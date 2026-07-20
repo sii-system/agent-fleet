@@ -112,6 +112,10 @@ def _patch_trial_decorator_with_tb_tags() -> None:
 
 
 def main() -> None:
+    if os.environ.get("TB_ENVIRONMENT_TYPE", "docker").strip().lower() == "e2b":
+        from e2b_runtime import patch_e2b_runtime_from_env
+
+        patch_e2b_runtime_from_env()
     if _trace_to_opik_enabled():
         _patch_opik_batch_tags()
         _install_track_harbor()

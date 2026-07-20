@@ -157,6 +157,7 @@ normalize_opik_url_override() {
   else
     OPIK_URL_OVERRIDE="$normalized"
   fi
+  export OPIK_URL_OVERRIDE
 }
 
 resolve_opik_health_url() {
@@ -208,14 +209,21 @@ append_rust_package_mirror_env() {
 }
 
 append_harbor_unprivileged_docker_compose() {
-  if [[ "$TB_ENVIRONMENT_TYPE" == "docker" ]]; then
-    cmd+=( --extra-docker-compose "$SCRIPT_DIR/overlays/unprivileged-task.yaml" )
+  if [[ "${TB_ENVIRONMENT_TYPE:-docker}" != "docker" ]]; then
+    if [[ "${TB_DRY_RUN:-0}" == "1" ]]; then
+      echo "[INFO] ${TB_ENVIRONMENT_TYPE} environment; skip unprivileged Docker Compose overlay"
+    fi
+    return 0
+  fi
+  cmd+=( --extra-docker-compose "$SCRIPT_DIR/overlays/unprivileged-task.yaml" )
+  if [[ "${TB_DRY_RUN:-0}" == "1" ]]; then
+    echo "[INFO] Docker environment; add unprivileged Docker Compose overlay"
   fi
 }
 
 validate_environment_backend() {
   case "$TB_ENVIRONMENT_TYPE" in
-    docker)
+    docker|e2b)
       ;;
     opensandbox)
       local name
@@ -244,16 +252,35 @@ validate_environment_backend() {
       fi
       ;;
     *)
-      echo "[ERROR] TB_ENVIRONMENT_TYPE must be docker or opensandbox, got: $TB_ENVIRONMENT_TYPE" >&2
+      echo "[ERROR] TB_ENVIRONMENT_TYPE must be docker, e2b, or opensandbox, got: $TB_ENVIRONMENT_TYPE" >&2
       exit 1
       ;;
   esac
+
+  if [[ -n "${TB_E2B_SANDBOX_TIMEOUT_SEC:-}" ]] \
+    && [[ ! "$TB_E2B_SANDBOX_TIMEOUT_SEC" =~ ^[1-9][0-9]*$ ]]; then
+    echo "[ERROR] TB_E2B_SANDBOX_TIMEOUT_SEC must be a positive integer" >&2
+    exit 1
+  fi
 }
 
 ensure_environment_backend() {
   validate_environment_backend
   if [[ "$TB_ENVIRONMENT_TYPE" == "docker" ]]; then
     ensure_docker_daemon
+    docker_hub_preflight_check
+    return 0
+  fi
+  if [[ "$TB_ENVIRONMENT_TYPE" == "e2b" ]]; then
+    if [[ -z "${E2B_API_KEY:-}" ]]; then
+      echo "[ERROR] E2B_API_KEY is required when TB_ENVIRONMENT_TYPE=e2b" >&2
+      exit 1
+    fi
+    if ! harbor_agent_is_oracle && [[ "$OPIK_MODE" != "remote" ]]; then
+      echo "[ERROR] OPIK_MODE=remote is required when TB_ENVIRONMENT_TYPE=e2b" >&2
+      exit 1
+    fi
+    echo "[INFO] using E2B environment; skip host Docker daemon and Docker Hub preflight"
   fi
 }
 
@@ -315,9 +342,9 @@ prepare_opensandbox_image_ref() {
 }
 
 append_environment_backend_args() {
+  cmd+=( --env "$TB_ENVIRONMENT_SPEC" )
   if [[ "$TB_ENVIRONMENT_TYPE" == "opensandbox" ]]; then
     cmd+=(
-      --env "$TB_ENVIRONMENT_SPEC"
       --ek "image_ref=$HARBOR_OPENSANDBOX_IMAGE_REF"
       --ek "lifecycle_minutes=$YICLOUD_SANDBOX_LIFECYCLE_MINUTES"
     )
@@ -337,9 +364,11 @@ ensure_trace_plugin_source_if_needed() {
       required=("$TRACE_PLUGIN_OPENCODE_PLUGIN_SOURCE" "$TRACE_PLUGIN_OPENCODE_HOOK_SOURCE")
     fi
   elif harbor_trace_to_opik_enabled &&
+    [[ "$AGENT" == "claude-code" ]] &&
+    [[ "$TB_ENVIRONMENT_TYPE" == "docker" ]] &&
     [[ "$trace_enabled" == "true" || "$trace_enabled" == "1" || "$TB_CC_OPIK_ENABLE_HOOK" == "1" ]]; then
     # With tracing off the realtime hook is forced off at command
-    # construction, so its source is not required either.
+    # construction. E2B cannot use the host bind-mounted hook source.
     required=("$TRACE_PLUGIN_CLAUDE_HOOK_SOURCE")
   fi
 
@@ -398,6 +427,22 @@ prepare_verifier_uv_bin() {
   cat >"$target_dir/env" <<EOF
 export PATH="\$HOME/.local/bin:$TB_VERIFIER_UV_BIN_DIR_MOUNT_PATH:\$PATH"
 EOF
+}
+
+verifier_uv_bin_ready() {
+  [[ -n "$VERIFIER_UV_BIN_DIR_SOURCE" ]] \
+    && [[ -x "$VERIFIER_UV_BIN_DIR_SOURCE/uv" ]] \
+    && [[ -x "$VERIFIER_UV_BIN_DIR_SOURCE/uvx" ]] \
+    && [[ -x "$VERIFIER_UV_BIN_DIR_SOURCE/curl" ]]
+}
+
+configure_e2b_verifier_uv_upload() {
+  TB_E2B_VERIFIER_UV_SOURCE=""
+  if [[ "$TB_ENVIRONMENT_TYPE" == "e2b" ]] && verifier_uv_bin_ready; then
+    TB_E2B_VERIFIER_UV_SOURCE="$VERIFIER_UV_BIN_DIR_SOURCE"
+    echo "[INFO] E2B verifier uv tools will be uploaded after sandbox start"
+  fi
+  export TB_E2B_VERIFIER_UV_SOURCE
 }
 
 task_is_included() {
@@ -666,6 +711,7 @@ run_oracle_task() {
   else
     echo "[WARN] failed to create verifier uv backup dir; verifier will use its normal uv install path" >&2
   fi
+  configure_e2b_verifier_uv_upload
 
   if [[ "$TB_DRY_RUN" != "1" ]]; then
     harbor_validate_runner_cli
@@ -691,7 +737,7 @@ run_oracle_task() {
     cmd+=( --path "$TB_PATH" )
   fi
   append_environment_backend_args
-  if [[ -n "$VERIFIER_UV_BIN_DIR_SOURCE" && -x "$VERIFIER_UV_BIN_DIR_SOURCE/uv" && -x "$VERIFIER_UV_BIN_DIR_SOURCE/uvx" ]]; then
+  if [[ "$TB_ENVIRONMENT_TYPE" != "e2b" ]] && verifier_uv_bin_ready; then
     local verifier_mounts_json verifier_uv_path_prefix
     verifier_mounts_json="$(
       python3 - "$VERIFIER_UV_BIN_DIR_SOURCE" "$TB_VERIFIER_UV_BIN_DIR_MOUNT_PATH" <<'PY'
@@ -712,6 +758,17 @@ PY
     fi
     cmd+=(
       --mounts-json "$verifier_mounts_json"
+      --ve "PATH=$verifier_uv_path_prefix:$TB_VERIFIER_UV_BIN_DIR_MOUNT_PATH:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+      --ve "TB_VERIFIER_UV_BIN_DIR=$TB_VERIFIER_UV_BIN_DIR_MOUNT_PATH"
+    )
+  fi
+  if [[ "$TB_ENVIRONMENT_TYPE" == "e2b" ]] && verifier_uv_bin_ready; then
+    local verifier_uv_path_prefix
+    verifier_uv_path_prefix="/root/.local/bin:/home/oai/.local/bin:/home/agent/.local/bin:/home/ubuntu/.local/bin"
+    if [[ -n "${TB_VERIFIER_UV_HOME:-}" ]]; then
+      verifier_uv_path_prefix="$TB_VERIFIER_UV_HOME/.local/bin:$verifier_uv_path_prefix"
+    fi
+    cmd+=(
       --ve "PATH=$verifier_uv_path_prefix:$TB_VERIFIER_UV_BIN_DIR_MOUNT_PATH:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
       --ve "TB_VERIFIER_UV_BIN_DIR=$TB_VERIFIER_UV_BIN_DIR_MOUNT_PATH"
     )
@@ -772,7 +829,10 @@ PY
     return 0
   fi
 
-  export PYTHONPATH="$SCRIPT_DIR${PYTHONPATH:+:$PYTHONPATH}"
+  # sitecustomize.py activates the shared E2B runtime patches before Harbor
+  # imports either the built-in or prebuilt environment. Oracle needs this
+  # path too even though it does not instantiate the Claude Code agent.
+  export PYTHONPATH="$HARBOR_CLAUDE_CODE_DIR:$SCRIPT_DIR${PYTHONPATH:+:$PYTHONPATH}"
   "${cmd[@]}"
   echo "[INFO] Oracle completed"
   echo "[INFO] results: $out_dir"
@@ -825,12 +885,15 @@ run_tb() {
     echo "[ERROR] current TB_LLM_KWARGS: $TB_LLM_KWARGS" >&2
     exit 1
   fi
-  VERIFIER_UV_BIN_DIR_SOURCE="$(mktemp -d "${RUNTIME_DIR%/}/verifier-uv.${job_name}.XXXXXX" 2>/dev/null || true)"
-  if [[ -n "$VERIFIER_UV_BIN_DIR_SOURCE" ]]; then
-    prepare_verifier_uv_bin "$VERIFIER_UV_BIN_DIR_SOURCE" || true
-  else
-    echo "[WARN] failed to create verifier uv backup dir; verifier will use its normal uv install path" >&2
+  if [[ "$TB_ENVIRONMENT_TYPE" == "docker" || "$TB_ENVIRONMENT_TYPE" == "e2b" ]]; then
+    VERIFIER_UV_BIN_DIR_SOURCE="$(mktemp -d "${RUNTIME_DIR%/}/verifier-uv.${job_name}.XXXXXX" 2>/dev/null || true)"
+    if [[ -n "$VERIFIER_UV_BIN_DIR_SOURCE" ]]; then
+      prepare_verifier_uv_bin "$VERIFIER_UV_BIN_DIR_SOURCE" || true
+    else
+      echo "[WARN] failed to create verifier uv backup dir; verifier will use its normal uv install path" >&2
+    fi
   fi
+  configure_e2b_verifier_uv_upload
 
   local effective_tb_task_id include_task
   effective_tb_task_id="${TB_TASK_ID:-}"
@@ -865,7 +928,7 @@ PY
     fi
   fi
 
-  if ! harbor_runner_cli_ready; then
+  if [[ "$TB_DRY_RUN" != "1" ]] && ! harbor_runner_cli_ready; then
     harbor_validate_runner_cli
   fi
 
@@ -985,7 +1048,8 @@ PY
   # The hook has no Opik server to talk to when tracing is off, so an
   # exported TB_CC_OPIK_ENABLE_HOOK=1 (e.g. persisted by setup.sh) must not
   # re-enable it.
-  if [[ "$TB_CC_OPIK_ENABLE_HOOK" == "1" ]] && harbor_trace_to_opik_enabled; then
+  if [[ "$TB_CC_OPIK_ENABLE_HOOK" == "1" && "$TB_ENVIRONMENT_TYPE" == "docker" ]] &&
+    harbor_trace_to_opik_enabled; then
     if [[ -f "$TB_CC_HOOK_SOURCE" ]]; then
       hook_mount_enabled=1
       cmd+=( --ae "CC_OPIK_ENABLE_HOOK=true" )
@@ -994,11 +1058,15 @@ PY
       cmd+=( --ae "CC_OPIK_ENABLE_HOOK=false" )
     fi
   else
+    if [[ "$TB_CC_OPIK_ENABLE_HOOK" == "1" && "$TB_ENVIRONMENT_TYPE" == "e2b" ]]; then
+      echo "[INFO] disable realtime Claude hook for E2B because its source is a host bind mount"
+    fi
     cmd+=( --ae "CC_OPIK_ENABLE_HOOK=false" )
   fi
 
-  local mounts_json
-  mounts_json="$(
+  local mounts_json="[]"
+  if [[ "$TB_ENVIRONMENT_TYPE" == "docker" ]]; then
+    mounts_json="$(
     python3 - "$hook_mount_enabled" "$TB_CC_HOOK_SOURCE" "$TB_CC_HOOK_MOUNT_PATH" "$TB_CC_CLAUDE_TGZ_SOURCE" "$TB_CC_CLAUDE_TGZ_MOUNT_PATH" "$TB_CC_PY_WHEEL_DIR_SOURCE" "$TB_CC_PY_WHEEL_DIR_MOUNT_PATH" "$VERIFIER_UV_BIN_DIR_SOURCE" "$TB_VERIFIER_UV_BIN_DIR_MOUNT_PATH" <<'PY'
 import json
 import os
@@ -1036,11 +1104,14 @@ if (
     mounts.append(bind_mount(uv_src, uv_dst))
 print(json.dumps(mounts, ensure_ascii=True))
 PY
-  )"
+    )"
+  else
+    echo "[INFO] E2B environment does not support host bind mounts; skip hook, dependency, and verifier uv mounts"
+  fi
   if [[ "$mounts_json" != "[]" ]]; then
     cmd+=( --mounts-json "$mounts_json" )
   fi
-  if [[ -n "$VERIFIER_UV_BIN_DIR_SOURCE" && -x "$VERIFIER_UV_BIN_DIR_SOURCE/uv" && -x "$VERIFIER_UV_BIN_DIR_SOURCE/uvx" ]]; then
+  if [[ "$TB_ENVIRONMENT_TYPE" == "docker" || "$TB_ENVIRONMENT_TYPE" == "e2b" ]] && verifier_uv_bin_ready; then
     local verifier_uv_path_prefix
     verifier_uv_path_prefix="/root/.local/bin:/home/oai/.local/bin:/home/agent/.local/bin:/home/ubuntu/.local/bin"
     if [[ -n "${TB_VERIFIER_UV_HOME:-}" ]]; then
@@ -1142,8 +1213,12 @@ PY
     cmd+=( --force-build )
   fi
 
-  echo "[INFO] running TB with real-time Opik tracking"
-  echo "[INFO] project: $OPIK_PROJECT_NAME"
+  if harbor_trace_to_opik_enabled; then
+    echo "[INFO] running TB with real-time Opik tracking"
+    echo "[INFO] project: $OPIK_PROJECT_NAME"
+  else
+    echo "[INFO] running TB without Opik tracing"
+  fi
   if harbor_uses_local_opensandbox_dataset; then
     echo "[INFO] agent: $TB_AGENT | runs: $TB_RUNS | path: $TB_PATH"
   elif harbor_uses_registry_dataset; then
@@ -1153,8 +1228,11 @@ PY
   fi
   echo "[INFO] agent_import_path: ${TB_AGENT_IMPORT_PATH:-<none>}"
   echo "[INFO] output dir: $out_dir"
-  echo "[INFO] dashboard: ${OPIK_BASE%/}/${OPIK_WORKSPACE}/home"
+  if harbor_trace_to_opik_enabled; then
+    echo "[INFO] dashboard: ${OPIK_BASE%/}/${OPIK_WORKSPACE}/home"
+  fi
   echo "[INFO] model: $TB_MODEL"
+  echo "[INFO] environment: $TB_ENVIRONMENT_TYPE"
   echo "[INFO] claude max_turns: ${TB_AK_MAX_TURNS:-<default>}"
   echo "[INFO] n_concurrent: $TB_N_CONCURRENT | max_retries: $TB_MAX_RETRIES"
   echo "[INFO] retry_include_exceptions: ${TB_RETRY_INCLUDE_EXCEPTIONS:-<all-except-excludes>}"
@@ -1180,7 +1258,9 @@ PY
 
   echo "[INFO] completed"
   echo "[INFO] results: $out_dir"
-  echo "[INFO] open traces in Opik project: $OPIK_PROJECT_NAME"
+  if harbor_trace_to_opik_enabled; then
+    echo "[INFO] open traces in Opik project: $OPIK_PROJECT_NAME"
+  fi
 }
 
 run_opencode_task() {
@@ -1191,6 +1271,7 @@ run_opencode_task() {
   else
     echo "[WARN] failed to create verifier uv backup dir; verifier will use its normal uv install path" >&2
   fi
+  configure_e2b_verifier_uv_upload
   if harbor_trace_to_opik_enabled; then
     normalize_opik_url_override
   fi
@@ -1314,8 +1395,9 @@ PY
       fi
     fi
 
-    local mounts_json
-    mounts_json="$(
+    local mounts_json="[]"
+    if [[ "$TB_ENVIRONMENT_TYPE" == "docker" ]]; then
+      mounts_json="$(
       python3 - "$TB_CC_PY_WHEEL_DIR_SOURCE" "$TB_CC_PY_WHEEL_DIR_MOUNT_PATH" "$VERIFIER_UV_BIN_DIR_SOURCE" "$TB_VERIFIER_UV_BIN_DIR_MOUNT_PATH" <<'PY'
 import json
 import os
@@ -1347,11 +1429,13 @@ if (
     })
 print(json.dumps(mounts, ensure_ascii=True))
 PY
-    )"
+      )"
+    fi
     if [[ "$mounts_json" != "[]" ]]; then
       cmd+=( --mounts-json "$mounts_json" )
     fi
-    if [[ -n "$VERIFIER_UV_BIN_DIR_SOURCE" && -x "$VERIFIER_UV_BIN_DIR_SOURCE/uv" && -x "$VERIFIER_UV_BIN_DIR_SOURCE/uvx" ]]; then
+    if [[ "$TB_ENVIRONMENT_TYPE" == "docker" || "$TB_ENVIRONMENT_TYPE" == "e2b" ]] \
+      && verifier_uv_bin_ready; then
       cmd+=(
         --ve "PATH=/root/.local/bin:/home/oai/.local/bin:/home/agent/.local/bin:/home/ubuntu/.local/bin:$TB_VERIFIER_UV_BIN_DIR_MOUNT_PATH:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
         --ve "TB_VERIFIER_UV_BIN_DIR=$TB_VERIFIER_UV_BIN_DIR_MOUNT_PATH"
@@ -1456,16 +1540,22 @@ PY
 main() {
   harbor_validate_agent
   harbor_validate_generation_controls
+  validate_environment_backend
   configure_trace_disabled_runtime
+  if ! harbor_agent_is_oracle && harbor_trace_to_opik_enabled; then
+    normalize_opik_url_override
+  fi
   if [[ "$AGENT" == "oracle" ]]; then
     need_cmd python3
     need_cmd uv
-    ensure_environment_backend
     harbor_init_run_dirs
     apply_min_test_defaults
-    if ! harbor_uses_registry_dataset && [[ ! -d "$TB_PATH" ]]; then
-      echo "[ERROR] local dataset path not found: $TB_PATH" >&2
-      exit 1
+    if [[ "$TB_DRY_RUN" != "1" ]]; then
+      ensure_environment_backend
+      if ! harbor_uses_registry_dataset && [[ ! -d "$TB_PATH" ]]; then
+        echo "[ERROR] local dataset path not found: $TB_PATH" >&2
+        exit 1
+      fi
     fi
     run_oracle_task
     return $?
@@ -1474,9 +1564,6 @@ main() {
   if harbor_agent_is_opencode; then
     need_cmd curl
     need_cmd python3
-    if harbor_trace_to_opik_enabled; then
-      normalize_opik_url_override
-    fi
     ensure_trace_plugin_source_if_needed
     apply_min_test_defaults
 
@@ -1487,7 +1574,6 @@ main() {
     fi
 
     ensure_environment_backend
-    docker_hub_preflight_check
 
     if ! harbor_trace_to_opik_enabled; then
       echo "[INFO] TRACE_TO_OPIK=false, skip Opik readiness checks"
@@ -1520,10 +1606,6 @@ main() {
   need_cmd git
   need_cmd curl
   need_cmd python3
-  ensure_environment_backend
-  if harbor_trace_to_opik_enabled; then
-    normalize_opik_url_override
-  fi
   ensure_trace_plugin_source_if_needed
 
   if [[ -z "$TB_AGENT" && -z "$TB_AGENT_IMPORT_PATH" ]]; then
@@ -1531,8 +1613,8 @@ main() {
     exit 1
   fi
 
-  if [[ -z "$TB_AGENT_IMPORT_PATH" && "$TB_AGENT" != "claude-code" ]]; then
-    echo "[ERROR] when TB_AGENT_IMPORT_PATH is empty, TB_AGENT must be claude-code (got: $TB_AGENT)" >&2
+  if [[ -z "$TB_AGENT_IMPORT_PATH" && "$TB_AGENT" != "claude-code" && "$TB_AGENT" != "oracle" ]]; then
+    echo "[ERROR] when TB_AGENT_IMPORT_PATH is empty, TB_AGENT must be claude-code or oracle (got: $TB_AGENT)" >&2
     exit 1
   fi
 
@@ -1540,11 +1622,21 @@ main() {
 
   if [[ "$TB_DRY_RUN" == "1" ]]; then
     echo "[INFO] TB_DRY_RUN=1, skip dataset/opik readiness checks"
-    run_tb
+    if harbor_agent_is_oracle; then
+      run_oracle_task
+    else
+      run_tb
+    fi
     return 0
   fi
 
-  docker_hub_preflight_check
+  ensure_environment_backend
+
+  if harbor_agent_is_oracle; then
+    prepare_local_dataset_if_needed
+    run_oracle_task
+    return $?
+  fi
 
   if ! harbor_trace_to_opik_enabled; then
     echo "[INFO] TRACE_TO_OPIK=false, skip Opik readiness checks"

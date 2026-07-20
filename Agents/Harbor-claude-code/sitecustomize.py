@@ -482,6 +482,15 @@ def _patch_claude_code_realtime_hooks() -> None:
             # This compatibility fix is independent of Opik and must always
             # run, including when external tracing is disabled.
             patched_command = _fix_unquoted_append_system_prompt(command)
+            if not hook_enabled:
+                return await original_exec_as_agent(
+                    environment,
+                    patched_command,
+                    env=env,
+                    cwd=cwd,
+                    timeout_sec=timeout_sec,
+                )
+
             if "claude --verbose --output-format=stream-json" in patched_command:
                 patched_command = (
                     "export PATH=\"$HOME/.local/bin:$PATH\"; "
@@ -614,5 +623,9 @@ def _patch_claude_code_fallback() -> None:
     ClaudeCode._opik_fallback_patch_applied = True
 
 
+from e2b_runtime import patch_e2b_runtime_from_env
+
+
+patch_e2b_runtime_from_env()
 _patch_claude_code_realtime_hooks()
 _patch_claude_code_fallback()

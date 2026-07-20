@@ -33,6 +33,7 @@ DEFAULT_API_BASE = os.environ.get("RL_API_BASE", "")
 DEFAULT_API_KEY = os.environ.get("RL_API_KEY", "")
 DEFAULT_API_KEY_MODE = os.environ.get("RL_API_KEY_MODE", "static").strip().lower()
 DEFAULT_OPIK_PROJECT_NAME = os.environ.get("OPIK_PROJECT_NAME", "")
+DEFAULT_ENVIRONMENT_TYPE = os.environ.get("RL_ENVIRONMENT_TYPE", "docker").strip().lower()
 DEFAULT_DISABLED_TASK_IDS = os.environ.get("RL_DISABLED_TASK_IDS", "")
 DEFAULT_TIMEOUT = float(os.environ.get("RL_REQUEST_TIMEOUT", "3600"))
 REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
@@ -69,6 +70,56 @@ def _metadata(request: dict[str, Any]) -> dict[str, Any]:
 def _trial_config(request: dict[str, Any]) -> dict[str, Any]:
     value = request.get("trial_config")
     return value if isinstance(value, dict) else {}
+
+
+def _environment_type(request: dict[str, Any]) -> str:
+    trial_environment = _trial_config(request).get("environment")
+    if not isinstance(trial_environment, dict):
+        trial_environment = {}
+    value = _first_nonempty(
+        request.get("environment_type"),
+        trial_environment.get("type"),
+        DEFAULT_ENVIRONMENT_TYPE,
+        "docker",
+    ).lower()
+    if value not in {"docker", "e2b"}:
+        raise ValueError(f"environment_type must be docker or e2b, got: {value}")
+    return value
+
+
+def _reject_e2b_credentials(request: dict[str, Any]) -> None:
+    if _contains_key(request, "e2b_api_key"):
+        raise ValueError(
+            "E2B_API_KEY must be supplied by the agent-fleet host environment, not the request"
+        )
+    for key in (
+        "e2b_template",
+        "tb_e2b_prebuilt_template",
+        "rl_e2b_prebuilt_template",
+    ):
+        if _contains_key(request, key):
+            raise ValueError(
+                "the E2B prebuilt template must be supplied by the agent-fleet "
+                "host environment, not the request"
+            )
+
+
+def _reject_model_credentials(request: dict[str, Any]) -> None:
+    if _contains_key(request, "api_key"):
+        raise ValueError(
+            "model API keys must be supplied by the agent-fleet host environment, not the request"
+        )
+
+
+def _contains_key(value: Any, target: str) -> bool:
+    if isinstance(value, dict):
+        return any(
+            str(key).strip().lower() == target or _contains_key(item, target)
+            for key, item in value.items()
+        )
+    if isinstance(value, list):
+        return any(_contains_key(item, target) for item in value)
+    return False
 
 
 def _first_nonempty(*values: Any) -> str:
@@ -188,11 +239,13 @@ def _queue_for_submission(ray_submission_id: str) -> Path:
     return _require_contained_path(JOB_QUEUE_ROOT / _storage_id(ray_submission_id, prefix="submission"), JOB_QUEUE_ROOT, label="queue dir")
 
 
-def _submission_session_name(ray_submission_id: str, dataset_name: str) -> str:
-    agent_slug = _safe_slug(os.environ.get("RL_AGENT", "claude-code"))
-    dataset_slug = _safe_slug(dataset_name)
+def _submission_session_name(ray_submission_id: str, _dataset_name: str) -> str:
     submission_slug = _storage_id(ray_submission_id, prefix="submission")
-    return f"harbor-rollout-{agent_slug}-{dataset_slug}-{submission_slug}"
+    # Zellij includes the session name in its Unix socket path. Keep the name
+    # compact even when the storage-safe submission id already contains a full
+    # digest; long descriptive prefixes can exceed Zellij's socket-path budget.
+    submission_digest = submission_slug.removeprefix("submission-")
+    return f"hr-{submission_digest}"
 
 
 def _job_lock(job_slug: str) -> threading.Lock:
@@ -435,6 +488,8 @@ def resolve_task_path(request: dict[str, Any]) -> Path:
 
 
 def _enqueue_request(request: dict[str, Any]) -> tuple[str, Path]:
+    _reject_e2b_credentials(request)
+    _reject_model_credentials(request)
     request_id = _validated_request_id(request.get("request_id"))
     request_file_id = _storage_id(request_id, prefix="request")
     session_id = request.get("session_id") or uuid4().hex
@@ -446,6 +501,7 @@ def _enqueue_request(request: dict[str, Any]) -> tuple[str, Path]:
     opik_project_name = _extract_opik_project_name(request, ray_submission_id)
     polar_task_id = _extract_polar_task_id(request, session_id)
     display_name = _display_name(task_path.name, polar_task_id, session_id)
+    environment_type = _environment_type(request)
     queue_dir = _queue_for_submission(ray_submission_id)
     pending_dir = queue_dir / "pending"
     results_dir = queue_dir / "results"
@@ -471,6 +527,8 @@ def _enqueue_request(request: dict[str, Any]) -> tuple[str, Path]:
         "model_name": model_name,
         "opik_project_name": opik_project_name,
         "api_base": _extract_api_base(request),
+        "api_key_mode": DEFAULT_API_KEY_MODE,
+        "environment_type": environment_type,
         "queue_dir": str(queue_dir),
         "zellij_session": zellij_session,
         "created_at": _now(),
@@ -495,6 +553,7 @@ def _enqueue_request(request: dict[str, Any]) -> tuple[str, Path]:
         "model_name": model_name,
         "opik_project_name": opik_project_name,
         "dataset_name": payload["dataset_name"],
+        "environment_type": environment_type,
         "queue_dir": str(queue_dir),
         "zellij_session": zellij_session,
     })
@@ -567,6 +626,12 @@ class Handler(BaseHTTPRequestHandler):
                     "default_agent": os.environ.get("RL_AGENT", "claude-code"),
                     "default_model_name": DEFAULT_MODEL_NAME,
                     "default_api_base_set": bool(DEFAULT_API_BASE),
+                    "default_environment_type": DEFAULT_ENVIRONMENT_TYPE,
+                    "e2b_prebuilt_template_configured": bool(
+                        os.environ.get("RL_E2B_PREBUILT_TEMPLATE")
+                        or os.environ.get("TB_E2B_PREBUILT_TEMPLATE")
+                        or os.environ.get("E2B_TEMPLATE")
+                    ),
                     "api_key_mode": DEFAULT_API_KEY_MODE,
                     "queue_dir": str(QUEUE_DIR),
                     "job_queue_root": str(JOB_QUEUE_ROOT),

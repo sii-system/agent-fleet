@@ -1,6 +1,7 @@
 # Direct dependencies of the Harbor runner control environment.
 # Keep this list small; task-container dependencies are prepared separately.
 harbor==0.18.0
+e2b==2.32.1
 opik==2.1.32
 pip==25.2
 s3cmd==2.4.0

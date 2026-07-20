@@ -9,8 +9,8 @@ RL_PORT="${RL_PORT:-19001}"
 # Dataset roots exposed by the remote Harbor service.  RL_DATASET_ROOTS accepts
 # comma-separated name=path pairs, for example:
 #   seta=/workspace/seta-env/Harbor-Dataset,smith=/workspace/harbor/datasets/swesmith
-RL_DATASET_NAME="${RL_DATASET_NAME:-seta}"
-RL_DATASET_ROOT="${RL_DATASET_ROOT:-/workspace/seta-env/Harbor-Dataset}"
+RL_DATASET_NAME="${RL_DATASET_NAME:-${DATASET_NAME:-seta}}"
+RL_DATASET_ROOT="${RL_DATASET_ROOT:-${DATASET_PATH:-/workspace/seta-env/Harbor-Dataset}}"
 RL_DATASET_ROOTS="${RL_DATASET_ROOTS:-}"
 RL_DISABLED_TASK_IDS="${RL_DISABLED_TASK_IDS:-}"
 
@@ -30,6 +30,10 @@ RL_API_KEY="${RL_API_KEY:-${API_KEY:-}}"
 RL_API_KEY_MODE="${RL_API_KEY_MODE:-static}"
 
 RL_ENVIRONMENT_TYPE="${RL_ENVIRONMENT_TYPE:-docker}"
+RL_E2B_SANDBOX_TIMEOUT_SEC="${RL_E2B_SANDBOX_TIMEOUT_SEC:-}"
+# Host-only compatibility setting. The template ID is inherited by workers and
+# must never be accepted from /run_trial request payloads.
+RL_E2B_PREBUILT_TEMPLATE="${RL_E2B_PREBUILT_TEMPLATE:-${E2B_TEMPLATE:-}}"
 RL_FORCE_BUILD="${RL_FORCE_BUILD:-${TB_FORCE_BUILD:-0}}"
 if [[ -z "${RL_MODEL_INFO:-}" ]]; then
   # Polar rollout currently serves 32k-context models by default. Keep the

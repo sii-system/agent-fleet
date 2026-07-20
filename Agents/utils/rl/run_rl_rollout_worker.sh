@@ -29,6 +29,15 @@ clear_pane_history() {
   printf '\033[3J\033[H\033[2J'
 }
 
+rename_pane() {
+  local name="$1"
+  # Pane naming is cosmetic and must never stop a rollout worker.  zellij can
+  # reject the action when the pane has no attached client during startup.
+  if [[ -n "${ZELLIJ_SESSION_NAME:-}" ]] && command -v zellij >/dev/null 2>&1; then
+    zellij action rename-pane "$name" >/dev/null 2>&1 || true
+  fi
+}
+
 json_get() {
   python3 - "$1" "$2" <<'PY'
 import json
@@ -119,6 +128,7 @@ payload = {
     "ray_submission_id": request.get("ray_submission_id"),
     "polar_task_id": request.get("polar_task_id"),
     "display_name": request.get("display_name"),
+    "environment_type": request.get("environment_type"),
     "trial_name": Path(result_file).parent.name if result_file else "",
     "trial_uri": str(Path(result_file).parent) if result_file else "",
     "reward": float(reward) if str(reward).strip() not in {"", "None"} else None,
@@ -156,8 +166,10 @@ start_agent_log_stream() {
   local target="$1"
   if [[ "$RL_AGENT" == "opencode" ]]; then
     setsid python3 "$HARBOR_SCRIPT_DIR/harbor_worker_utils.py" stream-opencode-log "$target" &
-  else
+  elif [[ "$RL_AGENT" == "claude-code" ]]; then
     setsid python3 "$HARBOR_SCRIPT_DIR/harbor_worker_utils.py" stream-claude-log "$target" &
+  else
+    return 0
   fi
   AGENT_TAIL_PID="$!"
 }
@@ -223,7 +235,7 @@ finalize_timeout_trace() {
   if [[ "$RL_AGENT" == "opencode" ]]; then
     "$py" "$HARBOR_OPENCODE_DIR/finalize_opencode_sessions.py" \
       --status timeout --logs-dir "$logs_dir" >> "$WORKER_LOG" 2>&1 || true
-  else
+  elif [[ "$RL_AGENT" == "claude-code" ]]; then
     python3 "$HARBOR_SCRIPT_DIR/harbor_worker_utils.py" prepare-claude-timeout-backup \
       "$logs_dir" --project-name "$OPIK_PROJECT_NAME" >> "$WORKER_LOG" 2>&1 || true
     "$py" "$TRACE_PLUGIN_CLAUDE_HOOK_SOURCE" \
@@ -271,6 +283,7 @@ while true; do
   polar_task_id="$(json_get "$request_file" polar_task_id)"
   display_name="$(json_get "$request_file" display_name)"
   force_build="$(json_get_first "$request_file" force_build trial_config.environment.force_build)"
+  environment_type="$(json_get_first "$request_file" environment_type trial_config.environment.type)"
   max_new_tokens="$(json_get_first "$request_file" max_new_tokens trial_config.agent.kwargs.max_new_tokens)"
   model_info="$(json_get_first "$request_file" model_info trial_config.agent.kwargs.model_info)"
   claude_max_output_tokens="$(json_get_first "$request_file" claude_code_max_output_tokens trial_config.agent.kwargs.claude_code_max_output_tokens)"
@@ -297,7 +310,9 @@ while true; do
   mkdir -p "$task_jobs_root"
   printf '%s\t%s\t%s\t%s\t%s\n' "$request_id" "$task_name" "$display_name" "$ray_submission_id" "$polar_task_id" > "$CURRENT_FILE"
   clear_pane_history
-  log_msg "starting request=${request_id} display=${display_name} task=${task_name} ray_submission=${ray_submission_id:-none} polar_task=${polar_task_id:-none}"
+  rename_pane "$display_name"
+  environment_type="${environment_type:-${RL_ENVIRONMENT_TYPE:-docker}}"
+  log_msg "starting request=${request_id} display=${display_name} task=${task_name} environment=${environment_type} ray_submission=${ray_submission_id:-none} polar_task=${polar_task_id:-none}"
 
   if [[ -n "$dataset_root" ]]; then
     worklist="$WORKLIST_DIR/$(safe_name "$dataset_root").txt"
@@ -335,6 +350,15 @@ while true; do
       # model, endpoint, and key instead of reusing the listener-time snapshot.
       export OPENCODE_CONFIG_CONTENT=""
     fi
+    export TB_ENVIRONMENT_TYPE="$environment_type"
+    if [[ "$environment_type" == "e2b" && -n "${TB_E2B_PREBUILT_TEMPLATE:-}" ]]; then
+      export TB_ENVIRONMENT_SPEC="$HARBOR_E2B_PREBUILT_ENVIRONMENT_SPEC"
+    elif [[ "$environment_type" != "${RL_ENVIRONMENT_TYPE:-docker}" ]]; then
+      # A per-request backend override must not inherit the listener's default
+      # environment import path.
+      export TB_ENVIRONMENT_SPEC="$environment_type"
+    fi
+    export TB_E2B_SANDBOX_TIMEOUT_SEC="${RL_E2B_SANDBOX_TIMEOUT_SEC:-${TB_E2B_SANDBOX_TIMEOUT_SEC:-}}"
     # Rollout may target Polar gateways with smaller context windows than the
     # normal benchmark defaults. Apply RL_* budgets to the Harbor/Claude args.
     export TB_MAX_NEW_TOKENS="${max_new_tokens:-${RL_MAX_NEW_TOKENS:-${TB_MAX_NEW_TOKENS:-}}}"
@@ -369,7 +393,11 @@ PY
       api_root="${api_root%/v1}"
       export BASE_URL="$api_root"
       export TB_API_BASE="${api_root}/v1/chat/completions"
-      export TB_ANTHROPIC_BASE_URL="$api_root"
+      # api_base is the OpenAI-compatible endpoint used by rollout clients.
+      # Claude Code may need a different Anthropic-compatible endpoint (for
+      # example DeepSeek's /anthropic route), so preserve the host's explicit
+      # setting instead of deriving it from api_base.
+      export TB_ANTHROPIC_BASE_URL="${TB_ANTHROPIC_BASE_URL:-$api_root}"
     fi
     if [[ -n "$api_key" ]]; then
       export API_KEY="$api_key"
@@ -389,9 +417,6 @@ import sys
 
 session_id, temperature, top_p, top_k, min_p, timeout, max_retries = sys.argv[1:8]
 payload = {}
-api_key = os.environ.get("API_KEY", "")
-if api_key:
-    payload["api_key"] = api_key
 
 def add_number(name, value, cast=float):
     value = str(value).strip()
@@ -450,8 +475,8 @@ PY
   fi
 
   json_build_result "$request_file" "${result_file:-}" "$task_console_log" "$reward" "$exception_type" "$rc" "$result_out" "$status"
-  printf '{"event":"finish","timestamp":"%s","request_id":"%s","task_id":"%s","display_name":"%s","ray_submission_id":"%s","polar_task_id":"%s","status":"%s","reward":"%s","exception_type":"%s"}\n' \
-    "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$request_id" "$task_name" "$display_name" "$ray_submission_id" "$polar_task_id" "$status" "$reward" "$exception_type" >> "$RL_TRACE_LOG"
+  printf '{"event":"finish","timestamp":"%s","request_id":"%s","task_id":"%s","display_name":"%s","environment_type":"%s","ray_submission_id":"%s","polar_task_id":"%s","status":"%s","reward":"%s","exception_type":"%s"}\n' \
+    "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$request_id" "$task_name" "$display_name" "$environment_type" "$ray_submission_id" "$polar_task_id" "$status" "$reward" "$exception_type" >> "$RL_TRACE_LOG"
   log_msg "finished request=${request_id} display=${display_name} task=${task_name} status=${status} reward=${reward:-none} exception=${exception_type:-none} rc=${rc}"
   rm -f "$CURRENT_FILE" "$request_file"
   if ! python3 "$RL_SCRIPT_DIR/rollout_worker_utils.py" prune-trials \
