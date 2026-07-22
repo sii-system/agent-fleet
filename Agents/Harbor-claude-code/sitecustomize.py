@@ -29,9 +29,13 @@
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 import os
 import shlex
+import tempfile
+import uuid
 from pathlib import Path
 from types import MethodType
 
@@ -47,6 +51,7 @@ _HOOK_EVENTS = [
     "SessionEnd",
 ]
 _ROUND_GATE_EVENTS = ("PreToolUse", "Stop")
+_MISSING = object()
 
 
 def _is_true(value: str | None) -> bool:
@@ -95,34 +100,139 @@ def _rust_package_mirror_bootstrap(extra_env: dict[str, str] | None) -> str:
     return "set +e; " + "; ".join(parts) + "; set -e"
 
 
-def _fix_unquoted_append_system_prompt(command: str) -> str:
-    """Fix Harbor's missing shell-quoting of --append-system-prompt value.
-
-    Harbor concatenates the claude CLI command as a plain string without
-    shell-quoting the --append-system-prompt value.  When bash executes
-    the string, it splits the value on spaces, turning it into stray
-    positional arguments.  Claude Code's CLI parser then consumes the
-    first word as the value and treats the rest as the user message,
-    so the actual task instruction is never delivered to the model.
-
-    This function detects an unquoted value and wraps it in single quotes
-    so bash passes the full string as a single argument.
-    """
-    import re as _re
-
-    if "--append-system-prompt" not in command:
-        return command
-    # Match --append-system-prompt VALUE where VALUE is not already quoted.
-    # The value runs until the next --flag (e.g. --disallowedTools, --print).
-    m = _re.search(
-        r"(--append-system-prompt\s+)([^'\"\s]\S.*?)(\s+--[a-zA-Z])",
-        command,
-        _re.DOTALL,
+def _write_local_append_system_prompt(prompt: str) -> tuple[Path, int, str]:
+    """Write exact prompt bytes to a private host-side staging file."""
+    payload = prompt.encode("utf-8")
+    fd, raw_path = tempfile.mkstemp(
+        prefix="harbor-claude-append-system-prompt-", suffix=".txt"
     )
-    if not m:
+    path = Path(raw_path)
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(payload)
+        os.chmod(path, 0o600)
+    except BaseException:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        path.unlink(missing_ok=True)
+        raise
+    return path, len(payload), hashlib.sha256(payload).hexdigest()
+
+
+async def _install_remote_append_system_prompt(
+    agent, environment, local_path: Path, remote_path: str
+) -> None:
+    """Upload the prompt and prove that Claude's runtime user can read it."""
+    identity = await agent.exec_as_agent(
+        environment,
+        command='printf "%s %s\\n" "$(id -u)" "$(id -g)"',
+        timeout_sec=30,
+    )
+    identity_parts = (identity.stdout or "").strip().split()
+    if len(identity_parts) != 2 or not all(part.isdigit() for part in identity_parts):
+        raise RuntimeError(
+            "Unable to resolve Claude runtime UID/GID for append-system-prompt-file"
+        )
+    uid, gid = identity_parts
+
+    await environment.upload_file(local_path, remote_path)
+    quoted_path = shlex.quote(remote_path)
+    await agent.exec_as_root(
+        environment,
+        command=f"chown {uid}:{gid} {quoted_path} && chmod 600 {quoted_path}",
+        timeout_sec=30,
+    )
+    await agent.exec_as_agent(
+        environment,
+        command=f"test -f {quoted_path} && test -r {quoted_path}",
+        timeout_sec=30,
+    )
+
+
+async def _remove_remote_append_system_prompt(
+    environment, remote_path: str, logger
+) -> None:
+    """Best-effort cleanup that never masks the trial's primary outcome."""
+    try:
+        result = await environment.exec(
+            command=f"rm -f -- {shlex.quote(remote_path)}",
+            user="root",
+            timeout_sec=30,
+        )
+        if result.return_code != 0:
+            logger.warning(
+                "Failed to remove remote append-system-prompt file %s (exit %s)",
+                remote_path,
+                result.return_code,
+            )
+    except Exception as exc:
+        logger.warning(
+            "Failed to remove remote append-system-prompt file %s: %s",
+            remote_path,
+            exc,
+        )
+
+
+def _inject_append_system_prompt_file(command: str, remote_path: str) -> str:
+    """Insert a file-backed system prompt before Claude's print delimiter."""
+    marker = " --print --"
+    marker_pos = command.find(marker)
+    if marker_pos < 0:
+        raise RuntimeError(
+            "Claude command is missing the --print -- insertion point for "
+            "append-system-prompt-file"
+        )
+    if " --append-system-prompt " in command:
+        raise RuntimeError(
+            "Unsafe inline --append-system-prompt remained in the Claude command"
+        )
+    if " --append-system-prompt-file " in command:
+        raise RuntimeError("Duplicate --append-system-prompt-file in Claude command")
+    file_arg = f" --append-system-prompt-file {shlex.quote(remote_path)}"
+    return command[:marker_pos] + file_arg + command[marker_pos:]
+
+
+def _replace_print_instruction(command: str, instruction: str) -> str:
+    """Preserve the main instruction across Harbor's nested shell boundary."""
+    marker = " --print -- "
+    tail_marker = " 2>&1 </dev/null | tee "
+    start = command.find(marker)
+    if start < 0:
         return command
-    value = m.group(2)
-    return command[: m.start(2)] + shlex.quote(value) + command[m.end(2):]
+    value_start = start + len(marker)
+    end = command.find(tail_marker, value_start)
+    if end < 0:
+        return command
+    encoded = base64.b64encode(instruction.encode("utf-8")).decode("ascii")
+    safe_value = f'"$(printf %s {shlex.quote(encoded)} | base64 -d)"'
+    return command[:value_start] + safe_value + command[end:]
+
+
+def _claude_stream_command(command: str) -> bool:
+    return (
+        "claude --verbose --output-format=stream-json" in command
+        and " --print --" in command
+    )
+
+
+def _append_claude_exit_diagnostics(command: str) -> str:
+    """Persist Claude/tee statuses without changing pipefail semantics."""
+    marker = " 2>&1 </dev/null | tee "
+    if marker not in command or "claude-wrapper-exit.log" in command:
+        return command
+    return command + (
+        '; __tb_pipeline_status=("${PIPESTATUS[@]}"); '
+        '__tb_pipeline_rc=0; '
+        'for __tb_status in "${__tb_pipeline_status[@]}"; do '
+        'if [ "$__tb_status" -ne 0 ]; then __tb_pipeline_rc="$__tb_status"; fi; '
+        'done; '
+        'printf "%s\\n" '
+        '"time=$(date -Is) pipeline=${__tb_pipeline_status[*]} return=$__tb_pipeline_rc" '
+        '>> /logs/agent/claude-wrapper-exit.log 2>&1 || true; '
+        'exit "$__tb_pipeline_rc"'
+    )
 
 
 def _inject_claude_agents_flag(
@@ -537,10 +647,21 @@ def _patch_claude_code_realtime_hooks() -> None:
                 or os.environ.get("TB_CLAUDE_CODE_AGENTS_JSON", "")
             ).strip()
         )
-        if not hook_enabled and not round_gate_enabled and not agents_enabled:
+        saved_flags = self._resolved_flags
+        run_flags = dict(saved_flags)
+        append_prompt = run_flags.pop("append_system_prompt", _MISSING)
+        prompt_configured = append_prompt is not _MISSING
+        if (
+            not hook_enabled
+            and not round_gate_enabled
+            and not agents_enabled
+            and not prompt_configured
+        ):
             return await original_run(self, instruction, environment, context)
 
         original_exec_as_agent = self.exec_as_agent
+        local_prompt_path: Path | None = None
+        remote_prompt_path = ""
 
         async def exec_as_agent_with_hook(
             _self,
@@ -550,10 +671,15 @@ def _patch_claude_code_realtime_hooks() -> None:
             cwd=None,
             timeout_sec=None,
         ):
-            # This compatibility fix is independent of Opik and must always
-            # run, including when external tracing is disabled.
-            patched_command = _fix_unquoted_append_system_prompt(command)
-            if "claude --verbose --output-format=stream-json" in patched_command:
+            patched_command = command
+            if _claude_stream_command(patched_command):
+                if remote_prompt_path:
+                    patched_command = _inject_append_system_prompt_file(
+                        patched_command, remote_prompt_path
+                    )
+                patched_command = _replace_print_instruction(
+                    patched_command, instruction
+                )
                 patched_command = (
                     "export PATH=\"$HOME/.local/bin:$PATH\"; "
                     f"{patched_command}"
@@ -590,6 +716,9 @@ def _patch_claude_code_realtime_hooks() -> None:
                 )
                 _self._opik_hook_settings_written = True
 
+            if _claude_stream_command(patched_command):
+                patched_command = _append_claude_exit_diagnostics(patched_command)
+
             return await original_exec_as_agent(
                 environment,
                 patched_command,
@@ -598,11 +727,48 @@ def _patch_claude_code_realtime_hooks() -> None:
                 timeout_sec=timeout_sec,
             )
 
-        self.exec_as_agent = MethodType(exec_as_agent_with_hook, self)
+        self._resolved_flags = run_flags
         try:
-            return await original_run(self, instruction, environment, context)
+            if prompt_configured:
+                local_prompt_path, prompt_size, prompt_sha256 = (
+                    _write_local_append_system_prompt(str(append_prompt))
+                )
+                remote_prompt_path = (
+                    "/tmp/.harbor-claude-append-system-prompt-"
+                    f"{uuid.uuid4().hex}.txt"
+                )
+                await _install_remote_append_system_prompt(
+                    self, environment, local_prompt_path, remote_prompt_path
+                )
+                self.logger.debug(
+                    "Staged append system prompt via file",
+                    extra={
+                        "prompt_size_bytes": prompt_size,
+                        "prompt_sha256": prompt_sha256,
+                        "remote_path": remote_prompt_path,
+                    },
+                )
+
+            self.exec_as_agent = MethodType(exec_as_agent_with_hook, self)
+            try:
+                return await original_run(self, instruction, environment, context)
+            finally:
+                self.exec_as_agent = original_exec_as_agent
         finally:
-            self.exec_as_agent = original_exec_as_agent
+            self._resolved_flags = saved_flags
+            if remote_prompt_path:
+                await _remove_remote_append_system_prompt(
+                    environment, remote_prompt_path, self.logger
+                )
+            if local_prompt_path is not None:
+                try:
+                    local_prompt_path.unlink(missing_ok=True)
+                except OSError as exc:
+                    self.logger.warning(
+                        "Failed to remove local append-system-prompt file %s: %s",
+                        local_prompt_path,
+                        exc,
+                    )
 
     ClaudeCode.install = patched_install
     ClaudeCode.run = patched_run

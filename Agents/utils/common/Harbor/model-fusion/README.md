@@ -32,10 +32,16 @@ For a host-only wiring check that stops after contract generation, set
 
 The original implementation provenance is the locked
 `origin/task-fusion-router` source branch; only its mid-turn reachable wiring
-was retained here.
+was retained here. The current transport baseline includes its recoverable
+hook-message contract (`cabf5ab`) and file-backed Claude prompt transport
+(`3ad61d4`).
 
 The shared Harbor files contain thin source/call hooks only. In-session
 defaults, agent environment arguments, mount extension helpers, the single-task
 wrapper, documentation, and wiring tests live in this directory. The normal
 Harbor worker loop is unchanged. `Agents/Harbor-claude-code/sitecustomize.py`
 remains in place because its import location is the Harbor startup contract.
+That patch stages append-system-prompt content as a private file and never
+embeds the raw prompt in the Claude shell command. Router owns the matching
+hook-message file: each fusion writes `boundary.json`, and hook stdout returns
+the `BOUNDARY_FILE` pointer instead of the full boundary payload.

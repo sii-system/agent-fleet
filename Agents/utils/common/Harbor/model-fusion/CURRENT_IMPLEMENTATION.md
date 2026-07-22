@@ -6,11 +6,19 @@ prompt, and `fusion.json`, mounts the complete Router Claude frontend directory
 read-only, and registers its PreToolUse and Stop gate alongside the existing
 Opik hooks.
 
+Fleet passes the generated system prompt to Harbor as configuration, but the
+Claude runtime patch removes the inline `append_system_prompt` flag before
+Harbor builds its shell command. It writes the exact bytes to a private local
+file, uploads a per-run file owned by the Claude runtime user, invokes Claude
+with `--append-system-prompt-file`, and removes both copies afterward.
+
 The execution contract is fixed to `mid-turn-fusion`:
 
 1. A productive main-agent tool reaches the mounted gate.
-2. The gate establishes `SPAN_MID_TURN_BOUNDARY_PANEL_REQUIRED` and supplies
-   isolated panel workdirs under `SPAN_MID_TURN_ARTIFACT_ROOT`.
+2. The gate atomically stores the complete hook message in a mode-`0600`
+   `boundary.json`, then establishes `SPAN_MID_TURN_BOUNDARY_PANEL_REQUIRED`
+   with its `BOUNDARY_FILE` path and isolated panel workdirs under
+   `SPAN_MID_TURN_ARTIFACT_ROOT`.
 3. Claude Code runs `span-panel-0..N`, then `span-outer`.
 4. `span-outer` returns `MID_TURN_MERGE_RESULT`.
 5. The main actor applies that result, or continues fail-open without mutating

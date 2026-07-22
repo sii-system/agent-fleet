@@ -3,11 +3,16 @@
 ```text
 Agents/Harbor-claude-code/
 ├── sitecustomize.py
+├── tests/
+│   └── test_prompt_transport.py
 ├── README.md
 └── STRUCT.md
 ```
 
-`sitecustomize.py` contains Claude Code specific runtime hooks used by the Harbor runner.
+`sitecustomize.py` contains Claude Code specific runtime hooks used by the
+Harbor runner. It also stages `append_system_prompt` as a private remote file,
+injects `--append-system-prompt-file`, and cleans the staging files after the
+run so prompt bytes never appear in the nested shell command.
 
 The realtime Opik hook is loaded from the `third_party/sii-opik-plugin`
 submodule:

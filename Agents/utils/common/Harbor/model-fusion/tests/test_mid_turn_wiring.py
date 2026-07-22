@@ -149,6 +149,8 @@ class MidTurnWiringTest(unittest.TestCase):
         self.assertIn("/opt/tb-fusion-round/subagent_barrier_gate.py", wrapper)
         self.assertIn("mid-turn-fusion", fusion_env)
         self.assertIn("SPAN_MID_TURN_ARTIFACT_ROOT", fusion_harboropik)
+        self.assertIn("SPAN_HOOK_REASON_MAX_BYTES", fusion_env)
+        self.assertIn("SPAN_HOOK_REASON_MAX_BYTES", fusion_harboropik)
         self.assertIn("model_fusion_build_agent_env_args", harboropik)
         self.assertIn('--outer-model "$SPAN_OUTER_MODEL"', wrapper)
         self.assertNotIn("--judge-model", wrapper)
@@ -159,6 +161,13 @@ class MidTurnWiringTest(unittest.TestCase):
             ).exists()
         )
         self.assertTrue((ROUTER / "prompts/mid_turn_fusion/panel.md").is_file())
+
+    def test_claude_prompt_transport_is_file_backed(self):
+        source = SITE_CUSTOMIZE.read_text(encoding="utf-8")
+        self.assertIn("--append-system-prompt-file", source)
+        self.assertIn('run_flags.pop("append_system_prompt", _MISSING)', source)
+        self.assertIn("_remove_remote_append_system_prompt", source)
+        self.assertNotIn("def _fix_unquoted_append_system_prompt", source)
 
     def test_shared_harbor_files_are_thin_hooks(self):
         env_text = (HARBOR / "env.sh").read_text(encoding="utf-8")
