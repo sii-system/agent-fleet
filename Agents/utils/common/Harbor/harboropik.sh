@@ -42,6 +42,8 @@ trap cleanup_verifier_uv_bin_dir EXIT
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$SCRIPT_DIR/env.sh"
+# shellcheck source=/dev/null
+. "$MODEL_FUSION_DIR/harboropik.sh"
 
 harbor_is_native_registry_main() {
   [[ "$ROLLOUT" != "1" ]] \
@@ -660,6 +662,8 @@ PY
       --ae "OPIK_WORKSPACE=$OPIK_WORKSPACE"
     )
   fi
+  model_fusion_build_agent_env_args
+  cmd+=( "${MODEL_FUSION_AGENT_ENV_ARGS[@]}" )
   if harbor_uses_registry_dataset; then
     cmd+=( --dataset "$(harbor_registry_dataset_name)" )
   else
@@ -768,6 +772,7 @@ if (
 print(json.dumps(mounts, ensure_ascii=True))
 PY
   )"
+  mounts_json="$(model_fusion_append_readonly_mounts "$mounts_json")"
   if [[ "$mounts_json" != "[]" ]]; then
     cmd+=( --mounts-json "$mounts_json" )
   fi

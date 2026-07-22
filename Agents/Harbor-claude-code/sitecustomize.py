@@ -27,7 +27,10 @@
 # Both patches guard against double-application and gracefully no-op when the
 # Harbor agent module cannot be imported (e.g. wrong package version).
 
+from __future__ import annotations
+
 import json
+import os
 import shlex
 from pathlib import Path
 from types import MethodType
@@ -43,6 +46,7 @@ _HOOK_EVENTS = [
     "SubagentStop",
     "SessionEnd",
 ]
+_ROUND_GATE_EVENTS = ("PreToolUse", "Stop")
 
 
 def _is_true(value: str | None) -> bool:
@@ -121,6 +125,23 @@ def _fix_unquoted_append_system_prompt(command: str) -> str:
     return command[: m.start(2)] + shlex.quote(value) + command[m.end(2):]
 
 
+def _inject_claude_agents_flag(
+    command: str, extra_env: dict[str, str] | None
+) -> str:
+    agents_json = (
+        (extra_env or {}).get("TB_CLAUDE_CODE_AGENTS_JSON", "")
+        or os.environ.get("TB_CLAUDE_CODE_AGENTS_JSON", "")
+    ).strip()
+    prefix = "claude --verbose --output-format=stream-json"
+    if not agents_json or " --agents " in command or prefix not in command:
+        return command
+    marker = " --print --"
+    addition = f" --agents {shlex.quote(agents_json)}"
+    if marker in command:
+        return command.replace(marker, addition + marker, 1)
+    return command.replace(prefix, prefix + addition, 1)
+
+
 def _hook_enabled(extra_env: dict[str, str] | None) -> bool:
     if not extra_env:
         return False
@@ -139,7 +160,39 @@ def _hook_mount_path(extra_env: dict[str, str] | None) -> str:
     )
 
 
-def _build_hook_settings_json(hook_path: str) -> str:
+def _round_gate_enabled(extra_env: dict[str, str] | None) -> bool:
+    return _is_true(
+        (extra_env or {}).get("TB_FUSION_ROUND_GATE")
+        or os.environ.get("TB_FUSION_ROUND_GATE")
+    )
+
+
+def _round_gate_path(extra_env: dict[str, str] | None) -> str:
+    return (
+        (extra_env or {}).get("TB_FUSION_ROUND_GATE_PATH")
+        or os.environ.get("TB_FUSION_ROUND_GATE_PATH")
+        or "/opt/tb-fusion-round/subagent_barrier_gate.py"
+    )
+
+
+def _round_gate_mode(extra_env: dict[str, str] | None) -> str:
+    return (
+        (extra_env or {}).get("TB_FUSION_ROUND_GATE_MODE")
+        or (extra_env or {}).get("SPAN_FORCE_MODE")
+        or os.environ.get("TB_FUSION_ROUND_GATE_MODE")
+        or os.environ.get("SPAN_FORCE_MODE")
+        or "mid-turn-fusion"
+    )
+
+
+def _build_hook_settings_json(
+    hook_path: str,
+    *,
+    opik_enabled: bool = True,
+    round_gate_enabled: bool = False,
+    round_gate_path: str = "/opt/tb-fusion-round/subagent_barrier_gate.py",
+    round_gate_mode: str = "mid-turn-fusion",
+) -> str:
     def hook_command(event: str, extra_args: str = "") -> str:
         return (
         "for py in /opt/python3.12-runtime/bin/python3.12 python3.12 python3; do "
@@ -169,9 +222,8 @@ def _build_hook_settings_json(hook_path: str) -> str:
         )
         return "sh -lc " + shlex.quote(detached)
 
-    payload = {
-        "alwaysThinkingEnabled": True,
-        "hooks": {
+    hooks = (
+        {
             event: [
                 {
                     "hooks": [
@@ -186,7 +238,40 @@ def _build_hook_settings_json(hook_path: str) -> str:
                 }
             ]
             for event in _HOOK_EVENTS
-        },
+        }
+        if opik_enabled
+        else {}
+    )
+    if round_gate_enabled:
+        for event in _ROUND_GATE_EVENTS:
+            if opik_enabled and event not in hooks:
+                hooks[event] = [
+                    {
+                        "hooks": [
+                            {
+                                "type": "command",
+                                "command": event_command(event),
+                            }
+                        ]
+                    }
+                ]
+            hooks.setdefault(event, []).append(
+                {
+                    "hooks": [
+                        {
+                            "type": "command",
+                            "command": (
+                                f"python3 {shlex.quote(round_gate_path)} "
+                                f"{shlex.quote(event)} --mode "
+                                f"{shlex.quote(round_gate_mode)}"
+                            ),
+                        }
+                    ]
+                }
+            )
+    payload = {
+        "alwaysThinkingEnabled": True,
+        "hooks": hooks,
     }
     return json.dumps(payload, ensure_ascii=True)
 
@@ -445,6 +530,15 @@ def _patch_claude_code_realtime_hooks() -> None:
     async def patched_run(self, instruction, environment, context):  # type: ignore[no-untyped-def]
         extra_env = getattr(self, "_extra_env", None)
         hook_enabled = _hook_enabled(extra_env)
+        round_gate_enabled = _round_gate_enabled(extra_env)
+        agents_enabled = bool(
+            (
+                (extra_env or {}).get("TB_CLAUDE_CODE_AGENTS_JSON", "")
+                or os.environ.get("TB_CLAUDE_CODE_AGENTS_JSON", "")
+            ).strip()
+        )
+        if not hook_enabled and not round_gate_enabled and not agents_enabled:
+            return await original_run(self, instruction, environment, context)
 
         original_exec_as_agent = self.exec_as_agent
 
@@ -464,6 +558,9 @@ def _patch_claude_code_realtime_hooks() -> None:
                     "export PATH=\"$HOME/.local/bin:$PATH\"; "
                     f"{patched_command}"
                 )
+                patched_command = _inject_claude_agents_flag(
+                    patched_command, extra_env
+                )
             # Harbor AK 2.1.69 run() first calls exec_as_agent with a setup
             # command that creates $CLAUDE_CONFIG_DIR subdirectories (debug,
             # projects/-app, etc.) but never writes settings.json.  We detect
@@ -471,13 +568,19 @@ def _patch_claude_code_realtime_hooks() -> None:
             # and append a printf that writes our hook configuration into
             # $CLAUDE_CONFIG_DIR/settings.json so Claude Code picks it up.
             if (
-                hook_enabled
+                (hook_enabled or round_gate_enabled)
                 and "CLAUDE_CONFIG_DIR/debug" in command
                 and "mkdir -p" in command
                 and not getattr(_self, "_opik_hook_settings_written", False)
             ):
                 settings_json = shlex.quote(
-                    _build_hook_settings_json(_hook_mount_path(extra_env))
+                    _build_hook_settings_json(
+                        _hook_mount_path(extra_env),
+                        opik_enabled=hook_enabled,
+                        round_gate_enabled=round_gate_enabled,
+                        round_gate_path=_round_gate_path(extra_env),
+                        round_gate_mode=_round_gate_mode(extra_env),
+                    )
                 )
                 patched_command = (
                     f"{patched_command} && "
