@@ -5,10 +5,11 @@ mid-turn fusion. Prompt construction, templates, and barrier state-machine code
 are owned by the sibling `sii-fusion-router` checkout. Fleet does not vendor
 fallback copies or expose a CLI fusion path.
 
-The wrapper resolves three host-side Router paths and one container target:
+The wrapper resolves four host-side Router paths and one container target:
 
 - builder: `$FUSION_ROUTER_DIR/src/sii_fusion_router/frontends/claude_code/task_subagent_prompt.py`
 - mounted frontend directory: `$FUSION_ROUTER_DIR/src/sii_fusion_router/frontends/claude_code`
+- canonical panel prompt: `$FUSION_ROUTER_DIR/prompts/mid_turn_fusion/panel.md`
 - canonical outer prompt: `$FUSION_ROUTER_DIR/prompts/mid_turn_fusion/outer.md`
 - container gate: `/opt/tb-fusion-round/subagent_barrier_gate.py`
 
@@ -23,8 +24,8 @@ bash Agents/utils/common/Harbor/model-fusion/run_one_tb21_task.sh
 This wrapper has exactly one execution path: Router prepare, the Claude Code
 in-session gate/panels/`span-outer`, and Router finalize. Set
 `FUSION_ROUTER_DIR` when the sibling checkout is not at the default location.
-A missing builder, gate, canonical outer prompt, or `templates/` directory is a
-hard preflight error showing the absolute missing path.
+A missing builder, gate, canonical agent prompt, or `templates/` directory is
+a hard preflight error showing the absolute missing path.
 
 For a host-only wiring check that stops after contract generation, set
 `MID_TURN_PREPARE_ONLY=1`.

@@ -18,9 +18,9 @@ The execution contract is fixed to `mid-turn-fusion`:
 6. Router finalization records `mode=mid_turn_fusion` in `fusion.json`.
 
 Router exposes only the in-session execution for mid-turn fusion. It registers
-one canonical `outer.md` contract and accepts one `MID_TURN_OUTER_CONTEXT`
-schema. The workflow has one merge stage and is strictly boundary -> panels ->
-span-outer -> apply/fail-open -> finalize.
+canonical `panel.md` and `outer.md` contracts and accepts one
+`MID_TURN_OUTER_CONTEXT` schema. The workflow has one merge stage and is
+strictly boundary -> panels -> span-outer -> apply/fail-open -> finalize.
 
 There is no Fleet-owned prompt builder, barrier gate, panel runner, outer
 runner, or CLI fusion adapter. This model-fusion wrapper has no alternate

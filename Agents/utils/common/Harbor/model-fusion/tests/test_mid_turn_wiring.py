@@ -143,6 +143,7 @@ class MidTurnWiringTest(unittest.TestCase):
         self.assertNotIn("FUSION_ROUTER_ENTRY", fusion_env)
         self.assertNotIn("FUSION_HARBOR_ADAPTER", fusion_env)
         self.assertIn("task_subagent_prompt.py", wrapper)
+        self.assertIn("prompts/mid_turn_fusion/panel.md", wrapper)
         self.assertIn("prompts/mid_turn_fusion/outer.md", wrapper)
         self.assertNotIn("FUSION_ENABLED", wrapper)
         self.assertIn("/opt/tb-fusion-round/subagent_barrier_gate.py", wrapper)
@@ -157,7 +158,7 @@ class MidTurnWiringTest(unittest.TestCase):
                 / "src/sii_fusion_router/engine/pipelines/mid_turn_fusion"
             ).exists()
         )
-        self.assertFalse((ROUTER / "prompts/mid_turn_fusion/panel.md").exists())
+        self.assertTrue((ROUTER / "prompts/mid_turn_fusion/panel.md").is_file())
 
     def test_shared_harbor_files_are_thin_hooks(self):
         env_text = (HARBOR / "env.sh").read_text(encoding="utf-8")
@@ -255,6 +256,9 @@ class MidTurnWiringTest(unittest.TestCase):
             agents = json.loads((artifact / "claude-agents.json").read_text())
             fusion = json.loads((artifact / "fusion.json").read_text())
             prompt = (artifact / "task-subagent-system-prompt.md").read_text()
+            canonical_panel = (
+                ROUTER / "prompts/mid_turn_fusion/panel.md"
+            ).read_text(encoding="utf-8")
             canonical_outer = (
                 ROUTER / "prompts/mid_turn_fusion/outer.md"
             ).read_text(encoding="utf-8")
@@ -345,6 +349,12 @@ class MidTurnWiringTest(unittest.TestCase):
             "span-outer",
         )
         self.assertIn("MID_TURN_OUTER_CONTEXT", agents["span-outer"]["prompt"])
+        self.assertEqual(
+            agents["span-panel-0"]["prompt"],
+            Template(canonical_panel)
+            .substitute(panel_name="span-panel-0", model_label="panel-a")
+            .strip(),
+        )
         self.assertEqual(
             agents["span-outer"]["prompt"],
             Template(canonical_outer).substitute(model_label="outer-model").strip(),

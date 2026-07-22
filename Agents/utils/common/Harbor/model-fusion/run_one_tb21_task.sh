@@ -111,6 +111,7 @@ for required_path in \
   "$FUSION_ROUTER_DIR" \
   "$TB_FUSION_ROUND_ROUTER_DIR" \
   "$TB_FUSION_TASK_BUILDER" \
+  "$FUSION_ROUTER_DIR/prompts/mid_turn_fusion/panel.md" \
   "$FUSION_ROUTER_DIR/prompts/mid_turn_fusion/outer.md" \
   "$TB_FUSION_ROUND_ROUTER_DIR/subagent_barrier_gate.py" \
   "$TB_FUSION_ROUND_ROUTER_DIR/templates"; do
