@@ -42,10 +42,8 @@ unchanged. `run_one_tb21_task.sh` explicitly selects two local wrappers:
 
 - `harboropik.sh` proxies only this run's Opik CLI call, adding the fusion agent
   environment and read-only Router/task mounts.
-- `sitecustomize.py` is Python's required startup entry point; its only job is
-  importing `fusion_sitecustomize.py`.
-- `fusion_sitecustomize.py` loads the normal Claude/Opik patch, then layers on
-  the fusion gate, `--agents`, and private file-backed prompt transport.
+- `sitecustomize.py` loads the normal Claude/Opik patch, then layers on the
+  fusion gate, `--agents`, and private file-backed prompt transport.
 
 Consequently, none of this directory is sourced or imported unless the
 single-task wrapper is invoked. Router owns the matching hook-message file:
