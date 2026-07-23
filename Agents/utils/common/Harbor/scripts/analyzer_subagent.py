@@ -201,7 +201,7 @@ def _pending_handovers(
     now: float,
 ) -> list[tuple[dict[str, Any], Path, str]]:
     candidates = sorted(handoff_dir.glob("*.json")) if handoff_dir.is_dir() else []
-    if latest_path.is_file():
+    if not candidates and latest_path.is_file():
         candidates.append(latest_path)
     unique: dict[str, tuple[dict[str, Any], Path, str]] = {}
     for path in candidates:

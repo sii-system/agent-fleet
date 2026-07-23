@@ -193,6 +193,29 @@ class HarborAnalyzerRuntimeTest(unittest.TestCase):
             self.assertNotEqual(first["tasks"][0]["terminal_fingerprint"], second["tasks"][0]["terminal_fingerprint"])
             self.assertNotEqual(first["handover_id"], second["handover_id"])
 
+    def test_analyzer_handover_skips_synthetic_pending_without_task_name(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            payload = {
+                "timestamp": "2026-07-20T00:00:00+00:00",
+                "task_handover": [
+                    {
+                        "task_index": "pending-1",
+                        "task_name": "",
+                        "task_complete_status": "not_complete",
+                        "task_result_signals": ["not_complete_with_no_progress"],
+                    }
+                ],
+                "task_summary": {"not_complete": 1, "total_evaluated": 1},
+            }
+            handover = build_analyzer_handover(
+                payload,
+                run_dir=Path(root) / "run",
+                queue_dir=Path(root) / "queue",
+            )
+
+            self.assertFalse(handover["should_run_analyzer"])
+            self.assertEqual(handover["tasks"], [])
+
     def test_pending_handovers_do_not_deduplicate_distinct_attempts_by_handover_id(self) -> None:
         with tempfile.TemporaryDirectory() as root:
             handoff_dir = Path(root) / "handoffs"
