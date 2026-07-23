@@ -77,11 +77,15 @@ class SkillDocsTest(unittest.TestCase):
 
     def test_root_readme_advertises_supported_runner_agents(self):
         root_readme = (ROOT / "README.md").read_text(encoding="utf-8")
-        agent_options = re.search(r"`--agent[ \t]+([^`]+)`", root_readme)
+        agent_row = re.search(
+            r"^\|\s*`--agent`\s*\|\s*`-a`\s*\|\s*(.+?)\s*\|$",
+            root_readme,
+            re.MULTILINE,
+        )
 
-        self.assertIsNotNone(agent_options)
+        self.assertIsNotNone(agent_row)
         self.assertEqual(
-            {option.strip() for option in agent_options.group(1).split("|")},
+            set(re.findall(r"`([^`]+)`", agent_row.group(1))),
             {"claude-code", "opencode", "openclaw"},
         )
         self.assertNotIn("Terminus-2", root_readme)
