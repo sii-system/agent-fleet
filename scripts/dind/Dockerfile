@@ -131,9 +131,9 @@ RUN set -eux; \
     tar -xzf "/tmp/${zellij_archive}" -C /usr/local/bin zellij; \
     rm -f "/tmp/${zellij_archive}"; \
     chmod +x /usr/local/bin/zellij; \
-    groupadd --system sii; \
-    useradd --system --create-home --home-dir /home/sii --shell /bin/bash --gid sii sii; \
-    usermod --append --groups docker sii; \
+    groupadd --system agent; \
+    useradd --system --create-home --home-dir /home/agent --shell /bin/bash --gid agent agent; \
+    usermod --append --groups docker agent; \
     python3 -c 'import pyexpat; print("system python", __import__("sys").version)'; \
     zellij --version
 
@@ -165,9 +165,9 @@ RUN set -eux; \
     /opt/harbor-runner/bin/python -c 'import sys; assert sys.version_info[:3] == (3, 12, 13), sys.version'; \
     /opt/harbor-runner/bin/opik harbor run --help >/dev/null; \
     /opt/harbor-runner/bin/harbor run --help >/dev/null; \
-    runuser -u sii -- /opt/harbor-runner/bin/python -c 'import harbor, opik'; \
-    runuser -u sii -- /opt/harbor-runner/bin/opik harbor run --help >/dev/null; \
-    runuser -u sii -- /opt/harbor-runner/bin/harbor run --help >/dev/null
+    runuser -u agent -- /opt/harbor-runner/bin/python -c 'import harbor, opik'; \
+    runuser -u agent -- /opt/harbor-runner/bin/opik harbor run --help >/dev/null; \
+    runuser -u agent -- /opt/harbor-runner/bin/harbor run --help >/dev/null
 
 RUN printf '%s\n' 'export PATH="/opt/harbor-runner/bin:$PATH"' \
       > /etc/profile.d/harbor-runner.sh

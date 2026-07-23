@@ -448,14 +448,14 @@ When invoked inside a container, the launcher warns and delegates directly to
 | `DIND_REGISTRY_MIRRORS` | `https://docker.m.daocloud.io,https://mirror.ccs.tencentyun.com` from `config.env` | Comma-separated registry mirror URLs for the nested Docker daemon |
 | `DIND_REGISTRY_MIRROR` | _(empty)_ | Singular fallback used only when `DIND_REGISTRY_MIRRORS` is unset |
 | `DIND_DEFAULT_ADDRESS_POOLS` | `base=10.200.0.0/13,size=21` from `config.env` | Semicolon-separated Docker daemon default-address-pool specs for nested bridge networks |
-| `DIND_NAME` | `sii-agent-fleet-dind` | DinD container name |
-| `DIND_IMAGE` | `sii-agent-fleet-dind:28-<fingerprint>` | Prepared DinD runner image; the default is built locally if missing |
+| `DIND_NAME` | `agent-fleet-dind` | DinD container name |
+| `DIND_IMAGE` | `agent-fleet-dind:28-<fingerprint>` | Prepared DinD runner image; the default is built locally if missing |
 | `DIND_IMAGE_DOCKERFILE` | `scripts/dind/Dockerfile` | Dockerfile used to build the default DinD runner image |
 | `DIND_BASE_IMAGE` | pinned Debian 12 slim digest | glibc base image used when building the default image |
 | `DIND_UV_IMAGE` | DaoCloud mirror of `ghcr.io/astral-sh/uv:0.11.28` | Pinned uv image used to install the Harbor runner environment at build time |
 | `DIND_DOCKER_VOLUME` | `<DIND_NAME>-docker` | Persistent `/var/lib/docker` volume for nested image/build cache reuse |
 | `DIND_HOME_VOLUME` | `<DIND_NAME>-home` | Persistent benchmark-user home volume for Pi control-plane configuration and skills |
-| `DIND_USER` | `sii` | Unprivileged user that runs `run_fleet.sh`; must exist in `DIND_IMAGE` |
+| `DIND_USER` | `agent` | Unprivileged user that runs `run_fleet.sh`; must exist in `DIND_IMAGE` |
 | `DIND_HOME_DIR` | `/home/<DIND_USER>` | Home path mounted from `DIND_HOME_VOLUME` |
 | `DIND_USER_UID` / `DIND_USER_GID` | caller's UID / GID | IDs assigned to `DIND_USER` so the mounted checkout stays writable without host-side `chown` |
 | `DIND_PORTS` | _(empty)_ | Comma-separated `docker run -p` entries, e.g. `18789-18989:18789-18989` |
@@ -467,7 +467,7 @@ When invoked inside a container, the launcher warns and delegates directly to
 ### Caveats
 
 - Requires privileged Docker on the host.
-- The launcher runs as the image's unprivileged `sii` user. Setup installs Pi
+- The launcher runs as the image's unprivileged `agent` user. Setup installs Pi
   globally as root, then transfers the controller home directory to that user.
   The wrapper maps that user's UID/GID to the calling host user so it can write
   result files to the mounted checkout without changing host file ownership.

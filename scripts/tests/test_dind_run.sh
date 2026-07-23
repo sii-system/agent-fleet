@@ -170,8 +170,8 @@ PI_VERSION=0.81.1 \
 "$PROJECT_DIR/scripts/dind-run.sh" --taskset terminalbench21 --agent claude-code --workers 1 > "$LOG"
 
 grep -qF -- '<sh> <-c> <command -v pi >/dev/null 2>&1 && [ "$(pi --version 2>/dev/null | grep -oE "[0-9]+\.[0-9]+\.[0-9]+" | head -n 1)" = "$3" ] && test -f "$1" && test -d "$2">' "$LOG"
-grep -q -- '</home/sii/.pi/agent/models.json>' "$LOG"
-grep -q -- '</home/sii/.pi/agent/skills/harbor-benchmark-runner>' "$LOG"
+grep -q -- '</home/agent/.pi/agent/models.json>' "$LOG"
+grep -q -- '</home/agent/.pi/agent/skills/harbor-benchmark-runner>' "$LOG"
 grep -q -- '<0.81.1>' "$LOG"
 grep -q -- '<PI_VERSION=0.81.1>' "$LOG"
 if grep -q -- 'command -v claude' "$LOG"; then
