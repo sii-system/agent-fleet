@@ -1,4 +1,4 @@
-# AGENTS.md — SII Agent Fleet
+# AGENTS.md — Agent Fleet
 
 Guidance for coding agents working in this repository. Subsystem runbooks
 live in [Agents/AGENTS.md](Agents/AGENTS.md) and

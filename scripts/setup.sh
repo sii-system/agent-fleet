@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ============================================================
-# setup.sh - SII Agent Fleet one-shot environment setup
+# setup.sh - Agent Fleet one-shot environment setup
 #
 # Idempotent: safe to re-run on failure; existing values are
 # merged, not overwritten.
@@ -170,8 +170,8 @@ PI_AGENT_DIR="$HOME/.pi/agent"
 mkdir -p "$PI_AGENT_DIR"
 PI_SETTINGS="$PI_AGENT_DIR/settings.json"
 PI_MODELS="$PI_AGENT_DIR/models.json"
-cp -f "$PI_SETTINGS" "$PI_SETTINGS.bak.sii-agent-fleet" 2>/dev/null || true
-cp -f "$PI_MODELS" "$PI_MODELS.bak.sii-agent-fleet" 2>/dev/null || true
+cp -f "$PI_SETTINGS" "$PI_SETTINGS.bak.agent-fleet" 2>/dev/null || true
+cp -f "$PI_MODELS" "$PI_MODELS.bak.agent-fleet" 2>/dev/null || true
 python3 - "$PI_SETTINGS" "$PI_MODELS" "$BASE_URL" "$MODEL" "$SCRIPT_DIR" <<'PY'
 import json, sys
 settings_path, models_path, base_url, model, script_dir = sys.argv[1:]
@@ -189,7 +189,7 @@ def load_object(path):
     except json.JSONDecodeError:
         print(
             f"\033[1;33m[WARN]\033[0m existing {path} could not be parsed; "
-            f"backed up at {path}.bak.sii-agent-fleet, writing fresh",
+            f"backed up at {path}.bak.agent-fleet, writing fresh",
             file=sys.stderr,
         )
     return {}
@@ -212,7 +212,7 @@ except PromptFailure as exc:
     print(f"\033[1;31m[FAIL]\033[0m {exc}", file=sys.stderr)
     raise SystemExit(1) from exc
 providers["sii-gateway"] = models_config(
-    normalized_url, model, display_name="SII Agent Fleet"
+    normalized_url, model, display_name="Agent Fleet"
 )["providers"]["sii-gateway"]
 
 for path, value in ((settings_path, settings), (models_path, models)):
@@ -226,7 +226,7 @@ ok "Pi configuration merged (provider=sii-gateway, model=${MODEL})"
 # Uses Python to replace the managed block portably (GNU/BSD sed differ).
 info "Writing env vars to ~/.bashrc..."
 BASHRC="$HOME/.bashrc"
-cp -f "$BASHRC" "$BASHRC.bak.sii-agent-fleet" 2>/dev/null || true
+cp -f "$BASHRC" "$BASHRC.bak.agent-fleet" 2>/dev/null || true
 AUTH_TOKEN="$AUTH_TOKEN" \
 CLAUDE_TGZ_SOURCE="$CLAUDE_TGZ_SOURCE" \
 CLAUDE_WHEEL_DIR_SOURCE="$CLAUDE_WHEEL_DIR_SOURCE" \
@@ -240,8 +240,8 @@ auth_token = os.environ["AUTH_TOKEN"]
 tgz = os.environ.get("CLAUDE_TGZ_SOURCE", "").strip()
 wheel = os.environ.get("CLAUDE_WHEEL_DIR_SOURCE", "").strip()
 
-BEGIN = "# >>> sii-agent-fleet env >>>"
-END   = "# <<< sii-agent-fleet env <<<"
+BEGIN = "# >>> agent-fleet env >>>"
+END   = "# <<< agent-fleet env <<<"
 
 lines = []
 if bashrc.exists():
@@ -281,7 +281,7 @@ block.append(END)
 out.extend(block)
 bashrc.write_text("\n".join(out) + "\n", encoding="utf-8")
 PY
-ok "Env vars written to ~/.bashrc (idempotent); backup at ${BASHRC}.bak.sii-agent-fleet"
+ok "Env vars written to ~/.bashrc (idempotent); backup at ${BASHRC}.bak.agent-fleet"
 
 export PI_OFFLINE=1
 export SII_AGENT_FLEET_API_KEY="${AUTH_TOKEN}"
@@ -348,7 +348,7 @@ ok "Pi skills installed to $PI_SKILLS_DIR"
 # runners append /v1 themselves.
 info "Merging managed keys into $REPO_DIR/config.local.env..."
 CONFIG_LOCAL="$REPO_DIR/config.local.env"
-cp -f "$CONFIG_LOCAL" "$CONFIG_LOCAL.bak.sii-agent-fleet" 2>/dev/null || true
+cp -f "$CONFIG_LOCAL" "$CONFIG_LOCAL.bak.agent-fleet" 2>/dev/null || true
 BASE_URL="$BASE_URL" \
 AUTH_TOKEN="$AUTH_TOKEN" \
 MODEL="$MODEL" \
@@ -424,7 +424,7 @@ for k in managed:
 
 path.write_text("\n".join(out) + "\n", encoding="utf-8")
 PY
-ok "config.local.env merged; backup at ${CONFIG_LOCAL}.bak.sii-agent-fleet"
+ok "config.local.env merged; backup at ${CONFIG_LOCAL}.bak.agent-fleet"
 
 # ---- 11. Docker permission check ----
 info "Checking Docker permission..."

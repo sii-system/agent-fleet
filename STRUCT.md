@@ -1,10 +1,10 @@
 # Repository Structure
 
-SII Agent Fleet separates runnable agents and task assets so each part can be
+Agent Fleet separates runnable agents and task assets so each part can be
 used independently.
 
 ```text
-sii-agent-fleet/
+agent-fleet/
 ├── Agents/
 │   ├── Openclaw/              # Dockerized OpenClaw gateway fleet
 │   ├── Harbor-claude-code/    # Claude Code tracing/integration code

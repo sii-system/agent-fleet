@@ -37,7 +37,7 @@ def models_config(
     base_url: str,
     model: str,
     *,
-    display_name: str = "SII Agent Fleet Prompt Translator",
+    display_name: str = "Agent Fleet Prompt Translator",
 ) -> dict[str, Any]:
     """Keep this provider contract aligned with the merged Pi analyzer."""
 

@@ -104,9 +104,9 @@ printf '%s\n' "$*" >>"$SETUP_TEST_STATE/git.log"
 
         (self.home / ".bashrc").write_text(
             "export KEEP_ME=yes\n"
-            "# >>> sii-agent-fleet env >>>\n"
+            "# >>> agent-fleet env >>>\n"
             "export ANTHROPIC_AUTH_TOKEN=old-secret\n"
-            "# <<< sii-agent-fleet env <<<\n",
+            "# <<< agent-fleet env <<<\n",
             encoding="utf-8",
         )
         (self.repo / "config.local.env").write_text(

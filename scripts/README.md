@@ -56,20 +56,20 @@ Harbor task-container dependency and is prepared separately by the runner.
 <details>
 <summary>Idempotency notes</summary>
 
-- `~/.bashrc`: wrapped in a marker block `# >>> sii-agent-fleet env >>>`, the whole block is replaced each run
+- `~/.bashrc`: wrapped in a marker block `# >>> agent-fleet env >>>`, the whole block is replaced each run
 - `~/.pi/agent/settings.json`: the managed provider/model defaults are merged; unrelated settings are preserved
 - `~/.pi/agent/models.json`: only the managed `sii-gateway` provider is replaced; unrelated providers and top-level fields are preserved
 - Existing user-managed Claude Code installations and `~/.claude` data are not removed or modified
 - `config.local.env`: only managed keys (`BASE_URL` / `API_KEY` / `MODEL`, plus `TRACE_TO_OPIK` and `OPIK_*` when set) are updated; comments and other keys are preserved
 - Host Harbor runner: exact direct dependencies come from `runner-requirements.txt`; a valid environment is reused
-- A backup is taken before each modification (`*.bak.sii-agent-fleet`)
+- A backup is taken before each modification (`*.bak.agent-fleet`)
 
 Safe to re-run.
 
 </details>
 
 On a direct host, setup creates the runner under
-`~/.local/share/sii-agent-fleet/harbor-runner`; inside DinD it validates the
+`~/.local/share/agent-fleet/harbor-runner`; inside DinD it validates the
 image-owned `/opt/harbor-runner`. Set `HARBOR_RUNNER_SETUP=0` to skip this step.
 
 ---

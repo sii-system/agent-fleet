@@ -158,7 +158,7 @@ LOCAL_DEPS_LOG_FILE="${RUNTIME_DIR}/local-deps-prepare.log"
 # image-owned in DinD and setup-owned on a direct host; workloads only validate.
 HARBOR_RUNNER_PREPARE="${HARBOR_RUNNER_PREPARE:-1}"
 HARBOR_RUNNER_IMAGE_DIR="${HARBOR_RUNNER_IMAGE_DIR:-/opt/harbor-runner}"
-HARBOR_RUNNER_HOST_DIR="${HARBOR_RUNNER_HOST_DIR:-$HOME/.local/share/sii-agent-fleet/harbor-runner}"
+HARBOR_RUNNER_HOST_DIR="${HARBOR_RUNNER_HOST_DIR:-$HOME/.local/share/agent-fleet/harbor-runner}"
 HARBOR_RUNNER_PYTHON_VERSION="${HARBOR_RUNNER_PYTHON_VERSION:-3.12.13}"
 if [[ -z "${HARBOR_RUNNER_DIR:-}" ]]; then
   if [[ -d "$HARBOR_RUNNER_IMAGE_DIR" ]]; then

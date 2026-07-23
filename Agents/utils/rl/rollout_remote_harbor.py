@@ -410,7 +410,7 @@ def _wait_result(result_path: Path, timeout: float) -> dict[str, Any]:
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "sii-agent-fleet-rl-rollout/0.2"
+    server_version = "agent-fleet-rl-rollout/0.2"
 
     def _send_json(self, status: int, payload: dict[str, Any]) -> None:
         body = json.dumps(payload, ensure_ascii=True).encode("utf-8")

@@ -127,11 +127,11 @@ mkdir -p "$TMP_DIR/existing-bin"
 cat > "$TMP_DIR/existing-bin/docker" <<'MOCK'
 #!/usr/bin/env bash
 if [[ "${1:-}" == "ps" ]]; then
-  printf '%s\n' 'sii-agent-fleet-dind'
+  printf '%s\n' 'agent-fleet-dind'
   exit 0
 fi
-if [[ "${1:-}" == "inspect" && "$*" == *"sii.agent-fleet.runner-image"* ]]; then
-  printf '%s\n' 'sii-agent-fleet-dind:stale'
+if [[ "${1:-}" == "inspect" && "$*" == *"agent-fleet.runner-image"* ]]; then
+  printf '%s\n' 'agent-fleet-dind:stale'
   exit 0
 fi
 exit 0
@@ -140,7 +140,7 @@ chmod +x "$TMP_DIR/existing-bin/docker"
 
 STALE_LOG="$TMP_DIR/stale.log"
 if PATH="$TMP_DIR/existing-bin:$PATH" \
-  DIND_IMAGE=sii-agent-fleet-dind:current \
+  DIND_IMAGE=agent-fleet-dind:current \
   "$PROJECT_DIR/scripts/dind-run.sh" \
     --taskset terminalbench21 --agent claude-code --workers 1 \
     > "$STALE_LOG" 2>&1; then
@@ -158,7 +158,7 @@ DIND_BOOTSTRAP=skip \
 "$PROJECT_DIR/scripts/dind-run.sh" \
   --taskset terminalbench21 --agent claude-code --workers 1 \
   > "$RECREATE_LOG"
-grep -q -- '^rm -f sii-agent-fleet-dind$' "$DOCKER_ACTION_LOG"
+grep -q -- '^rm -f agent-fleet-dind$' "$DOCKER_ACTION_LOG"
 if grep -q -- '^volume rm ' "$DOCKER_ACTION_LOG"; then
   echo "DIND_RECREATE removed the Docker storage volume" >&2
   exit 1

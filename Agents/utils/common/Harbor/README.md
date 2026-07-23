@@ -69,7 +69,7 @@ git submodule update --init --recursive
 
 For a direct host run, first execute `./scripts/setup.sh` from the repository
 root. It creates a pinned Harbor/Opik control environment under
-`~/.local/share/sii-agent-fleet/harbor-runner`. The DinD runner uses the
+`~/.local/share/agent-fleet/harbor-runner`. The DinD runner uses the
 image-owned `/opt/harbor-runner` environment instead. Workload startup only
 validates the selected environment and never installs or repairs it.
 
@@ -146,17 +146,17 @@ container. Build the runner directly from this repository first:
 ```bash
 docker build \
   -f scripts/dind/Dockerfile \
-  -t sii-agent-fleet-harbor-runner:local \
+  -t agent-fleet-harbor-runner:local \
   .
 
 docker run -d --name harbor-rollout \
   -p 19001:19001 \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -v /workspace:/workspace \
-  sii-agent-fleet-harbor-runner:local sleep infinity
+  agent-fleet-harbor-runner:local sleep infinity
 
 docker exec harbor-rollout bash -lc '
-  cd /workspace/sii-agent-fleet/Agents/utils/common/Harbor
+  cd /workspace/agent-fleet/Agents/utils/common/Harbor
   ROLLOUT=1 RL_HOST=0.0.0.0 RL_PORT=19001 bash start.sh --detach
 '
 ```

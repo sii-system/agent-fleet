@@ -1,6 +1,6 @@
-# SII Agent Fleet
+# Agent Fleet
 
-SII Agent Fleet provides runnable integrations and benchmark tasksets for
+Agent Fleet provides runnable integrations and benchmark tasksets for
 evaluating Claude Code, OpenCode, and OpenClaw.
 
 ## Quick Start

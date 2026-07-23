@@ -74,7 +74,7 @@ done
 Claude Code can load these skills through a small plugin wrapper:
 
 ```bash
-CLAUDE_PLUGIN_DIR="${CLAUDE_PLUGIN_DIR:-$HOME/.claude/skills/sii-agent-fleet}"
+CLAUDE_PLUGIN_DIR="${CLAUDE_PLUGIN_DIR:-$HOME/.claude/skills/agent-fleet}"
 mkdir -p "$CLAUDE_PLUGIN_DIR/.claude-plugin"
 
 for skill in \
@@ -88,9 +88,9 @@ done
 cat > "$CLAUDE_PLUGIN_DIR/.claude-plugin/plugin.json" <<'JSON'
 {
   "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
-  "name": "sii-agent-fleet",
+  "name": "agent-fleet",
   "version": "0.1.0",
-  "description": "SII Agent Fleet operation skills for Harbor, OpenClaw, and benchmarks.",
+  "description": "Agent Fleet operation skills for Harbor, OpenClaw, and benchmarks.",
   "skills": [
     "./harbor-benchmark-runner",
     "./openclaw-fleet-operations",
