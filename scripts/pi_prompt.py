@@ -16,7 +16,7 @@ from urllib.parse import urlparse
 
 
 PROVIDER = "sii-gateway"
-API_KEY_ENV = "SII_AGENT_FLEET_API_KEY"
+API_KEY_ENV = "AGENT_FLEET_API_KEY"
 
 
 class PromptFailure(RuntimeError):

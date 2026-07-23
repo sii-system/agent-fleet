@@ -268,7 +268,7 @@ block = [
     'export NVM_DIR="$HOME/.nvm"',
     '[ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"',
     "export PI_OFFLINE=1",
-    f"export SII_AGENT_FLEET_API_KEY={q(auth_token)}",
+    f"export AGENT_FLEET_API_KEY={q(auth_token)}",
 ]
 if tgz and wheel:
     block += [
@@ -284,7 +284,7 @@ PY
 ok "Env vars written to ~/.bashrc (idempotent); backup at ${BASHRC}.bak.agent-fleet"
 
 export PI_OFFLINE=1
-export SII_AGENT_FLEET_API_KEY="${AUTH_TOKEN}"
+export AGENT_FLEET_API_KEY="${AUTH_TOKEN}"
 if [[ -n "${CLAUDE_TGZ_SOURCE:-}" && -n "${CLAUDE_WHEEL_DIR_SOURCE:-}" ]]; then
   export TB_CC_OPIK_ENABLE_HOOK=1
   export TB_CC_CLAUDE_TGZ_SOURCE="${CLAUDE_TGZ_SOURCE}"

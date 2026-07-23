@@ -158,7 +158,7 @@ ${OUTPUT_SCHEMA}"
 # resource disabled. The helper validates the JSONL session, agent, and turn
 # lifecycle plus provider errors and the final stop reason before emitting the
 # candidate object below.
-if ! translation="$(SII_AGENT_FLEET_API_KEY="$token" python3 "$SCRIPT_DIR/pi_prompt.py" \
+if ! translation="$(AGENT_FLEET_API_KEY="$token" python3 "$SCRIPT_DIR/pi_prompt.py" \
   --base-url "$base" \
   --model "$model" \
   --system-prompt "$PI_SYSTEM_PROMPT" \

@@ -50,7 +50,7 @@ stdin_data="$(cat)"
   printf 'home=%s\\n' "${HOME:-}"
   printf 'pi_dir=%s\\n' "${PI_CODING_AGENT_DIR:-}"
   printf 'offline=%s\\n' "${PI_OFFLINE:-}"
-  printf 'token=%s\\n' "${SII_AGENT_FLEET_API_KEY:-}"
+  printf 'token=%s\\n' "${AGENT_FLEET_API_KEY:-}"
   printf 'prompt=<%s>\\n' "$prompt"
   printf 'stdin=<%s>\\n' "$stdin_data"
   printf 'arg=<%s>\\n' "$@"
@@ -148,7 +148,7 @@ exit "${STUB_EXIT:-0}"
         for name in (
             "PI_CODING_AGENT_DIR",
             "PI_OFFLINE",
-            "SII_AGENT_FLEET_API_KEY",
+            "AGENT_FLEET_API_KEY",
             "API_KEY",
             "BASE_URL",
             "MODEL",
@@ -235,7 +235,7 @@ exit "${STUB_EXIT:-0}"
                 "API_KEY": "fake-caller-token",
                 "MODEL": "caller-model",
                 "PI_CODING_AGENT_DIR": "/tmp/stale-pi-dir",
-                "SII_AGENT_FLEET_API_KEY": "fake-stale-token",
+                "AGENT_FLEET_API_KEY": "fake-stale-token",
             },
         )
 
@@ -245,7 +245,7 @@ exit "${STUB_EXIT:-0}"
         self.assertIn("offline=1", captured)
         self.assertIn('"baseUrl": "https://caller.example.invalid/v1"', captured)
         self.assertIn('"api": "openai-completions"', captured)
-        self.assertIn('"apiKey": "$SII_AGENT_FLEET_API_KEY"', captured)
+        self.assertIn('"apiKey": "$AGENT_FLEET_API_KEY"', captured)
         self.assertIn('"id": "caller-model"', captured)
         self.assertNotIn("stale", captured)
         # Pi print mode consumes the user message as the trailing positional

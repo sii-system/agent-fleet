@@ -183,14 +183,14 @@ printf '%s\n' "$*" >>"$SETUP_TEST_STATE/git.log"
         provider = models["providers"]["sii-gateway"]
         self.assertEqual(provider["baseUrl"], "https://gateway.example.invalid/v1")
         self.assertEqual(provider["api"], "openai-completions")
-        self.assertEqual(provider["apiKey"], "$SII_AGENT_FLEET_API_KEY")
+        self.assertEqual(provider["apiKey"], "$AGENT_FLEET_API_KEY")
         self.assertEqual(provider["models"][0]["id"], "test-model")
         self.assertNotIn("fake-setup-secret", (pi_dir / "models.json").read_text())
 
         bashrc = (self.home / ".bashrc").read_text(encoding="utf-8")
         self.assertIn("export KEEP_ME=yes", bashrc)
         self.assertIn("export PI_OFFLINE=1", bashrc)
-        self.assertIn("export SII_AGENT_FLEET_API_KEY=fake-setup-secret", bashrc)
+        self.assertIn("export AGENT_FLEET_API_KEY=fake-setup-secret", bashrc)
         self.assertIn(f"export TB_CC_CLAUDE_TGZ_SOURCE={self.claude_tgz}", bashrc)
         self.assertIn(f"export TB_CC_PY_WHEEL_DIR_SOURCE={self.wheel_dir}", bashrc)
         self.assertNotIn("ANTHROPIC_AUTH_TOKEN", bashrc)
