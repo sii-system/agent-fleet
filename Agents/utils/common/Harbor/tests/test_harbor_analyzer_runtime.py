@@ -18,6 +18,7 @@ if str(SCRIPT_DIR) not in sys.path:
 
 from Agents.utils.common.Harbor.scripts.analyzer_subagent import (
     FOLLOW_MAX_FAILURE_ATTEMPTS,
+    _default_model,
     _pending_handovers,
     _record_follow_failure,
 )
@@ -29,6 +30,7 @@ from Agents.utils.common.Harbor.scripts.harbor_analyzer.runner import (
     _write_outputs,
     run_handover,
 )
+from Agents.utils.common.Harbor.scripts.harbor_analyzer.pi import _models_config, dispatch_to_child
 from Agents.utils.common.Harbor.scripts.harbor_monitor.contracts import build_analyzer_handover
 
 
@@ -154,6 +156,49 @@ def write_outputs_process(root: str, marker: str) -> None:
 
 
 class HarborAnalyzerRuntimeTest(unittest.TestCase):
+    def test_analyzer_model_has_no_glm_default(self) -> None:
+        with mock.patch.dict("os.environ", {}, clear=True):
+            self.assertEqual(_default_model(), "")
+            self.assertEqual(
+                AnalyzerConfig(
+                    run_dir=Path("/tmp/run"),
+                    queue_dir=None,
+                    output_dir=Path("/tmp/out"),
+                ).model,
+                "",
+            )
+
+    def test_dispatch_requires_configured_model(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            result = dispatch_to_child(
+                prompt="{}",
+                analysis_id="sha256-" + ("1" * 64),
+                output_dir=Path(root),
+                pi_bin=sys.executable,
+                provider="harbor-analyzer",
+                model="",
+                base_url="https://example.test/v1",
+                api_key_env="HARBOR_ANALYZER_API_KEY",
+                agent_name="harbor_analyzer_pi_subagent",
+                timeout_seconds=1,
+            )
+
+        self.assertIsNone(result.report)
+        self.assertEqual(result.block_reason, "pi_model_not_configured")
+
+    def test_models_config_uses_bearer_auth_header_for_custom_provider(self) -> None:
+        config = _models_config(
+            provider="harbor-analyzer",
+            model="glm-5.2-fp8",
+            base_url="https://example.test/v1",
+            api_key_env="HARBOR_ANALYZER_API_KEY",
+        )
+
+        provider = config["providers"]["harbor-analyzer"]
+        self.assertEqual(provider["api"], "openai-completions")
+        self.assertEqual(provider["apiKey"], "$HARBOR_ANALYZER_API_KEY")
+        self.assertTrue(provider["authHeader"])
+
     def test_task_slug_uses_safe_basename_for_untrusted_task_index(self) -> None:
         slug = _task_slug(task(task_index="/tmp/pr83-escape"))
 

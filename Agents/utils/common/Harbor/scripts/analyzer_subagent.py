@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the Harbor Analyzer entrypoint that launches Pi + GLM-5.2."""
+"""Run the Harbor Analyzer entrypoint that launches Pi."""
 
 from __future__ import annotations
 
@@ -29,7 +29,7 @@ def _default_base_url() -> str:
 
 
 def _default_model() -> str:
-    return os.environ.get("HARBOR_ANALYZER_MODEL") or os.environ.get("MODEL") or "glm5.2"
+    return os.environ.get("HARBOR_ANALYZER_MODEL") or os.environ.get("MODEL") or ""
 
 
 def _ensure_analyzer_env_defaults() -> None:

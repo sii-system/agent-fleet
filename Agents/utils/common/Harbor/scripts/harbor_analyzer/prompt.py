@@ -1,4 +1,4 @@
-"""Build fixed prompts used to launch Pi/GLM analyzer subagents."""
+"""Build fixed prompts used to launch Pi analyzer subagents."""
 
 from __future__ import annotations
 
