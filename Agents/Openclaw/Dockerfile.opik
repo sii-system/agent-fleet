@@ -2,7 +2,7 @@
 #
 # Prerequisites:
 #   - openclaw:local must exist
-#   - sii-opik-plugin submodule must be initialized at third_party/sii-opik-plugin
+#   - agent-opik-plugin submodule must be initialized at third_party/agent-opik-plugin
 #
 # Build:
 #   OPIK_PLUGIN=enabled ./Agents/Openclaw/scripts/build-openclaw-image.sh
@@ -16,26 +16,26 @@ ARG PIP_EXTRA_INDEX_URL=""
 ARG PIP_TRUSTED_HOST=""
 ARG NPM_CONFIG_REGISTRY=""
 
-COPY third_party/sii-opik-plugin/ /opt/sii-opik-plugin/
+COPY third_party/agent-opik-plugin/ /opt/agent-opik-plugin/
 
 # Install python3-venv (ensurepip not available in base image), build the
 # OpenClaw plugin from the submodule, then create the Python tracer venv.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends python3.11-venv && \
     rm -rf /var/lib/apt/lists/* && \
-    cd /opt/sii-opik-plugin/harness/openclaw && \
+    cd /opt/agent-opik-plugin/harness/openclaw && \
     if [ -n "$NPM_CONFIG_REGISTRY" ]; then npm config set registry "$NPM_CONFIG_REGISTRY"; fi && \
     npm ci --ignore-scripts && \
     npm run build && \
     rm -rf node_modules && \
     mkdir -p /opt/openclaw-plugins && \
-    ln -sfn /opt/sii-opik-plugin/harness/openclaw /opt/openclaw-plugins/openclaw-opik-tracer && \
+    ln -sfn /opt/agent-opik-plugin/harness/openclaw /opt/openclaw-plugins/openclaw-opik-tracer && \
     python3 -m venv /opt/opik-venv && \
     if [ -n "$PIP_INDEX_URL" ]; then export PIP_INDEX_URL; fi && \
     if [ -n "$PIP_EXTRA_INDEX_URL" ]; then export PIP_EXTRA_INDEX_URL; fi && \
     if [ -n "$PIP_TRUSTED_HOST" ]; then export PIP_TRUSTED_HOST; fi && \
     /opt/opik-venv/bin/pip install --no-cache-dir --quiet \
-        -r /opt/sii-opik-plugin/requirements.txt
+        -r /opt/agent-opik-plugin/requirements.txt
 
 RUN mkdir -p /home/node/.openclaw/state && \
     ln -sfn /home/node/openclaw-state/agents /home/node/.openclaw/agents && \

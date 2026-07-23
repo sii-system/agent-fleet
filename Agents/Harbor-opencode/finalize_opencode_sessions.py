@@ -21,7 +21,7 @@ def _resolve_timeout_hook() -> Path:
     """Locate the opencode realtime hook for host-side timeout replay."""
     repo_root = Path(__file__).resolve().parents[1]
     source_dir = Path(
-        os.environ.get("TRACE_PLUGIN_SOURCE_DIR", repo_root / "third_party" / "sii-opik-plugin")
+        os.environ.get("TRACE_PLUGIN_SOURCE_DIR", repo_root / "third_party" / "agent-opik-plugin")
     ).expanduser()
     candidates = [
         Path(

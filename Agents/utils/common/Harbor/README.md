@@ -61,7 +61,7 @@ TB_N_CONCURRENT="80"
 ```
 
 When `TRACE_TO_OPIK=true` (the default), the Opik tracing plugin is loaded from
-the `third_party/sii-opik-plugin` submodule. Initialize it before a traced run:
+the `third_party/agent-opik-plugin` submodule. Initialize it before a traced run:
 
 ```bash
 git submodule update --init --recursive

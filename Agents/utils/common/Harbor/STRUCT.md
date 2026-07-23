@@ -106,7 +106,7 @@ Typical dataset paths:
 | `OPIK_URL_OVERRIDE` | Opik API URL forwarded into task containers |
 | `OPIK_API_KEY` | Opik API key |
 | `OPIK_PROJECT_NAME` | Opik project name |
-| `TRACE_PLUGIN_SOURCE_DIR` | Tracing source path, defaults to `third_party/sii-opik-plugin` |
+| `TRACE_PLUGIN_SOURCE_DIR` | Tracing source path, defaults to `third_party/agent-opik-plugin` |
 | `TRACE_TO_OPIK` | Enables or disables trace upload |
 | `CLAUDE_CODE_VERSION` | Claude Code package version used by local dependency cache |
 | `OPENCODE_VERSION` | OpenCode package version used by local dependency cache |
@@ -180,7 +180,7 @@ OpenCode specific defaults:
 ## Opik Plugin Submodule
 
 The tracing plugin is linked as a Git submodule at
-`third_party/sii-opik-plugin`, pinned to tag `v0.1.0`. Initialize it before
+`third_party/agent-opik-plugin`, pinned to tag `v0.1.0`. Initialize it before
 running:
 
 ```bash
@@ -191,11 +191,11 @@ The runner checks these files when tracing is enabled:
 
 ```text
 Claude Code:
-  third_party/sii-opik-plugin/src/sii_opik_plugin/claude_code/claude_realtime_trace.py
+  third_party/agent-opik-plugin/src/sii_opik_plugin/claude_code/claude_realtime_trace.py
 
 OpenCode:
-  third_party/sii-opik-plugin/harness/opencode/opik-trace.ts
-  third_party/sii-opik-plugin/src/sii_opik_plugin/opencode/opencode_realtime_trace.py
+  third_party/agent-opik-plugin/harness/opencode/opik-trace.ts
+  third_party/agent-opik-plugin/src/sii_opik_plugin/opencode/opencode_realtime_trace.py
 ```
 
 ## Execution Flow
