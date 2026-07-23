@@ -112,6 +112,7 @@ grep -q -- '<--build-arg> <DIND_BASE_IMAGE=m.daocloud.io/docker.io/library/debia
 grep -q -- '<--build-arg> <UV_IMAGE=m.daocloud.io/ghcr.io/astral-sh/uv:0.11.28>' "$LOG"
 grep -q -- "<-f> <$PROJECT_DIR/scripts/dind/Dockerfile> <-t> <$RUNNER_IMAGE> <$PROJECT_DIR>" "$LOG"
 grep -q -- "<--label> <agent-fleet.runner-image=$RUNNER_IMAGE>" "$LOG"
+grep -q -- "^docker <run> .* <-w> <$PROJECT_DIR> <$RUNNER_IMAGE> " "$LOG"
 grep -q -- '<env> <REPO_DIR='"$PROJECT_DIR"'> <BASE_URL=https://local.example.com> <API_KEY=sk-local> <MODEL=local-model>' "$LOG"
 # The documented no-Opik escape must survive the DinD env handoff.
 grep -q -- '<TRACE_TO_OPIK=false>' "$LOG"
