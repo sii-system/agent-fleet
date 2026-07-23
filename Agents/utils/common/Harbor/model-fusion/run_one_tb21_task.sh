@@ -54,6 +54,17 @@ export OPIK_PROJECT_NAME="${OPIK_PROJECT_NAME:-tb21-mid-turn-${TASK_ID}-${RUN_ID
 # shellcheck source=/dev/null
 . "$HARBOR_DIR/env.sh"
 
+# Keep every integration override local to this wrapper. The shared Harbor
+# scripts remain untouched: this process swaps in a scoped Opik CLI proxy and
+# a scoped sitecustomize overlay, and child workers inherit only these exports.
+MODEL_FUSION_REAL_HARBOR_OPIK_BIN="${MODEL_FUSION_REAL_HARBOR_OPIK_BIN:-$HARBOR_OPIK_BIN}"
+HARBOR_OPIK_BIN="$MODEL_FUSION_DIR/harboropik.sh"
+HARBOR_CLAUDE_CODE_DIR="$MODEL_FUSION_DIR"
+export MODEL_FUSION_REAL_HARBOR_OPIK_BIN HARBOR_OPIK_BIN HARBOR_CLAUDE_CODE_DIR
+
+# shellcheck source=/dev/null
+. "$MODEL_FUSION_DIR/env.sh"
+
 # Preserve the wrapper's explicit empty-subagent-model behavior after the
 # shared Harbor defaults have been loaded.
 if [[ "$_USER_SUBAGENT_MODEL_SET" == "x" ]]; then

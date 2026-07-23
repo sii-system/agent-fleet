@@ -36,12 +36,16 @@ was retained here. The current transport baseline includes its recoverable
 hook-message contract (`cabf5ab`) and file-backed Claude prompt transport
 (`3ad61d4`).
 
-The shared Harbor files contain thin source/call hooks only. In-session
-defaults, agent environment arguments, mount extension helpers, the single-task
-wrapper, documentation, and wiring tests live in this directory. The normal
-Harbor worker loop is unchanged. `Agents/Harbor-claude-code/sitecustomize.py`
-remains in place because its import location is the Harbor startup contract.
-That patch stages append-system-prompt content as a private file and never
-embeds the raw prompt in the Claude shell command. Router owns the matching
-hook-message file: each fusion writes `boundary.json`, and hook stdout returns
-the `BOUNDARY_FILE` pointer instead of the full boundary payload.
+The integration is isolated from normal Harbor runs. The shared `env.sh`,
+`harboropik.sh`, worker loop, Claude `sitecustomize.py`, skills, and tests are
+unchanged. `run_one_tb21_task.sh` explicitly selects two local wrappers:
+
+- `harboropik.sh` proxies only this run's Opik CLI call, adding the fusion agent
+  environment and read-only Router/task mounts.
+- `sitecustomize.py` loads the normal Claude/Opik patch, then layers on the
+  fusion gate, `--agents`, and private file-backed prompt transport.
+
+Consequently, none of this directory is sourced or imported unless the
+single-task wrapper is invoked. Router owns the matching hook-message file:
+each fusion writes `boundary.json`, and hook stdout returns the `BOUNDARY_FILE`
+pointer instead of the full boundary payload.

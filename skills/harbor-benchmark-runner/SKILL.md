@@ -108,7 +108,6 @@ Run only the affected checks unless the change spans subsystems:
 
 ```bash
 python3 -m unittest discover -s Agents/utils/common/Harbor/tests
-python3 -m unittest discover -s Agents/utils/common/Harbor/model-fusion/tests
 bash -n Agents/utils/common/Harbor/env.sh \
   Agents/utils/common/Harbor/start.sh \
   Agents/utils/common/Harbor/run_harbor_worker.sh \
