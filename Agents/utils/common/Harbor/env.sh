@@ -107,6 +107,14 @@ HARBOR_ANALYZER_BASE_URL="${HARBOR_ANALYZER_BASE_URL:-${BASE_URL:+${BASE_URL}/v1
 HARBOR_ANALYZER_MODEL="${HARBOR_ANALYZER_MODEL:-$MODEL}"
 HARBOR_ANALYZER_PI_PROVIDER="${HARBOR_ANALYZER_PI_PROVIDER:-harbor-analyzer}"
 HARBOR_ANALYZER_NO_PROXY="${HARBOR_ANALYZER_NO_PROXY:-0}"
+HARBOR_ANALYZER_ENABLED="${HARBOR_ANALYZER_ENABLED:-0}"
+HARBOR_ANALYZER_MODE="${HARBOR_ANALYZER_MODE:-handover-follow}"
+HARBOR_ANALYZER_OUTPUT_DIR="${HARBOR_ANALYZER_OUTPUT_DIR:-${OUTPUT_PATH}/analyzer}"
+HARBOR_ANALYZER_PID_FILE="${HARBOR_ANALYZER_PID_FILE:-${RUNTIME_DIR}/harbor-analyzer.pid}"
+HARBOR_ANALYZER_LOG_FILE="${HARBOR_ANALYZER_LOG_FILE:-${RUNTIME_DIR}/harbor-analyzer.log}"
+HARBOR_ANALYZER_POLL_INTERVAL="${HARBOR_ANALYZER_POLL_INTERVAL:-5}"
+HARBOR_ANALYZER_TIMEOUT="${HARBOR_ANALYZER_TIMEOUT:-900}"
+HARBOR_ANALYZER_MAX_CONCURRENCY="${HARBOR_ANALYZER_MAX_CONCURRENCY:-1}"
 TRACE_TO_OPIK="${TRACE_TO_OPIK:-true}"
 # The single switch for running without Opik, shared by every script that
 # sources env.sh (harboropik.sh, run_harbor_worker.sh). Anything except an
@@ -368,7 +376,7 @@ export SCRIPT_DIR REPO_ROOT AGENTS_DIR TASKS_DIR HARBOR_CLAUDE_CODE_DIR HARBOR_O
 export HARBOR_ROOT DATASET_PATH DATASET_NAME METRIC_MODE OUTPUT_ROOT OUTPUT_PATH TASK_SOURCE_FILE TASK_FILE QUEUE_DIR RUNTIME_DIR LAYOUT_FILE JOBS_ROOT
 export HARBOR_ONLINE_ANALYSIS HARBOR_ONLINE_ANALYSIS_POLL_INTERVAL HARBOR_ONLINE_ANALYSIS_DIR HARBOR_ONLINE_ANALYSIS_PID_FILE HARBOR_ONLINE_ANALYSIS_LOG_FILE HARBOR_EARLY_STOP HARBOR_ZELLIJ_CLOSE_ON_COMPLETE
 export HARBOR_MONITOR_ENABLED HARBOR_MONITOR_DIR HARBOR_MONITOR_PID_FILE HARBOR_MONITOR_LOG_FILE HARBOR_BENCHMARK_PID_FILE HARBOR_BENCHMARK_EXIT_FILE HARBOR_JOB_DIR_FILE HARBOR_MONITOR_RESTART_CMD HARBOR_MONITOR_STOP_CMD HARBOR_MONITOR_INTERVAL HARBOR_MONITOR_STARTUP_GRACE HARBOR_MONITOR_STALL_SECONDS HARBOR_MONITOR_MAX_RETRIES HARBOR_MONITOR_CONFIGURED_TIMEOUT
-export API_KEY BASE_URL HARBOR_ANALYZER_API_KEY HARBOR_ANALYZER_BASE_URL HARBOR_ANALYZER_MODEL HARBOR_ANALYZER_PI_PROVIDER HARBOR_ANALYZER_NO_PROXY TRACE_TO_OPIK OPIK_URL OPIK_URL_OVERRIDE OPIK_BASE OPIK_MODE OPIK_PROJECT_NAME OPIK_API_KEY OPIK_WORKSPACE CC_OPIK_DEBUG
+export API_KEY BASE_URL HARBOR_ANALYZER_API_KEY HARBOR_ANALYZER_BASE_URL HARBOR_ANALYZER_MODEL HARBOR_ANALYZER_PI_PROVIDER HARBOR_ANALYZER_NO_PROXY HARBOR_ANALYZER_ENABLED HARBOR_ANALYZER_MODE HARBOR_ANALYZER_OUTPUT_DIR HARBOR_ANALYZER_PID_FILE HARBOR_ANALYZER_LOG_FILE HARBOR_ANALYZER_POLL_INTERVAL HARBOR_ANALYZER_TIMEOUT HARBOR_ANALYZER_MAX_CONCURRENCY TRACE_TO_OPIK OPIK_URL OPIK_URL_OVERRIDE OPIK_BASE OPIK_MODE OPIK_PROJECT_NAME OPIK_API_KEY OPIK_WORKSPACE CC_OPIK_DEBUG
 export CLAUDE_CODE_VERSION CLAUDE_CODE_TGZ_BASENAME LOCAL_WHEEL_DIR LOCAL_WHEEL_PORT LOCAL_WHEEL_PORT_ATTEMPTS LOCAL_WHEEL_HOST_IP
 export TB_LOCAL_WHEEL_SERVER_URL TB_LOCAL_CLAUDE_TGZ_URL TB_REMOTE_WHEEL_SERVER_URLS EFFECTIVE_WHEEL_URL_FILE EFFECTIVE_CLAUDE_TGZ_URL_FILE LOCAL_DEPS_LOG_FILE HARBOR_RUNNER_PREPARE HARBOR_OPIK_BIN HARBOR_RUNNER_PREPARE_STATUS_FILE HARBOR_RUNNER_PREPARE_LOG_FILE
 export TB_DATASET_GIT_URL TB_PATH TB_LIMIT TB_RUNS TB_AGENT TB_AGENT_IMPORT_PATH TB_MODEL INCLUDE_TASKS TB_DRY_RUN TB_MIN_TEST TB_MIN_TEST_INCLUDE_TASK
@@ -402,6 +410,18 @@ harbor_agent_is_opencode() {
 
 harbor_agent_is_claude_code() {
   [[ "$AGENT" == "claude-code" ]]
+}
+
+harbor_analyzer_pid_matches_run() {
+  local pid="$1" arg previous="" script_seen=0 run_seen=0 handover_seen=0
+  [[ "$pid" =~ ^[0-9]+$ && -r "/proc/$pid/cmdline" ]] || return 1
+  while IFS= read -r -d '' arg; do
+    [[ "$arg" == "$SCRIPT_DIR/scripts/analyzer_subagent.py" ]] && script_seen=1
+    [[ "$previous" == "--run-dir" && "$arg" == "$OUTPUT_PATH" ]] && run_seen=1
+    [[ "$previous" == "--handover" && "$arg" == "$HARBOR_MONITOR_DIR/analyzer-handover-latest.json" ]] && handover_seen=1
+    previous="$arg"
+  done < "/proc/$pid/cmdline"
+  [[ "$script_seen" == 1 && "$run_seen" == 1 && "$handover_seen" == 1 ]]
 }
 
 harbor_validate_agent() {
@@ -495,16 +515,44 @@ harbor_stop_monitor() {
 }
 
 harbor_reset_run_state() {
+  harbor_stop_analyzer
   harbor_stop_monitor
   harbor_stop_online_analysis
   rm -f "$QUEUE_DIR"/worker-*.current "$LOCK_FILE" "$WORKERS_READY_FILE" "$WORKERS_FAILED_FILE"
   rm -f "$NEXT_INDEX_FILE"
   rm -f "$OUTPUT_PATH/.monitor_state.json" "$HARBOR_MONITOR_LOG_FILE" "$HARBOR_BENCHMARK_PID_FILE" "$HARBOR_BENCHMARK_EXIT_FILE" "$HARBOR_JOB_DIR_FILE"
   rm -rf "$HARBOR_MONITOR_DIR"
+  rm -f "$HARBOR_ANALYZER_PID_FILE" "$HARBOR_ANALYZER_LOG_FILE" "$HARBOR_ANALYZER_OUTPUT_DIR/.analyzer_state.json"
   rm -f "$HARBOR_ONLINE_ANALYSIS_PID_FILE" "$HARBOR_ONLINE_ANALYSIS_LOG_FILE"
   rm -f "$HARBOR_ONLINE_ANALYSIS_DIR/environment-events.jsonl" "$HARBOR_ONLINE_ANALYSIS_DIR/environment-summary.json"
   : > "$QUEUE_DIR/done.txt"
   : > "$QUEUE_DIR/failed.txt"
+}
+
+harbor_stop_analyzer() {
+  [[ -f "$HARBOR_ANALYZER_PID_FILE" ]] || return 0
+  local pid sid signal_target
+  pid="$(cat "$HARBOR_ANALYZER_PID_FILE" 2>/dev/null || true)"
+  if [[ ! "$pid" =~ ^[0-9]+$ ]] || ! kill -0 "$pid" >/dev/null 2>&1; then
+    rm -f "$HARBOR_ANALYZER_PID_FILE"
+    return 0
+  fi
+  if ! harbor_analyzer_pid_matches_run "$pid"; then
+    echo "[ERROR] refusing to stop unrelated process from $HARBOR_ANALYZER_PID_FILE: pid=$pid" >&2
+    return 1
+  fi
+  sid="$(ps -o sid= -p "$pid" 2>/dev/null | tr -d ' ' || true)"
+  signal_target="$pid"
+  [[ "$sid" == "$pid" ]] && signal_target="-$pid"
+  kill -TERM -- "$signal_target" >/dev/null 2>&1 || true
+  for _ in $(seq 1 30); do
+    kill -0 "$pid" >/dev/null 2>&1 || break
+    sleep 1
+  done
+  if kill -0 "$pid" >/dev/null 2>&1; then
+    kill -KILL -- "$signal_target" >/dev/null 2>&1 || true
+  fi
+  rm -f "$HARBOR_ANALYZER_PID_FILE"
 }
 
 harbor_generate_task_file() {
