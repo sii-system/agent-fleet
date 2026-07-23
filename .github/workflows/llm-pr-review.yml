@@ -16,6 +16,7 @@ jobs:
   review:
     if: ${{ !github.event.pull_request.draft }}
     runs-on: ubuntu-latest
+    environment: llm-pr-review
     timeout-minutes: 15
     steps:
       - name: Check out trusted base revision
