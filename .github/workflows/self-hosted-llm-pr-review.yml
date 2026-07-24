@@ -19,6 +19,4 @@ jobs:
     with:
       runner_json: '["self-hosted", "Linux", "X64"]'
       environment: self-hosted-env
-      base_url_variable: LLM_BASE_URL
-      model_variable: LLM_MODEL
       review_id: self-hosted-llm-pr-review
