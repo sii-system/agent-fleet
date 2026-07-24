@@ -17,6 +17,7 @@ jobs:
     name: Hosted review
     if: ${{ !github.event.pull_request.draft }}
     uses: ./.github/workflows/reusable-llm-pr-review.yml
+    secrets: inherit
     with:
       runner_json: '["ubuntu-latest"]'
       environment: llm-pr-review

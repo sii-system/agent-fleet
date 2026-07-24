@@ -16,6 +16,7 @@ jobs:
   review:
     name: Self-hosted review
     uses: ./.github/workflows/reusable-llm-pr-review.yml
+    secrets: inherit
     with:
       runner_json: '["self-hosted", "Linux", "X64"]'
       environment: self-hosted-env

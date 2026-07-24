@@ -32,6 +32,7 @@ class LlmPrReviewWorkflowReuseTest(unittest.TestCase):
                     "uses: ./.github/workflows/reusable-llm-pr-review.yml",
                     workflow,
                 )
+                self.assertIn("secrets: inherit", workflow)
                 self.assertNotIn("actions/checkout@", workflow)
                 self.assertNotIn("llm_pr_review.py", workflow)
 
