@@ -21,6 +21,18 @@ import llm_pr_review as _review  # noqa: E402
 
 # -- pi integration helpers from the control-plane prompt translator -----
 _PROJECT_ROOT = _SCRIPTS_DIR.parents[1]
+PI_PATH_GATE_EXTENSION = (
+    _PROJECT_ROOT
+    / "Agents"
+    / "utils"
+    / "common"
+    / "Harbor"
+    / "scripts"
+    / "harbor_analyzer"
+    / "pi_extensions"
+    / "analyzer_path_gate.ts"
+)
+PI_ALLOWED_PATHS_ENV = "HARBOR_ANALYZER_ALLOWED_PATHS_JSON"
 sys.path.insert(0, str(_PROJECT_ROOT))
 from scripts.pi_prompt import (  # noqa: E402
     PROVIDER,
@@ -144,9 +156,29 @@ class PiClient:
         base_url: str,
         api_key: str,
         model: str,
+        repository_root: Path,
         provider: str = PROVIDER,
         timeout: int = PI_TIMEOUT_SECONDS,
+        path_gate_extension: Path = PI_PATH_GATE_EXTENSION,
     ) -> None:
+        try:
+            self.repository_root = repository_root.resolve(strict=True)
+        except (OSError, RuntimeError) as exc:
+            raise PiReviewError(
+                "pi repository root is unavailable"
+            ) from exc
+        if not self.repository_root.is_dir():
+            raise PiReviewError("pi repository root is not a directory")
+
+        try:
+            self.path_gate_extension = path_gate_extension.resolve(strict=True)
+        except (OSError, RuntimeError) as exc:
+            raise PiReviewError(
+                "pi path-gate extension is unavailable"
+            ) from exc
+        if not self.path_gate_extension.is_file():
+            raise PiReviewError("pi path-gate extension is not a file")
+
         self.pi_binary = pi_binary
         self.base_url = _chat_url_to_base(base_url)
         self.api_key = api_key
@@ -158,9 +190,7 @@ class PiClient:
         with tempfile.TemporaryDirectory(prefix="pi-pr-review-") as tmp:
             root = Path(tmp)
             runtime_dir = root / "pi-agent"
-            work_dir = root / "work"
             runtime_dir.mkdir()
-            work_dir.mkdir()
 
             (runtime_dir / "models.json").write_text(
                 json.dumps(
@@ -170,6 +200,11 @@ class PiClient:
                 encoding="utf-8",
             )
 
+            environment = minimal_environment(runtime_dir, self.api_key)
+            environment[PI_ALLOWED_PATHS_ENV] = json.dumps(
+                [str(self.repository_root)]
+            )
+
             command = [
                 self.pi_binary,
                 "--mode", "json",
@@ -177,13 +212,15 @@ class PiClient:
                 "--provider", self.provider,
                 "--model", self.model,
                 "--no-session",
+                "--no-builtin-tools",
                 "--tools", "read,grep,find,ls",
+                "--extension", str(self.path_gate_extension),
                 "--no-extensions",
                 "--no-skills",
                 "--no-prompt-templates",
                 "--no-themes",
                 "--no-context-files",
-                "--approve",
+                "--no-approve",
                 "--system-prompt", system_prompt,
                 diff_chunk,
             ]
@@ -191,8 +228,8 @@ class PiClient:
             try:
                 completed = subprocess.run(
                     command,
-                    cwd=work_dir,
-                    env=minimal_environment(runtime_dir, self.api_key),
+                    cwd=self.repository_root,
+                    env=environment,
                     stdin=subprocess.DEVNULL,
                     text=True,
                     stdout=subprocess.PIPE,
@@ -311,6 +348,7 @@ def main() -> int:
         base_url=require_env("LLM_REVIEW_BASE_URL"),
         api_key=require_env("LLM_REVIEW_API_KEY"),
         model=require_env("LLM_REVIEW_MODEL"),
+        repository_root=_PROJECT_ROOT,
     )
     prompt = args.prompt_path.read_text()
     review_id = os.environ.get("LLM_REVIEW_ID", PI_REVIEW_ID)

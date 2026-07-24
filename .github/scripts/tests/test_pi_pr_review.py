@@ -36,6 +36,8 @@ prompt="${{@: -1}}"
 {{
   printf 'home=%s\\n' "${{HOME:-}}"
   printf 'pi_dir=%s\\n' "${{PI_CODING_AGENT_DIR:-}}"
+  printf 'cwd=%s\\n' "$PWD"
+  printf 'allowed_paths=%s\\n' "${{HARBOR_ANALYZER_ALLOWED_PATHS_JSON:-}}"
   printf 'offline=%s\\n' "${{PI_OFFLINE:-}}"
   printf 'token=%s\\n' "${{AGENT_FLEET_API_KEY:-}}"
   printf 'prompt=<%s>\\n' "$prompt"
@@ -294,6 +296,8 @@ class PiClientTest(unittest.TestCase):
         self.root = Path(self.temp_dir.name)
         self.bin_dir = self.root / "bin"
         self.bin_dir.mkdir()
+        self.repo_dir = self.root / "repository"
+        self.repo_dir.mkdir()
         self.capture = self.bin_dir / "pi-capture.txt"
 
     def tearDown(self):
@@ -305,10 +309,64 @@ class PiClientTest(unittest.TestCase):
             base_url="https://api.example.com/v1/chat/completions",
             api_key="test-api-key",
             model="test-model",
+            repository_root=self.repo_dir,
             timeout=30,
         )
         kwargs.update(overrides)
         return pi_review.PiClient(**kwargs)
+
+    def test_runs_from_repository_root(self) -> None:
+        _stub_pi_script(self.bin_dir, stdout=_make_findings_response())
+        client = self._make_client()
+
+        client.review("prompt", "diff")
+
+        captured = self.capture.read_text(encoding="utf-8")
+        self.assertIn(f"cwd={self.repo_dir.resolve()}", captured)
+
+    def test_uses_only_path_gated_read_tools(self) -> None:
+        _stub_pi_script(self.bin_dir, stdout=_make_findings_response())
+        client = self._make_client()
+
+        client.review("prompt", "diff")
+
+        captured = self.capture.read_text(encoding="utf-8")
+        self.assertIn("arg=<--no-builtin-tools>", captured)
+        self.assertIn("arg=<--tools>", captured)
+        self.assertIn("arg=<read,grep,find,ls>", captured)
+        self.assertIn("arg=<--extension>", captured)
+        self.assertIn(
+            f"arg=<{pi_review.PI_PATH_GATE_EXTENSION.resolve()}>",
+            captured,
+        )
+        self.assertIn("arg=<--no-approve>", captured)
+        self.assertNotIn("arg=<--approve>", captured)
+
+    def test_limits_path_gate_to_repository_root(self) -> None:
+        _stub_pi_script(self.bin_dir, stdout=_make_findings_response())
+        client = self._make_client()
+
+        client.review("prompt", "diff")
+
+        captured = self.capture.read_text(encoding="utf-8")
+        expected = json.dumps([str(self.repo_dir.resolve())])
+        self.assertIn(f"allowed_paths={expected}", captured)
+
+    def test_missing_repository_root_fails_before_launch(self) -> None:
+        missing_root = self.root / "missing-repository"
+
+        with self.assertRaises(pi_review.PiReviewError) as ctx:
+            self._make_client(repository_root=missing_root)
+
+        self.assertIn("repository root", str(ctx.exception))
+
+    def test_missing_path_gate_fails_before_launch(self) -> None:
+        missing_gate = self.root / "missing-path-gate.ts"
+
+        with self.assertRaises(pi_review.PiReviewError) as ctx:
+            self._make_client(path_gate_extension=missing_gate)
+
+        self.assertIn("path-gate extension", str(ctx.exception))
 
     def test_passes_system_prompt_and_diff_chunk_to_pi(self) -> None:
         _stub_pi_script(self.bin_dir, stdout=_make_findings_response())
@@ -322,7 +380,7 @@ class PiClientTest(unittest.TestCase):
         self.assertIn("arg=<You are a reviewer.>", captured)
         self.assertIn("arg=<--tools>", captured)
         self.assertIn("arg=<read,grep,find,ls>", captured)
-        self.assertIn("arg=<--approve>", captured)
+        self.assertIn("arg=<--no-approve>", captured)
         self.assertIn("arg=<--no-session>", captured)
         self.assertIn("offline=1", captured)
 
