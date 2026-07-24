@@ -31,11 +31,15 @@ jobs:
           PI_VERSION: "0.81.1"
         run: |
           set -euo pipefail
-          CURRENT_VERSION="$(pi --version 2>/dev/null || true)"
+          if ! CURRENT_VERSION="$(pi --version 2>/dev/null)"; then
+            CURRENT_VERSION=""
+          fi
           if [[ "$CURRENT_VERSION" != "$PI_VERSION" ]]; then
             npm install -g --ignore-scripts "@earendil-works/pi-coding-agent@${PI_VERSION}" --force
           fi
-          INSTALLED_VERSION="$(pi --version 2>/dev/null || true)"
+          if ! INSTALLED_VERSION="$(pi --version 2>/dev/null)"; then
+            INSTALLED_VERSION=""
+          fi
           if [[ "$INSTALLED_VERSION" != "$PI_VERSION" ]]; then
             echo "::error::Expected pi version $PI_VERSION, got ${INSTALLED_VERSION:-missing}" >&2
             exit 1

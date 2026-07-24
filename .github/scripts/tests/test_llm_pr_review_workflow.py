@@ -140,34 +140,43 @@ class LlmPrReviewWorkflowTest(unittest.TestCase):
                 )
                 self.assertIn("Expected pi version $PI_VERSION", workflow)
                 self.assertIn(
-                    'INSTALLED_VERSION="$(pi --version 2>/dev/null || true)"',
+                    'if ! INSTALLED_VERSION="$(pi --version 2>/dev/null)"; then',
                     workflow,
                 )
                 self.assertNotIn("grep -oE", workflow)
+                self.assertNotIn(
+                    "pi --version 2>/dev/null || true",
+                    workflow,
+                )
 
     def _run_version_step(
         self,
         script: str,
         initial_output: str | None,
         *,
+        initial_exit_code: int = 0,
         post_install_output: str = "0.81.1\n",
+        post_install_exit_code: int = 0,
     ) -> tuple[subprocess.CompletedProcess[str], int]:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             bin_dir = root / "bin"
             bin_dir.mkdir()
             output_path = root / "pi-output"
+            exit_path = root / "pi-exit"
             calls_path = root / "npm-calls"
             pi_template = root / "pi-template"
             pi_template.write_text(
                 "#!/usr/bin/env bash\n"
                 "set -euo pipefail\n"
-                'cat "$FAKE_PI_OUTPUT"\n',
+                'cat "$FAKE_PI_OUTPUT"\n'
+                'exit "$(cat "$FAKE_PI_EXIT")"\n',
                 encoding="utf-8",
             )
             pi_template.chmod(0o755)
             if initial_output is not None:
                 output_path.write_text(initial_output, encoding="utf-8")
+                exit_path.write_text(str(initial_exit_code), encoding="utf-8")
                 (bin_dir / "pi").write_bytes(pi_template.read_bytes())
                 (bin_dir / "pi").chmod(0o755)
             npm = bin_dir / "npm"
@@ -177,7 +186,8 @@ class LlmPrReviewWorkflowTest(unittest.TestCase):
                 'printf "install\\n" >>"$FAKE_NPM_CALLS"\n'
                 'cp "$FAKE_PI_TEMPLATE" "$FAKE_BIN/pi"\n'
                 'chmod +x "$FAKE_BIN/pi"\n'
-                'printf "%s" "$FAKE_PI_POST_OUTPUT" >"$FAKE_PI_OUTPUT"\n',
+                'printf "%s" "$FAKE_PI_POST_OUTPUT" >"$FAKE_PI_OUTPUT"\n'
+                'printf "%s" "$FAKE_PI_POST_EXIT" >"$FAKE_PI_EXIT"\n',
                 encoding="utf-8",
             )
             npm.chmod(0o755)
@@ -187,7 +197,9 @@ class LlmPrReviewWorkflowTest(unittest.TestCase):
                 "PI_VERSION": "0.81.1",
                 "FAKE_BIN": str(bin_dir),
                 "FAKE_NPM_CALLS": str(calls_path),
+                "FAKE_PI_EXIT": str(exit_path),
                 "FAKE_PI_OUTPUT": str(output_path),
+                "FAKE_PI_POST_EXIT": str(post_install_exit_code),
                 "FAKE_PI_POST_OUTPUT": post_install_output,
                 "FAKE_PI_TEMPLATE": str(pi_template),
             }
@@ -213,6 +225,18 @@ class LlmPrReviewWorkflowTest(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(install_count, 0)
+
+    def test_hosted_version_step_reinstalls_when_exact_output_exits_nonzero(
+        self,
+    ):
+        script = _step_script(self.hosted, "Install pi coding agent")
+        result, install_count = self._run_version_step(
+            script,
+            "0.81.1\n",
+            initial_exit_code=23,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(install_count, 1)
 
     def test_hosted_version_step_reinstalls_all_nonexact_versions(self):
         script = _step_script(self.hosted, "Install pi coding agent")
@@ -240,6 +264,17 @@ class LlmPrReviewWorkflowTest(unittest.TestCase):
         self.assertEqual(install_count, 1)
         self.assertIn("Expected pi version 0.81.1", result.stderr)
 
+    def test_hosted_version_step_rejects_exact_failing_post_install(self):
+        script = _step_script(self.hosted, "Install pi coding agent")
+        result, install_count = self._run_version_step(
+            script,
+            "0.80.0\n",
+            post_install_exit_code=23,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(install_count, 1)
+        self.assertIn("Expected pi version 0.81.1", result.stderr)
+
     def test_self_hosted_version_step_accepts_only_exact_version(self):
         script = _step_script(
             self.self_hosted, "Verify pi is available"
@@ -261,6 +296,19 @@ class LlmPrReviewWorkflowTest(unittest.TestCase):
                 self.assertNotEqual(result.returncode, 0)
                 self.assertEqual(install_count, 0)
                 self.assertIn("Expected pi version 0.81.1", result.stderr)
+
+    def test_self_hosted_version_step_rejects_exact_failing_command(self):
+        script = _step_script(
+            self.self_hosted, "Verify pi is available"
+        )
+        result, install_count = self._run_version_step(
+            script,
+            "0.81.1\n",
+            initial_exit_code=23,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(install_count, 0)
+        self.assertIn("Expected pi version 0.81.1", result.stderr)
 
     def test_prompt_handles_files_absent_from_trusted_base(self):
         prompt = " ".join(self.prompt.split())
