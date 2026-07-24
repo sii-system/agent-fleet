@@ -260,7 +260,9 @@ class LlmClient:
             try:
                 response = _json_request(request, opener=self.opener)
                 content = response["choices"][0]["message"].get("content")
-                if not isinstance(content, str) or not content.strip():
+                if not isinstance(content, str):
+                    raise ModelResponseError("model content must be text")
+                if not content.strip():
                     return {"findings": []}
                 return extract_json(content)
             except HTTPError as exc:

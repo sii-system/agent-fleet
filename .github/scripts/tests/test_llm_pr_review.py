@@ -261,7 +261,7 @@ class ApiClientTest(unittest.TestCase):
 
         self.assertEqual(client.review("system", "diff"), {"findings": []})
 
-    def test_missing_content_key_is_treated_as_no_findings(self) -> None:
+    def test_missing_content_key_raises_model_response_error(self) -> None:
         opener = mock.Mock(
             return_value=FakeResponse({"choices": [{"message": {}}]})
         )
@@ -269,7 +269,8 @@ class ApiClientTest(unittest.TestCase):
             "https://example.invalid", "key", "model", opener, mock.Mock()
         )
 
-        self.assertEqual(client.review("system", "diff"), {"findings": []})
+        with self.assertRaises(review.ModelResponseError):
+            client.review("system", "diff")
 
     def test_malformed_message_raises_model_response_error(self) -> None:
         opener = mock.Mock(
