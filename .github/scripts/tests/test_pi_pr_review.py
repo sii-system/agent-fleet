@@ -3,11 +3,14 @@ from __future__ import annotations
 import io
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from contextlib import redirect_stderr
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest import mock
 
@@ -107,6 +110,12 @@ class UrlNormalisationTest(unittest.TestCase):
         )
         self.assertEqual(result, "https://api.example.com/v1")
 
+    def test_strips_chat_completions_suffix_with_trailing_slash(self) -> None:
+        result = pi_review._chat_url_to_base(
+            "https://api.example.com/v1/chat/completions/"
+        )
+        self.assertEqual(result, "https://api.example.com/v1")
+
     def test_preserves_custom_prefix(self) -> None:
         result = pi_review._chat_url_to_base(
             "https://gateway.example.com/v3/chat/completions"
@@ -130,6 +139,24 @@ class UrlNormalisationTest(unittest.TestCase):
     def test_rejects_malformed_url(self) -> None:
         with self.assertRaises(pi_review.PiReviewError):
             pi_review._chat_url_to_base("http://[::1")
+
+    def test_rejects_query_parameters(self) -> None:
+        with self.assertRaisesRegex(
+            pi_review.PiReviewError,
+            "query parameters or fragments are not supported",
+        ):
+            pi_review._chat_url_to_base(
+                "https://api.example.com/v1/chat/completions?api-version=1"
+            )
+
+    def test_rejects_fragment(self) -> None:
+        with self.assertRaisesRegex(
+            pi_review.PiReviewError,
+            "query parameters or fragments are not supported",
+        ):
+            pi_review._chat_url_to_base(
+                "https://api.example.com/v1/chat/completions#endpoint"
+            )
 
 
 # -- JSON extraction ------------------------------------------------------
@@ -458,6 +485,143 @@ class PiClientTest(unittest.TestCase):
         with self.assertRaises(pi_review.PiReviewError) as ctx:
             client.review("prompt", "diff")
         self.assertIn("invalid jsonl", str(ctx.exception).lower())
+
+
+class PiRuntimeIntegrationTest(unittest.TestCase):
+    def test_real_pi_uses_adapted_chat_completions_path(self) -> None:
+        pi_binary = shutil.which("pi")
+        if pi_binary is None:
+            self.skipTest(
+                "pi runtime integration requires pi 0.81.1; "
+                "pi binary was not found"
+            )
+        version_result = subprocess.run(
+            [pi_binary, "--version"],
+            stdin=subprocess.DEVNULL,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=10,
+            check=False,
+        )
+        version = version_result.stdout.strip()
+        if version_result.returncode != 0 or version != "0.81.1":
+            self.skipTest(
+                "pi runtime integration requires pi 0.81.1; "
+                f"pi --version reported {version or 'no version'}"
+            )
+
+        model = "integration-model"
+        chunks = [
+            {
+                "id": "chatcmpl-integration",
+                "object": "chat.completion.chunk",
+                "created": 0,
+                "model": model,
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {
+                            "role": "assistant",
+                            "content": '{"findings":[]}',
+                        },
+                        "finish_reason": None,
+                    }
+                ],
+            },
+            {
+                "id": "chatcmpl-integration",
+                "object": "chat.completion.chunk",
+                "created": 0,
+                "model": model,
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {},
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": 1,
+                    "completion_tokens": 1,
+                    "total_tokens": 2,
+                },
+            },
+        ]
+        response_body = (
+            "".join(f"data: {json.dumps(chunk)}\n\n" for chunk in chunks)
+            + "data: [DONE]\n\n"
+        ).encode()
+        requests: list[dict] = []
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self) -> None:
+                length = int(self.headers.get("Content-Length", "0"))
+                requests.append(
+                    {
+                        "path": self.path,
+                        "body": json.loads(self.rfile.read(length)),
+                    }
+                )
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.send_header("Content-Length", str(len(response_body)))
+                self.send_header("Connection", "close")
+                self.end_headers()
+                self.wfile.write(response_body)
+
+            def log_message(self, _format: str, *args: object) -> None:
+                pass
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        server_thread = threading.Thread(
+            target=server.serve_forever,
+            daemon=True,
+        )
+        server_thread.start()
+        try:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                repository_root = Path(temp_dir) / "repository"
+                repository_root.mkdir()
+                port = server.server_address[1]
+                client = pi_review.PiClient(
+                    pi_binary=pi_binary,
+                    base_url=(
+                        f"http://127.0.0.1:{port}"
+                        "/custom/chat/completions"
+                    ),
+                    api_key="integration-api-key",
+                    model=model,
+                    repository_root=repository_root,
+                    timeout=30,
+                )
+                with mock.patch.dict(
+                    os.environ,
+                    {
+                        "NO_PROXY": "127.0.0.1,localhost",
+                        "no_proxy": "127.0.0.1,localhost",
+                    },
+                ):
+                    result = client.review(
+                        (
+                            "Return exactly one JSON object with an empty "
+                            "findings array. No tools are needed."
+                        ),
+                        "Return the requested JSON now.",
+                    )
+        finally:
+            server.shutdown()
+            server.server_close()
+            server_thread.join(timeout=5)
+
+        self.assertFalse(server_thread.is_alive())
+        self.assertEqual(result, {"findings": []})
+        self.assertEqual(
+            [request["path"] for request in requests],
+            ["/custom/chat/completions"],
+        )
+        self.assertEqual(requests[0]["body"]["model"], model)
+        self.assertTrue(requests[0]["body"]["stream"])
 
 
 # -- orchestration tests --------------------------------------------------

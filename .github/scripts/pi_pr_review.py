@@ -65,10 +65,16 @@ def _chat_url_to_base(url: str) -> str:
         ) from exc
     if parsed.scheme not in {"http", "https"} or not hostname:
         raise PiReviewError("invalid LLM_REVIEW_BASE_URL for pi provider")
-    suffix = "/chat/completions"
+    if parsed.params or parsed.query or parsed.fragment:
+        raise PiReviewError(
+            "LLM_REVIEW_BASE_URL query parameters or fragments are not "
+            "supported by pi provider"
+        )
     path = parsed.path
-    if path.endswith(suffix):
-        path = path[: -len(suffix)]
+    for suffix in ("/chat/completions/", "/chat/completions"):
+        if path.endswith(suffix):
+            path = path[: -len(suffix)]
+            break
     return parsed._replace(path=path).geturl()
 
 
