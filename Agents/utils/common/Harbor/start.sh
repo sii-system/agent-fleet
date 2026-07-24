@@ -176,7 +176,9 @@ harbor_start_analyzer_if_enabled() {
   fi
 
   mkdir -p "$HARBOR_ANALYZER_OUTPUT_DIR" "$RUNTIME_DIR"
-  local analyzer_pid
+  local analyzer_pid ready_file
+  ready_file="$HARBOR_ANALYZER_OUTPUT_DIR/.analyzer-ready"
+  rm -f "$ready_file"
   case "$HARBOR_ANALYZER_MODE" in
     handover-follow)
       nohup setsid python3 "$SCRIPT_DIR/scripts/analyzer_subagent.py" \
@@ -192,6 +194,7 @@ harbor_start_analyzer_if_enabled() {
         --pi-api-key-env HARBOR_ANALYZER_API_KEY \
         --timeout "$HARBOR_ANALYZER_TIMEOUT" \
         --max-concurrency "$HARBOR_ANALYZER_MAX_CONCURRENCY" \
+        --ready-file "$ready_file" \
         --follow \
         --poll-interval "$HARBOR_ANALYZER_POLL_INTERVAL" \
         >>"$HARBOR_ANALYZER_LOG_FILE" 2>&1 &
@@ -205,17 +208,18 @@ harbor_start_analyzer_if_enabled() {
   printf '%s\n' "$analyzer_pid" >"$HARBOR_ANALYZER_PID_FILE"
   for _ in $(seq 1 50); do
     if ! kill -0 "$analyzer_pid" >/dev/null 2>&1; then
-      rm -f "$HARBOR_ANALYZER_PID_FILE"
+      rm -f "$HARBOR_ANALYZER_PID_FILE" "$ready_file"
       echo "[ERROR] Harbor analyzer exited during startup; see $HARBOR_ANALYZER_LOG_FILE" >&2
       exit 1
     fi
-    if harbor_analyzer_pid_matches_run "$analyzer_pid"; then
+    if [[ -f "$ready_file" ]] && grep -qx "$analyzer_pid" "$ready_file"; then
       exit 0
     fi
     sleep 0.1
   done
-  rm -f "$HARBOR_ANALYZER_PID_FILE"
-  echo "[ERROR] Harbor analyzer did not survive startup; see $HARBOR_ANALYZER_LOG_FILE" >&2
+  harbor_stop_analyzer "$analyzer_pid" >/dev/null 2>&1 || true
+  rm -f "$HARBOR_ANALYZER_PID_FILE" "$ready_file"
+  echo "[ERROR] Harbor analyzer did not become ready during startup; see $HARBOR_ANALYZER_LOG_FILE" >&2
   exit 1
   ) 9>"$RUNTIME_DIR/harbor-analyzer.lock"
 }
@@ -233,7 +237,7 @@ harbor_wait_for_monitor_completion() {
   [[ "$HARBOR_MONITOR_ENABLED" == "1" && "$ROLLOUT" != "1" ]] || return 0
   harbor_monitor_is_running_for_run || return 0
   local timeout deadline
-  timeout="${HARBOR_ANALYZER_DRAIN_TIMEOUT:-60}"
+  timeout="$(harbor_analyzer_shutdown_timeout)"
   deadline=$((SECONDS + timeout))
   while (( SECONDS < deadline )); do
     harbor_monitor_is_running_for_run || return 0
@@ -274,11 +278,15 @@ PY
 harbor_wait_for_analyzer_drain() {
   [[ "$HARBOR_ANALYZER_ENABLED" == "1" && "$ROLLOUT" != "1" ]] || return 0
   [[ -f "$HARBOR_ANALYZER_PID_FILE" ]] || return 0
-  local pid timeout deadline
-  pid="$(cat "$HARBOR_ANALYZER_PID_FILE" 2>/dev/null || true)"
+  local expected_pid="${1:-}" current_pid pid timeout deadline
+  current_pid="$(cat "$HARBOR_ANALYZER_PID_FILE" 2>/dev/null || true)"
+  pid="${expected_pid:-$current_pid}"
+  if [[ -n "$expected_pid" && "$current_pid" != "$expected_pid" ]]; then
+    [[ "$expected_pid" =~ ^[0-9]+$ ]] || return 0
+  fi
   [[ "$pid" =~ ^[0-9]+$ ]] || return 0
   kill -0 "$pid" >/dev/null 2>&1 || return 0
-  timeout="${HARBOR_ANALYZER_DRAIN_TIMEOUT:-60}"
+  timeout="$(harbor_analyzer_shutdown_timeout)"
   deadline=$((SECONDS + timeout))
   while (( SECONDS < deadline )); do
     kill -0 "$pid" >/dev/null 2>&1 || return 0
@@ -297,16 +305,80 @@ harbor_finish_analyzer_lifecycle() {
   harbor_stop_analyzer || true
 }
 
+harbor_analyzer_shutdown_timeout() {
+  local configured_timeout analyzer_timeout max_concurrency derived_timeout
+  configured_timeout="${HARBOR_ANALYZER_DRAIN_TIMEOUT:-0}"
+  analyzer_timeout="${HARBOR_ANALYZER_TIMEOUT:-900}"
+  max_concurrency="${HARBOR_ANALYZER_MAX_CONCURRENCY:-1}"
+  [[ "$configured_timeout" =~ ^[0-9]+$ ]] || configured_timeout=0
+  [[ "$analyzer_timeout" =~ ^[0-9]+$ ]] || analyzer_timeout=900
+  [[ "$max_concurrency" =~ ^[0-9]+$ && "$max_concurrency" -gt 0 ]] || max_concurrency=1
+  derived_timeout="$analyzer_timeout"
+  if [[ -f "$HARBOR_MONITOR_DIR/analyzer-handover-latest.json" ]]; then
+    derived_timeout="$(
+      python3 - "$SCRIPT_DIR/scripts" \
+        "$HARBOR_MONITOR_DIR/analyzer-handover-latest.json" \
+        "$HARBOR_MONITOR_DIR/analyzer-handoffs" \
+        "$HARBOR_ANALYZER_OUTPUT_DIR/.analyzer_state.json" \
+        "$analyzer_timeout" \
+        "$max_concurrency" <<'PY'
+import math
+import sys
+import time
+from pathlib import Path
+
+scripts_dir = Path(sys.argv[1])
+sys.path.insert(0, str(scripts_dir))
+from analyzer_subagent import _load_follow_state, _pending_handovers  # noqa: E402
+
+latest_path = Path(sys.argv[2])
+handoff_dir = Path(sys.argv[3])
+state_path = Path(sys.argv[4])
+timeout = int(sys.argv[5])
+max_concurrency = max(1, int(sys.argv[6]))
+processed, failed = _load_follow_state(state_path)
+pending = _pending_handovers(
+    latest_path=latest_path,
+    handoff_dir=handoff_dir,
+    processed=processed,
+    failed=failed,
+    now=time.time(),
+)
+waves = 0
+for handover, _path, _key in pending:
+    tasks = handover.get("tasks")
+    if isinstance(tasks, list) and tasks:
+        waves += math.ceil(len(tasks) / max_concurrency)
+print(max(timeout, waves * timeout))
+PY
+    )" || derived_timeout="$analyzer_timeout"
+  fi
+  [[ "$derived_timeout" =~ ^[0-9]+$ ]] || derived_timeout="$analyzer_timeout"
+  (( configured_timeout > derived_timeout )) && printf '%s\n' "$configured_timeout" || printf '%s\n' "$derived_timeout"
+}
+
 harbor_start_detached_analyzer_supervisor_if_enabled() {
   [[ "$HARBOR_ANALYZER_ENABLED" == "1" && "$ROLLOUT" != "1" ]] || return 0
+  [[ -f "$HARBOR_ANALYZER_PID_FILE" ]] || return 0
+  local analyzer_pid
+  analyzer_pid="$(cat "$HARBOR_ANALYZER_PID_FILE" 2>/dev/null || true)"
+  [[ "$analyzer_pid" =~ ^[0-9]+$ ]] || return 0
+  rm -f "$HARBOR_ANALYZER_SUPERVISOR_PID_FILE"
   (
     trap '' HUP
     while harbor_monitor_is_running_for_run; do
       sleep 5
     done
-    harbor_wait_for_analyzer_drain
-    harbor_stop_analyzer || true
+    harbor_wait_for_analyzer_drain "$analyzer_pid"
+    harbor_stop_analyzer "$analyzer_pid" || true
   ) >>"$HARBOR_ANALYZER_LOG_FILE" 2>&1 &
+  printf '%s\n' "$!" >"$HARBOR_ANALYZER_SUPERVISOR_PID_FILE"
+}
+
+harbor_rollback_analyzer_startup() {
+  harbor_stop_analyzer >/dev/null 2>&1 || true
+  harbor_stop_monitor >/dev/null 2>&1 || true
+  harbor_stop_online_analysis >/dev/null 2>&1 || true
 }
 
 harbor_init_run_dirs
@@ -342,7 +414,7 @@ if [[ $# -gt 0 ]]; then
     harbor_start_online_analysis_if_enabled
     harbor_start_monitor_if_enabled
     if ! harbor_start_analyzer_if_enabled; then
-      harbor_stop_monitor >/dev/null 2>&1 || true
+      harbor_rollback_analyzer_startup
       exit 1
     fi
   fi
@@ -405,7 +477,7 @@ if [[ "$DETACH_MODE" == "true" ]]; then
     exit 1
   fi
   if ! harbor_start_analyzer_if_enabled; then
-    harbor_stop_monitor >/dev/null 2>&1 || true
+    harbor_rollback_analyzer_startup
     zellij kill-session "$ZELLIJ_SESSION_NAME" >/dev/null 2>&1 || true
     zellij delete-session "$ZELLIJ_SESSION_NAME" >/dev/null 2>&1 || true
     exit 1
@@ -418,7 +490,7 @@ fi
 
 harbor_start_monitor_if_enabled
 if ! harbor_start_analyzer_if_enabled; then
-  harbor_stop_monitor >/dev/null 2>&1 || true
+  harbor_rollback_analyzer_startup
   exit 1
 fi
 set +e

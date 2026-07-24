@@ -11,7 +11,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from harbor_analyzer.io import load_json, stable_hash, utc_now, write_json_atomic
+from harbor_analyzer.io import load_json, stable_hash, utc_now, write_json_atomic, write_text_atomic
 from harbor_analyzer.runner import AnalyzerConfig, run_handover
 
 
@@ -67,6 +67,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--follow", action="store_true")
     parser.add_argument("--poll-interval", type=float, default=5.0)
+    parser.add_argument("--ready-file", type=Path)
     args = parser.parse_args()
     if args.timeout <= 0:
         parser.error("--timeout must be positive")
@@ -236,10 +237,16 @@ def _run_one(handover: dict[str, Any], source_path: Path, config: AnalyzerConfig
     return exit_code
 
 
+def _write_ready_file(path: Path | None) -> None:
+    if path is not None:
+        write_text_atomic(path, f"{os.getpid()}\n")
+
+
 def main() -> int:
     _ensure_analyzer_env_defaults()
     args = parse_args()
     config = _config(args)
+    _write_ready_file(args.ready_file)
     if not args.follow:
         return _run_one(load_json(args.handover), args.handover, config)
 
