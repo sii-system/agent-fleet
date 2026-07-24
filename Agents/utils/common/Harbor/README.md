@@ -224,7 +224,7 @@ Automatic restart is only used when tasks remain and no worker is alive.
 ## Harbor Analyzer
 
 `start.sh` starts the Pi-backed analyzer under the same Harbor run lifecycle by
-default. Set `HARBOR_ANALYZER_ENABLED=0` to disable it:
+default when the monitor is enabled. Set `HARBOR_ANALYZER_ENABLED=0` to disable it:
 
 ```bash
 HARBOR_ANALYZER_ENABLED=0 ./start.sh --detach

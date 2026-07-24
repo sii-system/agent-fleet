@@ -380,6 +380,7 @@ harbor_start_detached_analyzer_supervisor_if_enabled() {
     fi
   fi
   (
+    exec 9>&-
     trap '' HUP
     while harbor_monitor_is_running_for_run; do
       sleep 5

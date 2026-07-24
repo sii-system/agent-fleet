@@ -201,6 +201,7 @@ def _pending_handovers(
     processed: set[str],
     failed: dict[str, dict[str, Any]],
     now: float,
+    include_deferred_retries: bool = False,
 ) -> list[tuple[dict[str, Any], Path, str]]:
     candidates = sorted(handoff_dir.glob("*.json")) if handoff_dir.is_dir() else []
     if latest_path.is_file():
@@ -223,7 +224,11 @@ def _pending_handovers(
             if isinstance(failed_record, dict)
             else None
         )
-        if isinstance(next_retry_at, (int, float)) and next_retry_at > now:
+        if (
+            not include_deferred_retries
+            and isinstance(next_retry_at, (int, float))
+            and next_retry_at > now
+        ):
             continue
         unique[follow_key] = (handover, path, follow_key)
     return sorted(
@@ -248,14 +253,33 @@ def analyzer_drain_budget_seconds(
         processed=processed,
         failed=failed,
         now=now,
+        include_deferred_retries=True,
     )
     task_budget = task_analysis_timeout_budget_seconds(timeout_seconds)
-    waves = 0
-    for handover, _path, _key in pending:
+    total_budget = 0
+    for handover, _path, follow_key in pending:
         tasks = handover.get("tasks")
         if isinstance(tasks, list) and tasks:
-            waves += math.ceil(len(tasks) / max(1, max_concurrency))
-    return max(timeout_seconds, waves * task_budget)
+            waves = math.ceil(len(tasks) / max(1, max_concurrency))
+            failed_record = failed.get(follow_key)
+            attempt_count = (
+                int(failed_record.get("attempt_count") or 0)
+                if isinstance(failed_record, dict)
+                else 0
+            )
+            next_retry_at = (
+                failed_record.get("next_retry_at")
+                if isinstance(failed_record, dict)
+                else None
+            )
+            retry_wait = (
+                math.ceil(max(0.0, float(next_retry_at) - now))
+                if isinstance(next_retry_at, (int, float))
+                else 0
+            )
+            remaining_attempts = max(1, FOLLOW_MAX_FAILURE_ATTEMPTS - attempt_count)
+            total_budget += retry_wait + waves * task_budget * remaining_attempts
+    return max(timeout_seconds, total_budget)
 
 
 def _run_one(handover: dict[str, Any], source_path: Path, config: AnalyzerConfig) -> int:

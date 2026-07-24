@@ -309,7 +309,7 @@ class HarborAnalyzerRuntimeTest(unittest.TestCase):
                 [],
             )
 
-    def test_analyzer_drain_budget_includes_task_retry_timeout(self) -> None:
+    def test_analyzer_drain_budget_includes_follow_retry_timeout(self) -> None:
         with tempfile.TemporaryDirectory() as root:
             root_path = Path(root)
             handoff_dir = root_path / "handoffs"
@@ -336,7 +336,59 @@ class HarborAnalyzerRuntimeTest(unittest.TestCase):
                     max_concurrency=1,
                     now=0.0,
                 ),
-                2700,
+                8100,
+            )
+
+    def test_analyzer_drain_budget_includes_follow_retry_backoff(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            root_path = Path(root)
+            handoff_dir = root_path / "handoffs"
+            state_path = root_path / "state.json"
+            latest_path = root_path / "latest.json"
+            handoff_dir.mkdir()
+            latest_path.write_text(
+                json.dumps(
+                    {
+                        "handover_id": HANDOVER_ID,
+                        "generated_at": "2026-07-20T00:00:00+00:00",
+                        "tasks": [task()],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            follow_key = _pending_handovers(
+                latest_path=latest_path,
+                handoff_dir=handoff_dir,
+                processed=set(),
+                failed={},
+                now=0.0,
+            )[0][2]
+            state_path.write_text(
+                json.dumps(
+                    {
+                        "attempted_handover_keys": [],
+                        "failed_handover_retries": {
+                            follow_key: {
+                                "attempt_count": 1,
+                                "next_retry_at": 5.0,
+                                "retry_exhausted": False,
+                            },
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            self.assertEqual(
+                analyzer_drain_budget_seconds(
+                    latest_path=latest_path,
+                    handoff_dir=handoff_dir,
+                    state_path=state_path,
+                    timeout_seconds=900,
+                    max_concurrency=1,
+                    now=0.0,
+                ),
+                5405,
             )
 
     def test_run_handover_keeps_task_evidence_paths_per_publication(self) -> None:
