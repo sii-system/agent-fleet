@@ -263,7 +263,7 @@ class LlmClient:
                 if not isinstance(content, str):
                     raise ModelResponseError("model content must be text")
                 if not content.strip():
-                    return {"findings": []}
+                    return {"findings": [], "incomplete": True}
                 return extract_json(content)
             except HTTPError as exc:
                 if exc.code not in RETRYABLE_STATUS or attempt == 2:
@@ -407,8 +407,11 @@ def build_summary(
     rejected: int,
     skipped: list[tuple[str, str]],
     truncated: bool,
+    incomplete_chunks: int,
 ) -> str:
-    coverage = "Partial" if skipped or truncated else "Complete"
+    coverage = (
+        "Partial" if skipped or truncated or incomplete_chunks else "Complete"
+    )
     headline = (
         f"Automated review found {len(findings)} actionable finding(s)."
         if findings
@@ -435,6 +438,14 @@ def build_summary(
         lines.extend(
             ["", "- Additional diff content exceeded the total review budget."]
         )
+    if incomplete_chunks:
+        lines.extend(
+            [
+                "",
+                f"- {incomplete_chunks} diff chunk(s) returned an empty model "
+                "response and were not reviewed.",
+            ]
+        )
     return "\n".join(lines)
 
 
@@ -457,8 +468,11 @@ def run_review(
     chunks, truncated = build_chunks(files)
     findings: list[Finding] = []
     rejected = 0
+    incomplete_chunks = 0
     for chunk in chunks:
         payload = llm.review(prompt, build_model_input(pull, chunk))
+        if payload.get("incomplete"):
+            incomplete_chunks += 1
         chunk_findings, chunk_rejected = validate_findings(payload, by_path)
         findings.extend(chunk_findings)
         rejected += chunk_rejected
@@ -471,7 +485,9 @@ def run_review(
     if current["head"]["sha"] != head_sha:
         return "stale"
 
-    summary = build_summary(head_sha, findings, rejected, skipped, truncated)
+    summary = build_summary(
+        head_sha, findings, rejected, skipped, truncated, incomplete_chunks
+    )
     github.create_review(pull_number, head_sha, summary, findings)
     return "published"
 

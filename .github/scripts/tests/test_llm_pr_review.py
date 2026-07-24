@@ -237,7 +237,7 @@ class ApiClientTest(unittest.TestCase):
         self.assertEqual(body["max_tokens"], review.MAX_RESPONSE_TOKENS)
         self.assertGreaterEqual(review.MAX_RESPONSE_TOKENS, 8_000)
 
-    def test_empty_content_is_treated_as_no_findings(self) -> None:
+    def test_empty_content_is_flagged_incomplete(self) -> None:
         opener = mock.Mock(
             return_value=FakeResponse(
                 {"choices": [{"message": {"content": ""}}]}
@@ -247,9 +247,12 @@ class ApiClientTest(unittest.TestCase):
             "https://example.invalid", "key", "model", opener, mock.Mock()
         )
 
-        self.assertEqual(client.review("system", "diff"), {"findings": []})
+        self.assertEqual(
+            client.review("system", "diff"),
+            {"findings": [], "incomplete": True},
+        )
 
-    def test_whitespace_content_is_treated_as_no_findings(self) -> None:
+    def test_whitespace_content_is_flagged_incomplete(self) -> None:
         opener = mock.Mock(
             return_value=FakeResponse(
                 {"choices": [{"message": {"content": "   \n\t "}}]}
@@ -259,7 +262,10 @@ class ApiClientTest(unittest.TestCase):
             "https://example.invalid", "key", "model", opener, mock.Mock()
         )
 
-        self.assertEqual(client.review("system", "diff"), {"findings": []})
+        self.assertEqual(
+            client.review("system", "diff"),
+            {"findings": [], "incomplete": True},
+        )
 
     def test_missing_content_key_raises_model_response_error(self) -> None:
         opener = mock.Mock(
@@ -302,7 +308,10 @@ class ApiClientTest(unittest.TestCase):
             "https://example.invalid", "key", "model", opener, mock.Mock()
         )
 
-        self.assertEqual(client.review("system", "diff"), {"findings": []})
+        self.assertEqual(
+            client.review("system", "diff"),
+            {"findings": [], "incomplete": True},
+        )
 
     def test_llm_client_retries_429_twice(self) -> None:
         error = HTTPError("url", 429, "rate limited", {}, None)
@@ -538,11 +547,33 @@ class OrchestrationTest(unittest.TestCase):
     def test_summary_caps_the_skipped_path_list(self) -> None:
         skipped = [(f"generated/{index}.map", "generated") for index in range(55)]
 
-        summary = review.build_summary("head-1", [], 0, skipped, False)
+        summary = review.build_summary("head-1", [], 0, skipped, False, 0)
 
         self.assertIn("`generated/49.map`", summary)
         self.assertNotIn("`generated/50.map`", summary)
         self.assertIn("5 additional skipped file(s)", summary)
+
+    def test_summary_reports_partial_when_a_chunk_is_incomplete(self) -> None:
+        summary = review.build_summary("head-1", [], 0, [], False, 1)
+
+        self.assertIn("Coverage: Partial", summary)
+        self.assertIn("empty model response", summary)
+
+    def test_summary_reports_complete_when_no_chunk_is_incomplete(self) -> None:
+        summary = review.build_summary("head-1", [], 0, [], False, 0)
+
+        self.assertIn("Coverage: Complete", summary)
+        self.assertNotIn("empty model response", summary)
+
+    def test_run_review_reports_partial_on_empty_model_response(self) -> None:
+        github = FakeGitHub()
+        llm = mock.Mock()
+        llm.review.return_value = {"findings": [], "incomplete": True}
+
+        review.run_review(github, llm, 7, "prompt")
+
+        self.assertIn("Coverage: Partial", github.created[0][2])
+        self.assertIn("empty model response", github.created[0][2])
 
 
 class WorkflowContractTest(unittest.TestCase):
