@@ -17,7 +17,9 @@ _USER_ANTHROPIC_HAIKU_MODEL_VALUE="${TB_ANTHROPIC_DEFAULT_HAIKU_MODEL-}"
 
 TASK_ID="${TASK_ID:-fix-git}"
 task_slug="$(printf '%s' "$TASK_ID" | tr -c '[:alnum:]_.-' '_')"
-task_slug="${task_slug:-task}"
+if [[ -z "$task_slug" || "$task_slug" == "." || "$task_slug" == ".." ]]; then
+  task_slug="task"
+fi
 RUN_ID="${RUN_ID:-$(date +%Y-%m-%d-%H%M%S)-tb21-mid-turn-fusion-${task_slug}-$$}"
 OUTPUT_ROOT="${OUTPUT_ROOT:-/tmp/harbor-mid-turn-runs}"
 OUTPUT_PATH="${OUTPUT_PATH:-${OUTPUT_ROOT}/${RUN_ID}}"
@@ -32,8 +34,6 @@ fi
 
 if [[ -z "${DATASET_PATH:-}" ]]; then
   for candidate in \
-    /home/tianyi/terminal-bench-2-verified \
-    /home/siisyslab/tianyi/terminal-bench-2-verified \
     /workspace/terminal-bench-2-verified \
     /workspace/terminal-bench-2-1/tasks; do
     if [[ -d "$candidate/$TASK_ID" ]]; then
@@ -86,8 +86,8 @@ fi
 MAIN_MODEL="${MAIN_MODEL:-$MODEL}"
 SPAN_PANEL_MODELS="${SPAN_PANEL_MODELS:-minimax2.7,minimax2.7}"
 SPAN_OUTER_MODEL="${SPAN_OUTER_MODEL:-minimax2.7}"
-SPAN_ARTIFACT_DIR="${SPAN_ARTIFACT_DIR:-${OUTPUT_PATH}/mid-turn-fusion/${TASK_ID}}"
-SPAN_FUSION_JSON_COPY="${SPAN_FUSION_JSON_COPY:-${OUTPUT_PATH}/${TASK_ID}.fusion.json}"
+SPAN_ARTIFACT_DIR="${SPAN_ARTIFACT_DIR:-${OUTPUT_PATH}/mid-turn-fusion/${task_slug}}"
+SPAN_FUSION_JSON_COPY="${SPAN_FUSION_JSON_COPY:-${OUTPUT_PATH}/${task_slug}.fusion.json}"
 SPAN_TASK_SUBAGENT_PROMPT_FILE="${SPAN_TASK_SUBAGENT_PROMPT_FILE:-${SPAN_ARTIFACT_DIR}/task-subagent-system-prompt.md}"
 SPAN_TASK_SUBAGENT_AGENTS_FILE="${SPAN_TASK_SUBAGENT_AGENTS_FILE:-${SPAN_ARTIFACT_DIR}/claude-agents.json}"
 

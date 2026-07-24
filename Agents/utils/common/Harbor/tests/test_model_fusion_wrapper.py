@@ -94,7 +94,8 @@ class ModelFusionWrapperTest(unittest.TestCase):
             printf '%s\n' "$JOBS_ROOT" > "$OUTPUT_PATH/worker-jobs-root.txt"
             printf '%s\n' "$RESET_RUN" > "$OUTPUT_PATH/worker-reset-run.txt"
             cp "$TASK_FILE" "$OUTPUT_PATH/worker-task.txt"
-            task_dir="$JOBS_ROOT/worker-1/1-${TB_TASK_ID}"
+            task_safe="$(printf '%s' "$TB_TASK_ID" | tr '/[:space:]' '___' | tr -cd 'A-Za-z0-9._-')"
+            task_dir="$JOBS_ROOT/worker-1/1-${task_safe}"
             mkdir -p "$task_dir"
             printf '%s\n' '{"verifier_result":{"rewards":{"reward":1}}}' > "$task_dir/result.json"
             """
@@ -296,6 +297,35 @@ class ModelFusionWrapperTest(unittest.TestCase):
         expected_result = scoped_jobs_root / "worker-1/1-fixture-task/result.json"
         self.assertEqual(finalized["jobs_root"], str(scoped_jobs_root))
         self.assertEqual(finalized["result_json"], str(expected_result))
+
+    def test_task_id_is_sanitized_only_for_output_paths(self) -> None:
+        nested_task = self.dataset / "nested" / "task"
+        nested_task.mkdir(parents=True)
+        (nested_task / "task.md").write_text("nested task\n", encoding="utf-8")
+
+        result = self._run_wrapper(
+            {
+                "RUN_ID": "path-safe-run",
+                "TASK_ID": "nested/task",
+            }
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+        output_path = self.output_root / "path-safe-run"
+        safe_artifact_dir = output_path / "mid-turn-fusion" / "nested_task"
+        self.assertTrue((safe_artifact_dir / "fusion.json").is_file())
+        self.assertTrue((output_path / "nested_task.fusion.json").is_file())
+        self.assertFalse((output_path / "mid-turn-fusion/nested/task").exists())
+
+        fusion = json.loads((safe_artifact_dir / "fusion.json").read_text())
+        self.assertEqual(
+            fusion["finalize"]["result_json"],
+            str(
+                output_path
+                / "jobs/claude-code/model-fusion-nested_task"
+                / "worker-1/1-nested_task/result.json"
+            ),
+        )
 
 
 if __name__ == "__main__":
