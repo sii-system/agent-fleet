@@ -431,6 +431,29 @@ class OrchestrationTest(unittest.TestCase):
         self.assertEqual(result, "duplicate")
         self.assertEqual(github.created, [])
 
+    def test_review_ids_keep_parallel_reviewers_independent(self) -> None:
+        github = FakeGitHub()
+        github.reviews = [
+            {
+                "user": {"login": "github-actions[bot]"},
+                "body": "<!-- llm-pr-review:head-1 -->",
+            }
+        ]
+
+        result = review.run_review(
+            github,
+            FakeLlm(),
+            7,
+            "prompt",
+            review_id="self-hosted-llm-pr-review",
+        )
+
+        self.assertEqual(result, "published")
+        self.assertIn(
+            "<!-- self-hosted-llm-pr-review:head-1 -->",
+            github.created[0][2],
+        )
+
     def test_existing_review_ignores_null_user(self) -> None:
         reviews = [{"user": None, "body": "<!-- llm-pr-review:head-1 -->"}]
 
