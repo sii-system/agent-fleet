@@ -14,44 +14,13 @@ concurrency:
 
 jobs:
   review:
-    name: ${{ matrix.name }}
+    name: Hosted review
     if: ${{ !github.event.pull_request.draft }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: Hosted review
-            runner: ubuntu-latest
-            environment: llm-pr-review
-            api_key_secret: LLM_REVIEW_API_KEY
-            base_url_variable: LLM_REVIEW_BASE_URL
-            model_variable: LLM_REVIEW_MODEL
-            review_id: llm-pr-review
-          - name: Self-hosted review
-            runner: [self-hosted, Linux, X64]
-            environment: self-hosted-env
-            api_key_secret: LLM_API_KEY
-            base_url_variable: LLM_BASE_URL
-            model_variable: LLM_MODEL
-            review_id: self-hosted-llm-pr-review
-    runs-on: ${{ matrix.runner }}
-    environment: ${{ matrix.environment }}
-    timeout-minutes: 15
-    steps:
-      - name: Check out trusted base revision
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ github.event.pull_request.base.sha }}
-          persist-credentials: false
-
-      - name: Review pull request
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-          LLM_REVIEW_API_KEY: ${{ secrets[matrix.api_key_secret] }}
-          LLM_REVIEW_BASE_URL: ${{ vars[matrix.base_url_variable] }}
-          LLM_REVIEW_MODEL: ${{ vars[matrix.model_variable] }}
-          LLM_REVIEW_ID: ${{ matrix.review_id }}
-        run: >-
-          python3 .github/scripts/llm_pr_review.py
-          --event-path "$GITHUB_EVENT_PATH"
-          --prompt-path .github/scripts/llm_review_prompt.md
+    uses: ./.github/workflows/reusable-llm-pr-review.yml
+    with:
+      runner_json: '["ubuntu-latest"]'
+      environment: llm-pr-review
+      api_key_secret: LLM_REVIEW_API_KEY
+      base_url_variable: LLM_REVIEW_BASE_URL
+      model_variable: LLM_REVIEW_MODEL
+      review_id: llm-pr-review

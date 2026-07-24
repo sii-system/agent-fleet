@@ -1,0 +1,51 @@
+name: Reusable LLM PR Review
+
+"on":
+  workflow_call:
+    inputs:
+      runner_json:
+        required: true
+        type: string
+      environment:
+        required: true
+        type: string
+      api_key_secret:
+        required: true
+        type: string
+      base_url_variable:
+        required: true
+        type: string
+      model_variable:
+        required: true
+        type: string
+      review_id:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  review:
+    runs-on: ${{ fromJSON(inputs.runner_json) }}
+    environment: ${{ inputs.environment }}
+    timeout-minutes: 15
+    steps:
+      - name: Check out trusted base revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+
+      - name: Review pull request
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          LLM_REVIEW_API_KEY: ${{ secrets[inputs.api_key_secret] }}
+          LLM_REVIEW_BASE_URL: ${{ vars[inputs.base_url_variable] }}
+          LLM_REVIEW_MODEL: ${{ vars[inputs.model_variable] }}
+          LLM_REVIEW_ID: ${{ inputs.review_id }}
+        run: >-
+          python3 .github/scripts/llm_pr_review.py
+          --event-path "$GITHUB_EVENT_PATH"
+          --prompt-path .github/scripts/llm_review_prompt.md

@@ -1,0 +1,26 @@
+name: Self-Hosted LLM PR Review
+
+"on":
+  pull_request_target:
+    types: [opened, reopened, synchronize, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: self-hosted-llm-pr-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    name: Self-hosted review
+    if: ${{ !github.event.pull_request.draft }}
+    uses: ./.github/workflows/reusable-llm-pr-review.yml
+    with:
+      runner_json: '["self-hosted", "Linux", "X64"]'
+      environment: self-hosted-env
+      api_key_secret: LLM_API_KEY
+      base_url_variable: LLM_BASE_URL
+      model_variable: LLM_MODEL
+      review_id: self-hosted-llm-pr-review

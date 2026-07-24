@@ -618,13 +618,16 @@ class WorkflowContractTest(unittest.TestCase):
 
     def test_workflow_has_least_permissions_and_base_checkout(self) -> None:
         workflow = SCRIPT_DIR.parent.joinpath("workflows/llm-pr-review.yml").read_text()
+        reusable = SCRIPT_DIR.parent.joinpath(
+            "workflows/reusable-llm-pr-review.yml"
+        ).read_text()
 
         self.assertIn("contents: read", workflow)
         self.assertIn("pull-requests: write", workflow)
         self.assertNotIn("issues: write", workflow)
         self.assertIn("cancel-in-progress: true", workflow)
-        self.assertIn("pull_request.base.sha", workflow)
-        self.assertIn("persist-credentials: false", workflow)
+        self.assertIn("pull_request.base.sha", reusable)
+        self.assertIn("persist-credentials: false", reusable)
 
 
 if __name__ == "__main__":
