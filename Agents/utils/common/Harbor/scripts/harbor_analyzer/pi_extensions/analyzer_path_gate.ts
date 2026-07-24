@@ -13,10 +13,13 @@ type Policy = {
 	allowed: AllowedPath[];
 	auditPath?: string;
 	cwd: string;
+	grepLiteralOnly: boolean;
 };
 
 const MAX_READ_LINES = 1200;
 const MAX_GREP_FILES = 5000;
+const MAX_GREP_PATTERN_LENGTH = 1024;
+const MAX_GLOB_LENGTH = 256;
 const DEFAULT_LIMIT = 200;
 const MAX_GREP_CONTEXT = 20;
 const MAX_GREP_OUTPUT_BYTES = 50 * 1024;
@@ -37,11 +40,11 @@ const readSchema = {
 const grepSchema = {
 	type: "object",
 	properties: {
-		pattern: { type: "string", description: "Pattern to search for" },
+		pattern: { type: "string", description: `Pattern to search for (maximum ${MAX_GREP_PATTERN_LENGTH} characters)` },
 		path: { type: "string", description: "Allowed file or directory to search" },
-		glob: { type: "string", description: "Optional simple glob filter" },
+		glob: { type: "string", description: `Optional simple glob filter using * and ? (maximum ${MAX_GLOB_LENGTH} characters)` },
 		ignoreCase: { type: "boolean" },
-		literal: { type: "boolean" },
+		literal: { type: "boolean", description: "Use literal string matching. A runtime policy may force literal matching even when false." },
 		context: { type: "number" },
 		limit: { type: "number" },
 	},
@@ -52,7 +55,7 @@ const grepSchema = {
 const findSchema = {
 	type: "object",
 	properties: {
-		pattern: { type: "string", description: "Simple glob pattern to find" },
+		pattern: { type: "string", description: `Simple * and ? glob pattern to find (maximum ${MAX_GLOB_LENGTH} characters)` },
 		path: { type: "string", description: "Allowed directory to search" },
 		limit: { type: "number" },
 	},
@@ -102,6 +105,7 @@ async function loadPolicy(cwd: string): Promise<Policy> {
 			allowed,
 			auditPath: process.env.HARBOR_ANALYZER_ACCESS_AUDIT_PATH || undefined,
 			cwd,
+			grepLiteralOnly: process.env.HARBOR_ANALYZER_GREP_LITERAL_ONLY === "1",
 		};
 	})();
 	return policyPromise;
@@ -216,9 +220,34 @@ function utf8Prefix(text: string, maxBytes: number): string {
 	return buffer.subarray(0, end).toString("utf8");
 }
 
-function simpleGlobToRegExp(pattern: string): RegExp {
-	const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".");
-	return new RegExp(`^${escaped}$`);
+function wildcardMatches(pattern: string, value: string): boolean {
+	let patternIndex = 0;
+	let valueIndex = 0;
+	let starIndex = -1;
+	let starValueIndex = 0;
+	while (valueIndex < value.length) {
+		if (
+			patternIndex < pattern.length &&
+			(pattern[patternIndex] === "?" || pattern[patternIndex] === value[valueIndex])
+		) {
+			patternIndex++;
+			valueIndex++;
+		} else if (patternIndex < pattern.length && pattern[patternIndex] === "*") {
+			starIndex = patternIndex;
+			patternIndex++;
+			starValueIndex = valueIndex;
+		} else if (starIndex !== -1) {
+			patternIndex = starIndex + 1;
+			starValueIndex++;
+			valueIndex = starValueIndex;
+		} else {
+			return false;
+		}
+	}
+	while (patternIndex < pattern.length && pattern[patternIndex] === "*") {
+		patternIndex++;
+	}
+	return patternIndex === pattern.length;
 }
 
 async function collectFiles(root: string, limit: number): Promise<string[]> {
@@ -343,6 +372,13 @@ export default function analyzerPathGate(pi: ExtensionAPI) {
 		description: "Find files under an analyzer-allowed evidence directory using a simple glob pattern.",
 		parameters: findSchema,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			const findPattern = params.pattern || "*";
+			if (findPattern.length > MAX_GLOB_LENGTH) {
+				return {
+					content: [{ type: "text", text: `find pattern exceeds ${MAX_GLOB_LENGTH} characters` }],
+					details: { error: true, max_pattern_length: MAX_GLOB_LENGTH },
+				};
+			}
 			const policy = await loadPolicy(ctx.cwd);
 			const requested = params.path || ".";
 			const resolved = await resolveAllowed(policy, "find", requested);
@@ -351,10 +387,13 @@ export default function analyzerPathGate(pi: ExtensionAPI) {
 			}
 			const info = await stat(resolved.real);
 			const candidates = info.isDirectory() ? await collectFiles(resolved.real, MAX_GREP_FILES) : [resolved.real];
-			const matcher = simpleGlobToRegExp(params.pattern || "*");
 			const limit = Math.max(1, Math.floor(params.limit ?? DEFAULT_LIMIT));
 			const matches = candidates
-				.filter((file) => matcher.test(path.basename(file)) || matcher.test(path.relative(resolved.real, file)))
+				.filter(
+					(file) =>
+						wildcardMatches(findPattern, path.basename(file)) ||
+						wildcardMatches(findPattern, path.relative(resolved.real, file)),
+				)
 				.slice(0, limit);
 			return { content: [{ type: "text", text: matches.join("\n") || "No matches" }], details: { match_count: matches.length } };
 		},
@@ -363,9 +402,21 @@ export default function analyzerPathGate(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "grep",
 		label: "grep allowed analyzer evidence",
-		description: "Search text files under analyzer-allowed evidence paths. Secret-looking values are redacted in returned lines.",
+		description: "Search text files under analyzer-allowed evidence paths. A runtime policy may force literal string matching regardless of the literal argument. Secret-looking values are redacted in returned lines.",
 		parameters: grepSchema,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			if (params.pattern.length > MAX_GREP_PATTERN_LENGTH) {
+				return {
+					content: [{ type: "text", text: `grep pattern exceeds ${MAX_GREP_PATTERN_LENGTH} characters` }],
+					details: { error: true, max_pattern_length: MAX_GREP_PATTERN_LENGTH },
+				};
+			}
+			if (params.glob && params.glob.length > MAX_GLOB_LENGTH) {
+				return {
+					content: [{ type: "text", text: `grep glob exceeds ${MAX_GLOB_LENGTH} characters` }],
+					details: { error: true, max_glob_length: MAX_GLOB_LENGTH },
+				};
+			}
 			const policy = await loadPolicy(ctx.cwd);
 			const requested = params.path || ".";
 			const resolved = await resolveAllowed(policy, "grep", requested);
@@ -374,18 +425,19 @@ export default function analyzerPathGate(pi: ExtensionAPI) {
 			}
 			const info = await stat(resolved.real);
 			const files = info.isDirectory() ? await collectFiles(resolved.real, MAX_GREP_FILES) : [resolved.real];
-			const glob = params.glob ? simpleGlobToRegExp(params.glob) : undefined;
+			const glob = params.glob || undefined;
 			const requestedLimit = Math.max(1, Math.floor(params.limit ?? DEFAULT_LIMIT));
 			const limit = Math.min(requestedLimit, DEFAULT_LIMIT);
 			const requestedContext = Math.max(0, Math.floor(params.context ?? 0));
 			const context = Math.min(requestedContext, MAX_GREP_CONTEXT);
 			const flags = params.ignoreCase ? "i" : "";
 			let pattern: RegExp | undefined;
-			if (!params.literal) {
+			let effectiveLiteral = policy.grepLiteralOnly || params.literal === true;
+			if (!effectiveLiteral) {
 				try {
 					pattern = new RegExp(params.pattern, flags);
 				} catch {
-					pattern = undefined;
+					effectiveLiteral = true;
 				}
 			}
 			const needle = params.ignoreCase ? params.pattern.toLowerCase() : params.pattern;
@@ -404,7 +456,13 @@ export default function analyzerPathGate(pi: ExtensionAPI) {
 					break;
 				}
 				const rel = path.relative(resolved.real, file);
-				if (glob && !(glob.test(path.basename(file)) || glob.test(rel))) continue;
+				if (
+					glob &&
+					!(
+						wildcardMatches(glob, path.basename(file)) ||
+						wildcardMatches(glob, rel)
+					)
+				) continue;
 				let text: string | undefined;
 				try {
 					text = await readTextFile(file);
@@ -475,6 +533,8 @@ export default function analyzerPathGate(pi: ExtensionAPI) {
 				effective_context: context,
 				output_bytes: finalOutputBytes,
 				output_byte_limit: MAX_GREP_OUTPUT_BYTES,
+				effective_literal: effectiveLiteral,
+				literal_forced: policy.grepLiteralOnly,
 			});
 			return {
 				content: [{ type: "text", text: content }],
@@ -490,6 +550,8 @@ export default function analyzerPathGate(pi: ExtensionAPI) {
 					output_byte_limit: MAX_GREP_OUTPUT_BYTES,
 					match_limit_reached: matchLimitReached,
 					output_byte_limit_reached: outputByteLimitReached,
+					effective_literal: effectiveLiteral,
+					literal_forced: policy.grepLiteralOnly,
 				},
 			};
 		},

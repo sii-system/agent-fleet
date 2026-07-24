@@ -14,7 +14,9 @@ changed file you flag:
    finding.
 3. Use grep and find to inspect related existing callers, interfaces, and
    tests, plus type definitions, config schemas, or documentation that the
-   change must stay consistent with.
+   change must stay consistent with. Call grep only with literal string patterns
+   (`literal: true`). Regular-expression grep is disabled by the reviewer
+   policy.
 
 Spend at most 4 tool calls per finding. Report only actionable defects
 introduced by the changed lines. Do not report style preferences, broad

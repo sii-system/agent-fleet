@@ -8,10 +8,12 @@ the hosted or self-hosted runner.
 
 ## Scope
 
-The refinement is limited to the new pi reviewer, its workflow contracts, and
-its tests. The existing direct-LLM reviewer remains available for rollback.
+The refinement primarily changes the new pi reviewer, its workflow contracts,
+and its tests. The existing direct-LLM reviewer remains available for rollback.
 The Harbor analyzer path gate is reused rather than duplicating another
-filesystem policy implementation.
+filesystem policy implementation. That shared extension also gains bounded
+grep/glob inputs and a non-regular-expression wildcard matcher, so Harbor
+analyzer users receive the same input limits and `*`/`?` glob semantics.
 
 ## Runtime Design
 
@@ -26,6 +28,14 @@ its allowlist contains only the repository root. The extension resolves real
 paths before access, so absolute paths, parent traversal, and symlinks cannot
 escape the checkout. Tool discovery, skills, prompt templates, themes,
 context files, and implicit project approval remain disabled.
+
+The PR reviewer sets a reviewer-only path-gate policy that treats every grep
+pattern as literal text even if the model requests regular-expression matching.
+Harbor analyzer callers that do not set this policy retain their existing regex
+grep behavior. Grep patterns are limited to 1024 characters, while grep and
+find glob patterns are limited to 256 characters. Glob matching still treats
+only `*` and `?` as wildcards, but no longer compiles model-supplied globs as
+JavaScript regular expressions.
 
 The subprocess environment remains minimal. It contains the model API key,
 network and certificate settings, the isolated pi runtime directory, and the
@@ -62,6 +72,10 @@ Regression tests are written before implementation and must demonstrate:
 - pi runs with the repository root as its working directory;
 - built-in tools are disabled and only path-gated read-only tools are enabled;
 - the path-gate extension and repository allowlist reach the subprocess;
+- reviewer grep is forced to literal matching while Harbor regex grep remains
+  available when the reviewer policy is absent;
+- grep and glob inputs are bounded and glob matching does not compile a regular
+  expression;
 - custom endpoint prefixes are preserved without an injected `/v1`;
 - compact fenced JSON is accepted while trailing content is rejected;
 - both workflow contracts still use trusted-base checkout and separate review

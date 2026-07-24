@@ -328,6 +328,14 @@ class LlmPrReviewWorkflowTest(unittest.TestCase):
             "related existing callers, interfaces, and tests",
             prompt,
         )
+        self.assertIn(
+            "grep only with literal string patterns",
+            prompt,
+        )
+        self.assertIn(
+            "Regular-expression grep is disabled",
+            prompt,
+        )
         self.assertIn("Spend at most 4 tool calls per finding", self.prompt)
         self.assertIn("added RIGHT-side line", self.prompt)
 

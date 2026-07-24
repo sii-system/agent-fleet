@@ -43,6 +43,7 @@ prompt="${{@: -1}}"
   printf 'pi_dir=%s\\n' "${{PI_CODING_AGENT_DIR:-}}"
   printf 'cwd=%s\\n' "$PWD"
   printf 'allowed_paths=%s\\n' "${{HARBOR_ANALYZER_ALLOWED_PATHS_JSON:-}}"
+  printf 'grep_literal_only=%s\\n' "${{HARBOR_ANALYZER_GREP_LITERAL_ONLY:-}}"
   printf 'offline=%s\\n' "${{PI_OFFLINE:-}}"
   printf 'token=%s\\n' "${{AGENT_FLEET_API_KEY:-}}"
   printf 'prompt=<%s>\\n' "$prompt"
@@ -381,6 +382,23 @@ class PiClientTest(unittest.TestCase):
         expected = json.dumps([str(self.repo_dir.resolve())])
         self.assertIn(f"allowed_paths={expected}", captured)
 
+    def test_forces_path_gate_grep_to_literal_matching(self) -> None:
+        _stub_pi_script(self.bin_dir, stdout=_make_findings_response())
+        client = self._make_client()
+
+        client.review("prompt", "diff")
+
+        captured = self.capture.read_text(encoding="utf-8")
+        self.assertIn("grep_literal_only=1", captured)
+
+    def test_path_gate_uses_non_regex_wildcard_matching(self) -> None:
+        source = pi_review.PI_PATH_GATE_EXTENSION.read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("function wildcardMatches(", source)
+        self.assertNotIn("simpleGlobToRegExp", source)
+
     def test_missing_repository_root_fails_before_launch(self) -> None:
         missing_root = self.root / "missing-repository"
 
@@ -539,6 +557,23 @@ class PiRuntimeIntegrationTest(unittest.TestCase):
             )
 
         model = "integration-model"
+
+        def tool_call(
+            index: int,
+            tool_call_id: str,
+            name: str,
+            arguments: dict[str, object],
+        ) -> dict:
+            return {
+                "index": index,
+                "id": tool_call_id,
+                "type": "function",
+                "function": {
+                    "name": name,
+                    "arguments": json.dumps(arguments),
+                },
+            }
+
         tool_chunks = [
             {
                 "id": "chatcmpl-integration",
@@ -551,45 +586,83 @@ class PiRuntimeIntegrationTest(unittest.TestCase):
                         "delta": {
                             "role": "assistant",
                             "tool_calls": [
-                                {
-                                    "index": 0,
-                                    "id": "call-inside",
-                                    "type": "function",
-                                    "function": {
-                                        "name": "read",
-                                        "arguments": json.dumps(
-                                            {"path": "inside.txt"}
-                                        ),
+                                tool_call(
+                                    0,
+                                    "call-inside",
+                                    "read",
+                                    {"path": "inside.txt"},
+                                ),
+                                tool_call(
+                                    1,
+                                    "call-outside",
+                                    "read",
+                                    {"path": "/etc/hosts"},
+                                ),
+                                tool_call(
+                                    2,
+                                    "call-grep",
+                                    "grep",
+                                    {
+                                        "pattern": "needle",
+                                        "path": "large.txt",
+                                        "literal": True,
+                                        "context": 1_000_000,
+                                        "limit": 1_000_000,
                                     },
-                                },
-                                {
-                                    "index": 1,
-                                    "id": "call-outside",
-                                    "type": "function",
-                                    "function": {
-                                        "name": "read",
-                                        "arguments": json.dumps(
-                                            {"path": "/etc/hosts"}
-                                        ),
+                                ),
+                                tool_call(
+                                    3,
+                                    "call-literal-policy",
+                                    "grep",
+                                    {
+                                        "pattern": "-+$",
+                                        "path": "separator.txt",
+                                        "literal": False,
                                     },
-                                },
-                                {
-                                    "index": 2,
-                                    "id": "call-grep",
-                                    "type": "function",
-                                    "function": {
-                                        "name": "grep",
-                                        "arguments": json.dumps(
-                                            {
-                                                "pattern": "needle",
-                                                "path": "large.txt",
-                                                "literal": True,
-                                                "context": 1_000_000,
-                                                "limit": 1_000_000,
-                                            }
+                                ),
+                                tool_call(
+                                    4,
+                                    "call-wildcard",
+                                    "grep",
+                                    {
+                                        "pattern": "wildcard marker",
+                                        "path": ".",
+                                        "glob": (
+                                            "review-*separator?.txt"
                                         ),
+                                        "literal": False,
                                     },
-                                },
+                                ),
+                                tool_call(
+                                    5,
+                                    "call-pattern-too-long",
+                                    "grep",
+                                    {
+                                        "pattern": "p" * 1025,
+                                        "path": ".",
+                                        "literal": True,
+                                    },
+                                ),
+                                tool_call(
+                                    6,
+                                    "call-glob-too-long",
+                                    "grep",
+                                    {
+                                        "pattern": "marker",
+                                        "path": ".",
+                                        "glob": "g" * 257,
+                                        "literal": True,
+                                    },
+                                ),
+                                tool_call(
+                                    7,
+                                    "call-find-pattern-too-long",
+                                    "find",
+                                    {
+                                        "pattern": "f" * 257,
+                                        "path": ".",
+                                    },
+                                ),
                             ],
                         },
                         "finish_reason": None,
@@ -701,6 +774,14 @@ class PiRuntimeIntegrationTest(unittest.TestCase):
                     ),
                     encoding="utf-8",
                 )
+                (repository_root / "separator.txt").write_text(
+                    "----------------\n",
+                    encoding="utf-8",
+                )
+                (repository_root / "review-separator1.txt").write_text(
+                    "wildcard marker\n",
+                    encoding="utf-8",
+                )
                 port = server.server_address[1]
                 client = pi_review.PiClient(
                     pi_binary=pi_binary,
@@ -757,6 +838,15 @@ class PiRuntimeIntegrationTest(unittest.TestCase):
         )
         self.assertEqual(requests[0]["body"]["model"], model)
         self.assertTrue(requests[0]["body"]["stream"])
+        grep_tool = next(
+            tool["function"]
+            for tool in requests[0]["body"]["tools"]
+            if tool["function"]["name"] == "grep"
+        )
+        self.assertIn(
+            "policy may force literal string matching",
+            grep_tool["description"],
+        )
         tool_results = {
             message["tool_call_id"]: message["content"]
             for message in requests[1]["body"]["messages"]
@@ -767,6 +857,26 @@ class PiRuntimeIntegrationTest(unittest.TestCase):
             tool_results["call-inside"],
         )
         self.assertIn("Access denied", tool_results["call-outside"])
+        self.assertEqual(
+            tool_results["call-literal-policy"],
+            "No matches",
+        )
+        self.assertIn(
+            "wildcard marker",
+            tool_results["call-wildcard"],
+        )
+        self.assertIn(
+            "grep pattern exceeds 1024 characters",
+            tool_results["call-pattern-too-long"],
+        )
+        self.assertIn(
+            "grep glob exceeds 256 characters",
+            tool_results["call-glob-too-long"],
+        )
+        self.assertIn(
+            "find pattern exceeds 256 characters",
+            tool_results["call-find-pattern-too-long"],
+        )
         grep_result = tool_results["call-grep"]
         self.assertLessEqual(len(grep_result.encode("utf-8")), 50 * 1024)
         self.assertIn(
@@ -786,6 +896,18 @@ class PiRuntimeIntegrationTest(unittest.TestCase):
             for event in stream_events
             if event["type"] == "tool_execution_end"
             and event["toolCallId"] == "call-grep"
+        )
+        literal_event = next(
+            event
+            for event in stream_events
+            if event["type"] == "tool_execution_end"
+            and event["toolCallId"] == "call-literal-policy"
+        )
+        self.assertTrue(
+            literal_event["result"]["details"]["effective_literal"]
+        )
+        self.assertTrue(
+            literal_event["result"]["details"]["literal_forced"]
         )
         self.assertEqual(
             grep_event["result"]["details"]["effective_limit"],

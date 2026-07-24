@@ -34,6 +34,7 @@ PI_PATH_GATE_EXTENSION = (
     / "analyzer_path_gate.ts"
 )
 PI_ALLOWED_PATHS_ENV = "HARBOR_ANALYZER_ALLOWED_PATHS_JSON"
+PI_GREP_LITERAL_ONLY_ENV = "HARBOR_ANALYZER_GREP_LITERAL_ONLY"
 sys.path.insert(0, str(_PROJECT_ROOT))
 from scripts.pi_prompt import (  # noqa: E402
     PROVIDER,
@@ -227,6 +228,7 @@ class PiClient:
             environment[PI_ALLOWED_PATHS_ENV] = json.dumps(
                 [str(self.repository_root)]
             )
+            environment[PI_GREP_LITERAL_ONLY_ENV] = "1"
 
             command = [
                 self.pi_binary,
