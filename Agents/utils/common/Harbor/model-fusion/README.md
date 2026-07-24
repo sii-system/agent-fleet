@@ -21,6 +21,14 @@ SPAN_FORCE_MODE=mid-turn-fusion \
 bash Agents/utils/common/Harbor/model-fusion/run_one_tb21_task.sh
 ```
 
+The wrapper defaults to `DATASET_NAME=auto` because both the task contract and
+the Harbor run use `DATASET_PATH`. Its generated `RUN_ID` includes the task,
+second-level timestamp, and process ID. If a caller deliberately reuses a
+`RUN_ID` or `OUTPUT_PATH`, the wrapper regenerates the single-task list and
+recreates only that task's model-fusion jobs directory before running.
+`MAIN_MODEL` also replaces the shared Harbor-derived Anthropic model aliases;
+aliases explicitly supplied by the caller remain unchanged.
+
 This wrapper has exactly one execution path: Router prepare, the Claude Code
 in-session gate/panels/`span-outer`, and Router finalize. Set
 `FUSION_ROUTER_DIR` when the sibling checkout is not at the default location.
@@ -37,7 +45,7 @@ hook-message contract (`cabf5ab`) and file-backed Claude prompt transport
 (`3ad61d4`).
 
 The integration is isolated from normal Harbor runs. The shared `env.sh`,
-`harboropik.sh`, worker loop, Claude `sitecustomize.py`, skills, and tests are
+`harboropik.sh`, worker loop, Claude `sitecustomize.py`, and skills are
 unchanged. `run_one_tb21_task.sh` explicitly selects two local wrappers:
 
 - `harboropik.sh` proxies only this run's Opik CLI call, adding the fusion agent

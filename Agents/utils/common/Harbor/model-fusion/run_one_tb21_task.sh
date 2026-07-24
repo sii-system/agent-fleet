@@ -6,9 +6,19 @@ HARBOR_DIR="${HARBOR_DIR:-$(cd "$MODEL_FUSION_DIR/.." && pwd)}"
 REPO_ROOT="$(cd "$MODEL_FUSION_DIR/../../../../.." && pwd)"
 _USER_SUBAGENT_MODEL_SET="${TB_CLAUDE_CODE_SUBAGENT_MODEL+x}"
 _USER_SUBAGENT_MODEL_VALUE="${TB_CLAUDE_CODE_SUBAGENT_MODEL-}"
+_USER_ANTHROPIC_MODEL_SET="${TB_ANTHROPIC_MODEL+x}"
+_USER_ANTHROPIC_MODEL_VALUE="${TB_ANTHROPIC_MODEL-}"
+_USER_ANTHROPIC_OPUS_MODEL_SET="${TB_ANTHROPIC_DEFAULT_OPUS_MODEL+x}"
+_USER_ANTHROPIC_OPUS_MODEL_VALUE="${TB_ANTHROPIC_DEFAULT_OPUS_MODEL-}"
+_USER_ANTHROPIC_SONNET_MODEL_SET="${TB_ANTHROPIC_DEFAULT_SONNET_MODEL+x}"
+_USER_ANTHROPIC_SONNET_MODEL_VALUE="${TB_ANTHROPIC_DEFAULT_SONNET_MODEL-}"
+_USER_ANTHROPIC_HAIKU_MODEL_SET="${TB_ANTHROPIC_DEFAULT_HAIKU_MODEL+x}"
+_USER_ANTHROPIC_HAIKU_MODEL_VALUE="${TB_ANTHROPIC_DEFAULT_HAIKU_MODEL-}"
 
 TASK_ID="${TASK_ID:-fix-git}"
-RUN_ID="${RUN_ID:-$(date +%Y-%m-%d-%H%M)-tb21-mid-turn-fusion}"
+task_slug="$(printf '%s' "$TASK_ID" | tr -c '[:alnum:]_.-' '_')"
+task_slug="${task_slug:-task}"
+RUN_ID="${RUN_ID:-$(date +%Y-%m-%d-%H%M%S)-tb21-mid-turn-fusion-${task_slug}-$$}"
 OUTPUT_ROOT="${OUTPUT_ROOT:-/tmp/harbor-mid-turn-runs}"
 OUTPUT_PATH="${OUTPUT_PATH:-${OUTPUT_ROOT}/${RUN_ID}}"
 FUSION_ROUTER_DIR="${FUSION_ROUTER_DIR:-$(cd "$REPO_ROOT/.." && pwd)/sii-fusion-router}"
@@ -35,7 +45,7 @@ fi
 : "${DATASET_PATH:?set DATASET_PATH to a Terminal-Bench task directory root}"
 
 export RUN_ID OUTPUT_ROOT OUTPUT_PATH FUSION_ROUTER_DIR
-export DATASET_NAME="${DATASET_NAME:-terminalbench21}"
+export DATASET_NAME="${DATASET_NAME:-auto}"
 export DATASET_PATH
 export TASK_SOURCE_FILE="${TASK_SOURCE_FILE:-${OUTPUT_PATH}/mid-turn-task-source.txt}"
 export TOTAL_WORKERS="${TOTAL_WORKERS:-1}"
@@ -83,11 +93,37 @@ SPAN_TASK_SUBAGENT_AGENTS_FILE="${SPAN_TASK_SUBAGENT_AGENTS_FILE:-${SPAN_ARTIFAC
 
 export MODEL="$MAIN_MODEL"
 export TB_MODEL="$MAIN_MODEL"
-export TB_ANTHROPIC_MODEL="${TB_ANTHROPIC_MODEL:-$MAIN_MODEL}"
-export TB_ANTHROPIC_DEFAULT_OPUS_MODEL="${TB_ANTHROPIC_DEFAULT_OPUS_MODEL:-$MAIN_MODEL}"
-export TB_ANTHROPIC_DEFAULT_SONNET_MODEL="${TB_ANTHROPIC_DEFAULT_SONNET_MODEL:-$MAIN_MODEL}"
-export TB_ANTHROPIC_DEFAULT_HAIKU_MODEL="${TB_ANTHROPIC_DEFAULT_HAIKU_MODEL:-$MAIN_MODEL}"
+if [[ "$_USER_ANTHROPIC_MODEL_SET" == "x" ]]; then
+  TB_ANTHROPIC_MODEL="$_USER_ANTHROPIC_MODEL_VALUE"
+else
+  TB_ANTHROPIC_MODEL="$MAIN_MODEL"
+fi
+if [[ "$_USER_ANTHROPIC_OPUS_MODEL_SET" == "x" ]]; then
+  TB_ANTHROPIC_DEFAULT_OPUS_MODEL="$_USER_ANTHROPIC_OPUS_MODEL_VALUE"
+else
+  TB_ANTHROPIC_DEFAULT_OPUS_MODEL="$MAIN_MODEL"
+fi
+if [[ "$_USER_ANTHROPIC_SONNET_MODEL_SET" == "x" ]]; then
+  TB_ANTHROPIC_DEFAULT_SONNET_MODEL="$_USER_ANTHROPIC_SONNET_MODEL_VALUE"
+else
+  TB_ANTHROPIC_DEFAULT_SONNET_MODEL="$MAIN_MODEL"
+fi
+if [[ "$_USER_ANTHROPIC_HAIKU_MODEL_SET" == "x" ]]; then
+  TB_ANTHROPIC_DEFAULT_HAIKU_MODEL="$_USER_ANTHROPIC_HAIKU_MODEL_VALUE"
+else
+  TB_ANTHROPIC_DEFAULT_HAIKU_MODEL="$MAIN_MODEL"
+fi
+export TB_ANTHROPIC_MODEL
+export TB_ANTHROPIC_DEFAULT_OPUS_MODEL
+export TB_ANTHROPIC_DEFAULT_SONNET_MODEL
+export TB_ANTHROPIC_DEFAULT_HAIKU_MODEL
 export TB_CLAUDE_CODE_SUBAGENT_MODEL
+
+# Keep this wrapper's disposable job state out of the shared Harbor jobs root.
+# A reused OUTPUT_PATH may contain results from an older task; scoping and
+# recreating this directory prevents finalize from selecting those results.
+JOBS_ROOT="${JOBS_ROOT}/model-fusion-${task_slug}"
+export JOBS_ROOT
 
 export SPAN_FORCE_MODE=mid-turn-fusion
 export SPAN_FORCE_FUSION=1
@@ -189,14 +225,16 @@ if [[ "$MID_TURN_PREPARE_ONLY" == "1" ]]; then
   exit 0
 fi
 
+export RESET_RUN=1
 harbor_init_run_dirs
 harbor_reset_run_state
+rm -rf -- "$JOBS_ROOT"
+harbor_init_run_dirs
 harbor_ensure_dataset
 harbor_prepare_task_file
 harbor_prepare_or_select_wheels
 bash "$HARBOR_DIR/run_harbor_worker.sh" 1
 
-task_slug="$(printf '%s' "$TASK_ID" | tr -c '[:alnum:]_.-' '_')"
 result_json="$JOBS_ROOT/worker-1/1-${task_slug}/result.json"
 if [[ ! -f "$result_json" ]]; then
   result_json=""
