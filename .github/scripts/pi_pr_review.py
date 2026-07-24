@@ -10,6 +10,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -47,6 +48,11 @@ from scripts.pi_prompt import (  # noqa: E402
 
 PI_REVIEW_ID = "pi-pr-review"
 PI_TIMEOUT_SECONDS = 900  # 15 min — agent tool calls take longer than raw API
+WORKFLOW_TIMEOUT_SECONDS = 20 * 60
+WORKFLOW_RESERVE_SECONDS = 5 * 60
+PI_REVIEW_BUDGET_SECONDS = (
+    WORKFLOW_TIMEOUT_SECONDS - WORKFLOW_RESERVE_SECONDS
+)
 
 
 class PiReviewError(RuntimeError):
@@ -192,7 +198,18 @@ class PiClient:
         self.provider = provider
         self.timeout = timeout
 
-    def review(self, system_prompt: str, diff_chunk: str) -> dict[str, Any]:
+    def review(
+        self,
+        system_prompt: str,
+        diff_chunk: str,
+        *,
+        timeout: float | None = None,
+    ) -> dict[str, Any]:
+        effective_timeout = (
+            self.timeout
+            if timeout is None
+            else min(timeout, self.timeout)
+        )
         with tempfile.TemporaryDirectory(prefix="pi-pr-review-") as tmp:
             root = Path(tmp)
             runtime_dir = root / "pi-agent"
@@ -240,12 +257,12 @@ class PiClient:
                     text=True,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
-                    timeout=self.timeout,
+                    timeout=effective_timeout,
                     check=False,
                 )
             except subprocess.TimeoutExpired as exc:
                 raise PiReviewError(
-                    f"pi timed out after {self.timeout}s"
+                    f"pi timed out after {effective_timeout:g}s"
                 ) from exc
             except OSError as exc:
                 raise PiReviewError(f"could not launch pi: {exc}") from exc
@@ -270,6 +287,7 @@ def run_review(
     prompt: str,
     review_id: str = PI_REVIEW_ID,
 ) -> str:
+    deadline = time.monotonic() + PI_REVIEW_BUDGET_SECONDS
     pull = github.get_pull(pull_number)
 
     head_sha = pull["head"]["sha"]
@@ -284,9 +302,22 @@ def run_review(
     findings: list[_review.Finding] = []
     rejected = 0
     incomplete_chunks = 0
-    for chunk in chunks:
+    for index, chunk in enumerate(chunks):
+        remaining_chunks = len(chunks) - index
+        remaining_seconds = deadline - time.monotonic()
+        if remaining_seconds <= 0:
+            raise PiReviewError(
+                "pi review deadline exhausted before chunk "
+                f"{index + 1} of {len(chunks)}"
+            )
+        chunk_timeout = min(
+            float(pi_client.timeout),
+            remaining_seconds / remaining_chunks,
+        )
         payload = pi_client.review(
-            prompt, _review.build_model_input(pull, chunk)
+            prompt,
+            _review.build_model_input(pull, chunk),
+            timeout=chunk_timeout,
         )
         if payload.get("incomplete"):
             incomplete_chunks += 1

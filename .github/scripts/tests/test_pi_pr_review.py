@@ -471,6 +471,33 @@ class PiClientTest(unittest.TestCase):
                 client.review("prompt", "diff")
             self.assertIn("timed out", str(ctx.exception))
 
+    def test_review_uses_effective_timeout_for_subprocess(self) -> None:
+        client = self._make_client(timeout=30)
+        completed = subprocess.CompletedProcess(
+            args=["pi"],
+            returncode=0,
+            stdout=_make_findings_response(),
+            stderr="",
+        )
+
+        with mock.patch(
+            "subprocess.run", return_value=completed
+        ) as run_mock:
+            client.review("prompt", "diff", timeout=12.5)
+
+        self.assertEqual(run_mock.call_args.kwargs["timeout"], 12.5)
+
+    def test_timeout_diagnostic_reports_effective_timeout(self) -> None:
+        client = self._make_client(timeout=30)
+        with mock.patch("subprocess.run") as run_mock:
+            run_mock.side_effect = subprocess.TimeoutExpired(
+                ["pi"], 12.5
+            )
+            with self.assertRaises(pi_review.PiReviewError) as ctx:
+                client.review("prompt", "diff", timeout=12.5)
+
+        self.assertEqual(str(ctx.exception), "pi timed out after 12.5s")
+
     def test_pi_not_found_raises(self) -> None:
         client = self._make_client(pi_binary="/nonexistent/pi-binary")
 
@@ -810,7 +837,12 @@ class FakeGitHub:
 
 
 class FakePiClient:
-    def __init__(self, findings: list[dict] | None = None) -> None:
+    def __init__(
+        self,
+        findings: list[dict] | None = None,
+        *,
+        timeout: float = pi_review.PI_TIMEOUT_SECONDS,
+    ) -> None:
         if findings is None:
             findings = [
                 {
@@ -824,9 +856,18 @@ class FakePiClient:
             ]
         self.findings = findings
         self.inputs: list[str] = []
+        self.timeout = timeout
+        self.timeouts: list[float] = []
 
-    def review(self, _prompt: str, chunk: str) -> dict:
+    def review(
+        self,
+        _prompt: str,
+        chunk: str,
+        *,
+        timeout: float,
+    ) -> dict:
         self.inputs.append(chunk)
+        self.timeouts.append(timeout)
         return {"findings": list(self.findings)}
 
 
@@ -896,6 +937,7 @@ class OrchestrationTest(unittest.TestCase):
     def test_incomplete_chunk_is_reported(self) -> None:
         github = FakeGitHub()
         pi_client = mock.Mock()
+        pi_client.timeout = pi_review.PI_TIMEOUT_SECONDS
         pi_client.review.return_value = {
             "findings": [],
             "incomplete": True,
@@ -920,6 +962,77 @@ class OrchestrationTest(unittest.TestCase):
 
         body = github.created[0][2]
         self.assertIn("<!-- custom-review-id:head-1 -->", body)
+
+    def test_four_chunks_share_one_recalculated_review_budget(self) -> None:
+        github = FakeGitHub()
+        pi_client = FakePiClient([])
+        chunks = ["chunk-1", "chunk-2", "chunk-3", "chunk-4"]
+
+        with (
+            mock.patch.object(
+                pi_review._review,
+                "build_chunks",
+                return_value=(chunks, False),
+            ),
+            mock.patch.object(
+                pi_review.time,
+                "monotonic",
+                side_effect=[100.0, 100.0, 200.0, 400.0, 700.0],
+            ),
+        ):
+            result = pi_review.run_review(
+                github, pi_client, 7, "prompt"
+            )
+
+        self.assertEqual(result, "published")
+        expected = [225.0, 800.0 / 3, 300.0, 300.0]
+        self.assertEqual(len(pi_client.timeouts), 4)
+        for actual, wanted in zip(
+            pi_client.timeouts, expected, strict=True
+        ):
+            self.assertAlmostEqual(actual, wanted)
+        self.assertTrue(
+            all(
+                timeout < pi_review.PI_TIMEOUT_SECONDS
+                for timeout in pi_client.timeouts
+            )
+        )
+
+    def test_chunk_timeout_is_capped_by_client_maximum(self) -> None:
+        github = FakeGitHub()
+        pi_client = FakePiClient([], timeout=30)
+
+        with mock.patch.object(
+            pi_review.time,
+            "monotonic",
+            side_effect=[0.0, 0.0],
+        ):
+            pi_review.run_review(github, pi_client, 7, "prompt")
+
+        self.assertEqual(pi_client.timeouts, [30])
+
+    def test_exhausted_review_budget_fails_before_launch(self) -> None:
+        github = FakeGitHub()
+        pi_client = FakePiClient([])
+
+        with (
+            mock.patch.object(
+                pi_review.time,
+                "monotonic",
+                side_effect=[
+                    0.0,
+                    float(pi_review.PI_REVIEW_BUDGET_SECONDS),
+                ],
+            ),
+            self.assertRaises(pi_review.PiReviewError) as ctx,
+        ):
+            pi_review.run_review(github, pi_client, 7, "prompt")
+
+        self.assertEqual(
+            str(ctx.exception),
+            "pi review deadline exhausted before chunk 1 of 1",
+        )
+        self.assertEqual(pi_client.inputs, [])
 
 
 # -- main entrypoint tests -------------------------------------------------
@@ -1022,6 +1135,14 @@ class PiWorkflowContractTest(unittest.TestCase):
             pi_review.PI_TIMEOUT_SECONDS, 600,
             "agent review should allow more time than direct API calls",
         )
+
+    def test_review_budget_reserves_time_within_workflow_timeout(self) -> None:
+        self.assertEqual(
+            pi_review.PI_REVIEW_BUDGET_SECONDS,
+            pi_review.WORKFLOW_TIMEOUT_SECONDS
+            - pi_review.WORKFLOW_RESERVE_SECONDS,
+        )
+        self.assertGreater(pi_review.WORKFLOW_RESERVE_SECONDS, 0)
 
 
 if __name__ == "__main__":
