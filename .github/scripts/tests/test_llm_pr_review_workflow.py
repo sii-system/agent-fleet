@@ -49,7 +49,6 @@ class LlmPrReviewWorkflowReuseTest(unittest.TestCase):
             "group: llm-pr-review-${{ github.event.pull_request.number }}",
             """runner_json: '["ubuntu-latest"]'""",
             "environment: llm-pr-review",
-            "api_key_secret: LLM_REVIEW_API_KEY",
             "base_url_variable: LLM_REVIEW_BASE_URL",
             "model_variable: LLM_REVIEW_MODEL",
             "review_id: llm-pr-review",
@@ -65,7 +64,6 @@ class LlmPrReviewWorkflowReuseTest(unittest.TestCase):
             "${{ github.event.pull_request.number }}",
             """runner_json: '["self-hosted", "Linux", "X64"]'""",
             "environment: self-hosted-env",
-            "api_key_secret: LLM_API_KEY",
             "base_url_variable: LLM_BASE_URL",
             "model_variable: LLM_MODEL",
             "review_id: self-hosted-llm-pr-review",
@@ -82,7 +80,8 @@ class LlmPrReviewWorkflowReuseTest(unittest.TestCase):
             "timeout-minutes: 15",
             "pull_request.base.sha",
             "persist-credentials: false",
-            "LLM_REVIEW_API_KEY: ${{ secrets[inputs.api_key_secret] }}",
+            "LLM_REVIEW_API_KEY: "
+            "${{ secrets.LLM_API_KEY || secrets.LLM_REVIEW_API_KEY }}",
             "LLM_REVIEW_BASE_URL: ${{ vars[inputs.base_url_variable] }}",
             "LLM_REVIEW_MODEL: ${{ vars[inputs.model_variable] }}",
             "LLM_REVIEW_ID: ${{ inputs.review_id }}",
@@ -97,6 +96,14 @@ class LlmPrReviewWorkflowReuseTest(unittest.TestCase):
         )
         self.assertEqual(self.reusable.count("actions/checkout@"), 1)
         self.assertEqual(self.reusable.count("llm_pr_review.py"), 1)
+
+    def test_environment_secrets_are_referenced_explicitly(self):
+        self.assertIn("secrets.LLM_API_KEY", self.reusable)
+        self.assertIn("secrets.LLM_REVIEW_API_KEY", self.reusable)
+        self.assertNotIn("secrets[", self.reusable)
+        self.assertNotIn("api_key_secret", self.hosted)
+        self.assertNotIn("api_key_secret", self.self_hosted)
+        self.assertNotIn("api_key_secret", self.reusable)
 
 
 if __name__ == "__main__":

@@ -20,7 +20,6 @@ jobs:
     with:
       runner_json: '["ubuntu-latest"]'
       environment: llm-pr-review
-      api_key_secret: LLM_REVIEW_API_KEY
       base_url_variable: LLM_REVIEW_BASE_URL
       model_variable: LLM_REVIEW_MODEL
       review_id: llm-pr-review
