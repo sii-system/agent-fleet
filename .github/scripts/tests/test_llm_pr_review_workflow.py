@@ -74,7 +74,7 @@ class LlmPrReviewWorkflowReuseTest(unittest.TestCase):
             '"on":\n  workflow_call:',
             "runs-on: ${{ fromJSON(inputs.runner_json) }}",
             "environment: ${{ inputs.environment }}",
-            "timeout-minutes: 15",
+            "timeout-minutes: 20",
             "pull_request.base.sha",
             "persist-credentials: false",
             "LLM_REVIEW_API_KEY: ${{ secrets.LLM_REVIEW_API_KEY }}",

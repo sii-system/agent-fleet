@@ -234,7 +234,7 @@ class ApiClientTest(unittest.TestCase):
             "https://example.invalid/v3/chat/completions",
         )
         self.assertEqual(request.get_header("Authorization"), "Bearer secret-value")
-        self.assertEqual(opener.call_args.kwargs["timeout"], 90)
+        self.assertEqual(opener.call_args.kwargs["timeout"], 600)
         body = json.loads(request.data)
         self.assertEqual(body["model"], "test-model")
         self.assertEqual(body["temperature"], 0.1)
