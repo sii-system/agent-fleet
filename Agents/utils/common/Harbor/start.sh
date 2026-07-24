@@ -322,36 +322,29 @@ harbor_analyzer_shutdown_timeout() {
         "$HARBOR_ANALYZER_OUTPUT_DIR/.analyzer_state.json" \
         "$analyzer_timeout" \
         "$max_concurrency" <<'PY'
-import math
 import sys
 import time
 from pathlib import Path
 
 scripts_dir = Path(sys.argv[1])
 sys.path.insert(0, str(scripts_dir))
-from analyzer_subagent import _load_follow_state, _pending_handovers  # noqa: E402
+from analyzer_subagent import analyzer_drain_budget_seconds  # noqa: E402
 
 latest_path = Path(sys.argv[2])
 handoff_dir = Path(sys.argv[3])
 state_path = Path(sys.argv[4])
 timeout = int(sys.argv[5])
 max_concurrency = max(1, int(sys.argv[6]))
-processed, failed = _load_follow_state(state_path)
-pending = _pending_handovers(
+print(analyzer_drain_budget_seconds(
     latest_path=latest_path,
     handoff_dir=handoff_dir,
-    processed=processed,
-    failed=failed,
+    state_path=state_path,
+    timeout_seconds=timeout,
+    max_concurrency=max_concurrency,
     now=time.time(),
-)
-waves = 0
-for handover, _path, _key in pending:
-    tasks = handover.get("tasks")
-    if isinstance(tasks, list) and tasks:
-        waves += math.ceil(len(tasks) / max_concurrency)
-print(max(timeout, waves * timeout))
+))
 PY
-    )" || derived_timeout="$analyzer_timeout"
+	    )" || derived_timeout="$analyzer_timeout"
   fi
   [[ "$derived_timeout" =~ ^[0-9]+$ ]] || derived_timeout="$analyzer_timeout"
   (( configured_timeout > derived_timeout )) && printf '%s\n' "$configured_timeout" || printf '%s\n' "$derived_timeout"
@@ -363,7 +356,29 @@ harbor_start_detached_analyzer_supervisor_if_enabled() {
   local analyzer_pid
   analyzer_pid="$(cat "$HARBOR_ANALYZER_PID_FILE" 2>/dev/null || true)"
   [[ "$analyzer_pid" =~ ^[0-9]+$ ]] || return 0
-  rm -f "$HARBOR_ANALYZER_SUPERVISOR_PID_FILE"
+  kill -0 "$analyzer_pid" >/dev/null 2>&1 || return 0
+  if ! harbor_analyzer_pid_matches_run "$analyzer_pid"; then
+    echo "[ERROR] refusing to supervise unrelated process from $HARBOR_ANALYZER_PID_FILE: pid=$analyzer_pid" >&2
+    return 1
+  fi
+  (
+  flock 9
+  if [[ -f "$HARBOR_ANALYZER_SUPERVISOR_PID_FILE" ]]; then
+    local existing_pid
+    existing_pid="$(cat "$HARBOR_ANALYZER_SUPERVISOR_PID_FILE" 2>/dev/null || true)"
+    if [[ "$existing_pid" =~ ^[0-9]+$ ]] && kill -0 "$existing_pid" >/dev/null 2>&1; then
+      if harbor_analyzer_supervisor_pid_matches_run "$existing_pid" "$analyzer_pid"; then
+        exit 0
+      fi
+      if ! harbor_analyzer_supervisor_pid_matches_run "$existing_pid"; then
+        rm -f "$HARBOR_ANALYZER_SUPERVISOR_PID_FILE" "$HARBOR_ANALYZER_SUPERVISOR_ID_FILE"
+      else
+        harbor_stop_analyzer_supervisor || exit 1
+      fi
+    else
+      rm -f "$HARBOR_ANALYZER_SUPERVISOR_PID_FILE" "$HARBOR_ANALYZER_SUPERVISOR_ID_FILE"
+    fi
+  fi
   (
     trap '' HUP
     while harbor_monitor_is_running_for_run; do
@@ -372,7 +387,15 @@ harbor_start_detached_analyzer_supervisor_if_enabled() {
     harbor_wait_for_analyzer_drain "$analyzer_pid"
     harbor_stop_analyzer "$analyzer_pid" || true
   ) >>"$HARBOR_ANALYZER_LOG_FILE" 2>&1 &
-  printf '%s\n' "$!" >"$HARBOR_ANALYZER_SUPERVISOR_PID_FILE"
+  local supervisor_pid="$!"
+  if ! harbor_write_analyzer_supervisor_identity "$supervisor_pid" "$analyzer_pid"; then
+    kill "$supervisor_pid" >/dev/null 2>&1 || true
+    rm -f "$HARBOR_ANALYZER_SUPERVISOR_PID_FILE" "$HARBOR_ANALYZER_SUPERVISOR_ID_FILE"
+    echo "[ERROR] failed to record Harbor analyzer supervisor identity" >&2
+    exit 1
+  fi
+  printf '%s\n' "$supervisor_pid" >"$HARBOR_ANALYZER_SUPERVISOR_PID_FILE"
+  ) 9>"$RUNTIME_DIR/harbor-analyzer-supervisor.lock"
 }
 
 harbor_rollback_analyzer_startup() {

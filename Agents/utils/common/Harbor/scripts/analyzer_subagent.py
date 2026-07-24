@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import sys
 import time
@@ -12,7 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from harbor_analyzer.io import load_json, stable_hash, utc_now, write_json_atomic, write_text_atomic
-from harbor_analyzer.runner import AnalyzerConfig, run_handover
+from harbor_analyzer.runner import AnalyzerConfig, run_handover, task_analysis_timeout_budget_seconds
 
 
 FOLLOW_MAX_BACKOFF_SECONDS = 300.0
@@ -229,6 +230,32 @@ def _pending_handovers(
         unique.values(),
         key=lambda item: (str(item[0].get("generated_at") or ""), str(item[1])),
     )
+
+
+def analyzer_drain_budget_seconds(
+    *,
+    latest_path: Path,
+    handoff_dir: Path,
+    state_path: Path,
+    timeout_seconds: int,
+    max_concurrency: int,
+    now: float,
+) -> int:
+    processed, failed = _load_follow_state(state_path)
+    pending = _pending_handovers(
+        latest_path=latest_path,
+        handoff_dir=handoff_dir,
+        processed=processed,
+        failed=failed,
+        now=now,
+    )
+    task_budget = task_analysis_timeout_budget_seconds(timeout_seconds)
+    waves = 0
+    for handover, _path, _key in pending:
+        tasks = handover.get("tasks")
+        if isinstance(tasks, list) and tasks:
+            waves += math.ceil(len(tasks) / max(1, max_concurrency))
+    return max(timeout_seconds, waves * task_budget)
 
 
 def _run_one(handover: dict[str, Any], source_path: Path, config: AnalyzerConfig) -> int:

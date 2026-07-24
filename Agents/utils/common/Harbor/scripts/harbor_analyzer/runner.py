@@ -85,6 +85,16 @@ def _timeout_retry_seconds(timeout_seconds: int) -> int:
     return min(max(timeout_seconds * 2, timeout_seconds + 300), MAX_RETRY_TIMEOUT_SECONDS)
 
 
+def task_analysis_timeout_budget_seconds(timeout_seconds: int) -> int:
+    total = 0
+    attempt_timeout = timeout_seconds
+    for attempt in range(1, MAX_TASK_ATTEMPTS + 1):
+        total += attempt_timeout
+        if attempt < MAX_TASK_ATTEMPTS:
+            attempt_timeout = _timeout_retry_seconds(attempt_timeout)
+    return total
+
+
 def _is_retryable_block_reason(reason: str) -> bool:
     return reason in RETRYABLE_BLOCK_REASONS or any(
         reason.startswith(prefix) for prefix in RETRYABLE_BLOCK_REASON_PREFIXES

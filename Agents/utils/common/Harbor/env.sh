@@ -112,6 +112,7 @@ HARBOR_ANALYZER_MODE="${HARBOR_ANALYZER_MODE:-handover-follow}"
 HARBOR_ANALYZER_OUTPUT_DIR="${HARBOR_ANALYZER_OUTPUT_DIR:-${OUTPUT_PATH}/analyzer}"
 HARBOR_ANALYZER_PID_FILE="${HARBOR_ANALYZER_PID_FILE:-${RUNTIME_DIR}/harbor-analyzer.pid}"
 HARBOR_ANALYZER_SUPERVISOR_PID_FILE="${HARBOR_ANALYZER_SUPERVISOR_PID_FILE:-${RUNTIME_DIR}/harbor-analyzer-supervisor.pid}"
+HARBOR_ANALYZER_SUPERVISOR_ID_FILE="${HARBOR_ANALYZER_SUPERVISOR_ID_FILE:-${RUNTIME_DIR}/harbor-analyzer-supervisor.identity}"
 HARBOR_ANALYZER_LOG_FILE="${HARBOR_ANALYZER_LOG_FILE:-${RUNTIME_DIR}/harbor-analyzer.log}"
 HARBOR_ANALYZER_POLL_INTERVAL="${HARBOR_ANALYZER_POLL_INTERVAL:-5}"
 HARBOR_ANALYZER_TIMEOUT="${HARBOR_ANALYZER_TIMEOUT:-900}"
@@ -392,7 +393,7 @@ export SCRIPT_DIR REPO_ROOT AGENTS_DIR TASKS_DIR HARBOR_CLAUDE_CODE_DIR HARBOR_O
 export HARBOR_ROOT DATASET_PATH DATASET_NAME METRIC_MODE OUTPUT_ROOT OUTPUT_PATH TASK_SOURCE_FILE TASK_FILE QUEUE_DIR RUNTIME_DIR LAYOUT_FILE JOBS_ROOT
 export HARBOR_ONLINE_ANALYSIS HARBOR_ONLINE_ANALYSIS_POLL_INTERVAL HARBOR_ONLINE_ANALYSIS_DIR HARBOR_ONLINE_ANALYSIS_PID_FILE HARBOR_ONLINE_ANALYSIS_LOG_FILE HARBOR_EARLY_STOP HARBOR_ZELLIJ_CLOSE_ON_COMPLETE
 export HARBOR_MONITOR_ENABLED HARBOR_MONITOR_DIR HARBOR_MONITOR_PID_FILE HARBOR_MONITOR_LOG_FILE HARBOR_BENCHMARK_PID_FILE HARBOR_BENCHMARK_EXIT_FILE HARBOR_JOB_DIR_FILE HARBOR_MONITOR_RESTART_CMD HARBOR_MONITOR_STOP_CMD HARBOR_MONITOR_INTERVAL HARBOR_MONITOR_STARTUP_GRACE HARBOR_MONITOR_STALL_SECONDS HARBOR_MONITOR_MAX_RETRIES HARBOR_MONITOR_CONFIGURED_TIMEOUT
-export API_KEY BASE_URL HARBOR_ANALYZER_API_KEY HARBOR_ANALYZER_BASE_URL HARBOR_ANALYZER_MODEL HARBOR_ANALYZER_PI_PROVIDER HARBOR_ANALYZER_NO_PROXY HARBOR_ANALYZER_ENABLED HARBOR_ANALYZER_MODE HARBOR_ANALYZER_OUTPUT_DIR HARBOR_ANALYZER_PID_FILE HARBOR_ANALYZER_SUPERVISOR_PID_FILE HARBOR_ANALYZER_LOG_FILE HARBOR_ANALYZER_POLL_INTERVAL HARBOR_ANALYZER_TIMEOUT HARBOR_ANALYZER_MAX_CONCURRENCY TRACE_TO_OPIK OPIK_URL OPIK_URL_OVERRIDE OPIK_BASE OPIK_MODE OPIK_PROJECT_NAME OPIK_API_KEY OPIK_WORKSPACE CC_OPIK_DEBUG
+export API_KEY BASE_URL HARBOR_ANALYZER_API_KEY HARBOR_ANALYZER_BASE_URL HARBOR_ANALYZER_MODEL HARBOR_ANALYZER_PI_PROVIDER HARBOR_ANALYZER_NO_PROXY HARBOR_ANALYZER_ENABLED HARBOR_ANALYZER_MODE HARBOR_ANALYZER_OUTPUT_DIR HARBOR_ANALYZER_PID_FILE HARBOR_ANALYZER_SUPERVISOR_PID_FILE HARBOR_ANALYZER_SUPERVISOR_ID_FILE HARBOR_ANALYZER_LOG_FILE HARBOR_ANALYZER_POLL_INTERVAL HARBOR_ANALYZER_TIMEOUT HARBOR_ANALYZER_MAX_CONCURRENCY TRACE_TO_OPIK OPIK_URL OPIK_URL_OVERRIDE OPIK_BASE OPIK_MODE OPIK_PROJECT_NAME OPIK_API_KEY OPIK_WORKSPACE CC_OPIK_DEBUG
 export CLAUDE_CODE_VERSION CLAUDE_CODE_TGZ_BASENAME LOCAL_WHEEL_DIR LOCAL_WHEEL_PORT LOCAL_WHEEL_PORT_ATTEMPTS LOCAL_WHEEL_HOST_IP
 export TB_LOCAL_WHEEL_SERVER_URL TB_LOCAL_CLAUDE_TGZ_URL TB_REMOTE_WHEEL_SERVER_URLS EFFECTIVE_WHEEL_URL_FILE EFFECTIVE_CLAUDE_TGZ_URL_FILE LOCAL_DEPS_LOG_FILE HARBOR_RUNNER_PREPARE HARBOR_RUNNER_IMAGE_DIR HARBOR_RUNNER_HOST_DIR HARBOR_RUNNER_PYTHON_VERSION HARBOR_RUNNER_DIR HARBOR_OPIK_BIN HARBOR_CLI_BIN HARBOR_OPIK_PYTHON HARBOR_RUNNER_REQUIREMENTS HARBOR_RUNNER_PREPARE_STATUS_FILE HARBOR_RUNNER_PREPARE_LOG_FILE
 export TB_DATASET_GIT_URL TB_PATH TB_LIMIT TB_RUNS TB_AGENT TB_AGENT_IMPORT_PATH TB_MODEL INCLUDE_TASKS TB_DRY_RUN TB_MIN_TEST TB_MIN_TEST_INCLUDE_TASK
@@ -438,6 +439,58 @@ harbor_analyzer_pid_matches_run() {
     previous="$arg"
   done < "/proc/$pid/cmdline"
   [[ "$script_seen" == 1 && "$run_seen" == 1 && "$handover_seen" == 1 ]]
+}
+
+harbor_process_start_time() {
+  local pid="$1"
+  [[ "$pid" =~ ^[0-9]+$ && -r "/proc/$pid/stat" ]] || return 1
+  awk '{print $22}' "/proc/$pid/stat" 2>/dev/null
+}
+
+harbor_identity_file_value() {
+  local file="$1" key="$2" line_key line_value
+  [[ -f "$file" ]] || return 1
+  while IFS='=' read -r line_key line_value; do
+    if [[ "$line_key" == "$key" ]]; then
+      printf '%s\n' "$line_value"
+      return 0
+    fi
+  done < "$file"
+  return 1
+}
+
+harbor_write_analyzer_supervisor_identity() {
+  local pid="$1" analyzer_pid="$2" start_time analyzer_start_time
+  start_time="$(harbor_process_start_time "$pid")" || return 1
+  analyzer_start_time="$(harbor_process_start_time "$analyzer_pid")" || return 1
+  {
+    printf 'pid=%s\n' "$pid"
+    printf 'start_time=%s\n' "$start_time"
+    printf 'run_dir=%s\n' "$OUTPUT_PATH"
+    printf 'analyzer_pid=%s\n' "$analyzer_pid"
+    printf 'analyzer_start_time=%s\n' "$analyzer_start_time"
+  } > "$HARBOR_ANALYZER_SUPERVISOR_ID_FILE"
+}
+
+harbor_analyzer_supervisor_pid_matches_run() {
+  local pid="$1" expected_analyzer_pid="${2:-}" stored_pid start_time run_dir analyzer_pid analyzer_start_time
+  local current_start_time current_analyzer_start_time
+  [[ "$pid" =~ ^[0-9]+$ && -r "/proc/$pid/stat" ]] || return 1
+  stored_pid="$(harbor_identity_file_value "$HARBOR_ANALYZER_SUPERVISOR_ID_FILE" pid || true)"
+  start_time="$(harbor_identity_file_value "$HARBOR_ANALYZER_SUPERVISOR_ID_FILE" start_time || true)"
+  run_dir="$(harbor_identity_file_value "$HARBOR_ANALYZER_SUPERVISOR_ID_FILE" run_dir || true)"
+  analyzer_pid="$(harbor_identity_file_value "$HARBOR_ANALYZER_SUPERVISOR_ID_FILE" analyzer_pid || true)"
+  analyzer_start_time="$(harbor_identity_file_value "$HARBOR_ANALYZER_SUPERVISOR_ID_FILE" analyzer_start_time || true)"
+  [[ "$stored_pid" == "$pid" && "$run_dir" == "$OUTPUT_PATH" ]] || return 1
+  current_start_time="$(harbor_process_start_time "$pid")" || return 1
+  [[ -n "$start_time" && "$start_time" == "$current_start_time" ]] || return 1
+  [[ -z "$expected_analyzer_pid" || "$analyzer_pid" == "$expected_analyzer_pid" ]] || return 1
+  if [[ -n "$expected_analyzer_pid" ]]; then
+    [[ "$analyzer_pid" =~ ^[0-9]+$ && -r "/proc/$analyzer_pid/stat" ]] || return 1
+    current_analyzer_start_time="$(harbor_process_start_time "$analyzer_pid")" || return 1
+    [[ -n "$analyzer_start_time" && "$analyzer_start_time" == "$current_analyzer_start_time" ]] || return 1
+    harbor_analyzer_pid_matches_run "$analyzer_pid"
+  fi
 }
 
 harbor_validate_agent() {
@@ -539,7 +592,7 @@ harbor_reset_run_state() {
   rm -f "$NEXT_INDEX_FILE"
   rm -f "$OUTPUT_PATH/.monitor_state.json" "$HARBOR_MONITOR_LOG_FILE" "$HARBOR_BENCHMARK_PID_FILE" "$HARBOR_BENCHMARK_EXIT_FILE" "$HARBOR_JOB_DIR_FILE"
   rm -rf "$HARBOR_MONITOR_DIR"
-  rm -f "$HARBOR_ANALYZER_PID_FILE" "$HARBOR_ANALYZER_SUPERVISOR_PID_FILE" "$HARBOR_ANALYZER_LOG_FILE" "$HARBOR_ANALYZER_OUTPUT_DIR/.analyzer_state.json" "$HARBOR_ANALYZER_OUTPUT_DIR/.analyzer-ready"
+  rm -f "$HARBOR_ANALYZER_PID_FILE" "$HARBOR_ANALYZER_SUPERVISOR_PID_FILE" "$HARBOR_ANALYZER_SUPERVISOR_ID_FILE" "$HARBOR_ANALYZER_LOG_FILE" "$HARBOR_ANALYZER_OUTPUT_DIR/.analyzer_state.json" "$HARBOR_ANALYZER_OUTPUT_DIR/.analyzer-ready"
   rm -f "$HARBOR_ONLINE_ANALYSIS_PID_FILE" "$HARBOR_ONLINE_ANALYSIS_LOG_FILE"
   rm -f "$HARBOR_ONLINE_ANALYSIS_DIR/environment-events.jsonl" "$HARBOR_ONLINE_ANALYSIS_DIR/environment-summary.json"
   : > "$QUEUE_DIR/done.txt"
@@ -551,8 +604,12 @@ harbor_stop_analyzer_supervisor() {
   local pid
   pid="$(cat "$HARBOR_ANALYZER_SUPERVISOR_PID_FILE" 2>/dev/null || true)"
   if [[ ! "$pid" =~ ^[0-9]+$ ]] || ! kill -0 "$pid" >/dev/null 2>&1; then
-    rm -f "$HARBOR_ANALYZER_SUPERVISOR_PID_FILE"
+    rm -f "$HARBOR_ANALYZER_SUPERVISOR_PID_FILE" "$HARBOR_ANALYZER_SUPERVISOR_ID_FILE"
     return 0
+  fi
+  if ! harbor_analyzer_supervisor_pid_matches_run "$pid"; then
+    echo "[ERROR] refusing to stop unrelated process from $HARBOR_ANALYZER_SUPERVISOR_PID_FILE: pid=$pid" >&2
+    return 1
   fi
   kill -TERM "$pid" >/dev/null 2>&1 || true
   for _ in $(seq 1 10); do
@@ -562,7 +619,7 @@ harbor_stop_analyzer_supervisor() {
   if kill -0 "$pid" >/dev/null 2>&1; then
     kill -KILL "$pid" >/dev/null 2>&1 || true
   fi
-  rm -f "$HARBOR_ANALYZER_SUPERVISOR_PID_FILE"
+  rm -f "$HARBOR_ANALYZER_SUPERVISOR_PID_FILE" "$HARBOR_ANALYZER_SUPERVISOR_ID_FILE"
 }
 
 harbor_stop_analyzer() {
