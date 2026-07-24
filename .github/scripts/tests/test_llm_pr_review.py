@@ -221,7 +221,7 @@ class ApiClientTest(unittest.TestCase):
         client = review.LlmClient(
             "https://example.invalid/v3/chat/completions",
             "secret-value",
-            "deepseek-v4-pro-202606",
+            "test-model",
             opener=opener,
             sleeper=mock.Mock(),
         )
@@ -232,8 +232,86 @@ class ApiClientTest(unittest.TestCase):
         self.assertEqual(request.get_header("Authorization"), "Bearer secret-value")
         self.assertEqual(opener.call_args.kwargs["timeout"], 90)
         body = json.loads(request.data)
-        self.assertEqual(body["model"], "deepseek-v4-pro-202606")
+        self.assertEqual(body["model"], "test-model")
         self.assertEqual(body["temperature"], 0.1)
+        self.assertEqual(body["max_tokens"], review.MAX_RESPONSE_TOKENS)
+        self.assertGreaterEqual(review.MAX_RESPONSE_TOKENS, 8_000)
+
+    def test_empty_content_is_flagged_incomplete(self) -> None:
+        opener = mock.Mock(
+            return_value=FakeResponse(
+                {"choices": [{"message": {"content": ""}}]}
+            )
+        )
+        client = review.LlmClient(
+            "https://example.invalid", "key", "model", opener, mock.Mock()
+        )
+
+        self.assertEqual(
+            client.review("system", "diff"),
+            {"findings": [], "incomplete": True},
+        )
+
+    def test_whitespace_content_is_flagged_incomplete(self) -> None:
+        opener = mock.Mock(
+            return_value=FakeResponse(
+                {"choices": [{"message": {"content": "   \n\t "}}]}
+            )
+        )
+        client = review.LlmClient(
+            "https://example.invalid", "key", "model", opener, mock.Mock()
+        )
+
+        self.assertEqual(
+            client.review("system", "diff"),
+            {"findings": [], "incomplete": True},
+        )
+
+    def test_missing_content_key_raises_model_response_error(self) -> None:
+        opener = mock.Mock(
+            return_value=FakeResponse({"choices": [{"message": {}}]})
+        )
+        client = review.LlmClient(
+            "https://example.invalid", "key", "model", opener, mock.Mock()
+        )
+
+        with self.assertRaises(review.ModelResponseError):
+            client.review("system", "diff")
+
+    def test_malformed_message_raises_model_response_error(self) -> None:
+        opener = mock.Mock(
+            return_value=FakeResponse({"choices": [{"message": "oops"}]})
+        )
+        client = review.LlmClient(
+            "https://example.invalid", "key", "model", opener, mock.Mock()
+        )
+
+        with self.assertRaises(review.ModelResponseError):
+            client.review("system", "diff")
+
+    def test_empty_content_ignores_reasoning_prose(self) -> None:
+        opener = mock.Mock(
+            return_value=FakeResponse(
+                {
+                    "choices": [
+                        {
+                            "message": {
+                                "content": "",
+                                "reasoning_content": "Let me analyze this diff...",
+                            }
+                        }
+                    ]
+                }
+            )
+        )
+        client = review.LlmClient(
+            "https://example.invalid", "key", "model", opener, mock.Mock()
+        )
+
+        self.assertEqual(
+            client.review("system", "diff"),
+            {"findings": [], "incomplete": True},
+        )
 
     def test_llm_client_retries_429_twice(self) -> None:
         error = HTTPError("url", 429, "rate limited", {}, None)
@@ -497,6 +575,35 @@ class OrchestrationTest(unittest.TestCase):
         self.assertIn("`generated/49.map`", summary)
         self.assertNotIn("`generated/50.map`", summary)
         self.assertIn("5 additional skipped file(s)", summary)
+
+    def test_summary_reports_partial_when_a_chunk_is_incomplete(self) -> None:
+        summary = review.build_summary(
+            "head-1",
+            [],
+            0,
+            [],
+            False,
+            incomplete_chunks=1,
+        )
+
+        self.assertIn("Coverage: Partial", summary)
+        self.assertIn("empty model response", summary)
+
+    def test_summary_reports_complete_when_no_chunk_is_incomplete(self) -> None:
+        summary = review.build_summary("head-1", [], 0, [], False)
+
+        self.assertIn("Coverage: Complete", summary)
+        self.assertNotIn("empty model response", summary)
+
+    def test_run_review_reports_partial_on_empty_model_response(self) -> None:
+        github = FakeGitHub()
+        llm = mock.Mock()
+        llm.review.return_value = {"findings": [], "incomplete": True}
+
+        review.run_review(github, llm, 7, "prompt")
+
+        self.assertIn("Coverage: Partial", github.created[0][2])
+        self.assertIn("empty model response", github.created[0][2])
 
 
 class WorkflowContractTest(unittest.TestCase):

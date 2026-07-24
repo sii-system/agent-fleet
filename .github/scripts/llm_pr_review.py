@@ -26,6 +26,7 @@ MAX_CHUNK_CHARS = 50_000
 MAX_TOTAL_CHARS = 200_000
 MAX_COMMENTS = 20
 MAX_FIELD_CHARS = 2_000
+MAX_RESPONSE_TOKENS = 12_000
 SEVERITY_ORDER = {"P0": 0, "P1": 1, "P2": 2, "P3": 3}
 API_VERSION = "2022-11-28"
 REQUEST_TIMEOUT_SECONDS = 90
@@ -244,7 +245,7 @@ class LlmClient:
                 {"role": "user", "content": diff_chunk},
             ],
             "temperature": 0.1,
-            "max_tokens": 4_000,
+            "max_tokens": MAX_RESPONSE_TOKENS,
         }
         request = Request(
             self.base_url,
@@ -259,15 +260,17 @@ class LlmClient:
         for attempt in range(3):
             try:
                 response = _json_request(request, opener=self.opener)
-                content = response["choices"][0]["message"]["content"]
+                content = response["choices"][0]["message"].get("content")
                 if not isinstance(content, str):
                     raise ModelResponseError("model content must be text")
+                if not content.strip():
+                    return {"findings": [], "incomplete": True}
                 return extract_json(content)
             except HTTPError as exc:
                 if exc.code not in RETRYABLE_STATUS or attempt == 2:
                     raise
                 self.sleeper(attempt + 1)
-            except (KeyError, IndexError, TypeError) as exc:
+            except (KeyError, IndexError, TypeError, AttributeError) as exc:
                 raise ModelResponseError(
                     "unexpected chat completion response"
                 ) from exc
@@ -409,9 +412,12 @@ def build_summary(
     rejected: int,
     skipped: list[tuple[str, str]],
     truncated: bool,
+    incomplete_chunks: int = 0,
     review_id: str = DEFAULT_REVIEW_ID,
 ) -> str:
-    coverage = "Partial" if skipped or truncated else "Complete"
+    coverage = (
+        "Partial" if skipped or truncated or incomplete_chunks else "Complete"
+    )
     headline = (
         f"Automated review found {len(findings)} actionable finding(s)."
         if findings
@@ -438,6 +444,14 @@ def build_summary(
         lines.extend(
             ["", "- Additional diff content exceeded the total review budget."]
         )
+    if incomplete_chunks:
+        lines.extend(
+            [
+                "",
+                f"- {incomplete_chunks} diff chunk(s) returned an empty model "
+                "response and were not reviewed.",
+            ]
+        )
     return "\n".join(lines)
 
 
@@ -461,8 +475,11 @@ def run_review(
     chunks, truncated = build_chunks(files)
     findings: list[Finding] = []
     rejected = 0
+    incomplete_chunks = 0
     for chunk in chunks:
         payload = llm.review(prompt, build_model_input(pull, chunk))
+        if payload.get("incomplete"):
+            incomplete_chunks += 1
         chunk_findings, chunk_rejected = validate_findings(payload, by_path)
         findings.extend(chunk_findings)
         rejected += chunk_rejected
@@ -481,7 +498,8 @@ def run_review(
         rejected,
         skipped,
         truncated,
-        review_id,
+        incomplete_chunks=incomplete_chunks,
+        review_id=review_id,
     )
     github.create_review(pull_number, head_sha, summary, findings)
     return "published"
