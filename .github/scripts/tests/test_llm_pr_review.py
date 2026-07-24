@@ -229,6 +229,10 @@ class ApiClientTest(unittest.TestCase):
         self.assertEqual(client.review("system", "diff"), {"findings": []})
 
         request = opener.call_args.args[0]
+        self.assertEqual(
+            request.full_url,
+            "https://example.invalid/v3/chat/completions",
+        )
         self.assertEqual(request.get_header("Authorization"), "Bearer secret-value")
         self.assertEqual(opener.call_args.kwargs["timeout"], 90)
         body = json.loads(request.data)
@@ -236,6 +240,22 @@ class ApiClientTest(unittest.TestCase):
         self.assertEqual(body["temperature"], 0.1)
         self.assertEqual(body["max_tokens"], review.MAX_RESPONSE_TOKENS)
         self.assertGreaterEqual(review.MAX_RESPONSE_TOKENS, 8_000)
+
+    def test_llm_client_accepts_api_roots_and_full_endpoints(self) -> None:
+        cases = {
+            "https://example.invalid": "https://example.invalid/v1/chat/completions",
+            "https://example.invalid/": "https://example.invalid/v1/chat/completions",
+            "https://example.invalid/v1": (
+                "https://example.invalid/v1/chat/completions"
+            ),
+            "https://example.invalid/v3/chat/completions": (
+                "https://example.invalid/v3/chat/completions"
+            ),
+        }
+
+        for base_url, expected in cases.items():
+            with self.subTest(base_url=base_url):
+                self.assertEqual(review.chat_completions_url(base_url), expected)
 
     def test_empty_content_is_flagged_incomplete(self) -> None:
         opener = mock.Mock(

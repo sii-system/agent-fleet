@@ -222,6 +222,15 @@ def _json_request(
         return json.loads(response.read())
 
 
+def chat_completions_url(base_url: str) -> str:
+    url = base_url.rstrip("/")
+    if url.endswith("/chat/completions"):
+        return url
+    if url.endswith("/v1"):
+        return f"{url}/chat/completions"
+    return f"{url}/v1/chat/completions"
+
+
 class LlmClient:
     def __init__(
         self,
@@ -231,7 +240,7 @@ class LlmClient:
         opener: Callable[..., Any] = urlopen,
         sleeper: Callable[[float], None] = time.sleep,
     ) -> None:
-        self.base_url = base_url
+        self.base_url = chat_completions_url(base_url)
         self.api_key = api_key
         self.model = model
         self.opener = opener
