@@ -136,13 +136,6 @@ def build_chunks(
     return chunks, cursor < len(source)
 
 
-def _first_nonempty_text(*candidates: Any) -> str | None:
-    for candidate in candidates:
-        if isinstance(candidate, str) and candidate.strip():
-            return candidate
-    return None
-
-
 def extract_json(content: str) -> dict[str, Any]:
     text = content.strip()
     opening, separator, fenced = text.partition("\n")
@@ -266,13 +259,10 @@ class LlmClient:
         for attempt in range(3):
             try:
                 response = _json_request(request, opener=self.opener)
-                message = response["choices"][0]["message"]
-                text = _first_nonempty_text(
-                    message.get("content"), message.get("reasoning_content")
-                )
-                if text is None:
+                content = response["choices"][0]["message"].get("content")
+                if not isinstance(content, str) or not content.strip():
                     return {"findings": []}
-                return extract_json(text)
+                return extract_json(content)
             except HTTPError as exc:
                 if exc.code not in RETRYABLE_STATUS or attempt == 2:
                     raise

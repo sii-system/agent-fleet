@@ -282,7 +282,7 @@ class ApiClientTest(unittest.TestCase):
         with self.assertRaises(review.ModelResponseError):
             client.review("system", "diff")
 
-    def test_falls_back_to_reasoning_content_when_content_empty(self) -> None:
+    def test_empty_content_ignores_reasoning_prose(self) -> None:
         opener = mock.Mock(
             return_value=FakeResponse(
                 {
@@ -290,7 +290,7 @@ class ApiClientTest(unittest.TestCase):
                         {
                             "message": {
                                 "content": "",
-                                "reasoning_content": '{"findings": []}',
+                                "reasoning_content": "Let me analyze this diff...",
                             }
                         }
                     ]
