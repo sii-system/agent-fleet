@@ -15,7 +15,6 @@ concurrency:
 jobs:
   review:
     name: Self-hosted review
-    if: ${{ !github.event.pull_request.draft }}
     uses: ./.github/workflows/reusable-llm-pr-review.yml
     with:
       runner_json: '["self-hosted", "Linux", "X64"]'

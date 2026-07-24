@@ -459,6 +459,15 @@ class FakeLlm:
 
 
 class OrchestrationTest(unittest.TestCase):
+    def test_reviews_draft_when_workflow_allows_it(self) -> None:
+        github = FakeGitHub()
+        github.pull["draft"] = True
+
+        result = review.run_review(github, FakeLlm(), 7, "prompt")
+
+        self.assertEqual(result, "published")
+        self.assertEqual(len(github.created), 1)
+
     def test_collect_files_anchors_renames_to_the_new_path(self) -> None:
         files, skipped = review.collect_files(
             [

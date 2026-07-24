@@ -463,8 +463,6 @@ def run_review(
     review_id: str = DEFAULT_REVIEW_ID,
 ) -> str:
     pull = github.get_pull(pull_number)
-    if pull.get("draft"):
-        return "draft"
 
     head_sha = pull["head"]["sha"]
     if has_existing_review(github.list_reviews(pull_number), head_sha, review_id):

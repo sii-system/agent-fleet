@@ -24,7 +24,6 @@ class LlmPrReviewWorkflowReuseTest(unittest.TestCase):
         for workflow in (self.hosted, self.self_hosted):
             with self.subTest(workflow=workflow.splitlines()[0]):
                 self.assertIn('"on":\n  pull_request_target:', workflow)
-                self.assertIn("!github.event.pull_request.draft", workflow)
                 self.assertIn(
                     "permissions:\n  contents: read\n  pull-requests: write",
                     workflow,
@@ -35,6 +34,14 @@ class LlmPrReviewWorkflowReuseTest(unittest.TestCase):
                 )
                 self.assertNotIn("actions/checkout@", workflow)
                 self.assertNotIn("llm_pr_review.py", workflow)
+
+    def test_hosted_skips_drafts_while_self_hosted_reviews_them(self):
+        self.assertIn("!github.event.pull_request.draft", self.hosted)
+        self.assertNotIn("!github.event.pull_request.draft", self.self_hosted)
+        self.assertIn(
+            "types: [opened, reopened, synchronize, ready_for_review]",
+            self.self_hosted,
+        )
 
     def test_hosted_workflow_keeps_hosted_configuration(self):
         expected = (
