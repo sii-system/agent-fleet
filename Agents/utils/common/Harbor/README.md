@@ -239,9 +239,11 @@ bash start.sh ./harboropik.sh
 The analyzer depends on the monitor. It follows
 `monitor/analyzer-handover-latest.json` and `monitor/analyzer-handoffs/`, writes
 reports under `$OUTPUT_PATH/analyzer`, and does not restart, stop, or otherwise
-control the benchmark run. Configure the model, Opik endpoint, dataset, workers,
-and task selection through `config.local.env`, `env.sh`, or environment
-overrides before starting the run.
+control the benchmark run. Before using the default analyzer path, configure
+`BASE_URL`, `API_KEY`, and `MODEL`, or set the analyzer-specific
+`HARBOR_ANALYZER_BASE_URL`, `HARBOR_ANALYZER_API_KEY`, and
+`HARBOR_ANALYZER_MODEL` overrides. If no analyzer model gateway should be used
+for a run, set `HARBOR_ANALYZER_ENABLED=0`.
 
 ## More Details
 
