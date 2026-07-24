@@ -680,7 +680,10 @@ class MainTest(unittest.TestCase):
             result = pi_review.main()
 
         self.assertEqual(result, 1)
-        self.assertIn("bad repository root", stderr.getvalue())
+        self.assertEqual(
+            stderr.getvalue(),
+            "pi PR review failed: bad repository root\n",
+        )
 
 
 # -- workflow contract tests -----------------------------------------------
