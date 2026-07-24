@@ -9,7 +9,7 @@ import sys
 import tempfile
 import threading
 import unittest
-from contextlib import redirect_stderr
+from contextlib import contextmanager, redirect_stderr
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest import mock
@@ -99,6 +99,267 @@ def _make_findings_response(
         {"type": "agent_end"},
     ]
     return "\n".join(json.dumps(e) for e in events)
+
+
+def _require_pi_081(test_case: unittest.TestCase) -> str:
+    pi_binary = shutil.which("pi")
+    if pi_binary is None:
+        test_case.skipTest(
+            "pi runtime integration requires pi 0.81.1; "
+            "pi binary was not found"
+        )
+    version_result = subprocess.run(
+        [pi_binary, "--version"],
+        stdin=subprocess.DEVNULL,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=10,
+        check=False,
+    )
+    version = version_result.stdout.strip()
+    if version_result.returncode != 0 or version != "0.81.1":
+        test_case.skipTest(
+            "pi runtime integration requires pi 0.81.1; "
+            f"pi --version reported {version or 'no version'}"
+        )
+    return pi_binary
+
+
+def _sse_body(chunks: list[dict]) -> bytes:
+    return (
+        "".join(f"data: {json.dumps(chunk)}\n\n" for chunk in chunks)
+        + "data: [DONE]\n\n"
+    ).encode()
+
+
+def _tool_call(
+    index: int,
+    tool_call_id: str,
+    name: str,
+    arguments: dict[str, object],
+) -> dict:
+    return {
+        "index": index,
+        "id": tool_call_id,
+        "type": "function",
+        "function": {
+            "name": name,
+            "arguments": json.dumps(arguments),
+        },
+    }
+
+
+def _tool_response_chunks(
+    model: str,
+    response_id: str,
+    tool_calls: list[dict],
+) -> list[dict]:
+    return [
+        {
+            "id": response_id,
+            "object": "chat.completion.chunk",
+            "created": 0,
+            "model": model,
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {
+                        "role": "assistant",
+                        "tool_calls": tool_calls,
+                    },
+                    "finish_reason": None,
+                }
+            ],
+        },
+        {
+            "id": response_id,
+            "object": "chat.completion.chunk",
+            "created": 0,
+            "model": model,
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {},
+                    "finish_reason": "tool_calls",
+                }
+            ],
+        },
+    ]
+
+
+def _final_response_chunks(model: str, response_id: str) -> list[dict]:
+    return [
+        {
+            "id": response_id,
+            "object": "chat.completion.chunk",
+            "created": 0,
+            "model": model,
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {
+                        "role": "assistant",
+                        "content": '{"findings":[]}',
+                    },
+                    "finish_reason": None,
+                }
+            ],
+        },
+        {
+            "id": response_id,
+            "object": "chat.completion.chunk",
+            "created": 0,
+            "model": model,
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {},
+                    "finish_reason": "stop",
+                }
+            ],
+            "usage": {
+                "prompt_tokens": 1,
+                "completion_tokens": 1,
+                "total_tokens": 2,
+            },
+        },
+    ]
+
+
+@contextmanager
+def _serve_sse(response_bodies: list[bytes]):
+    requests: list[dict] = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:
+            length = int(self.headers.get("Content-Length", "0"))
+            request_index = len(requests)
+            requests.append(
+                {
+                    "path": self.path,
+                    "body": json.loads(self.rfile.read(length)),
+                }
+            )
+            response_body = response_bodies[request_index]
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Content-Length", str(len(response_body)))
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.wfile.write(response_body)
+
+        def log_message(self, _format: str, *args: object) -> None:
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    server_thread = threading.Thread(
+        target=server.serve_forever,
+        daemon=True,
+    )
+    server_thread.start()
+    try:
+        yield server.server_address[1], requests
+    finally:
+        server.shutdown()
+        server.server_close()
+        server_thread.join(timeout=5)
+        if server_thread.is_alive():
+            raise RuntimeError("fake SSE server did not stop")
+
+
+def _run_real_pi_exchange(
+    test_case: unittest.TestCase,
+    *,
+    endpoint: str,
+    tool_calls: list[dict],
+    files: dict[str, str],
+    unset_reviewer_policy: bool = False,
+) -> tuple[dict, list[dict], list[dict]]:
+    pi_binary = _require_pi_081(test_case)
+    model = "integration-model"
+    response_bodies = [
+        _sse_body(
+            _tool_response_chunks(
+                model,
+                "chatcmpl-integration",
+                tool_calls,
+            )
+        ),
+        _sse_body(
+            _final_response_chunks(
+                model,
+                "chatcmpl-integration-final",
+            )
+        ),
+    ]
+    with (
+        _serve_sse(response_bodies) as (port, requests),
+        tempfile.TemporaryDirectory() as temp_dir,
+    ):
+        repository_root = Path(temp_dir) / "repository"
+        repository_root.mkdir()
+        for relative_path, content in files.items():
+            (repository_root / relative_path).write_text(
+                content,
+                encoding="utf-8",
+            )
+        launch_binary = pi_binary
+        if unset_reviewer_policy:
+            wrapper = Path(temp_dir) / "pi-without-reviewer-policy"
+            wrapper.write_text(
+                (
+                    "#!/usr/bin/env python3\n"
+                    "import os\n"
+                    "import sys\n"
+                    f"os.environ.pop({pi_review.PI_GREP_LITERAL_ONLY_ENV!r}, None)\n"
+                    f"pi_binary = {pi_binary!r}\n"
+                    "os.execv(pi_binary, [pi_binary, *sys.argv[1:]])\n"
+                ),
+                encoding="utf-8",
+            )
+            wrapper.chmod(0o755)
+            launch_binary = str(wrapper)
+        client = pi_review.PiClient(
+            pi_binary=launch_binary,
+            base_url=f"http://127.0.0.1:{port}{endpoint}",
+            api_key="integration-api-key",
+            model=model,
+            repository_root=repository_root,
+            timeout=30,
+        )
+        pi_streams: list[str] = []
+        validate_stream = pi_review._validate_pi_stream
+
+        def capture_stream(raw: str) -> dict:
+            pi_streams.append(raw)
+            return validate_stream(raw)
+
+        with (
+            mock.patch.dict(
+                os.environ,
+                {
+                    "NO_PROXY": "127.0.0.1,localhost",
+                    "no_proxy": "127.0.0.1,localhost",
+                },
+            ),
+            mock.patch.object(
+                pi_review,
+                "_validate_pi_stream",
+                side_effect=capture_stream,
+            ),
+        ):
+            result = client.review(
+                "Use the requested tools, then return an empty findings array.",
+                "Inspect the repository as requested.",
+            )
+
+    events = [
+        json.loads(line)
+        for line in pi_streams[0].splitlines()
+        if line.strip()
+    ]
+    return result, requests, events
 
 
 # -- URL normalisation ----------------------------------------------------
@@ -534,300 +795,98 @@ class PiClientTest(unittest.TestCase):
 
 class PiRuntimeIntegrationTest(unittest.TestCase):
     def test_real_pi_uses_path_gated_tools_at_adapted_endpoint(self) -> None:
-        pi_binary = shutil.which("pi")
-        if pi_binary is None:
-            self.skipTest(
-                "pi runtime integration requires pi 0.81.1; "
-                "pi binary was not found"
-            )
-        version_result = subprocess.run(
-            [pi_binary, "--version"],
-            stdin=subprocess.DEVNULL,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            timeout=10,
-            check=False,
-        )
-        version = version_result.stdout.strip()
-        if version_result.returncode != 0 or version != "0.81.1":
-            self.skipTest(
-                "pi runtime integration requires pi 0.81.1; "
-                f"pi --version reported {version or 'no version'}"
-            )
-
         model = "integration-model"
-
-        def tool_call(
-            index: int,
-            tool_call_id: str,
-            name: str,
-            arguments: dict[str, object],
-        ) -> dict:
-            return {
-                "index": index,
-                "id": tool_call_id,
-                "type": "function",
-                "function": {
-                    "name": name,
-                    "arguments": json.dumps(arguments),
-                },
-            }
-
-        tool_chunks = [
-            {
-                "id": "chatcmpl-integration",
-                "object": "chat.completion.chunk",
-                "created": 0,
-                "model": model,
-                "choices": [
+        result, requests, stream_events = _run_real_pi_exchange(
+            self,
+            endpoint="/custom/chat/completions",
+            tool_calls=[
+                _tool_call(
+                    0,
+                    "call-inside",
+                    "read",
+                    {"path": "inside.txt"},
+                ),
+                _tool_call(
+                    1,
+                    "call-outside",
+                    "read",
+                    {"path": "/etc/hosts"},
+                ),
+                _tool_call(
+                    2,
+                    "call-grep",
+                    "grep",
                     {
-                        "index": 0,
-                        "delta": {
-                            "role": "assistant",
-                            "tool_calls": [
-                                tool_call(
-                                    0,
-                                    "call-inside",
-                                    "read",
-                                    {"path": "inside.txt"},
-                                ),
-                                tool_call(
-                                    1,
-                                    "call-outside",
-                                    "read",
-                                    {"path": "/etc/hosts"},
-                                ),
-                                tool_call(
-                                    2,
-                                    "call-grep",
-                                    "grep",
-                                    {
-                                        "pattern": "needle",
-                                        "path": "large.txt",
-                                        "literal": True,
-                                        "context": 1_000_000,
-                                        "limit": 1_000_000,
-                                    },
-                                ),
-                                tool_call(
-                                    3,
-                                    "call-literal-policy",
-                                    "grep",
-                                    {
-                                        "pattern": "-+$",
-                                        "path": "separator.txt",
-                                        "literal": False,
-                                    },
-                                ),
-                                tool_call(
-                                    4,
-                                    "call-wildcard",
-                                    "grep",
-                                    {
-                                        "pattern": "wildcard marker",
-                                        "path": ".",
-                                        "glob": (
-                                            "review-*separator?.txt"
-                                        ),
-                                        "literal": False,
-                                    },
-                                ),
-                                tool_call(
-                                    5,
-                                    "call-pattern-too-long",
-                                    "grep",
-                                    {
-                                        "pattern": "p" * 1025,
-                                        "path": ".",
-                                        "literal": True,
-                                    },
-                                ),
-                                tool_call(
-                                    6,
-                                    "call-glob-too-long",
-                                    "grep",
-                                    {
-                                        "pattern": "marker",
-                                        "path": ".",
-                                        "glob": "g" * 257,
-                                        "literal": True,
-                                    },
-                                ),
-                                tool_call(
-                                    7,
-                                    "call-find-pattern-too-long",
-                                    "find",
-                                    {
-                                        "pattern": "f" * 257,
-                                        "path": ".",
-                                    },
-                                ),
-                            ],
-                        },
-                        "finish_reason": None,
-                    }
-                ],
+                        "pattern": "needle",
+                        "path": "large.txt",
+                        "literal": True,
+                        "context": 1_000_000,
+                        "limit": 1_000_000,
+                    },
+                ),
+                _tool_call(
+                    3,
+                    "call-literal-policy",
+                    "grep",
+                    {
+                        "pattern": "-+$",
+                        "path": "separator.txt",
+                        "literal": False,
+                    },
+                ),
+                _tool_call(
+                    4,
+                    "call-wildcard",
+                    "grep",
+                    {
+                        "pattern": "wildcard marker",
+                        "path": ".",
+                        "glob": "review-*separator?.txt",
+                        "literal": False,
+                    },
+                ),
+                _tool_call(
+                    5,
+                    "call-pattern-too-long",
+                    "grep",
+                    {
+                        "pattern": "p" * 1025,
+                        "path": ".",
+                        "literal": True,
+                    },
+                ),
+                _tool_call(
+                    6,
+                    "call-glob-too-long",
+                    "grep",
+                    {
+                        "pattern": "marker",
+                        "path": ".",
+                        "glob": "g" * 257,
+                        "literal": True,
+                    },
+                ),
+                _tool_call(
+                    7,
+                    "call-find-pattern-too-long",
+                    "find",
+                    {
+                        "pattern": "f" * 257,
+                        "path": ".",
+                    },
+                ),
+            ],
+            files={
+                "inside.txt": "inside repository evidence\n",
+                "large.txt": "\n".join(
+                    f"needle-{index}-{'界' * 400}"
+                    for index in range(80)
+                ),
+                "separator.txt": "----------------\n",
+                "review-separator1.txt": "wildcard marker\n",
             },
-            {
-                "id": "chatcmpl-integration",
-                "object": "chat.completion.chunk",
-                "created": 0,
-                "model": model,
-                "choices": [
-                    {
-                        "index": 0,
-                        "delta": {},
-                        "finish_reason": "tool_calls",
-                    }
-                ],
-            },
-        ]
-        final_chunks = [
-            {
-                "id": "chatcmpl-integration-final",
-                "object": "chat.completion.chunk",
-                "created": 0,
-                "model": model,
-                "choices": [
-                    {
-                        "index": 0,
-                        "delta": {
-                            "role": "assistant",
-                            "content": '{"findings":[]}',
-                        },
-                        "finish_reason": None,
-                    }
-                ],
-            },
-            {
-                "id": "chatcmpl-integration-final",
-                "object": "chat.completion.chunk",
-                "created": 0,
-                "model": model,
-                "choices": [
-                    {
-                        "index": 0,
-                        "delta": {},
-                        "finish_reason": "stop",
-                    }
-                ],
-                "usage": {
-                    "prompt_tokens": 1,
-                    "completion_tokens": 1,
-                    "total_tokens": 2,
-                },
-            },
-        ]
-
-        def sse_body(chunks: list[dict]) -> bytes:
-            return (
-                "".join(
-                    f"data: {json.dumps(chunk)}\n\n"
-                    for chunk in chunks
-                )
-                + "data: [DONE]\n\n"
-            ).encode()
-
-        response_bodies = [sse_body(tool_chunks), sse_body(final_chunks)]
-        requests: list[dict] = []
-
-        class Handler(BaseHTTPRequestHandler):
-            def do_POST(self) -> None:
-                length = int(self.headers.get("Content-Length", "0"))
-                request_index = len(requests)
-                requests.append(
-                    {
-                        "path": self.path,
-                        "body": json.loads(self.rfile.read(length)),
-                    }
-                )
-                response_body = response_bodies[request_index]
-                self.send_response(200)
-                self.send_header("Content-Type", "text/event-stream")
-                self.send_header("Content-Length", str(len(response_body)))
-                self.send_header("Connection", "close")
-                self.end_headers()
-                self.wfile.write(response_body)
-
-            def log_message(self, _format: str, *args: object) -> None:
-                pass
-
-        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-        server_thread = threading.Thread(
-            target=server.serve_forever,
-            daemon=True,
         )
-        server_thread.start()
-        try:
-            with tempfile.TemporaryDirectory() as temp_dir:
-                repository_root = Path(temp_dir) / "repository"
-                repository_root.mkdir()
-                (repository_root / "inside.txt").write_text(
-                    "inside repository evidence\n",
-                    encoding="utf-8",
-                )
-                (repository_root / "large.txt").write_text(
-                    "\n".join(
-                        f"needle-{index}-{'界' * 400}"
-                        for index in range(80)
-                    ),
-                    encoding="utf-8",
-                )
-                (repository_root / "separator.txt").write_text(
-                    "----------------\n",
-                    encoding="utf-8",
-                )
-                (repository_root / "review-separator1.txt").write_text(
-                    "wildcard marker\n",
-                    encoding="utf-8",
-                )
-                port = server.server_address[1]
-                client = pi_review.PiClient(
-                    pi_binary=pi_binary,
-                    base_url=(
-                        f"http://127.0.0.1:{port}"
-                        "/custom/chat/completions"
-                    ),
-                    api_key="integration-api-key",
-                    model=model,
-                    repository_root=repository_root,
-                    timeout=30,
-                )
-                pi_streams: list[str] = []
-                validate_stream = pi_review._validate_pi_stream
 
-                def capture_stream(raw: str) -> dict:
-                    pi_streams.append(raw)
-                    return validate_stream(raw)
-
-                with (
-                    mock.patch.dict(
-                        os.environ,
-                        {
-                            "NO_PROXY": "127.0.0.1,localhost",
-                            "no_proxy": "127.0.0.1,localhost",
-                        },
-                    ),
-                    mock.patch.object(
-                        pi_review,
-                        "_validate_pi_stream",
-                        side_effect=capture_stream,
-                    ),
-                ):
-                    result = client.review(
-                        (
-                            "Use the requested tools, then return exactly one "
-                            "JSON object with an empty findings array."
-                        ),
-                        "Inspect the repository as requested.",
-                    )
-        finally:
-            server.shutdown()
-            server.server_close()
-            server_thread.join(timeout=5)
-
-        self.assertFalse(server_thread.is_alive())
         self.assertEqual(result, {"findings": []})
         self.assertEqual(
             [request["path"] for request in requests],
@@ -886,11 +945,6 @@ class PiRuntimeIntegrationTest(unittest.TestCase):
         self.assertIn("200 matches", grep_result)
         self.assertIn("20 context lines", grep_result)
         self.assertIn("50KB UTF-8 output", grep_result)
-        stream_events = [
-            json.loads(line)
-            for line in pi_streams[0].splitlines()
-            if line.strip()
-        ]
         grep_event = next(
             event
             for event in stream_events
@@ -921,6 +975,55 @@ class PiRuntimeIntegrationTest(unittest.TestCase):
         self.assertLessEqual(
             grep_event["result"]["details"]["output_bytes"],
             50 * 1024,
+        )
+
+    def test_real_pi_preserves_regex_grep_without_reviewer_policy(
+        self,
+    ) -> None:
+        result, requests, events = _run_real_pi_exchange(
+            self,
+            endpoint="/harbor/chat/completions",
+            tool_calls=[
+                _tool_call(
+                    0,
+                    "call-regex",
+                    "grep",
+                    {
+                        "pattern": "^section-[0-9]+$",
+                        "path": "evidence.txt",
+                        "literal": False,
+                    },
+                )
+            ],
+            files={"evidence.txt": "section-42\n"},
+            unset_reviewer_policy=True,
+        )
+
+        self.assertEqual(result, {"findings": []})
+        self.assertEqual(
+            [request["path"] for request in requests],
+            [
+                "/harbor/chat/completions",
+                "/harbor/chat/completions",
+            ],
+        )
+        tool_result = next(
+            message["content"]
+            for message in requests[1]["body"]["messages"]
+            if message.get("tool_call_id") == "call-regex"
+        )
+        self.assertIn("section-42", tool_result)
+        grep_event = next(
+            event
+            for event in events
+            if event["type"] == "tool_execution_end"
+            and event["toolCallId"] == "call-regex"
+        )
+        self.assertFalse(
+            grep_event["result"]["details"]["effective_literal"]
+        )
+        self.assertFalse(
+            grep_event["result"]["details"]["literal_forced"]
         )
 
 
