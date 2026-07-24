@@ -251,6 +251,12 @@ class ApiClientTest(unittest.TestCase):
             "https://example.invalid/v3/chat/completions": (
                 "https://example.invalid/v3/chat/completions"
             ),
+            "https://example.invalid/chat/completions?api-version=3#review": (
+                "https://example.invalid/chat/completions?api-version=3#review"
+            ),
+            "https://example.invalid?api-version=3": (
+                "https://example.invalid/v1/chat/completions?api-version=3"
+            ),
         }
 
         for base_url, expected in cases.items():
@@ -646,17 +652,15 @@ class WorkflowContractTest(unittest.TestCase):
         self.assertNotIn("pull_request.head.ref", workflow)
 
     def test_workflow_has_least_permissions_and_base_checkout(self) -> None:
-        workflow = SCRIPT_DIR.parent.joinpath("workflows/llm-pr-review.yml").read_text()
-        reusable = SCRIPT_DIR.parent.joinpath(
-            "workflows/reusable-llm-pr-review.yml"
-        ).read_text()
-
-        self.assertIn("contents: read", workflow)
-        self.assertIn("pull-requests: write", workflow)
-        self.assertNotIn("issues: write", workflow)
-        self.assertIn("cancel-in-progress: true", workflow)
-        self.assertIn("pull_request.base.sha", reusable)
-        self.assertIn("persist-credentials: false", reusable)
+        for name in ("llm-pr-review.yml", "self-hosted-llm-pr-review.yml"):
+            workflow = SCRIPT_DIR.parent.joinpath("workflows", name).read_text()
+            with self.subTest(workflow=name):
+                self.assertIn("contents: read", workflow)
+                self.assertIn("pull-requests: write", workflow)
+                self.assertNotIn("issues: write", workflow)
+                self.assertIn("cancel-in-progress: true", workflow)
+                self.assertIn("pull_request.base.sha", workflow)
+                self.assertIn("persist-credentials: false", workflow)
 
 
 if __name__ == "__main__":

@@ -15,9 +15,24 @@ concurrency:
 jobs:
   review:
     name: Self-hosted review
-    uses: ./.github/workflows/reusable-llm-pr-review.yml
-    secrets: inherit
-    with:
-      runner_json: '["self-hosted", "Linux", "X64"]'
-      environment: self-hosted-env
-      review_id: self-hosted-llm-pr-review
+    runs-on: [self-hosted, Linux, X64]
+    environment: self-hosted-env
+    timeout-minutes: 20
+    steps:
+      - name: Check out trusted base revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+
+      - name: Review pull request
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          LLM_REVIEW_API_KEY: ${{ secrets.LLM_REVIEW_API_KEY }}
+          LLM_REVIEW_BASE_URL: ${{ vars.LLM_REVIEW_BASE_URL }}
+          LLM_REVIEW_MODEL: ${{ vars.LLM_REVIEW_MODEL }}
+          LLM_REVIEW_ID: self-hosted-llm-pr-review
+        run: >-
+          python3 .github/scripts/llm_pr_review.py
+          --event-path "$GITHUB_EVENT_PATH"
+          --prompt-path .github/scripts/llm_review_prompt.md

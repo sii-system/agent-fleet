@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit, urlunsplit
 from urllib.request import Request, urlopen
 
 MAX_FILE_PATCH_CHARS = 60_000
@@ -223,12 +223,17 @@ def _json_request(
 
 
 def chat_completions_url(base_url: str) -> str:
-    url = base_url.rstrip("/")
-    if url.endswith("/chat/completions"):
-        return url
-    if url.endswith("/v1"):
-        return f"{url}/chat/completions"
-    return f"{url}/v1/chat/completions"
+    parts = urlsplit(base_url)
+    path = parts.path.rstrip("/")
+    if path.endswith("/chat/completions"):
+        normalized_path = path
+    elif path.endswith("/v1"):
+        normalized_path = f"{path}/chat/completions"
+    else:
+        normalized_path = f"{path}/v1/chat/completions"
+    return urlunsplit(
+        (parts.scheme, parts.netloc, normalized_path, parts.query, parts.fragment)
+    )
 
 
 class LlmClient:
