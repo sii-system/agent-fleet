@@ -1,4 +1,7 @@
+import os
 import re
+import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -6,6 +9,33 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[3]
 WORKFLOWS = ROOT / ".github" / "workflows"
 PROMPT = ROOT / ".github" / "scripts" / "pi_review_prompt.md"
+
+
+def _step_script(workflow: str, step_name: str) -> str:
+    lines = workflow.splitlines()
+    step_start = next(
+        index
+        for index, line in enumerate(lines)
+        if line.strip() == f"- name: {step_name}"
+    )
+    step_end = next(
+        (
+            index
+            for index in range(step_start + 1, len(lines))
+            if lines[index].strip().startswith("- name:")
+        ),
+        len(lines),
+    )
+    run_index = next(
+        index
+        for index in range(step_start + 1, step_end)
+        if lines[index].strip() == "run: |"
+    )
+    body_indent = len(lines[run_index]) - len(lines[run_index].lstrip()) + 2
+    return "\n".join(
+        line[body_indent:] if line else ""
+        for line in lines[run_index + 1 : step_end]
+    ).rstrip()
 
 
 class LlmPrReviewWorkflowTest(unittest.TestCase):
@@ -110,13 +140,127 @@ class LlmPrReviewWorkflowTest(unittest.TestCase):
                 )
                 self.assertIn("Expected pi version $PI_VERSION", workflow)
                 self.assertIn(
-                    'INSTALLED_VERSION="$(pi --version',
+                    'INSTALLED_VERSION="$(pi --version 2>/dev/null || true)"',
                     workflow,
                 )
-                self.assertIn(
-                    "grep -oE '[0-9]+\\.[0-9]+\\.[0-9]+'",
-                    workflow,
-                )
+                self.assertNotIn("grep -oE", workflow)
+
+    def _run_version_step(
+        self,
+        script: str,
+        initial_output: str | None,
+        *,
+        post_install_output: str = "0.81.1\n",
+    ) -> tuple[subprocess.CompletedProcess[str], int]:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            output_path = root / "pi-output"
+            calls_path = root / "npm-calls"
+            pi_template = root / "pi-template"
+            pi_template.write_text(
+                "#!/usr/bin/env bash\n"
+                "set -euo pipefail\n"
+                'cat "$FAKE_PI_OUTPUT"\n',
+                encoding="utf-8",
+            )
+            pi_template.chmod(0o755)
+            if initial_output is not None:
+                output_path.write_text(initial_output, encoding="utf-8")
+                (bin_dir / "pi").write_bytes(pi_template.read_bytes())
+                (bin_dir / "pi").chmod(0o755)
+            npm = bin_dir / "npm"
+            npm.write_text(
+                "#!/usr/bin/env bash\n"
+                "set -euo pipefail\n"
+                'printf "install\\n" >>"$FAKE_NPM_CALLS"\n'
+                'cp "$FAKE_PI_TEMPLATE" "$FAKE_BIN/pi"\n'
+                'chmod +x "$FAKE_BIN/pi"\n'
+                'printf "%s" "$FAKE_PI_POST_OUTPUT" >"$FAKE_PI_OUTPUT"\n',
+                encoding="utf-8",
+            )
+            npm.chmod(0o755)
+            env = {
+                **os.environ,
+                "PATH": f"{bin_dir}{os.pathsep}/usr/bin{os.pathsep}/bin",
+                "PI_VERSION": "0.81.1",
+                "FAKE_BIN": str(bin_dir),
+                "FAKE_NPM_CALLS": str(calls_path),
+                "FAKE_PI_OUTPUT": str(output_path),
+                "FAKE_PI_POST_OUTPUT": post_install_output,
+                "FAKE_PI_TEMPLATE": str(pi_template),
+            }
+            result = subprocess.run(
+                ["bash", "-c", script],
+                cwd=root,
+                env=env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            call_count = (
+                len(calls_path.read_text(encoding="utf-8").splitlines())
+                if calls_path.exists()
+                else 0
+            )
+            return result, call_count
+
+    def test_hosted_version_step_accepts_exact_without_install(self):
+        script = _step_script(self.hosted, "Install pi coding agent")
+        result, install_count = self._run_version_step(
+            script, "0.81.1\n"
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(install_count, 0)
+
+    def test_hosted_version_step_reinstalls_all_nonexact_versions(self):
+        script = _step_script(self.hosted, "Install pi coding agent")
+        cases = (
+            None,
+            "0.80.0\n",
+            "0.81.1-beta.1\n",
+            "0.81.1.1\n",
+            "pi version 0.81.1\n",
+        )
+        for output in cases:
+            with self.subTest(output=output):
+                result, install_count = self._run_version_step(script, output)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(install_count, 1)
+
+    def test_hosted_version_step_rejects_nonexact_post_install_output(self):
+        script = _step_script(self.hosted, "Install pi coding agent")
+        result, install_count = self._run_version_step(
+            script,
+            "0.80.0\n",
+            post_install_output="0.81.1-beta.1\n",
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(install_count, 1)
+        self.assertIn("Expected pi version 0.81.1", result.stderr)
+
+    def test_self_hosted_version_step_accepts_only_exact_version(self):
+        script = _step_script(
+            self.self_hosted, "Verify pi is available"
+        )
+        exact, install_count = self._run_version_step(script, "0.81.1\n")
+        self.assertEqual(exact.returncode, 0, exact.stderr)
+        self.assertEqual(install_count, 0)
+
+        cases = (
+            None,
+            "0.80.0\n",
+            "0.81.1-beta.1\n",
+            "0.81.1.1\n",
+            "pi version 0.81.1\n",
+        )
+        for output in cases:
+            with self.subTest(output=output):
+                result, install_count = self._run_version_step(script, output)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(install_count, 0)
+                self.assertIn("Expected pi version 0.81.1", result.stderr)
 
     def test_prompt_handles_files_absent_from_trusted_base(self):
         prompt = " ".join(self.prompt.split())

@@ -38,8 +38,8 @@ passed to pi.
 Chat Completions endpoint. The pi adapter validates its scheme and host and
 removes only a final `/chat/completions` path suffix. It does not append
 `/v1` or otherwise rewrite custom gateway path prefixes. Query parameters and
-fragments are unsupported; operators must remove them or move their values to
-the appropriate request headers before configuring the endpoint.
+fragments are unsupported; operators must remove them or configure a compatible
+endpoint that does not require them.
 
 ## Response Handling
 
