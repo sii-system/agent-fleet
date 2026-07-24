@@ -43,11 +43,18 @@ class PiReviewError(RuntimeError):
 
 def _chat_url_to_base(url: str) -> str:
     """Convert a chat-completions endpoint URL to a pi-compatible base URL."""
-    parsed = urlparse(url.strip())
-    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+    value = url.strip()
+    try:
+        parsed = urlparse(value)
+        hostname = parsed.hostname
+    except ValueError as exc:
+        raise PiReviewError(
+            "invalid LLM_REVIEW_BASE_URL for pi provider"
+        ) from exc
+    if parsed.scheme not in {"http", "https"} or not hostname:
         raise PiReviewError("invalid LLM_REVIEW_BASE_URL for pi provider")
     suffix = "/chat/completions"
-    path = parsed.path.rstrip("/")
+    path = parsed.path
     if path.endswith(suffix):
         path = path[: -len(suffix)]
     return parsed._replace(path=path).geturl()

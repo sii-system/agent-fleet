@@ -113,9 +113,19 @@ class UrlNormalisationTest(unittest.TestCase):
         result = pi_review._chat_url_to_base("https://api.example.com/v1")
         self.assertEqual(result, "https://api.example.com/v1")
 
+    def test_preserves_clean_url_trailing_slash(self) -> None:
+        result = pi_review._chat_url_to_base(
+            "https://api.example.com/custom/"
+        )
+        self.assertEqual(result, "https://api.example.com/custom/")
+
     def test_rejects_invalid_url(self) -> None:
         with self.assertRaises(pi_review.PiReviewError):
             pi_review._chat_url_to_base("not-a-url")
+
+    def test_rejects_malformed_url(self) -> None:
+        with self.assertRaises(pi_review.PiReviewError):
+            pi_review._chat_url_to_base("http://[::1")
 
 
 # -- JSON extraction ------------------------------------------------------
