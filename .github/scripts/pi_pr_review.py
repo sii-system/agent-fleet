@@ -343,16 +343,16 @@ def main() -> int:
     repository = require_env("GITHUB_REPOSITORY")
     pull_number = int(event["pull_request"]["number"])
     github = _review.GitHubClient(repository, require_env("GITHUB_TOKEN"))
-    pi_client = PiClient(
-        pi_binary=args.pi_bin,
-        base_url=require_env("LLM_REVIEW_BASE_URL"),
-        api_key=require_env("LLM_REVIEW_API_KEY"),
-        model=require_env("LLM_REVIEW_MODEL"),
-        repository_root=_PROJECT_ROOT,
-    )
     prompt = args.prompt_path.read_text()
     review_id = os.environ.get("LLM_REVIEW_ID", PI_REVIEW_ID)
     try:
+        pi_client = PiClient(
+            pi_binary=args.pi_bin,
+            base_url=require_env("LLM_REVIEW_BASE_URL"),
+            api_key=require_env("LLM_REVIEW_API_KEY"),
+            model=require_env("LLM_REVIEW_MODEL"),
+            repository_root=Path(require_env("GITHUB_WORKSPACE")),
+        )
         result = run_review(github, pi_client, pull_number, prompt, review_id)
     except PiReviewError as exc:
         print(f"pi PR review failed: {exc}", file=sys.stderr)

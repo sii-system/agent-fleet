@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import io
 import json
 import os
 import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stderr
 from pathlib import Path
 from unittest import mock
 
@@ -603,6 +605,82 @@ class OrchestrationTest(unittest.TestCase):
 
         body = github.created[0][2]
         self.assertIn("<!-- custom-review-id:head-1 -->", body)
+
+
+# -- main entrypoint tests -------------------------------------------------
+
+
+class MainTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp_dir.name)
+        self.event_path = self.root / "event.json"
+        self.event_path.write_text(
+            json.dumps({"pull_request": {"number": 23}}),
+            encoding="utf-8",
+        )
+        self.prompt_path = self.root / "prompt.md"
+        self.prompt_path.write_text(
+            "Review this pull request.", encoding="utf-8"
+        )
+        self.workspace = self.root / "workspace"
+        self.workspace.mkdir()
+        self.environment = {
+            "GITHUB_REPOSITORY": "sii-system/agent-fleet",
+            "GITHUB_TOKEN": "fake-github-token",
+            "GITHUB_WORKSPACE": str(self.workspace),
+            "LLM_REVIEW_BASE_URL": (
+                "https://api.example.com/v1/chat/completions"
+            ),
+            "LLM_REVIEW_API_KEY": "fake-review-api-key",
+            "LLM_REVIEW_MODEL": "fake-review-model",
+        }
+
+    def tearDown(self) -> None:
+        self.temp_dir.cleanup()
+
+    def argv(self) -> list[str]:
+        return [
+            "pi_pr_review.py",
+            "--event-path",
+            str(self.event_path),
+            "--prompt-path",
+            str(self.prompt_path),
+        ]
+
+    def test_main_passes_github_workspace_to_pi_client(self) -> None:
+        with (
+            mock.patch.dict(os.environ, self.environment, clear=True),
+            mock.patch.object(sys, "argv", self.argv()),
+            mock.patch.object(pi_review, "PiClient") as pi_client,
+            mock.patch.object(
+                pi_review, "run_review", return_value="published"
+            ),
+        ):
+            result = pi_review.main()
+
+        self.assertEqual(result, 0)
+        self.assertEqual(
+            pi_client.call_args.kwargs["repository_root"],
+            self.workspace,
+        )
+
+    def test_main_reports_repository_validation_error(self) -> None:
+        stderr = io.StringIO()
+        with (
+            mock.patch.dict(os.environ, self.environment, clear=True),
+            mock.patch.object(sys, "argv", self.argv()),
+            mock.patch.object(
+                pi_review,
+                "PiClient",
+                side_effect=pi_review.PiReviewError("bad repository root"),
+            ),
+            redirect_stderr(stderr),
+        ):
+            result = pi_review.main()
+
+        self.assertEqual(result, 1)
+        self.assertIn("bad repository root", stderr.getvalue())
 
 
 # -- workflow contract tests -----------------------------------------------
