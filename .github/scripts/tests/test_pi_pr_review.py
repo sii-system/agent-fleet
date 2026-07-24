@@ -488,7 +488,7 @@ class PiClientTest(unittest.TestCase):
 
 
 class PiRuntimeIntegrationTest(unittest.TestCase):
-    def test_real_pi_uses_adapted_chat_completions_path(self) -> None:
+    def test_real_pi_uses_path_gated_tools_at_adapted_endpoint(self) -> None:
         pi_binary = shutil.which("pi")
         if pi_binary is None:
             self.skipTest(
@@ -512,9 +512,80 @@ class PiRuntimeIntegrationTest(unittest.TestCase):
             )
 
         model = "integration-model"
-        chunks = [
+        tool_chunks = [
             {
                 "id": "chatcmpl-integration",
+                "object": "chat.completion.chunk",
+                "created": 0,
+                "model": model,
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {
+                            "role": "assistant",
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "id": "call-inside",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "read",
+                                        "arguments": json.dumps(
+                                            {"path": "inside.txt"}
+                                        ),
+                                    },
+                                },
+                                {
+                                    "index": 1,
+                                    "id": "call-outside",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "read",
+                                        "arguments": json.dumps(
+                                            {"path": "/etc/hosts"}
+                                        ),
+                                    },
+                                },
+                                {
+                                    "index": 2,
+                                    "id": "call-grep",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "grep",
+                                        "arguments": json.dumps(
+                                            {
+                                                "pattern": "needle",
+                                                "path": "large.txt",
+                                                "literal": True,
+                                                "context": 1_000_000,
+                                                "limit": 1_000_000,
+                                            }
+                                        ),
+                                    },
+                                },
+                            ],
+                        },
+                        "finish_reason": None,
+                    }
+                ],
+            },
+            {
+                "id": "chatcmpl-integration",
+                "object": "chat.completion.chunk",
+                "created": 0,
+                "model": model,
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {},
+                        "finish_reason": "tool_calls",
+                    }
+                ],
+            },
+        ]
+        final_chunks = [
+            {
+                "id": "chatcmpl-integration-final",
                 "object": "chat.completion.chunk",
                 "created": 0,
                 "model": model,
@@ -530,7 +601,7 @@ class PiRuntimeIntegrationTest(unittest.TestCase):
                 ],
             },
             {
-                "id": "chatcmpl-integration",
+                "id": "chatcmpl-integration-final",
                 "object": "chat.completion.chunk",
                 "created": 0,
                 "model": model,
@@ -548,21 +619,30 @@ class PiRuntimeIntegrationTest(unittest.TestCase):
                 },
             },
         ]
-        response_body = (
-            "".join(f"data: {json.dumps(chunk)}\n\n" for chunk in chunks)
-            + "data: [DONE]\n\n"
-        ).encode()
+
+        def sse_body(chunks: list[dict]) -> bytes:
+            return (
+                "".join(
+                    f"data: {json.dumps(chunk)}\n\n"
+                    for chunk in chunks
+                )
+                + "data: [DONE]\n\n"
+            ).encode()
+
+        response_bodies = [sse_body(tool_chunks), sse_body(final_chunks)]
         requests: list[dict] = []
 
         class Handler(BaseHTTPRequestHandler):
             def do_POST(self) -> None:
                 length = int(self.headers.get("Content-Length", "0"))
+                request_index = len(requests)
                 requests.append(
                     {
                         "path": self.path,
                         "body": json.loads(self.rfile.read(length)),
                     }
                 )
+                response_body = response_bodies[request_index]
                 self.send_response(200)
                 self.send_header("Content-Type", "text/event-stream")
                 self.send_header("Content-Length", str(len(response_body)))
@@ -583,6 +663,17 @@ class PiRuntimeIntegrationTest(unittest.TestCase):
             with tempfile.TemporaryDirectory() as temp_dir:
                 repository_root = Path(temp_dir) / "repository"
                 repository_root.mkdir()
+                (repository_root / "inside.txt").write_text(
+                    "inside repository evidence\n",
+                    encoding="utf-8",
+                )
+                (repository_root / "large.txt").write_text(
+                    "\n".join(
+                        f"needle-{index}-{'界' * 400}"
+                        for index in range(80)
+                    ),
+                    encoding="utf-8",
+                )
                 port = server.server_address[1]
                 client = pi_review.PiClient(
                     pi_binary=pi_binary,
@@ -595,19 +686,33 @@ class PiRuntimeIntegrationTest(unittest.TestCase):
                     repository_root=repository_root,
                     timeout=30,
                 )
-                with mock.patch.dict(
-                    os.environ,
-                    {
-                        "NO_PROXY": "127.0.0.1,localhost",
-                        "no_proxy": "127.0.0.1,localhost",
-                    },
+                pi_streams: list[str] = []
+                validate_stream = pi_review._validate_pi_stream
+
+                def capture_stream(raw: str) -> dict:
+                    pi_streams.append(raw)
+                    return validate_stream(raw)
+
+                with (
+                    mock.patch.dict(
+                        os.environ,
+                        {
+                            "NO_PROXY": "127.0.0.1,localhost",
+                            "no_proxy": "127.0.0.1,localhost",
+                        },
+                    ),
+                    mock.patch.object(
+                        pi_review,
+                        "_validate_pi_stream",
+                        side_effect=capture_stream,
+                    ),
                 ):
                     result = client.review(
                         (
-                            "Return exactly one JSON object with an empty "
-                            "findings array. No tools are needed."
+                            "Use the requested tools, then return exactly one "
+                            "JSON object with an empty findings array."
                         ),
-                        "Return the requested JSON now.",
+                        "Inspect the repository as requested.",
                     )
         finally:
             server.shutdown()
@@ -618,10 +723,56 @@ class PiRuntimeIntegrationTest(unittest.TestCase):
         self.assertEqual(result, {"findings": []})
         self.assertEqual(
             [request["path"] for request in requests],
-            ["/custom/chat/completions"],
+            [
+                "/custom/chat/completions",
+                "/custom/chat/completions",
+            ],
         )
         self.assertEqual(requests[0]["body"]["model"], model)
         self.assertTrue(requests[0]["body"]["stream"])
+        tool_results = {
+            message["tool_call_id"]: message["content"]
+            for message in requests[1]["body"]["messages"]
+            if message["role"] == "tool"
+        }
+        self.assertIn(
+            "inside repository evidence",
+            tool_results["call-inside"],
+        )
+        self.assertIn("Access denied", tool_results["call-outside"])
+        grep_result = tool_results["call-grep"]
+        self.assertLessEqual(len(grep_result.encode("utf-8")), 50 * 1024)
+        self.assertIn(
+            "[Output truncated by analyzer path gate:",
+            grep_result,
+        )
+        self.assertIn("200 matches", grep_result)
+        self.assertIn("20 context lines", grep_result)
+        self.assertIn("50KB UTF-8 output", grep_result)
+        stream_events = [
+            json.loads(line)
+            for line in pi_streams[0].splitlines()
+            if line.strip()
+        ]
+        grep_event = next(
+            event
+            for event in stream_events
+            if event["type"] == "tool_execution_end"
+            and event["toolCallId"] == "call-grep"
+        )
+        self.assertEqual(
+            grep_event["result"]["details"]["effective_limit"],
+            200,
+        )
+        self.assertEqual(
+            grep_event["result"]["details"]["effective_context"],
+            20,
+        )
+        self.assertTrue(grep_event["result"]["details"]["truncated"])
+        self.assertLessEqual(
+            grep_event["result"]["details"]["output_bytes"],
+            50 * 1024,
+        )
 
 
 # -- orchestration tests --------------------------------------------------

@@ -18,6 +18,10 @@ type Policy = {
 const MAX_READ_LINES = 1200;
 const MAX_GREP_FILES = 5000;
 const DEFAULT_LIMIT = 200;
+const MAX_GREP_CONTEXT = 20;
+const MAX_GREP_OUTPUT_BYTES = 50 * 1024;
+const GREP_TRUNCATION_NOTICE =
+	`[Output truncated by analyzer path gate: maximum ${DEFAULT_LIMIT} matches, ${MAX_GREP_CONTEXT} context lines, and ${MAX_GREP_OUTPUT_BYTES / 1024}KB UTF-8 output. Refine the search.]`;
 
 const readSchema = {
 	type: "object",
@@ -202,6 +206,16 @@ function formatLines(lines: string[], offset: number): string {
 	return lines.map((line, index) => `L${offset + index}: ${line}`).join("\n");
 }
 
+function utf8Prefix(text: string, maxBytes: number): string {
+	const buffer = Buffer.from(text, "utf8");
+	if (buffer.length <= maxBytes) return text;
+	let end = Math.max(0, maxBytes);
+	while (end > 0 && (buffer[end] & 0xc0) === 0x80) {
+		end--;
+	}
+	return buffer.subarray(0, end).toString("utf8");
+}
+
 function simpleGlobToRegExp(pattern: string): RegExp {
 	const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".");
 	return new RegExp(`^${escaped}$`);
@@ -361,8 +375,10 @@ export default function analyzerPathGate(pi: ExtensionAPI) {
 			const info = await stat(resolved.real);
 			const files = info.isDirectory() ? await collectFiles(resolved.real, MAX_GREP_FILES) : [resolved.real];
 			const glob = params.glob ? simpleGlobToRegExp(params.glob) : undefined;
-			const limit = Math.max(1, Math.floor(params.limit ?? DEFAULT_LIMIT));
-			const context = Math.max(0, Math.floor(params.context ?? 0));
+			const requestedLimit = Math.max(1, Math.floor(params.limit ?? DEFAULT_LIMIT));
+			const limit = Math.min(requestedLimit, DEFAULT_LIMIT);
+			const requestedContext = Math.max(0, Math.floor(params.context ?? 0));
+			const context = Math.min(requestedContext, MAX_GREP_CONTEXT);
 			const flags = params.ignoreCase ? "i" : "";
 			let pattern: RegExp | undefined;
 			if (!params.literal) {
@@ -373,11 +389,20 @@ export default function analyzerPathGate(pi: ExtensionAPI) {
 				}
 			}
 			const needle = params.ignoreCase ? params.pattern.toLowerCase() : params.pattern;
-			const output: string[] = [];
+			const noticeBytes = Buffer.byteLength(`\n${GREP_TRUNCATION_NOTICE}`, "utf8");
+			const outputBudget = MAX_GREP_OUTPUT_BYTES - noticeBytes;
+			let output = "";
+			let outputBytes = 0;
+			let outputByteLimitReached = false;
+			let matchLimitReached = false;
+			let matchCount = 0;
 			const matches: Array<{ path: string; resolved_path: string; line_start: number; line_end: number }> = [];
 			let redactedAny = false;
-			for (const file of files) {
-				if (output.length >= limit) break;
+			search: for (const file of files) {
+				if (matchCount >= limit) {
+					matchLimitReached = true;
+					break;
+				}
 				const rel = path.relative(resolved.real, file);
 				if (glob && !(glob.test(path.basename(file)) || glob.test(rel))) continue;
 				let text: string | undefined;
@@ -388,7 +413,11 @@ export default function analyzerPathGate(pi: ExtensionAPI) {
 				}
 				if (text === undefined) continue;
 				const lines = text.split(/\r?\n/);
-				for (let index = 0; index < lines.length && output.length < limit; index++) {
+				for (let index = 0; index < lines.length; index++) {
+					if (matchCount >= limit) {
+						matchLimitReached = true;
+						break search;
+					}
 					const haystack = params.ignoreCase ? lines[index].toLowerCase() : lines[index];
 					const matched = pattern ? pattern.test(lines[index]) : haystack.includes(needle);
 					if (!matched) continue;
@@ -397,10 +426,38 @@ export default function analyzerPathGate(pi: ExtensionAPI) {
 					const selected = lines.slice(start, end + 1);
 					const redacted = redactLines(selected);
 					if (redacted.redacted) redactedAny = true;
-					output.push(`File: ${file}\n${formatLines(redacted.lines, start + 1)}`);
+					const separator = output ? "\n---\n" : "";
+					const block = `${separator}File: ${file}\n${formatLines(redacted.lines, start + 1)}`;
+					const blockBytes = Buffer.byteLength(block, "utf8");
+					const remainingBytes = outputBudget - outputBytes;
+					if (blockBytes <= remainingBytes) {
+						output += block;
+						outputBytes += blockBytes;
+					} else {
+						const prefix = utf8Prefix(block, remainingBytes);
+						const lastCompleteLine = prefix.lastIndexOf("\n");
+						const completePrefix = lastCompleteLine > 0 ? prefix.slice(0, lastCompleteLine) : "";
+						if (completePrefix) {
+							output += completePrefix;
+							outputBytes += Buffer.byteLength(completePrefix, "utf8");
+						}
+						outputByteLimitReached = true;
+					}
+					matchCount++;
 					matches.push({ path: file, resolved_path: file, line_start: start + 1, line_end: end + 1 });
+					if (outputByteLimitReached) break search;
 				}
 			}
+			const truncated =
+				requestedLimit > limit ||
+				requestedContext > context ||
+				matchLimitReached ||
+				outputByteLimitReached;
+			let content = output || "No matches";
+			if (truncated) {
+				content += `${output ? "\n" : ""}${GREP_TRUNCATION_NOTICE}`;
+			}
+			const finalOutputBytes = Buffer.byteLength(content, "utf8");
 			await writeAudit(policy, {
 				tool: "grep",
 				requested_path: requested,
@@ -408,11 +465,33 @@ export default function analyzerPathGate(pi: ExtensionAPI) {
 				resolved_path: resolved.real,
 				allowed: true,
 				pattern: params.pattern,
-				match_count: output.length,
+				match_count: matchCount,
 				matches,
 				redacted: redactedAny,
+				truncated,
+				requested_limit: requestedLimit,
+				effective_limit: limit,
+				requested_context: requestedContext,
+				effective_context: context,
+				output_bytes: finalOutputBytes,
+				output_byte_limit: MAX_GREP_OUTPUT_BYTES,
 			});
-			return { content: [{ type: "text", text: output.join("\n---\n") || "No matches" }], details: { match_count: output.length, redacted: redactedAny } };
+			return {
+				content: [{ type: "text", text: content }],
+				details: {
+					match_count: matchCount,
+					redacted: redactedAny,
+					truncated,
+					requested_limit: requestedLimit,
+					effective_limit: limit,
+					requested_context: requestedContext,
+					effective_context: context,
+					output_bytes: finalOutputBytes,
+					output_byte_limit: MAX_GREP_OUTPUT_BYTES,
+					match_limit_reached: matchLimitReached,
+					output_byte_limit_reached: outputByteLimitReached,
+				},
+			};
 		},
 	});
 }
