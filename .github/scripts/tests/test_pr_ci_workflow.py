@@ -42,6 +42,7 @@ class PrCiWorkflowContractTest(unittest.TestCase):
                     f"python3 -m unittest discover -s {suite} -v",
                     self.workflow,
                 )
+        self.assertIn("bash scripts/tests/test_dind_run.sh", self.workflow)
 
 
 if __name__ == "__main__":

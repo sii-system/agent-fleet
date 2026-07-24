@@ -42,4 +42,5 @@ jobs:
           set -euo pipefail
           python3 -m unittest discover -s tests -v
           python3 -m unittest discover -s scripts/tests -v
+          bash scripts/tests/test_dind_run.sh
           python3 -m unittest discover -s .github/scripts/tests -v
