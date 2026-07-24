@@ -241,28 +241,6 @@ class ApiClientTest(unittest.TestCase):
         self.assertEqual(body["max_tokens"], review.MAX_RESPONSE_TOKENS)
         self.assertGreaterEqual(review.MAX_RESPONSE_TOKENS, 8_000)
 
-    def test_llm_client_accepts_api_roots_and_full_endpoints(self) -> None:
-        cases = {
-            "https://example.invalid": "https://example.invalid/v1/chat/completions",
-            "https://example.invalid/": "https://example.invalid/v1/chat/completions",
-            "https://example.invalid/v1": (
-                "https://example.invalid/v1/chat/completions"
-            ),
-            "https://example.invalid/v3/chat/completions": (
-                "https://example.invalid/v3/chat/completions"
-            ),
-            "https://example.invalid/chat/completions?api-version=3#review": (
-                "https://example.invalid/chat/completions?api-version=3#review"
-            ),
-            "https://example.invalid?api-version=3": (
-                "https://example.invalid/v1/chat/completions?api-version=3"
-            ),
-        }
-
-        for base_url, expected in cases.items():
-            with self.subTest(base_url=base_url):
-                self.assertEqual(review.chat_completions_url(base_url), expected)
-
     def test_empty_content_is_flagged_incomplete(self) -> None:
         opener = mock.Mock(
             return_value=FakeResponse(
