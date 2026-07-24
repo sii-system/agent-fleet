@@ -223,17 +223,17 @@ Automatic restart is only used when tasks remain and no worker is alive.
 
 ## Harbor Analyzer
 
-`start.sh` can also start the Pi-backed analyzer under the same Harbor run
-lifecycle. It is disabled by default because it may consume model calls:
+`start.sh` starts the Pi-backed analyzer under the same Harbor run lifecycle by
+default. Set `HARBOR_ANALYZER_ENABLED=0` to disable it:
 
 ```bash
-HARBOR_ANALYZER_ENABLED=1 ./start.sh --detach
+HARBOR_ANALYZER_ENABLED=0 ./start.sh --detach
 ```
 
 For a foreground run without zellij, pass the Harbor command to `start.sh`:
 
 ```bash
-HARBOR_ANALYZER_ENABLED=1 bash start.sh ./harboropik.sh
+bash start.sh ./harboropik.sh
 ```
 
 The analyzer depends on the monitor. It follows

@@ -121,7 +121,7 @@ Typical dataset paths:
 | `TB_AGENT_SETUP_TIMEOUT_MULTIPLIER` | Agent setup timeout multiplier |
 | `HARBOR_ONLINE_ANALYSIS` | Enables console-only online analysis, default `0` |
 | `HARBOR_EARLY_STOP` | Stops the current SETA task on matching task-blocking online-analysis events when set to `1`, default `0` |
-| `HARBOR_ANALYZER_ENABLED` | Starts the Pi-backed analyzer from `start.sh` after the monitor is ready, default `0` |
+| `HARBOR_ANALYZER_ENABLED` | Starts the Pi-backed analyzer from `start.sh` after the monitor is ready, default `1` |
 | `HARBOR_ANALYZER_MODE` | Analyzer launch mode, currently only `handover-follow` |
 | `HARBOR_ANALYZER_OUTPUT_DIR` | Analyzer output directory, defaults to `<OUTPUT_PATH>/analyzer` |
 | `HARBOR_ANALYZER_POLL_INTERVAL` | Analyzer handover polling interval in seconds, default `5` |
@@ -272,7 +272,7 @@ Outputs:
 <OUTPUT_PATH>/online-analysis/environment-summary.json
 ```
 
-When `HARBOR_ANALYZER_ENABLED=1`, `start.sh` also starts
+By default, `start.sh` also starts
 `scripts/analyzer_subagent.py --follow` after the monitor has produced
 `monitor/analyzer-handover-latest.json`. The analyzer consumes that latest file
 and `monitor/analyzer-handoffs/`, writes reports under `<OUTPUT_PATH>/analyzer`,
