@@ -26,6 +26,7 @@ MAX_CHUNK_CHARS = 50_000
 MAX_TOTAL_CHARS = 200_000
 MAX_COMMENTS = 20
 MAX_FIELD_CHARS = 2_000
+MAX_RESPONSE_TOKENS = 12_000
 SEVERITY_ORDER = {"P0": 0, "P1": 1, "P2": 2, "P3": 3}
 API_VERSION = "2022-11-28"
 REQUEST_TIMEOUT_SECONDS = 90
@@ -133,6 +134,13 @@ def build_chunks(
         output_chars += len(chunk)
 
     return chunks, cursor < len(source)
+
+
+def _first_nonempty_text(*candidates: Any) -> str | None:
+    for candidate in candidates:
+        if isinstance(candidate, str) and candidate.strip():
+            return candidate
+    return None
 
 
 def extract_json(content: str) -> dict[str, Any]:
@@ -243,7 +251,7 @@ class LlmClient:
                 {"role": "user", "content": diff_chunk},
             ],
             "temperature": 0.1,
-            "max_tokens": 4_000,
+            "max_tokens": MAX_RESPONSE_TOKENS,
         }
         request = Request(
             self.base_url,
@@ -258,15 +266,18 @@ class LlmClient:
         for attempt in range(3):
             try:
                 response = _json_request(request, opener=self.opener)
-                content = response["choices"][0]["message"]["content"]
-                if not isinstance(content, str):
-                    raise ModelResponseError("model content must be text")
-                return extract_json(content)
+                message = response["choices"][0]["message"]
+                text = _first_nonempty_text(
+                    message.get("content"), message.get("reasoning_content")
+                )
+                if text is None:
+                    return {"findings": []}
+                return extract_json(text)
             except HTTPError as exc:
                 if exc.code not in RETRYABLE_STATUS or attempt == 2:
                     raise
                 self.sleeper(attempt + 1)
-            except (KeyError, IndexError, TypeError) as exc:
+            except (KeyError, IndexError, TypeError, AttributeError) as exc:
                 raise ModelResponseError(
                     "unexpected chat completion response"
                 ) from exc

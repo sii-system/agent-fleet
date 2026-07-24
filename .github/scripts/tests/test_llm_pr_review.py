@@ -221,7 +221,7 @@ class ApiClientTest(unittest.TestCase):
         client = review.LlmClient(
             "https://example.invalid/v3/chat/completions",
             "secret-value",
-            "deepseek-v4-pro-202606",
+            "test-model",
             opener=opener,
             sleeper=mock.Mock(),
         )
@@ -232,8 +232,76 @@ class ApiClientTest(unittest.TestCase):
         self.assertEqual(request.get_header("Authorization"), "Bearer secret-value")
         self.assertEqual(opener.call_args.kwargs["timeout"], 90)
         body = json.loads(request.data)
-        self.assertEqual(body["model"], "deepseek-v4-pro-202606")
+        self.assertEqual(body["model"], "test-model")
         self.assertEqual(body["temperature"], 0.1)
+        self.assertEqual(body["max_tokens"], review.MAX_RESPONSE_TOKENS)
+        self.assertGreaterEqual(review.MAX_RESPONSE_TOKENS, 8_000)
+
+    def test_empty_content_is_treated_as_no_findings(self) -> None:
+        opener = mock.Mock(
+            return_value=FakeResponse(
+                {"choices": [{"message": {"content": ""}}]}
+            )
+        )
+        client = review.LlmClient(
+            "https://example.invalid", "key", "model", opener, mock.Mock()
+        )
+
+        self.assertEqual(client.review("system", "diff"), {"findings": []})
+
+    def test_whitespace_content_is_treated_as_no_findings(self) -> None:
+        opener = mock.Mock(
+            return_value=FakeResponse(
+                {"choices": [{"message": {"content": "   \n\t "}}]}
+            )
+        )
+        client = review.LlmClient(
+            "https://example.invalid", "key", "model", opener, mock.Mock()
+        )
+
+        self.assertEqual(client.review("system", "diff"), {"findings": []})
+
+    def test_missing_content_key_is_treated_as_no_findings(self) -> None:
+        opener = mock.Mock(
+            return_value=FakeResponse({"choices": [{"message": {}}]})
+        )
+        client = review.LlmClient(
+            "https://example.invalid", "key", "model", opener, mock.Mock()
+        )
+
+        self.assertEqual(client.review("system", "diff"), {"findings": []})
+
+    def test_malformed_message_raises_model_response_error(self) -> None:
+        opener = mock.Mock(
+            return_value=FakeResponse({"choices": [{"message": "oops"}]})
+        )
+        client = review.LlmClient(
+            "https://example.invalid", "key", "model", opener, mock.Mock()
+        )
+
+        with self.assertRaises(review.ModelResponseError):
+            client.review("system", "diff")
+
+    def test_falls_back_to_reasoning_content_when_content_empty(self) -> None:
+        opener = mock.Mock(
+            return_value=FakeResponse(
+                {
+                    "choices": [
+                        {
+                            "message": {
+                                "content": "",
+                                "reasoning_content": '{"findings": []}',
+                            }
+                        }
+                    ]
+                }
+            )
+        )
+        client = review.LlmClient(
+            "https://example.invalid", "key", "model", opener, mock.Mock()
+        )
+
+        self.assertEqual(client.review("system", "diff"), {"findings": []})
 
     def test_llm_client_retries_429_twice(self) -> None:
         error = HTTPError("url", 429, "rate limited", {}, None)
