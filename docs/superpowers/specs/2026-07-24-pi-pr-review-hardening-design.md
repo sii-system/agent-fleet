@@ -37,7 +37,9 @@ passed to pi.
 `LLM_REVIEW_BASE_URL` keeps its existing contract as a complete
 Chat Completions endpoint. The pi adapter validates its scheme and host and
 removes only a final `/chat/completions` path suffix. It does not append
-`/v1` or otherwise rewrite custom gateway path prefixes.
+`/v1` or otherwise rewrite custom gateway path prefixes. Query parameters and
+fragments are unsupported; operators must remove them or move their values to
+the appropriate request headers before configuring the endpoint.
 
 ## Response Handling
 

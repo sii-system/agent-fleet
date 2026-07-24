@@ -5,6 +5,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
 WORKFLOWS = ROOT / ".github" / "workflows"
+PROMPT = ROOT / ".github" / "scripts" / "pi_review_prompt.md"
 
 
 class LlmPrReviewWorkflowTest(unittest.TestCase):
@@ -16,6 +17,7 @@ class LlmPrReviewWorkflowTest(unittest.TestCase):
         cls.self_hosted = WORKFLOWS.joinpath(
             "self-hosted-llm-pr-review.yml"
         ).read_text(encoding="utf-8")
+        cls.prompt = PROMPT.read_text(encoding="utf-8")
 
     def test_reviewers_remain_separate_top_level_workflows(self):
         for workflow in (self.hosted, self.self_hosted):
@@ -96,6 +98,46 @@ class LlmPrReviewWorkflowTest(unittest.TestCase):
                 self.assertNotIn("api_key_secret", workflow)
                 self.assertNotIn("base_url_variable", workflow)
                 self.assertNotIn("model_variable", workflow)
+
+    def test_workflows_post_validate_the_tested_pi_version(self):
+        for workflow in (self.hosted, self.self_hosted):
+            with self.subTest(workflow=workflow.splitlines()[0]):
+                self.assertIn('PI_VERSION: "0.81.1"', workflow)
+                self.assertIn("INSTALLED_VERSION=", workflow)
+                self.assertIn(
+                    '[[ "$INSTALLED_VERSION" != "$PI_VERSION" ]]',
+                    workflow,
+                )
+                self.assertIn("Expected pi version $PI_VERSION", workflow)
+                self.assertIn(
+                    'INSTALLED_VERSION="$(pi --version',
+                    workflow,
+                )
+                self.assertIn(
+                    "grep -oE '[0-9]+\\.[0-9]+\\.[0-9]+'",
+                    workflow,
+                )
+
+    def test_prompt_handles_files_absent_from_trusted_base(self):
+        prompt = " ".join(self.prompt.split())
+        self.assertIn(
+            "only when that path exists in the trusted base checkout",
+            prompt,
+        )
+        self.assertIn(
+            "judge the added file from the supplied diff",
+            prompt,
+        )
+        self.assertIn(
+            "Path not found is not a reason to suppress a valid finding",
+            prompt,
+        )
+        self.assertIn(
+            "related existing callers, interfaces, and tests",
+            prompt,
+        )
+        self.assertIn("Spend at most 4 tool calls per finding", self.prompt)
+        self.assertIn("added RIGHT-side line", self.prompt)
 
     def test_reusable_workflow_is_removed(self):
         self.assertFalse(

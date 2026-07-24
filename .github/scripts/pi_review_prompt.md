@@ -7,11 +7,14 @@ them to gather context beyond the diff before reporting findings. For each
 changed file you flag:
 
 1. Use read to inspect at least 50 lines around each change for surrounding
-   logic, error handling, and invariants the change may violate.
-2. Use grep to find related test files, callers, and implementations of any
-   interface or base class the change affects.
-3. Use find to locate type definitions, config schemas, or documentation that
-   the change must stay consistent with.
+   logic, error handling, and invariants only when that path exists in the
+   trusted base checkout.
+2. If an added file is absent from the trusted base, judge the added file from
+   the supplied diff. Path not found is not a reason to suppress a valid
+   finding.
+3. Use grep and find to inspect related existing callers, interfaces, and
+   tests, plus type definitions, config schemas, or documentation that the
+   change must stay consistent with.
 
 Spend at most 4 tool calls per finding. Report only actionable defects
 introduced by the changed lines. Do not report style preferences, broad
