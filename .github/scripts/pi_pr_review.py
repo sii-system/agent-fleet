@@ -23,14 +23,12 @@ import llm_pr_review as _review  # noqa: E402
 _PROJECT_ROOT = _SCRIPTS_DIR.parents[1]
 sys.path.insert(0, str(_PROJECT_ROOT))
 from scripts.pi_prompt import (  # noqa: E402
-    API_KEY_ENV,
     PROVIDER,
     PromptFailure,
     final_assistant_message,
     message_text,
     minimal_environment,
     models_config,
-    normalized_base_url,
     parse_jsonl,
     provider_error,
 )
@@ -45,10 +43,14 @@ class PiReviewError(RuntimeError):
 
 def _chat_url_to_base(url: str) -> str:
     """Convert a chat-completions endpoint URL to a pi-compatible base URL."""
-    parsed = urlparse(url)
-    path = re.sub(r"/chat/completions$", "", parsed.path)
-    base = f"{parsed.scheme}://{parsed.netloc}{path}"
-    return normalized_base_url(base)
+    parsed = urlparse(url.strip())
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise PiReviewError("invalid LLM_REVIEW_BASE_URL for pi provider")
+    suffix = "/chat/completions"
+    path = parsed.path.rstrip("/")
+    if path.endswith(suffix):
+        path = path[: -len(suffix)]
+    return parsed._replace(path=path).geturl()
 
 
 def _extract_json(text: str) -> dict[str, Any]:
@@ -58,9 +60,9 @@ def _extract_json(text: str) -> dict[str, Any]:
     ``--mode json`` returns clean JSON, but some models still fence it.
     """
     content = text.strip()
-    opening, separator, fenced = content.partition("\n")
-    if separator and opening in {"```", "```json"} and fenced.endswith("```"):
-        content = fenced[:-3].strip()
+    fenced = re.fullmatch(r"```(?:json)?\s*(.*?)\s*```", content, re.DOTALL)
+    if fenced:
+        content = fenced.group(1)
     decoder = json.JSONDecoder()
     try:
         value, end = decoder.raw_decode(content)
