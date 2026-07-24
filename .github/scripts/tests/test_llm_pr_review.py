@@ -570,7 +570,7 @@ class OrchestrationTest(unittest.TestCase):
     def test_summary_caps_the_skipped_path_list(self) -> None:
         skipped = [(f"generated/{index}.map", "generated") for index in range(55)]
 
-        summary = review.build_summary("head-1", [], 0, skipped, False)
+        summary = review.build_summary("head-1", [], 0, skipped, False, 0)
 
         self.assertIn("`generated/49.map`", summary)
         self.assertNotIn("`generated/50.map`", summary)

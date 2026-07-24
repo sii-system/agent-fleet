@@ -1,4 +1,4 @@
-"""Run per-task Pi/GLM Analyzer subagents and persist aggregate outputs."""
+"""Run per-task Pi Analyzer subagents and persist aggregate outputs."""
 
 from __future__ import annotations
 
@@ -41,7 +41,7 @@ class AnalyzerConfig:
     run_id: str | None = None
     pi_bin: str = "pi"
     provider: str = "harbor-analyzer"
-    model: str = "glm5.2"
+    model: str = ""
     base_url: str = ""
     api_key_env: str = "HARBOR_ANALYZER_API_KEY"
     timeout_seconds: int = 900

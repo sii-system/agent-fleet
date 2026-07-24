@@ -1,4 +1,4 @@
-"""Launch an isolated read-only Pi process pinned to the GLM-5.2 analyzer model."""
+"""Launch an isolated read-only Pi process for the configured analyzer model."""
 
 from __future__ import annotations
 
@@ -101,6 +101,7 @@ def _models_config(
                 "baseUrl": base_url,
                 "api": "openai-completions",
                 "apiKey": f"${api_key_env}",
+                "authHeader": True,
                 "compat": {
                     "supportsDeveloperRole": False,
                     "supportsReasoningEffort": False,
@@ -347,6 +348,8 @@ def dispatch_to_child(
         return DispatchResult(None, provenance, "pi_binary_not_found", "")
     if not provider.strip():
         return DispatchResult(None, provenance, "pi_provider_not_configured", "")
+    if not model.strip():
+        return DispatchResult(None, provenance, "pi_model_not_configured", "")
     if not ENV_NAME_RE.fullmatch(api_key_env):
         return DispatchResult(None, provenance, "analyzer_api_key_env_invalid", "")
     if not os.environ.get(api_key_env):
