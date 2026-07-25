@@ -53,32 +53,30 @@ def _fallback_timeout_trace(logs_dir: Path, status: str) -> int:
         return 0
     session_id = ""
     first_text = ""
-    last_text = ""
     try:
         for line in agent_log.read_text(encoding="utf-8", errors="replace").splitlines():
             try:
                 event = json.loads(line)
-            except Exception:
+            except json.JSONDecodeError:
                 continue
             session_id = session_id or str(event.get("sessionID") or "")
             part = event.get("part") if isinstance(event.get("part"), dict) else {}
             text = part.get("text") if isinstance(part, dict) else None
             if isinstance(text, str) and text.strip():
                 first_text = first_text or text.strip()
-                last_text = text.strip()
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - fallback parsing must fail closed
         print(f"[WARN] unable to parse opencode log fallback: {exc}", file=sys.stderr)
         return 1
     if not session_id:
         return 0
     try:
         from opik import Opik
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - optional dependency may fail during import
         print(f"[WARN] unable to import opik for fallback timeout trace: {exc}", file=sys.stderr)
         return 1
     try:
         from uuid6 import uuid7
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - optional dependency may fail during import
         print(f"[WARN] unable to import uuid6 for fallback timeout trace: {exc}", file=sys.stderr)
         return 1
 
@@ -110,16 +108,16 @@ def _fallback_timeout_trace(logs_dir: Path, status: str) -> int:
         client = Opik(project_name=project_name)
         try:
             client.rest_client.traces.create_trace(**payload)
-        except Exception:
+        except Exception:  # noqa: BLE001 - update is the compatibility fallback
             client.rest_client.traces.update_trace(trace_id, **{k: v for k, v in payload.items() if k not in {"id", "start_time"}})
         try:
             client.flush()
             client.shutdown()
-        except Exception:
+        except Exception:  # noqa: BLE001,S110 - shutdown is best effort
             pass
         print(f"[INFO] fallback timeout trace finalized trace_id={trace_id}")
         return 0
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - tracing failure must not escape the finalizer
         print(f"[WARN] fallback timeout trace failed: {exc}", file=sys.stderr)
         return 1
 
@@ -164,7 +162,7 @@ def main() -> int:
 
     try:
         state = json.loads(state_file.read_text(encoding="utf-8"))
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - invalid state must not abort cleanup
         print(f"[WARN] unable to read opencode realtime state: {exc}", file=sys.stderr)
         return 0
 
@@ -211,7 +209,7 @@ def main() -> int:
             )
             if result.returncode != 0:
                 rc = result.returncode
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - finalizer records arbitrary hook failures
             print(f"[WARN] unable to finalize opencode session {session_id}: {exc}", file=sys.stderr)
             rc = 1
 

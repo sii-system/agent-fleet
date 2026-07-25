@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Tests for Harbor worker helper utilities."""
 
 from __future__ import annotations
@@ -10,7 +9,6 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-
 
 SCRIPT = Path(__file__).parents[1] / "harbor_worker_utils.py"
 SPEC = importlib.util.spec_from_file_location("harbor_worker_utils", SCRIPT)

@@ -22,7 +22,6 @@ import uuid
 from pathlib import Path
 from types import MethodType, ModuleType
 
-
 _MISSING = object()
 _ROUND_GATE_EVENTS = ("PreToolUse", "Stop")
 _ACTIVE_EXTRA_ENV: contextvars.ContextVar[dict[str, str] | None] = (
@@ -187,7 +186,7 @@ async def _remove_remote_prompt(environment, remote_path: str, logger) -> None:
                 remote_path,
                 result.return_code,
             )
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - remote cleanup is best effort
         logger.warning(
             "Failed to remove remote append-system-prompt file %s: %s",
             remote_path,
@@ -262,7 +261,7 @@ def _append_exit_diagnostics(command: str) -> str:
 def _patch_model_fusion_run() -> None:
     try:
         from harbor.agents.installed.claude_code import ClaudeCode
-    except Exception:
+    except Exception:  # noqa: BLE001 - Harbor is optional at interpreter startup
         return
 
     if getattr(ClaudeCode, "_model_fusion_patch_applied", False):
@@ -274,7 +273,7 @@ def _patch_model_fusion_run() -> None:
         extra_env = getattr(self, "_extra_env", None)
         saved_flags = getattr(self, "_resolved_flags", None)
         if not isinstance(saved_flags, dict):
-            raise RuntimeError(
+            raise TypeError(
                 "model-fusion requires Harbor ClaudeCode._resolved_flags"
             )
 

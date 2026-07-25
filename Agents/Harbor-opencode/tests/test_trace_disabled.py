@@ -11,7 +11,6 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-
 MODULE_DIR = Path(__file__).resolve().parents[1]
 
 

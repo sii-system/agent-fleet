@@ -32,7 +32,6 @@ import shlex
 from pathlib import Path
 from types import MethodType
 
-
 _HOOK_EVENTS = [
     "UserPromptSubmit",
     "PostToolUse",
@@ -72,16 +71,20 @@ def _rust_package_mirror_bootstrap(extra_env: dict[str, str] | None) -> str:
                 "mkdir -p \"$cargo_home\"",
                 "cargo_config=\"$cargo_home/config.toml\"",
                 "tmp_config=\"$cargo_home/config.toml.tmp.$$\"",
-                "if [ -f \"$cargo_config\" ] && command -v awk >/dev/null 2>&1; then "
-                "awk -v mirror=\"$CARGO_REGISTRY_REPLACE_WITH\" "
-                "'BEGIN { skip=0 } "
-                "/^\\[/ { skip = ($0 == \"[source.crates-io]\" || $0 == \"[source.\" mirror \"]\" || $0 == \"[registries.\" mirror \"]\") } "
-                "!skip { print }' \"$cargo_config\" > \"$tmp_config\"; "
-                "elif [ -f \"$cargo_config\" ]; then cp \"$cargo_config\" \"$tmp_config\"; "
-                "else : > \"$tmp_config\"; fi",
-                "printf '\\n[source.crates-io]\\nreplace-with = \"%s\"\\n\\n[source.%s]\\nregistry = \"%s\"\\n\\n[registries.%s]\\nindex = \"%s\"\\n' "
-                "\"$CARGO_REGISTRY_REPLACE_WITH\" \"$CARGO_REGISTRY_REPLACE_WITH\" \"$CARGO_REGISTRY_URL\" "
-                "\"$CARGO_REGISTRY_REPLACE_WITH\" \"$CARGO_REGISTRY_URL\" >> \"$tmp_config\"",
+                (
+                    "if [ -f \"$cargo_config\" ] && command -v awk >/dev/null 2>&1; then "
+                    "awk -v mirror=\"$CARGO_REGISTRY_REPLACE_WITH\" "
+                    "'BEGIN { skip=0 } "
+                    "/^\\[/ { skip = ($0 == \"[source.crates-io]\" || $0 == \"[source.\" mirror \"]\" || $0 == \"[registries.\" mirror \"]\") } "
+                    "!skip { print }' \"$cargo_config\" > \"$tmp_config\"; "
+                    "elif [ -f \"$cargo_config\" ]; then cp \"$cargo_config\" \"$tmp_config\"; "
+                    "else : > \"$tmp_config\"; fi"
+                ),
+                (
+                    "printf '\\n[source.crates-io]\\nreplace-with = \"%s\"\\n\\n[source.%s]\\nregistry = \"%s\"\\n\\n[registries.%s]\\nindex = \"%s\"\\n' "
+                    "\"$CARGO_REGISTRY_REPLACE_WITH\" \"$CARGO_REGISTRY_REPLACE_WITH\" \"$CARGO_REGISTRY_URL\" "
+                    "\"$CARGO_REGISTRY_REPLACE_WITH\" \"$CARGO_REGISTRY_URL\" >> \"$tmp_config\""
+                ),
                 "mv \"$tmp_config\" \"$cargo_config\"",
             ]
         )
@@ -194,7 +197,7 @@ def _build_hook_settings_json(hook_path: str) -> str:
 def _patch_claude_code_realtime_hooks() -> None:
     try:
         from harbor.agents.installed.claude_code import ClaudeCode
-    except Exception:
+    except Exception:  # noqa: BLE001 - Harbor is optional at interpreter startup
         return
 
     if getattr(ClaudeCode, "_opik_realtime_hooks_patch_applied", False):
@@ -509,7 +512,7 @@ def _patch_claude_code_realtime_hooks() -> None:
 def _patch_claude_code_fallback() -> None:
     try:
         from harbor.agents.installed.claude_code import ClaudeCode
-    except Exception:
+    except Exception:  # noqa: BLE001 - Harbor is optional at interpreter startup
         return
 
     if getattr(ClaudeCode, "_opik_fallback_patch_applied", False):
@@ -527,21 +530,23 @@ def _patch_claude_code_fallback() -> None:
         session_file = session_dir / "fallback.jsonl"
 
         event_count = 0
-        with open(stream_log, "r", encoding="utf-8", errors="replace") as src:
-            with open(session_file, "w", encoding="utf-8") as dst:
-                for raw_line in src:
-                    line = raw_line.strip()
-                    if not line:
-                        continue
-                    try:
-                        event = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    if not isinstance(event, dict):
-                        continue
-                    dst.write(json.dumps(event, ensure_ascii=False))
-                    dst.write("\n")
-                    event_count += 1
+        with (
+            open(stream_log, "r", encoding="utf-8", errors="replace") as src,
+            open(session_file, "w", encoding="utf-8") as dst,
+        ):
+            for raw_line in src:
+                line = raw_line.strip()
+                if not line:
+                    continue
+                try:
+                    event = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(event, dict):
+                    continue
+                dst.write(json.dumps(event, ensure_ascii=False))
+                dst.write("\n")
+                event_count += 1
 
         if event_count == 0:
             return None
@@ -561,7 +566,7 @@ def _patch_claude_code_fallback() -> None:
 
         try:
             trajectory = self._convert_events_to_trajectory(fallback_dir)
-        except Exception:
+        except Exception:  # noqa: BLE001 - fallback conversion is best effort
             return
 
         if not trajectory:
