@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""PR review powered by pi agent — explores codebase context with read-only tools."""
+"""PR review powered by pi agent with trusted codebase context."""
 
 from __future__ import annotations
 
@@ -10,7 +10,6 @@ import re
 import subprocess
 import sys
 import tempfile
-import time
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -22,44 +21,22 @@ import llm_pr_review as _review  # noqa: E402
 
 # -- pi integration helpers from the control-plane prompt translator -----
 _PROJECT_ROOT = _SCRIPTS_DIR.parents[1]
-PI_PATH_GATE_EXTENSION = (
-    _PROJECT_ROOT
-    / "Agents"
-    / "utils"
-    / "common"
-    / "Harbor"
-    / "scripts"
-    / "harbor_analyzer"
-    / "pi_extensions"
-    / "analyzer_path_gate.ts"
-)
-PI_ALLOWED_PATHS_ENV = "HARBOR_ANALYZER_ALLOWED_PATHS_JSON"
-PI_GREP_LITERAL_ONLY_ENV = "HARBOR_ANALYZER_GREP_LITERAL_ONLY"
-PI_MAX_TOOL_CALLS_ENV = "HARBOR_ANALYZER_MAX_TOOL_CALLS"
-PI_MAX_TOTAL_TOOL_OUTPUT_ENV = (
-    "HARBOR_ANALYZER_MAX_TOTAL_TOOL_OUTPUT_BYTES"
-)
 sys.path.insert(0, str(_PROJECT_ROOT))
 from scripts.pi_prompt import (  # noqa: E402
+    API_KEY_ENV,
     PROVIDER,
     PromptFailure,
     final_assistant_message,
     message_text,
     minimal_environment,
     models_config,
+    normalized_base_url,
     parse_jsonl,
     provider_error,
 )
 
 PI_REVIEW_ID = "pi-pr-review"
 PI_TIMEOUT_SECONDS = 900  # 15 min — agent tool calls take longer than raw API
-WORKFLOW_TIMEOUT_SECONDS = 20 * 60
-WORKFLOW_RESERVE_SECONDS = 5 * 60
-PI_REVIEW_BUDGET_SECONDS = (
-    WORKFLOW_TIMEOUT_SECONDS - WORKFLOW_RESERVE_SECONDS
-)
-PI_MAX_TOOL_CALLS = 16
-PI_MAX_TOTAL_TOOL_OUTPUT_BYTES = 128 * 1024
 
 
 class PiReviewError(RuntimeError):
@@ -68,27 +45,10 @@ class PiReviewError(RuntimeError):
 
 def _chat_url_to_base(url: str) -> str:
     """Convert a chat-completions endpoint URL to a pi-compatible base URL."""
-    value = url.strip()
-    try:
-        parsed = urlparse(value)
-        hostname = parsed.hostname
-    except ValueError as exc:
-        raise PiReviewError(
-            "invalid LLM_REVIEW_BASE_URL for pi provider"
-        ) from exc
-    if parsed.scheme not in {"http", "https"} or not hostname:
-        raise PiReviewError("invalid LLM_REVIEW_BASE_URL for pi provider")
-    if parsed.params or parsed.query or parsed.fragment:
-        raise PiReviewError(
-            "LLM_REVIEW_BASE_URL query parameters or fragments are not "
-            "supported by pi provider"
-        )
-    path = parsed.path
-    for suffix in ("/chat/completions/", "/chat/completions"):
-        if path.endswith(suffix):
-            path = path[: -len(suffix)]
-            break
-    return parsed._replace(path=path).geturl()
+    parsed = urlparse(url)
+    path = re.sub(r"/chat/completions$", "", parsed.path)
+    base = f"{parsed.scheme}://{parsed.netloc}{path}"
+    return normalized_base_url(base)
 
 
 def _extract_json(text: str) -> dict[str, Any]:
@@ -98,9 +58,9 @@ def _extract_json(text: str) -> dict[str, Any]:
     ``--mode json`` returns clean JSON, but some models still fence it.
     """
     content = text.strip()
-    fenced = re.fullmatch(r"```(?:json)?\s*(.*?)\s*```", content, re.DOTALL)
-    if fenced:
-        content = fenced.group(1)
+    opening, separator, fenced = content.partition("\n")
+    if separator and opening in {"```", "```json"} and fenced.endswith("```"):
+        content = fenced[:-3].strip()
     decoder = json.JSONDecoder()
     try:
         value, end = decoder.raw_decode(content)
@@ -144,15 +104,6 @@ def _validate_pi_stream(raw_stdout: str) -> dict[str, Any]:
     if turn_start < 1 or turn_start != turn_end:
         raise PiReviewError("pi turn lifecycle is incomplete")
 
-    tool_executions = sum(
-        e.get("type") == "tool_execution_start" for e in events
-    )
-    if tool_executions > PI_MAX_TOOL_CALLS:
-        raise PiReviewError(
-            "pi exceeded reviewer tool-call limit of "
-            f"{PI_MAX_TOOL_CALLS}: observed {tool_executions} executions"
-        )
-
     err = provider_error(events)
     if err:
         raise PiReviewError(f"pi provider request failed: {err}")
@@ -176,7 +127,7 @@ def _validate_pi_stream(raw_stdout: str) -> dict[str, Any]:
 
 
 class PiClient:
-    """PR review client powered by the pi coding agent in read-only mode."""
+    """PR review client powered by the pi coding agent."""
 
     def __init__(
         self,
@@ -187,45 +138,16 @@ class PiClient:
         repository_root: Path,
         provider: str = PROVIDER,
         timeout: int = PI_TIMEOUT_SECONDS,
-        path_gate_extension: Path = PI_PATH_GATE_EXTENSION,
     ) -> None:
-        try:
-            self.repository_root = repository_root.resolve(strict=True)
-        except (OSError, RuntimeError) as exc:
-            raise PiReviewError(
-                "pi repository root is unavailable"
-            ) from exc
-        if not self.repository_root.is_dir():
-            raise PiReviewError("pi repository root is not a directory")
-
-        try:
-            self.path_gate_extension = path_gate_extension.resolve(strict=True)
-        except (OSError, RuntimeError) as exc:
-            raise PiReviewError(
-                "pi path-gate extension is unavailable"
-            ) from exc
-        if not self.path_gate_extension.is_file():
-            raise PiReviewError("pi path-gate extension is not a file")
-
         self.pi_binary = pi_binary
         self.base_url = _chat_url_to_base(base_url)
         self.api_key = api_key
         self.model = model
+        self.repository_root = repository_root
         self.provider = provider
         self.timeout = timeout
 
-    def review(
-        self,
-        system_prompt: str,
-        diff_chunk: str,
-        *,
-        timeout: float | None = None,
-    ) -> dict[str, Any]:
-        effective_timeout = (
-            self.timeout
-            if timeout is None
-            else min(timeout, self.timeout)
-        )
+    def review(self, system_prompt: str, diff_chunk: str) -> dict[str, Any]:
         with tempfile.TemporaryDirectory(prefix="pi-pr-review-") as tmp:
             root = Path(tmp)
             runtime_dir = root / "pi-agent"
@@ -239,16 +161,6 @@ class PiClient:
                 encoding="utf-8",
             )
 
-            environment = minimal_environment(runtime_dir, self.api_key)
-            environment[PI_ALLOWED_PATHS_ENV] = json.dumps(
-                [str(self.repository_root)]
-            )
-            environment[PI_GREP_LITERAL_ONLY_ENV] = "1"
-            environment[PI_MAX_TOOL_CALLS_ENV] = str(PI_MAX_TOOL_CALLS)
-            environment[PI_MAX_TOTAL_TOOL_OUTPUT_ENV] = str(
-                PI_MAX_TOTAL_TOOL_OUTPUT_BYTES
-            )
-
             command = [
                 self.pi_binary,
                 "--mode", "json",
@@ -256,15 +168,7 @@ class PiClient:
                 "--provider", self.provider,
                 "--model", self.model,
                 "--no-session",
-                "--no-builtin-tools",
-                "--tools", "read,grep,find,ls",
-                "--extension", str(self.path_gate_extension),
-                "--no-extensions",
-                "--no-skills",
-                "--no-prompt-templates",
-                "--no-themes",
-                "--no-context-files",
-                "--no-approve",
+                "--approve",
                 "--system-prompt", system_prompt,
                 diff_chunk,
             ]
@@ -273,17 +177,17 @@ class PiClient:
                 completed = subprocess.run(
                     command,
                     cwd=self.repository_root,
-                    env=environment,
+                    env=minimal_environment(runtime_dir, self.api_key),
                     stdin=subprocess.DEVNULL,
                     text=True,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
-                    timeout=effective_timeout,
+                    timeout=self.timeout,
                     check=False,
                 )
             except subprocess.TimeoutExpired as exc:
                 raise PiReviewError(
-                    f"pi timed out after {effective_timeout:g}s"
+                    f"pi timed out after {self.timeout}s"
                 ) from exc
             except OSError as exc:
                 raise PiReviewError(f"could not launch pi: {exc}") from exc
@@ -301,40 +205,18 @@ class PiClient:
 # -- orchestration (mirrors llm_pr_review.run_review) --------------------
 
 
-def _matches_event_revision(
-    pull: dict[str, Any],
-    expected_base_sha: str,
-    expected_head_sha: str,
-) -> bool:
-    return (
-        pull["base"]["sha"] == expected_base_sha
-        and pull["head"]["sha"] == expected_head_sha
-    )
-
-
 def run_review(
     github: _review.GitHubClient,
     pi_client: PiClient,
     pull_number: int,
     prompt: str,
     review_id: str = PI_REVIEW_ID,
-    *,
-    expected_base_sha: str,
-    expected_head_sha: str,
 ) -> str:
-    deadline = time.monotonic() + PI_REVIEW_BUDGET_SECONDS
     pull = github.get_pull(pull_number)
-    if not _matches_event_revision(
-        pull, expected_base_sha, expected_head_sha
-    ):
-        return "stale"
 
-    head_sha = expected_head_sha
+    head_sha = pull["head"]["sha"]
     if _review.has_existing_review(
-        github.list_reviews(pull_number),
-        head_sha,
-        review_id,
-        base_sha=expected_base_sha,
+        github.list_reviews(pull_number), head_sha, review_id
     ):
         return "duplicate"
 
@@ -344,22 +226,9 @@ def run_review(
     findings: list[_review.Finding] = []
     rejected = 0
     incomplete_chunks = 0
-    for index, chunk in enumerate(chunks):
-        remaining_chunks = len(chunks) - index
-        remaining_seconds = deadline - time.monotonic()
-        if remaining_seconds <= 0:
-            raise PiReviewError(
-                "pi review deadline exhausted before chunk "
-                f"{index + 1} of {len(chunks)}"
-            )
-        chunk_timeout = min(
-            float(pi_client.timeout),
-            remaining_seconds / remaining_chunks,
-        )
+    for chunk in chunks:
         payload = pi_client.review(
-            prompt,
-            _review.build_model_input(pull, chunk),
-            timeout=chunk_timeout,
+            prompt, _review.build_model_input(pull, chunk)
         )
         if payload.get("incomplete"):
             incomplete_chunks += 1
@@ -378,6 +247,10 @@ def run_review(
     )
     rejected += aggregate_rejected
 
+    current = github.get_pull(pull_number)
+    if current["head"]["sha"] != head_sha:
+        return "stale"
+
     summary = _review.build_summary(
         head_sha,
         findings,
@@ -386,13 +259,7 @@ def run_review(
         truncated,
         incomplete_chunks=incomplete_chunks,
         review_id=review_id,
-        base_sha=expected_base_sha,
     )
-    current = github.get_pull(pull_number)
-    if not _matches_event_revision(
-        current, expected_base_sha, expected_head_sha
-    ):
-        return "stale"
     github.create_review(pull_number, head_sha, summary, findings)
     return "published"
 
@@ -422,28 +289,19 @@ def main() -> int:
     args = parse_args()
     event = json.loads(args.event_path.read_text())
     repository = require_env("GITHUB_REPOSITORY")
-    pull_request = event["pull_request"]
-    pull_number = int(pull_request["number"])
+    pull_number = int(event["pull_request"]["number"])
     github = _review.GitHubClient(repository, require_env("GITHUB_TOKEN"))
+    pi_client = PiClient(
+        pi_binary=args.pi_bin,
+        base_url=require_env("LLM_REVIEW_BASE_URL"),
+        api_key=require_env("LLM_REVIEW_API_KEY"),
+        model=require_env("LLM_REVIEW_MODEL"),
+        repository_root=Path(require_env("GITHUB_WORKSPACE")),
+    )
     prompt = args.prompt_path.read_text()
     review_id = os.environ.get("LLM_REVIEW_ID", PI_REVIEW_ID)
     try:
-        pi_client = PiClient(
-            pi_binary=args.pi_bin,
-            base_url=require_env("LLM_REVIEW_BASE_URL"),
-            api_key=require_env("LLM_REVIEW_API_KEY"),
-            model=require_env("LLM_REVIEW_MODEL"),
-            repository_root=Path(require_env("GITHUB_WORKSPACE")),
-        )
-        result = run_review(
-            github,
-            pi_client,
-            pull_number,
-            prompt,
-            review_id=review_id,
-            expected_base_sha=pull_request["base"]["sha"],
-            expected_head_sha=pull_request["head"]["sha"],
-        )
+        result = run_review(github, pi_client, pull_number, prompt, review_id)
     except PiReviewError as exc:
         print(f"pi PR review failed: {exc}", file=sys.stderr)
         return 1

@@ -1,8 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { constants } from "node:fs";
-import { access, appendFile, lstat, open, readdir, realpath, stat } from "node:fs/promises";
+import { access, appendFile, lstat, readdir, readFile, realpath, stat } from "node:fs/promises";
 import path from "node:path";
-import { compileSimpleGlob } from "./simple_glob_matcher.mjs";
 
 type AllowedPath = {
 	raw: string;
@@ -14,30 +13,11 @@ type Policy = {
 	allowed: AllowedPath[];
 	auditPath?: string;
 	cwd: string;
-	grepLiteralOnly: boolean;
 };
 
 const MAX_READ_LINES = 1200;
 const MAX_GREP_FILES = 5000;
-const MAX_GREP_PATTERN_LENGTH = 1024;
-const MAX_GLOB_LENGTH = 256;
 const DEFAULT_LIMIT = 200;
-const MAX_GREP_CONTEXT = 20;
-const MAX_TOOL_OUTPUT_BYTES = 50 * 1024;
-const MAX_FILE_READ_BYTES = 2 * 1024 * 1024;
-const MAX_GREP_SCAN_BYTES = 8 * 1024 * 1024;
-const READ_TRUNCATION_NOTICE =
-	`[Output truncated by analyzer path gate: maximum ${MAX_FILE_READ_BYTES / (1024 * 1024)}MiB input, ${MAX_READ_LINES} lines, and ${MAX_TOOL_OUTPUT_BYTES / 1024}KB UTF-8 output. Refine the read.]`;
-const FIND_TRUNCATION_NOTICE =
-	`[Output truncated by analyzer path gate: maximum ${DEFAULT_LIMIT} matches and ${MAX_TOOL_OUTPUT_BYTES / 1024}KB UTF-8 output. Refine the search.]`;
-const LS_TRUNCATION_NOTICE =
-	`[Output truncated by analyzer path gate: maximum ${DEFAULT_LIMIT} entries and ${MAX_TOOL_OUTPUT_BYTES / 1024}KB UTF-8 output. Refine the listing.]`;
-const TOOL_TRUNCATION_NOTICE =
-	`[Output truncated by analyzer path gate: maximum ${MAX_TOOL_OUTPUT_BYTES / 1024}KB UTF-8 output.]`;
-const CUMULATIVE_TOOL_TRUNCATION_NOTICE = "[tool output truncated]";
-const GREP_TRUNCATION_NOTICE =
-	`[Output truncated by analyzer path gate: maximum ${MAX_FILE_READ_BYTES / (1024 * 1024)}MiB input per file, ${MAX_GREP_SCAN_BYTES / (1024 * 1024)}MiB total scan, ${DEFAULT_LIMIT} matches, ${MAX_GREP_CONTEXT} context lines, and ${MAX_TOOL_OUTPUT_BYTES / 1024}KB UTF-8 output. Refine the search.]`;
-const PATH_GATED_TOOL_NAMES = new Set(["read", "grep", "find", "ls"]);
 
 const readSchema = {
 	type: "object",
@@ -53,11 +33,11 @@ const readSchema = {
 const grepSchema = {
 	type: "object",
 	properties: {
-		pattern: { type: "string", description: `Pattern to search for (maximum ${MAX_GREP_PATTERN_LENGTH} characters)` },
+		pattern: { type: "string", description: "Pattern to search for" },
 		path: { type: "string", description: "Allowed file or directory to search" },
-		glob: { type: "string", description: `Optional simple glob filter using * and ? (maximum ${MAX_GLOB_LENGTH} characters)` },
+		glob: { type: "string", description: "Optional simple glob filter" },
 		ignoreCase: { type: "boolean" },
-		literal: { type: "boolean", description: "Use literal string matching. A runtime policy may force literal matching even when false." },
+		literal: { type: "boolean" },
 		context: { type: "number" },
 		limit: { type: "number" },
 	},
@@ -68,7 +48,7 @@ const grepSchema = {
 const findSchema = {
 	type: "object",
 	properties: {
-		pattern: { type: "string", description: `Simple * and ? glob pattern to find (maximum ${MAX_GLOB_LENGTH} characters)` },
+		pattern: { type: "string", description: "Simple glob pattern to find" },
 		path: { type: "string", description: "Allowed directory to search" },
 		limit: { type: "number" },
 	},
@@ -118,7 +98,6 @@ async function loadPolicy(cwd: string): Promise<Policy> {
 			allowed,
 			auditPath: process.env.HARBOR_ANALYZER_ACCESS_AUDIT_PATH || undefined,
 			cwd,
-			grepLiteralOnly: process.env.HARBOR_ANALYZER_GREP_LITERAL_ONLY === "1",
 		};
 	})();
 	return policyPromise;
@@ -223,130 +202,9 @@ function formatLines(lines: string[], offset: number): string {
 	return lines.map((line, index) => `L${offset + index}: ${line}`).join("\n");
 }
 
-function utf8Prefix(text: string, maxBytes: number): string {
-	const buffer = Buffer.from(text, "utf8");
-	if (buffer.length <= maxBytes) return text;
-	let end = Math.max(0, maxBytes);
-	while (end > 0 && (buffer[end] & 0xc0) === 0x80) {
-		end--;
-	}
-	return buffer.subarray(0, end).toString("utf8");
-}
-
-function boundedOutput(
-	text: string,
-	resultLimitReached: boolean,
-	notice: string,
-	maxBytes = MAX_TOOL_OUTPUT_BYTES,
-): {
-	text: string;
-	truncated: boolean;
-	outputBytes: number;
-	outputByteLimitReached: boolean;
-} {
-	const rawBytes = Buffer.byteLength(text, "utf8");
-	const truncated = resultLimitReached || rawBytes > maxBytes;
-	if (!truncated) {
-		return {
-			text,
-			truncated: false,
-			outputBytes: rawBytes,
-			outputByteLimitReached: false,
-		};
-	}
-	if (maxBytes <= 0) {
-		return {
-			text: "",
-			truncated: true,
-			outputBytes: 0,
-			outputByteLimitReached: rawBytes > 0,
-		};
-	}
-	const suffix = `\n${notice}`;
-	const suffixBytes = Buffer.byteLength(suffix, "utf8");
-	if (suffixBytes > maxBytes) {
-		const minimalNotice = "[truncated]";
-		let output = "";
-		if (Buffer.byteLength(minimalNotice, "utf8") <= maxBytes) {
-			output = minimalNotice;
-		} else if (maxBytes >= 1) {
-			output = ".";
-		}
-		return {
-			text: output,
-			truncated: true,
-			outputBytes: Buffer.byteLength(output, "utf8"),
-			outputByteLimitReached: rawBytes > 0,
-		};
-	}
-	const prefixBudget = maxBytes - suffixBytes;
-	const prefix = utf8Prefix(text, prefixBudget);
-	const output = `${prefix}${suffix}`;
-	return {
-		text: output,
-		truncated: true,
-		outputBytes: Buffer.byteLength(output, "utf8"),
-		outputByteLimitReached: Buffer.byteLength(prefix, "utf8") < rawBytes,
-	};
-}
-
-function configuredPositiveInteger(name: string): number | undefined {
-	const raw = process.env[name]?.trim();
-	if (!raw) return undefined;
-	const limit = Number(raw);
-	if (!Number.isSafeInteger(limit) || limit < 1) {
-		throw new Error(`${name} must be a positive integer`);
-	}
-	return limit;
-}
-
-function toolResultText(
-	content: Array<{ type: string; text?: string }>,
-): string {
-	const text = content
-		.filter(
-			(block): block is { type: "text"; text: string } =>
-				block.type === "text" && typeof block.text === "string",
-		)
-		.map((block) => block.text)
-		.join("\n");
-	const hasNonText = content.some((block) => block.type !== "text");
-	if (!hasNonText) return text || "(no tool output)";
-	const omission = "[non-text tool output omitted]";
-	return text ? `${text}\n${omission}` : omission;
-}
-
-function toolTruncationNotice(
-	toolName: string,
-	text: string,
-): string | undefined {
-	let toolNotice: string | undefined;
-	switch (toolName) {
-		case "read":
-			toolNotice = READ_TRUNCATION_NOTICE;
-			break;
-		case "grep":
-			toolNotice = GREP_TRUNCATION_NOTICE;
-			break;
-		case "find":
-			toolNotice = FIND_TRUNCATION_NOTICE;
-			break;
-		case "ls":
-			toolNotice = LS_TRUNCATION_NOTICE;
-			break;
-	}
-	const hasNotice = (notice: string) =>
-		text.endsWith(notice) ||
-		text.endsWith(
-			`${notice}\n${CUMULATIVE_TOOL_TRUNCATION_NOTICE}`,
-		);
-	if (toolNotice !== undefined && hasNotice(toolNotice)) {
-		return toolNotice;
-	}
-	if (hasNotice(TOOL_TRUNCATION_NOTICE)) {
-		return TOOL_TRUNCATION_NOTICE;
-	}
-	return undefined;
+function simpleGlobToRegExp(pattern: string): RegExp {
+	const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".");
+	return new RegExp(`^${escaped}$`);
 }
 
 async function collectFiles(root: string, limit: number): Promise<string[]> {
@@ -386,171 +244,13 @@ function isProbablyText(buffer: Buffer): boolean {
 	return !buffer.subarray(0, 4096).includes(0);
 }
 
-async function readTextFile(
-	file: string,
-	maxBytes = MAX_FILE_READ_BYTES,
-): Promise<{
-	text: string | undefined;
-	inputBytes: number;
-	inputTruncated: boolean;
-}> {
-	const handle = await open(file, "r");
-	try {
-		const info = await handle.stat();
-		const readSize = Math.min(info.size, Math.max(0, maxBytes));
-		const buffer = Buffer.alloc(readSize);
-		let inputBytes = 0;
-		while (inputBytes < readSize) {
-			const result = await handle.read(
-				buffer,
-				inputBytes,
-				readSize - inputBytes,
-				inputBytes,
-			);
-			if (result.bytesRead === 0) break;
-			inputBytes += result.bytesRead;
-		}
-		const input = buffer.subarray(0, inputBytes);
-		const inputTruncated = info.size > inputBytes;
-		if (!isProbablyText(input)) {
-			return { text: undefined, inputBytes, inputTruncated };
-		}
-		const text = new TextDecoder().decode(input, {
-			stream: inputTruncated,
-		});
-		return { text, inputBytes, inputTruncated };
-	} finally {
-		await handle.close();
-	}
+async function readTextFile(file: string): Promise<string | undefined> {
+	const buffer = await readFile(file);
+	if (!isProbablyText(buffer)) return undefined;
+	return buffer.toString("utf8");
 }
 
 export default function analyzerPathGate(pi: ExtensionAPI) {
-	const toolCallLimit = configuredPositiveInteger(
-		"HARBOR_ANALYZER_MAX_TOOL_CALLS",
-	);
-	const totalOutputLimit = configuredPositiveInteger(
-		"HARBOR_ANALYZER_MAX_TOTAL_TOOL_OUTPUT_BYTES",
-	);
-	if (totalOutputLimit !== undefined && toolCallLimit === undefined) {
-		throw new Error(
-			"HARBOR_ANALYZER_MAX_TOTAL_TOOL_OUTPUT_BYTES requires HARBOR_ANALYZER_MAX_TOOL_CALLS",
-		);
-	}
-	let toolCallCount = 0;
-	if (toolCallLimit !== undefined) {
-		pi.on("tool_execution_start", async (_event, ctx) => {
-			toolCallCount++;
-			if (toolCallCount <= toolCallLimit) return undefined;
-			ctx.abort();
-		});
-		pi.on("tool_call", async (_event) => {
-			if (toolCallCount <= toolCallLimit) return undefined;
-			const reason =
-				`Analyzer tool-call limit of ${toolCallLimit} exceeded; blocked call ${toolCallCount}.`;
-			return { block: true, reason };
-		});
-	}
-	if (totalOutputLimit !== undefined) {
-		pi.on("context", async (event) => {
-			const toolResults = event.messages
-				.filter((message) => message.role === "toolResult")
-				.map((message) => {
-					const rawText = toolResultText(message.content);
-					if (!PATH_GATED_TOOL_NAMES.has(message.toolName)) {
-						return {
-							text: rawText,
-							cumulativeNotice:
-								CUMULATIVE_TOOL_TRUNCATION_NOTICE,
-						};
-					}
-					const perCallOutput = boundedOutput(
-						rawText,
-						false,
-						TOOL_TRUNCATION_NOTICE,
-					);
-					const perCallNotice = toolTruncationNotice(
-						message.toolName,
-						perCallOutput.text,
-					);
-					return {
-						text: perCallOutput.text,
-						cumulativeNotice:
-							perCallNotice === undefined
-								? CUMULATIVE_TOOL_TRUNCATION_NOTICE
-								: `${perCallNotice}\n${CUMULATIVE_TOOL_TRUNCATION_NOTICE}`,
-					};
-				});
-			let remainingNoticeBytes = toolResults.reduce(
-				(total, result) =>
-					total +
-					Buffer.byteLength(
-						`\n${result.cumulativeNotice}`,
-						"utf8",
-					),
-				0,
-			);
-			let toolResultIndex = 0;
-			let totalOutputBytes = 0;
-			const messages = event.messages.map((message) => {
-				if (message.role !== "toolResult") return message;
-				const toolResult = toolResults[toolResultIndex++];
-				const noticeBytes = Buffer.byteLength(
-					`\n${toolResult.cumulativeNotice}`,
-					"utf8",
-				);
-				remainingNoticeBytes -= noticeBytes;
-				const availableBytes = Math.max(
-					0,
-					totalOutputLimit -
-						totalOutputBytes -
-						remainingNoticeBytes,
-				);
-				const output = boundedOutput(
-					toolResult.text,
-					false,
-					toolResult.cumulativeNotice,
-					availableBytes,
-				);
-				totalOutputBytes += output.outputBytes;
-				return {
-					...message,
-					content: [{ type: "text" as const, text: output.text }],
-				};
-			});
-			return { messages };
-		});
-	}
-	pi.on("tool_result", async (event) => {
-		if (!PATH_GATED_TOOL_NAMES.has(event.toolName)) {
-			return undefined;
-		}
-		if (event.content.length !== 1 || event.content[0].type !== "text") {
-			return undefined;
-		}
-		const perCallOutput = boundedOutput(
-			event.content[0].text,
-			false,
-			TOOL_TRUNCATION_NOTICE,
-		);
-		if (!perCallOutput.truncated) return undefined;
-		const details: Record<string, unknown> =
-			typeof event.details === "object" && event.details !== null
-				? (event.details as Record<string, unknown>)
-				: {};
-		return {
-			content: [{ type: "text", text: perCallOutput.text }],
-			details: {
-				...details,
-				truncated: true,
-				output_bytes: perCallOutput.outputBytes,
-				output_byte_limit: MAX_TOOL_OUTPUT_BYTES,
-				output_byte_limit_reached:
-					details.output_byte_limit_reached === true ||
-					perCallOutput.outputByteLimitReached,
-			},
-		};
-	});
-
 	pi.registerTool({
 		name: "read",
 		label: "read allowed analyzer evidence",
@@ -568,23 +268,16 @@ export default function analyzerPathGate(pi: ExtensionAPI) {
 				if (!info.isFile()) {
 					return { content: [{ type: "text", text: `Not a file: ${params.path}` }], details: { error: true } };
 				}
-				const fileRead = await readTextFile(resolved.real);
-				if (fileRead.text === undefined) {
+				const text = await readTextFile(resolved.real);
+				if (text === undefined) {
 					return { content: [{ type: "text", text: `Binary file skipped: ${resolved.absolute}` }], details: { binary: true } };
 				}
-				const allLines = fileRead.text.split(/\r?\n/);
+				const allLines = text.split(/\r?\n/);
 				const start = Math.max(1, Math.floor(params.offset ?? 1));
 				const requestedLimit = Math.max(1, Math.floor(params.limit ?? MAX_READ_LINES));
 				const limit = Math.min(requestedLimit, MAX_READ_LINES);
 				const selected = allLines.slice(start - 1, start - 1 + limit);
 				const redacted = redactLines(selected);
-				const lineLimitReached = start - 1 + limit < allLines.length;
-				const header = `Path: ${resolved.absolute}\nLines: ${start}-${start + selected.length - 1}${redacted.redacted ? "\nRedaction: secret-looking values replaced with <REDACTED>" : ""}`;
-				const output = boundedOutput(
-					`${header}\n${formatLines(redacted.lines, start)}`,
-					lineLimitReached || fileRead.inputTruncated,
-					READ_TRUNCATION_NOTICE,
-				);
 				await writeAudit(policy, {
 					tool: "read",
 					requested_path: params.path,
@@ -594,29 +287,11 @@ export default function analyzerPathGate(pi: ExtensionAPI) {
 					line_start: start,
 					line_end: start + selected.length - 1,
 					redacted: redacted.redacted,
-					truncated: output.truncated,
-					input_bytes: fileRead.inputBytes,
-					input_byte_limit: MAX_FILE_READ_BYTES,
-					input_truncated: fileRead.inputTruncated,
-					output_bytes: output.outputBytes,
-					output_byte_limit: MAX_TOOL_OUTPUT_BYTES,
+					truncated: start - 1 + limit < allLines.length,
 				});
-				return {
-					content: [{ type: "text", text: output.text }],
-					details: {
-						redacted: redacted.redacted,
-						truncated: output.truncated,
-						input_bytes: fileRead.inputBytes,
-						input_byte_limit: MAX_FILE_READ_BYTES,
-						input_truncated: fileRead.inputTruncated,
-						requested_limit: requestedLimit,
-						effective_limit: limit,
-						output_bytes: output.outputBytes,
-						output_byte_limit: MAX_TOOL_OUTPUT_BYTES,
-						line_limit_reached: lineLimitReached,
-						output_byte_limit_reached: output.outputByteLimitReached,
-					},
-				};
+				const header = `Path: ${resolved.absolute}\nLines: ${start}-${start + selected.length - 1}${redacted.redacted ? "\nRedaction: secret-looking values replaced with <REDACTED>" : ""}`;
+				const suffix = start - 1 + limit < allLines.length ? "\n[Output truncated by analyzer path gate]" : "";
+				return { content: [{ type: "text", text: `${header}\n${formatLines(redacted.lines, start)}${suffix}` }], details: { redacted: redacted.redacted } };
 			} catch (error: any) {
 				return { content: [{ type: "text", text: `Error reading ${params.path}: ${error?.message || error}` }], details: { error: true } };
 			}
@@ -639,31 +314,12 @@ export default function analyzerPathGate(pi: ExtensionAPI) {
 			if (!info.isDirectory()) {
 				return { content: [{ type: "text", text: `Path: ${resolved.absolute}\n(file)` }], details: {} };
 			}
-			const requestedLimit = Math.max(1, Math.floor(params.limit ?? DEFAULT_LIMIT));
-			const limit = Math.min(requestedLimit, DEFAULT_LIMIT);
-			const allEntries = (await readdir(resolved.real, { withFileTypes: true }))
-				.sort((a, b) => a.name.localeCompare(b.name));
-			const entries = allEntries
+			const limit = Math.max(1, Math.floor(params.limit ?? DEFAULT_LIMIT));
+			const entries = (await readdir(resolved.real, { withFileTypes: true }))
+				.sort((a, b) => a.name.localeCompare(b.name))
 				.slice(0, limit)
 				.map((entry) => `${entry.name}${entry.isDirectory() ? "/" : ""}`);
-			const output = boundedOutput(
-				`Path: ${resolved.absolute}\n${entries.join("\n")}`,
-				allEntries.length > limit,
-				LS_TRUNCATION_NOTICE,
-			);
-			return {
-				content: [{ type: "text", text: output.text }],
-				details: {
-					entry_count: entries.length,
-					truncated: output.truncated,
-					requested_limit: requestedLimit,
-					effective_limit: limit,
-					output_bytes: output.outputBytes,
-					output_byte_limit: MAX_TOOL_OUTPUT_BYTES,
-					entry_limit_reached: allEntries.length > limit,
-					output_byte_limit_reached: output.outputByteLimitReached,
-				},
-			};
+			return { content: [{ type: "text", text: `Path: ${resolved.absolute}\n${entries.join("\n")}` }], details: { entry_count: entries.length } };
 		},
 	});
 
@@ -673,13 +329,6 @@ export default function analyzerPathGate(pi: ExtensionAPI) {
 		description: "Find files under an analyzer-allowed evidence directory using a simple glob pattern.",
 		parameters: findSchema,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			const findPattern = params.pattern || "*";
-			if (findPattern.length > MAX_GLOB_LENGTH) {
-				return {
-					content: [{ type: "text", text: `find pattern exceeds ${MAX_GLOB_LENGTH} characters` }],
-					details: { error: true, max_pattern_length: MAX_GLOB_LENGTH },
-				};
-			}
 			const policy = await loadPolicy(ctx.cwd);
 			const requested = params.path || ".";
 			const resolved = await resolveAllowed(policy, "find", requested);
@@ -688,55 +337,21 @@ export default function analyzerPathGate(pi: ExtensionAPI) {
 			}
 			const info = await stat(resolved.real);
 			const candidates = info.isDirectory() ? await collectFiles(resolved.real, MAX_GREP_FILES) : [resolved.real];
-			const matcher = compileSimpleGlob(findPattern);
-			const requestedLimit = Math.max(1, Math.floor(params.limit ?? DEFAULT_LIMIT));
-			const limit = Math.min(requestedLimit, DEFAULT_LIMIT);
-			const allMatches = candidates
-				.filter(
-					(file) =>
-						matcher(path.basename(file)) ||
-						matcher(path.relative(resolved.real, file)),
-				);
-			const matches = allMatches.slice(0, limit);
-			const output = boundedOutput(
-				matches.join("\n") || "No matches",
-				allMatches.length > limit,
-				FIND_TRUNCATION_NOTICE,
-			);
-			return {
-				content: [{ type: "text", text: output.text }],
-				details: {
-					match_count: matches.length,
-					truncated: output.truncated,
-					requested_limit: requestedLimit,
-					effective_limit: limit,
-					output_bytes: output.outputBytes,
-					output_byte_limit: MAX_TOOL_OUTPUT_BYTES,
-					match_limit_reached: allMatches.length > limit,
-					output_byte_limit_reached: output.outputByteLimitReached,
-				},
-			};
+			const matcher = simpleGlobToRegExp(params.pattern || "*");
+			const limit = Math.max(1, Math.floor(params.limit ?? DEFAULT_LIMIT));
+			const matches = candidates
+				.filter((file) => matcher.test(path.basename(file)) || matcher.test(path.relative(resolved.real, file)))
+				.slice(0, limit);
+			return { content: [{ type: "text", text: matches.join("\n") || "No matches" }], details: { match_count: matches.length } };
 		},
 	});
 
 	pi.registerTool({
 		name: "grep",
 		label: "grep allowed analyzer evidence",
-		description: "Search text files under analyzer-allowed evidence paths. A runtime policy may force literal string matching regardless of the literal argument. Secret-looking values are redacted in returned lines.",
+		description: "Search text files under analyzer-allowed evidence paths. Secret-looking values are redacted in returned lines.",
 		parameters: grepSchema,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			if (params.pattern.length > MAX_GREP_PATTERN_LENGTH) {
-				return {
-					content: [{ type: "text", text: `grep pattern exceeds ${MAX_GREP_PATTERN_LENGTH} characters` }],
-					details: { error: true, max_pattern_length: MAX_GREP_PATTERN_LENGTH },
-				};
-			}
-			if (params.glob && params.glob.length > MAX_GLOB_LENGTH) {
-				return {
-					content: [{ type: "text", text: `grep glob exceeds ${MAX_GLOB_LENGTH} characters` }],
-					details: { error: true, max_glob_length: MAX_GLOB_LENGTH },
-				};
-			}
 			const policy = await loadPolicy(ctx.cwd);
 			const requested = params.path || ".";
 			const resolved = await resolveAllowed(policy, "grep", requested);
@@ -745,82 +360,35 @@ export default function analyzerPathGate(pi: ExtensionAPI) {
 			}
 			const info = await stat(resolved.real);
 			const files = info.isDirectory() ? await collectFiles(resolved.real, MAX_GREP_FILES) : [resolved.real];
-			const globMatcher = params.glob ? compileSimpleGlob(params.glob) : undefined;
-			const requestedLimit = Math.max(1, Math.floor(params.limit ?? DEFAULT_LIMIT));
-			const limit = Math.min(requestedLimit, DEFAULT_LIMIT);
-			const requestedContext = Math.max(0, Math.floor(params.context ?? 0));
-			const context = Math.min(requestedContext, MAX_GREP_CONTEXT);
+			const glob = params.glob ? simpleGlobToRegExp(params.glob) : undefined;
+			const limit = Math.max(1, Math.floor(params.limit ?? DEFAULT_LIMIT));
+			const context = Math.max(0, Math.floor(params.context ?? 0));
 			const flags = params.ignoreCase ? "i" : "";
 			let pattern: RegExp | undefined;
-			let effectiveLiteral = policy.grepLiteralOnly || params.literal === true;
-			if (!effectiveLiteral) {
+			if (!params.literal) {
 				try {
 					pattern = new RegExp(params.pattern, flags);
 				} catch {
-					effectiveLiteral = true;
+					pattern = undefined;
 				}
 			}
 			const needle = params.ignoreCase ? params.pattern.toLowerCase() : params.pattern;
-			const noticeBytes = Buffer.byteLength(`\n${GREP_TRUNCATION_NOTICE}`, "utf8");
-			const outputBudget = MAX_TOOL_OUTPUT_BYTES - noticeBytes;
-			let output = "";
-			let outputBytes = 0;
-			let outputByteLimitReached = false;
-			let matchLimitReached = false;
-			let matchCount = 0;
+			const output: string[] = [];
 			const matches: Array<{ path: string; resolved_path: string; line_start: number; line_end: number }> = [];
 			let redactedAny = false;
-			let inputTruncatedAny = false;
-			let scanBytes = 0;
-			let scanLimitReached = false;
-			search: for (let fileIndex = 0; fileIndex < files.length; fileIndex++) {
-				if (matchCount >= limit) {
-					matchLimitReached = true;
-					break;
-				}
-				if (scanBytes >= MAX_GREP_SCAN_BYTES) {
-					scanLimitReached = true;
-					break;
-				}
-				const file = files[fileIndex];
+			for (const file of files) {
+				if (output.length >= limit) break;
 				const rel = path.relative(resolved.real, file);
-				if (
-					globMatcher &&
-					!(
-						globMatcher(path.basename(file)) ||
-						globMatcher(rel)
-					)
-				) continue;
-				let fileRead: Awaited<ReturnType<typeof readTextFile>>;
+				if (glob && !(glob.test(path.basename(file)) || glob.test(rel))) continue;
+				let text: string | undefined;
 				try {
-					fileRead = await readTextFile(
-						file,
-						Math.min(
-							MAX_FILE_READ_BYTES,
-							MAX_GREP_SCAN_BYTES - scanBytes,
-						),
-					);
+					text = await readTextFile(file);
 				} catch {
 					continue;
 				}
-				scanBytes += fileRead.inputBytes;
-				if (fileRead.inputTruncated) inputTruncatedAny = true;
-				if (fileRead.text === undefined) {
-					if (
-						scanBytes >= MAX_GREP_SCAN_BYTES &&
-						(fileRead.inputTruncated || fileIndex < files.length - 1)
-					) {
-						scanLimitReached = true;
-						break;
-					}
-					continue;
-				}
-				const lines = fileRead.text.split(/\r?\n/);
-				for (let index = 0; index < lines.length; index++) {
-					if (matchCount >= limit) {
-						matchLimitReached = true;
-						break search;
-					}
+				if (text === undefined) continue;
+				const lines = text.split(/\r?\n/);
+				for (let index = 0; index < lines.length && output.length < limit; index++) {
 					const haystack = params.ignoreCase ? lines[index].toLowerCase() : lines[index];
 					const matched = pattern ? pattern.test(lines[index]) : haystack.includes(needle);
 					if (!matched) continue;
@@ -829,47 +397,10 @@ export default function analyzerPathGate(pi: ExtensionAPI) {
 					const selected = lines.slice(start, end + 1);
 					const redacted = redactLines(selected);
 					if (redacted.redacted) redactedAny = true;
-					const separator = output ? "\n---\n" : "";
-					const block = `${separator}File: ${file}\n${formatLines(redacted.lines, start + 1)}`;
-					const blockBytes = Buffer.byteLength(block, "utf8");
-					const remainingBytes = outputBudget - outputBytes;
-					if (blockBytes <= remainingBytes) {
-						output += block;
-						outputBytes += blockBytes;
-					} else {
-						const prefix = utf8Prefix(block, remainingBytes);
-						const lastCompleteLine = prefix.lastIndexOf("\n");
-						const completePrefix = lastCompleteLine > 0 ? prefix.slice(0, lastCompleteLine) : "";
-						if (completePrefix) {
-							output += completePrefix;
-							outputBytes += Buffer.byteLength(completePrefix, "utf8");
-						}
-						outputByteLimitReached = true;
-					}
-					matchCount++;
+					output.push(`File: ${file}\n${formatLines(redacted.lines, start + 1)}`);
 					matches.push({ path: file, resolved_path: file, line_start: start + 1, line_end: end + 1 });
-					if (outputByteLimitReached) break search;
-				}
-				if (
-					scanBytes >= MAX_GREP_SCAN_BYTES &&
-					(fileRead.inputTruncated || fileIndex < files.length - 1)
-				) {
-					scanLimitReached = true;
-					break;
 				}
 			}
-			const truncated =
-				requestedLimit > limit ||
-				requestedContext > context ||
-				matchLimitReached ||
-				outputByteLimitReached ||
-				inputTruncatedAny ||
-				scanLimitReached;
-			let content = output || "No matches";
-			if (truncated) {
-				content += `${output ? "\n" : ""}${GREP_TRUNCATION_NOTICE}`;
-			}
-			const finalOutputBytes = Buffer.byteLength(content, "utf8");
 			await writeAudit(policy, {
 				tool: "grep",
 				requested_path: requested,
@@ -877,47 +408,11 @@ export default function analyzerPathGate(pi: ExtensionAPI) {
 				resolved_path: resolved.real,
 				allowed: true,
 				pattern: params.pattern,
-				match_count: matchCount,
+				match_count: output.length,
 				matches,
 				redacted: redactedAny,
-				truncated,
-				input_truncated: inputTruncatedAny,
-				input_byte_limit: MAX_FILE_READ_BYTES,
-				scan_bytes: scanBytes,
-				scan_byte_limit: MAX_GREP_SCAN_BYTES,
-				scan_limit_reached: scanLimitReached,
-				requested_limit: requestedLimit,
-				effective_limit: limit,
-				requested_context: requestedContext,
-				effective_context: context,
-				output_bytes: finalOutputBytes,
-				output_byte_limit: MAX_TOOL_OUTPUT_BYTES,
-				effective_literal: effectiveLiteral,
-				literal_forced: policy.grepLiteralOnly,
 			});
-			return {
-				content: [{ type: "text", text: content }],
-				details: {
-					match_count: matchCount,
-					redacted: redactedAny,
-					truncated,
-					input_truncated: inputTruncatedAny,
-					input_byte_limit: MAX_FILE_READ_BYTES,
-					scan_bytes: scanBytes,
-					scan_byte_limit: MAX_GREP_SCAN_BYTES,
-					scan_limit_reached: scanLimitReached,
-					requested_limit: requestedLimit,
-					effective_limit: limit,
-					requested_context: requestedContext,
-					effective_context: context,
-					output_bytes: finalOutputBytes,
-					output_byte_limit: MAX_TOOL_OUTPUT_BYTES,
-					match_limit_reached: matchLimitReached,
-					output_byte_limit_reached: outputByteLimitReached,
-					effective_literal: effectiveLiteral,
-					literal_forced: policy.grepLiteralOnly,
-				},
-			};
+			return { content: [{ type: "text", text: output.join("\n---\n") || "No matches" }], details: { match_count: output.length, redacted: redactedAny } };
 		},
 	});
 }

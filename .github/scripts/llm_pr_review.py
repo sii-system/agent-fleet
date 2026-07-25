@@ -379,14 +379,7 @@ def collect_files(
     return parsed, skipped
 
 
-def review_marker(
-    head_sha: str,
-    review_id: str = DEFAULT_REVIEW_ID,
-    *,
-    base_sha: str | None = None,
-) -> str:
-    if base_sha is not None:
-        return f"<!-- {review_id}:base={base_sha}:head={head_sha} -->"
+def review_marker(head_sha: str, review_id: str = DEFAULT_REVIEW_ID) -> str:
     return f"<!-- {review_id}:{head_sha} -->"
 
 
@@ -404,10 +397,8 @@ def has_existing_review(
     reviews: list[dict[str, Any]],
     head_sha: str,
     review_id: str = DEFAULT_REVIEW_ID,
-    *,
-    base_sha: str | None = None,
 ) -> bool:
-    marker = review_marker(head_sha, review_id, base_sha=base_sha)
+    marker = review_marker(head_sha, review_id)
     return any(
         (item.get("user") or {}).get("login") == "github-actions[bot]"
         and marker in (item.get("body") or "")
@@ -423,8 +414,6 @@ def build_summary(
     truncated: bool,
     incomplete_chunks: int = 0,
     review_id: str = DEFAULT_REVIEW_ID,
-    *,
-    base_sha: str | None = None,
 ) -> str:
     coverage = (
         "Partial" if skipped or truncated or incomplete_chunks else "Complete"
@@ -435,19 +424,13 @@ def build_summary(
         else "Automated review found no actionable findings."
     )
     lines = [
-        review_marker(head_sha, review_id, base_sha=base_sha),
+        review_marker(head_sha, review_id),
         headline,
         "",
+        f"Reviewed head: `{head_sha}`",
+        f"Coverage: {coverage}",
+        f"Rejected model findings: {rejected}",
     ]
-    if base_sha is not None:
-        lines.append(f"Reviewed base: `{base_sha}`")
-    lines.extend(
-        [
-            f"Reviewed head: `{head_sha}`",
-            f"Coverage: {coverage}",
-            f"Rejected model findings: {rejected}",
-        ]
-    )
     if skipped:
         lines.extend(["", "Skipped files:"])
         lines.extend(
