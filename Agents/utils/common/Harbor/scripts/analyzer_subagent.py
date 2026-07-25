@@ -14,7 +14,6 @@ from typing import Any
 from harbor_analyzer.io import load_json, stable_hash, utc_now, write_json_atomic
 from harbor_analyzer.runner import AnalyzerConfig, run_handover
 
-
 FOLLOW_MAX_BACKOFF_SECONDS = 300.0
 FOLLOW_MAX_FAILURE_ATTEMPTS = 3
 

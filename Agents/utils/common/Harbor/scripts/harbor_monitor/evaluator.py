@@ -73,7 +73,6 @@ def evaluate_once(
     unfinished = max(0, total - finished) if total is not None else None
     previous = state.get("history", [])
     history: list[dict[str, Any]] = [item for item in previous if isinstance(item, dict)]
-    initial_history_empty = not history
 
     prev_sample = history[-1] if history else None
     prev_finished = prev_sample.get("finished") if prev_sample else None

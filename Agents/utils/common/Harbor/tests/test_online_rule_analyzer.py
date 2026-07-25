@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Tests for Harbor console online analysis summaries."""
 
 from __future__ import annotations
@@ -11,7 +10,6 @@ import unittest
 from argparse import Namespace
 from pathlib import Path
 from unittest import mock
-
 
 SCRIPT = Path(__file__).parents[1] / "scripts" / "online_rule_analyzer.py"
 SPEC = importlib.util.spec_from_file_location("online_rule_analyzer", SCRIPT)
@@ -29,9 +27,11 @@ class OnlineRuleAnalyzerTest(unittest.TestCase):
             console.write_text(
                 "\n".join(
                     [
-                        '[ONLINE_ENV] {"schema":1,"task_id":null,"phase":"preflight",'
-                        '"component":"docker","event":"daemon_unavailable","severity":"critical",'
-                        '"fatal":true,"scope":"task","message":"docker info failed"}',
+                        (
+                            '[ONLINE_ENV] {"schema":1,"task_id":null,"phase":"preflight",'
+                            '"component":"docker","event":"daemon_unavailable","severity":"critical",'
+                            '"fatal":true,"scope":"task","message":"docker info failed"}'
+                        ),
                         "AgentTimeoutError",
                         "NonZeroAgentExitCodeError",
                     ]

@@ -281,6 +281,7 @@ def run_loop(
                             stdout=subprocess.PIPE,
                             stderr=subprocess.STDOUT,
                             timeout=120,
+                            check=False,
                         )
                         if result.returncode == 0:
                             control_ts = now_ts()
@@ -326,7 +327,7 @@ def run_loop(
                             "control_attempted": True,
                             "external_control_performed": True,
                         }
-                    except Exception as exc:
+                    except Exception as exc:  # noqa: BLE001 - control boundary reports failures
                         output["action"] = {
                             "type": "notify",
                             "retry_count": state["retry_count"],
@@ -359,6 +360,7 @@ def run_loop(
                             stdout=subprocess.PIPE,
                             stderr=subprocess.STDOUT,
                             timeout=120,
+                            check=False,
                         )
                         output["action"] = {
                             "type": "stop" if result.returncode == 0 else "notify",
@@ -380,7 +382,7 @@ def run_loop(
                             "control_attempted": True,
                             "external_control_performed": True,
                         }
-                    except Exception as exc:
+                    except Exception as exc:  # noqa: BLE001 - control boundary reports failures
                         output["action"] = {
                             "type": "notify",
                             "retry_count": state.get("retry_count", 0),
