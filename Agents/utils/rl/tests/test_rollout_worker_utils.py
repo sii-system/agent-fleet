@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Tests for rollout-only worker maintenance helpers."""
 
 from __future__ import annotations
@@ -8,7 +7,6 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
-
 
 SCRIPT = Path(__file__).resolve().parents[1] / "rollout_worker_utils.py"
 SPEC = importlib.util.spec_from_file_location("rollout_worker_utils", SCRIPT)
