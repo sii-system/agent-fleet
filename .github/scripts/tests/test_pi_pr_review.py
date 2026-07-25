@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 import subprocess
 import sys
 import tempfile
@@ -13,7 +12,6 @@ SCRIPT_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SCRIPT_DIR))
 
 import pi_pr_review as pi_review
-
 
 # -- stub pi binary helpers ------------------------------------------------
 
@@ -298,14 +296,14 @@ class PiClientTest(unittest.TestCase):
         self.temp_dir.cleanup()
 
     def _make_client(self, **overrides) -> pi_review.PiClient:
-        kwargs = dict(
-            pi_binary=str(self.bin_dir / "pi"),
-            base_url="https://api.example.com/v1/chat/completions",
-            api_key="test-api-key",
-            model="test-model",
-            repository_root=self.repository_root,
-            timeout=30,
-        )
+        kwargs = {
+            "pi_binary": str(self.bin_dir / "pi"),
+            "base_url": "https://api.example.com/v1/chat/completions",
+            "api_key": "test-api-key",
+            "model": "test-model",
+            "repository_root": self.repository_root,
+            "timeout": 30,
+        }
         kwargs.update(overrides)
         return pi_review.PiClient(**kwargs)
 
