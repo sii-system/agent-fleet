@@ -311,7 +311,7 @@ def ensure_prerequisites(instances: list[Instance], requested: int) -> list[Inst
 def recover_failed_instances(
     instances: list[Instance],
     failed_container_names: set[str],
-    run_logger: "RunLogger",
+    run_logger: RunLogger,
     *,
     health_timeout_seconds: int = 120,
 ) -> None:
@@ -378,7 +378,7 @@ class RunLogger:
         self.path.write_text("", encoding="utf-8")
 
     def log(self, message: str) -> None:
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        timestamp = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S")
         line = f"[{timestamp}] {message}"
         with self._lock:
             print(line, flush=True)
@@ -445,8 +445,7 @@ def make_path_removable(root: Path) -> None:
     proc = subprocess.run(
         [chmod, "-R", "a+rwX", str(root)],
         check=False,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
         text=True,
     )
     if proc.returncode == 0:
@@ -457,8 +456,7 @@ def make_path_removable(root: Path) -> None:
         subprocess.run(
             [sudo, "-n", chmod, "-R", "a+rwX", str(root)],
             check=False,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
             text=True,
         )
 
@@ -594,7 +592,7 @@ def _extract_expected_scripts(skill_name: str) -> list[str]:
 
 
 def _copy_session_jsonl(
-    container: str, session_id: str, dest: Path, run_logger: "RunLogger | None" = None
+    container: str, session_id: str, dest: Path, run_logger: RunLogger | None = None
 ) -> Path | None:
     """Copy the session JSONL file from a container to dest.
 
@@ -773,7 +771,7 @@ def run_task(
 
         agent_finished = True
 
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - task boundary records arbitrary failures
         status = "failed"
         if not failure_stage:
             failure_stage = "task"
@@ -1275,7 +1273,7 @@ def main() -> None:
         run_root_dir.mkdir(exist_ok=True)
         # Caller (shell script) manages 'latest' symlink when --run-id is used.
     else:
-        run_root_dir = output_dir / datetime.now().strftime("%Y%m%d-%H%M%S")
+        run_root_dir = output_dir / datetime.now().astimezone().strftime("%Y%m%d-%H%M%S")
         run_root_dir.mkdir()
         ensure_latest_link(output_dir, run_root_dir)
 

@@ -78,7 +78,7 @@ def main() -> None:
     print(f"Execution time (s): {format_float(efficiency.get('total_execution_time_seconds'), 2)}")
     print(f"Score / 1K tokens: {format_float(efficiency.get('score_per_1k_tokens'), 6)}")
     print(f"Score / dollar: {format_float(efficiency.get('score_per_dollar'), 4)}")
-    print("")
+    print()
     print("Per-task:")
     print("task_id\tstatus\tscore\ttokens\tcost_usd")
     for task in tasks[: args.top]:
