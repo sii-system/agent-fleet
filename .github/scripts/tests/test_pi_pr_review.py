@@ -1715,6 +1715,8 @@ class OrchestrationTest(unittest.TestCase):
         pi_client: FakePiClient,
         *,
         review_id: str = pi_review.PI_REVIEW_ID,
+        expected_base_sha: str = "base-1",
+        expected_head_sha: str = "head-1",
     ) -> str:
         return pi_review.run_review(
             github,
@@ -1722,8 +1724,8 @@ class OrchestrationTest(unittest.TestCase):
             7,
             "prompt",
             review_id=review_id,
-            expected_base_sha="base-1",
-            expected_head_sha="head-1",
+            expected_base_sha=expected_base_sha,
+            expected_head_sha=expected_head_sha,
         )
 
     def test_event_base_mismatch_stops_before_listing_files(self) -> None:
@@ -1798,7 +1800,11 @@ class OrchestrationTest(unittest.TestCase):
         self.assertEqual(result, "published")
         number, sha, body, findings = github.created[0]
         self.assertEqual((number, sha), (7, "head-1"))
-        self.assertIn("<!-- pi-pr-review:head-1 -->", body)
+        self.assertIn(
+            "<!-- pi-pr-review:base=base-1:head=head-1 -->", body
+        )
+        self.assertIn("Reviewed base: `base-1`", body)
+        self.assertIn("Reviewed head: `head-1`", body)
         self.assertEqual(len(findings), 1)
 
     def test_no_findings_still_posts_summary(self) -> None:
@@ -1814,14 +1820,65 @@ class OrchestrationTest(unittest.TestCase):
         github.reviews = [
             {
                 "user": {"login": "github-actions[bot]"},
-                "body": "<!-- pi-pr-review:head-1 -->",
+                "body": (
+                    "<!-- pi-pr-review:base=base-1:head=head-1 -->"
+                ),
             }
         ]
+        github.list_files = mock.Mock(wraps=github.list_files)
+        pi_client = FakePiClient()
 
-        result = self._run_event_review(github, FakePiClient())
+        result = self._run_event_review(github, pi_client)
 
         self.assertEqual(result, "duplicate")
         self.assertEqual(github.created, [])
+        github.list_files.assert_not_called()
+        self.assertEqual(pi_client.inputs, [])
+
+    def test_head_only_marker_does_not_skip_base_bound_review(self) -> None:
+        github = FakeGitHub()
+        github.reviews = [
+            {
+                "user": {"login": "github-actions[bot]"},
+                "body": "<!-- pi-pr-review:head-1 -->",
+            }
+        ]
+        pi_client = FakePiClient([])
+
+        result = self._run_event_review(github, pi_client)
+
+        self.assertEqual(result, "published")
+        self.assertEqual(len(pi_client.inputs), 1)
+        self.assertIn(
+            "<!-- pi-pr-review:base=base-1:head=head-1 -->",
+            github.created[0][2],
+        )
+
+    def test_changed_base_with_same_head_publishes_fresh_review(self) -> None:
+        github = FakeGitHub()
+        github.pull["base"]["sha"] = "base-2"
+        github.reviews = [
+            {
+                "user": {"login": "github-actions[bot]"},
+                "body": (
+                    "<!-- pi-pr-review:base=base-1:head=head-1 -->"
+                ),
+            }
+        ]
+        pi_client = FakePiClient([])
+
+        result = self._run_event_review(
+            github,
+            pi_client,
+            expected_base_sha="base-2",
+        )
+
+        self.assertEqual(result, "published")
+        self.assertEqual(len(pi_client.inputs), 1)
+        self.assertIn(
+            "<!-- pi-pr-review:base=base-2:head=head-1 -->",
+            github.created[0][2],
+        )
 
     def test_stale_head_is_not_published(self) -> None:
         github = FakeGitHub()
@@ -1872,7 +1929,9 @@ class OrchestrationTest(unittest.TestCase):
         )
 
         body = github.created[0][2]
-        self.assertIn("<!-- custom-review-id:head-1 -->", body)
+        self.assertIn(
+            "<!-- custom-review-id:base=base-1:head=head-1 -->", body
+        )
 
     def test_four_chunks_share_one_recalculated_review_budget(self) -> None:
         github = FakeGitHub()

@@ -331,7 +331,10 @@ def run_review(
 
     head_sha = expected_head_sha
     if _review.has_existing_review(
-        github.list_reviews(pull_number), head_sha, review_id
+        github.list_reviews(pull_number),
+        head_sha,
+        review_id,
+        base_sha=expected_base_sha,
     ):
         return "duplicate"
 
@@ -383,6 +386,7 @@ def run_review(
         truncated,
         incomplete_chunks=incomplete_chunks,
         review_id=review_id,
+        base_sha=expected_base_sha,
     )
     current = github.get_pull(pull_number)
     if not _matches_event_revision(

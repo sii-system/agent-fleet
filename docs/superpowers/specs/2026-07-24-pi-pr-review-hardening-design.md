@@ -29,6 +29,11 @@ the live pull request to still match both event SHAs. It fetches the pull
 request again immediately before publication and repeats both checks. A
 mismatch returns a stale result without publishing, so a base-branch advance
 cannot combine a trusted checkout from one base with a diff from another.
+Pi review markers include both event SHAs, and duplicate detection requires
+the same review ID, base SHA, and head SHA. A previous review for the same head
+on an older base, including a legacy head-only marker, does not suppress a
+fresh review. The review summary displays both SHAs. The rollback direct-LLM
+reviewer retains its existing head-only marker and summary contract.
 
 Pi's built-in tools are disabled. The existing Harbor analyzer path-gate
 extension registers replacement `read`, `grep`, `find`, and `ls` tools, and
@@ -123,6 +128,8 @@ Regression tests are written before implementation and must demonstrate:
   expression;
 - event base and head SHAs are checked before file collection and again
   immediately before publication;
+- Pi duplicate markers bind the review ID, base SHA, and head SHA without
+  changing direct-LLM marker compatibility;
 - custom endpoint prefixes are preserved without an injected `/v1`;
 - compact fenced JSON is accepted while trailing content is rejected;
 - both workflow contracts still use trusted-base checkout and separate review
