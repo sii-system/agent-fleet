@@ -2,7 +2,6 @@ import re
 import unittest
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[1]
 EXPECTED_SKILLS = {
     "harbor-benchmark-runner": {
@@ -33,7 +32,7 @@ EXPECTED_SKILLS = {
 
 
 def parse_frontmatter(text):
-    match = re.match(r"\A---\n(.*?)\n---\n", text, flags=re.S)
+    match = re.match(r"\A---\n(.*?)\n---\n", text, flags=re.DOTALL)
     if not match:
         raise AssertionError("missing YAML frontmatter")
 
