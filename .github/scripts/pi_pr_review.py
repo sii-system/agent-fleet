@@ -47,19 +47,26 @@ def _chat_url_to_base(url: str) -> str:
     parsed = urlparse(url)
     path = re.sub(r"/chat/completions/?$", "", parsed.path)
     base = f"{parsed.scheme}://{parsed.netloc}{path}"
-    return normalized_base_url(base)
+    normalized_base = normalized_base_url(base)
+    if path != parsed.path:
+        return base
+    return normalized_base
 
 
 def _extract_json(text: str) -> dict[str, Any]:
     """Parse the final assistant text as a JSON object.
 
-    Mirrors llm_pr_review.extract_json but tailored for pi output: pi's
-    ``--mode json`` returns clean JSON, but some models still fence it.
+    Pi's ``--mode json`` returns a JSONL event stream, but the final model
+    message can still put its JSON in a final fenced block.
     """
     content = text.strip()
-    opening, separator, fenced = content.partition("\n")
-    if separator and opening in {"```", "```json"} and fenced.endswith("```"):
-        content = fenced[:-3].strip()
+    fenced = re.search(
+        r"(?:^|\n)```(?:json)?[ \t]*\n(?P<body>.*?)\n```[ \t]*\Z",
+        content,
+        flags=re.DOTALL,
+    )
+    if fenced:
+        content = fenced.group("body").strip()
     decoder = json.JSONDecoder()
     try:
         value, end = decoder.raw_decode(content)
@@ -208,9 +215,12 @@ def run_review(
     prompt: str,
     review_id: str = PI_REVIEW_ID,
 ) -> str:
-    return _review.run_review(
-        github, pi_client, pull_number, prompt, review_id
-    )
+    try:
+        return _review.run_review(
+            github, pi_client, pull_number, prompt, review_id
+        )
+    except _review.ModelResponseError as exc:
+        raise PiReviewError(str(exc)) from exc
 
 
 def parse_args() -> argparse.Namespace:

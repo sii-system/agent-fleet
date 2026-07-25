@@ -110,13 +110,11 @@ class UrlNormalisationTest(unittest.TestCase):
         )
         self.assertEqual(result, "https://api.example.com/v1")
 
-    def test_strips_chat_completions_and_normalises(self) -> None:
-        # normalized_base_url appends /v1 when the path doesn't already
-        # end with it, as required by the pi models.json provider contract.
+    def test_strips_chat_completions_from_nonstandard_path(self) -> None:
         result = pi_review._chat_url_to_base(
             "https://gateway.example.com/v3/chat/completions"
         )
-        self.assertEqual(result, "https://gateway.example.com/v3/v1")
+        self.assertEqual(result, "https://gateway.example.com/v3")
 
     def test_preserves_already_clean_url(self) -> None:
         result = pi_review._chat_url_to_base("https://api.example.com/v1")
@@ -142,6 +140,15 @@ class JsonExtractionTest(unittest.TestCase):
     def test_bare_fence(self) -> None:
         self.assertEqual(
             pi_review._extract_json('```\n{"findings": []}\n```'),
+            {"findings": []},
+        )
+
+    def test_final_fenced_object_after_prose(self) -> None:
+        self.assertEqual(
+            pi_review._extract_json(
+                "Review complete.\n\n```json\n"
+                '{"findings": []}\n```'
+            ),
             {"findings": []},
         )
 
@@ -540,6 +547,16 @@ class OrchestrationTest(unittest.TestCase):
 
         body = github.created[0][2]
         self.assertIn("<!-- custom-review-id:head-1 -->", body)
+
+    def test_invalid_findings_raise_pi_review_error(self) -> None:
+        github = FakeGitHub()
+        pi_client = mock.Mock()
+        pi_client.review.return_value = {"findings": "invalid"}
+
+        with self.assertRaises(pi_review.PiReviewError) as ctx:
+            pi_review.run_review(github, pi_client, 7, "prompt")
+
+        self.assertIn("findings must be an array", str(ctx.exception))
 
 
 # -- workflow contract tests -----------------------------------------------
