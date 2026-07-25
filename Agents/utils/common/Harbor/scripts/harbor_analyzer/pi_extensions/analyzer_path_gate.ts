@@ -34,6 +34,11 @@ const LS_TRUNCATION_NOTICE =
 	`[Output truncated by analyzer path gate: maximum ${DEFAULT_LIMIT} entries and ${MAX_TOOL_OUTPUT_BYTES / 1024}KB UTF-8 output. Refine the listing.]`;
 const TOOL_TRUNCATION_NOTICE =
 	`[Output truncated by analyzer path gate: maximum ${MAX_TOOL_OUTPUT_BYTES / 1024}KB UTF-8 output.]`;
+const CUMULATIVE_TOOL_TRUNCATION_NOTICE = "[tool output truncated]";
+const CUMULATIVE_TOOL_TRUNCATION_BYTES = Buffer.byteLength(
+	`\n${CUMULATIVE_TOOL_TRUNCATION_NOTICE}`,
+	"utf8",
+);
 const GREP_TRUNCATION_NOTICE =
 	`[Output truncated by analyzer path gate: maximum ${MAX_FILE_READ_BYTES / (1024 * 1024)}MiB input per file, ${MAX_GREP_SCAN_BYTES / (1024 * 1024)}MiB total scan, ${DEFAULT_LIMIT} matches, ${MAX_GREP_CONTEXT} context lines, and ${MAX_TOOL_OUTPUT_BYTES / 1024}KB UTF-8 output. Refine the search.]`;
 
@@ -298,6 +303,22 @@ function configuredPositiveInteger(name: string): number | undefined {
 	return limit;
 }
 
+function toolResultText(
+	content: Array<{ type: string; text?: string }>,
+): string {
+	const text = content
+		.filter(
+			(block): block is { type: "text"; text: string } =>
+				block.type === "text" && typeof block.text === "string",
+		)
+		.map((block) => block.text)
+		.join("\n");
+	const hasNonText = content.some((block) => block.type !== "text");
+	if (!hasNonText) return text || "(no tool output)";
+	const omission = "[non-text tool output omitted]";
+	return text ? `${text}\n${omission}` : omission;
+}
+
 async function collectFiles(root: string, limit: number): Promise<string[]> {
 	const files: string[] = [];
 	async function visit(current: string) {
@@ -386,8 +407,6 @@ export default function analyzerPathGate(pi: ExtensionAPI) {
 		);
 	}
 	let toolCallCount = 0;
-	let toolResultCount = 0;
-	let totalOutputBytes = 0;
 	if (toolCallLimit !== undefined) {
 		pi.on("tool_execution_start", async (_event, ctx) => {
 			toolCallCount++;
@@ -399,6 +418,39 @@ export default function analyzerPathGate(pi: ExtensionAPI) {
 			const reason =
 				`Analyzer tool-call limit of ${toolCallLimit} exceeded; blocked call ${toolCallCount}.`;
 			return { block: true, reason };
+		});
+	}
+	if (totalOutputLimit !== undefined) {
+		pi.on("context", async (event) => {
+			const toolResultCount = event.messages.filter(
+				(message) => message.role === "toolResult",
+			).length;
+			let toolResultsSeen = 0;
+			let totalOutputBytes = 0;
+			const messages = event.messages.map((message) => {
+				if (message.role !== "toolResult") return message;
+				toolResultsSeen++;
+				const remainingResults = toolResultCount - toolResultsSeen;
+				const availableBytes = Math.max(
+					0,
+					totalOutputLimit -
+						totalOutputBytes -
+						remainingResults *
+							CUMULATIVE_TOOL_TRUNCATION_BYTES,
+				);
+				const output = boundedOutput(
+					toolResultText(message.content),
+					false,
+					CUMULATIVE_TOOL_TRUNCATION_NOTICE,
+					availableBytes,
+				);
+				totalOutputBytes += output.outputBytes;
+				return {
+					...message,
+					content: [{ type: "text" as const, text: output.text }],
+				};
+			});
+			return { messages };
 		});
 	}
 	pi.on("tool_result", async (event) => {
@@ -413,62 +465,21 @@ export default function analyzerPathGate(pi: ExtensionAPI) {
 			false,
 			TOOL_TRUNCATION_NOTICE,
 		);
-		toolResultCount++;
-		const remainingTotalBytes =
-			totalOutputLimit === undefined
-				? undefined
-				: Math.max(0, totalOutputLimit - totalOutputBytes);
-		const reservedResultBytes =
-			totalOutputLimit === undefined || toolCallLimit === undefined
-				? 0
-				: Math.max(0, toolCallLimit - toolResultCount);
-		const currentOutputLimit =
-			remainingTotalBytes === undefined
-				? undefined
-				: Math.max(0, remainingTotalBytes - reservedResultBytes);
-		const cumulativeNotice =
-			totalOutputLimit === undefined
-				? ""
-				: `[Cumulative analyzer tool output truncated at ${totalOutputLimit / 1024}KiB for this process.]`;
-		const output =
-			currentOutputLimit === undefined
-				? perCallOutput
-				: boundedOutput(
-					perCallOutput.text,
-					false,
-					cumulativeNotice,
-					currentOutputLimit,
-				);
-		totalOutputBytes += output.outputBytes;
-		if (!perCallOutput.truncated && totalOutputLimit === undefined) {
-			return undefined;
-		}
+		if (!perCallOutput.truncated) return undefined;
 		const details: Record<string, unknown> =
 			typeof event.details === "object" && event.details !== null
 				? (event.details as Record<string, unknown>)
 				: {};
 		return {
-			content: [{ type: "text", text: output.text }],
+			content: [{ type: "text", text: perCallOutput.text }],
 			details: {
 				...details,
-				truncated:
-					details.truncated === true ||
-					perCallOutput.truncated ||
-					output.truncated,
-				output_bytes: output.outputBytes,
+				truncated: true,
+				output_bytes: perCallOutput.outputBytes,
 				output_byte_limit: MAX_TOOL_OUTPUT_BYTES,
 				output_byte_limit_reached:
 					details.output_byte_limit_reached === true ||
 					perCallOutput.outputByteLimitReached,
-				...(totalOutputLimit === undefined
-					? {}
-					: {
-						cumulative_output_bytes: totalOutputBytes,
-						cumulative_output_byte_limit: totalOutputLimit,
-						cumulative_output_byte_limit_reached:
-							output.truncated ||
-							totalOutputBytes >= totalOutputLimit,
-					}),
 			},
 		};
 	});

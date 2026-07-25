@@ -1138,7 +1138,7 @@ class PiRuntimeIntegrationTest(unittest.TestCase):
         self.assertTrue(all(event["isError"] for event in completed))
 
     def test_real_pi_caps_cumulative_reviewer_tool_output(self) -> None:
-        result, requests, events = _run_real_pi_exchange(
+        result, requests, _events = _run_real_pi_exchange(
             self,
             endpoint="/cumulative-cap/chat/completions",
             tool_calls=[
@@ -1176,23 +1176,122 @@ class PiRuntimeIntegrationTest(unittest.TestCase):
             "\ufffd",
             "".join(tool_results),
         )
-        cumulative_details = [
-            event["result"]["details"]
+        results_by_id = {
+            message["tool_call_id"]: message["content"]
+            for message in requests[1]["body"]["messages"]
+            if message["role"] == "tool"
+        }
+        self.assertIn("Path:", results_by_id["call-0"])
+        self.assertIn("Path:", results_by_id["call-1"])
+        for index in range(2, 16):
+            self.assertIn(
+                "[tool output truncated]",
+                results_by_id[f"call-{index}"],
+            )
+        self.assertNotIn(".", results_by_id.values())
+
+    def test_real_pi_caps_immediate_and_allowed_results_in_source_order(
+        self,
+    ) -> None:
+        unknown_names = [
+            f"unknown-{index}-" + ("x" * 9_990)
+            for index in range(4)
+        ]
+        result, requests, events = _run_real_pi_exchange(
+            self,
+            endpoint="/mixed-cumulative-cap/chat/completions",
+            tool_calls=[
+                *[
+                    _tool_call(
+                        index,
+                        f"call-unknown-{index}",
+                        name,
+                        {},
+                    )
+                    for index, name in enumerate(unknown_names)
+                ],
+                _tool_call(
+                    4,
+                    "call-read-first",
+                    "read",
+                    {"path": "large.txt"},
+                ),
+                _tool_call(
+                    5,
+                    "call-invalid",
+                    "read",
+                    {"path": ["x" * 200_000]},
+                ),
+                *[
+                    _tool_call(
+                        index,
+                        f"call-read-{index}",
+                        "read",
+                        {"path": "large.txt"},
+                    )
+                    for index in range(6, 16)
+                ],
+            ],
+            files={"large.txt": "界" * 40_000 + "\n"},
+        )
+
+        self.assertEqual(result, {"findings": []})
+        tool_messages = [
+            message
+            for message in requests[1]["body"]["messages"]
+            if message["role"] == "tool"
+        ]
+        self.assertEqual(
+            [message["tool_call_id"] for message in tool_messages],
+            [
+                *[f"call-unknown-{index}" for index in range(4)],
+                "call-read-first",
+                "call-invalid",
+                *[f"call-read-{index}" for index in range(6, 16)],
+            ],
+        )
+        tool_results = {
+            message["tool_call_id"]: message["content"]
+            for message in tool_messages
+        }
+        for index, name in enumerate(unknown_names):
+            self.assertEqual(
+                tool_results[f"call-unknown-{index}"],
+                f"Tool {name} not found",
+            )
+        self.assertIn("Path:", tool_results["call-read-first"])
+        self.assertIn(
+            "[tool output truncated]",
+            tool_results["call-invalid"],
+        )
+        for index in range(6, 16):
+            self.assertIn(
+                "[tool output truncated]",
+                tool_results[f"call-read-{index}"],
+            )
+        all_results = "".join(tool_results.values())
+        self.assertLessEqual(
+            sum(
+                len(content.encode("utf-8"))
+                for content in tool_results.values()
+            ),
+            128 * 1024,
+        )
+        self.assertEqual(
+            all_results.encode("utf-8").decode("utf-8"),
+            all_results,
+        )
+        self.assertNotIn("\ufffd", all_results)
+        self.assertNotIn(".", tool_results.values())
+        errors_by_id = {
+            event["toolCallId"]: event["isError"]
             for event in events
             if event["type"] == "tool_execution_end"
-        ]
-        self.assertTrue(
-            any(
-                details["cumulative_output_byte_limit_reached"]
-                for details in cumulative_details
-            )
-        )
-        self.assertTrue(
-            all(
-                details["cumulative_output_byte_limit"] == 128 * 1024
-                for details in cumulative_details
-            )
-        )
+        }
+        for index in range(4):
+            self.assertTrue(errors_by_id[f"call-unknown-{index}"])
+        self.assertTrue(errors_by_id["call-invalid"])
+        self.assertFalse(errors_by_id["call-read-first"])
 
     def test_real_pi_caps_read_find_and_ls_outputs(self) -> None:
         long_files = {

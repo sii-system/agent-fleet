@@ -44,6 +44,13 @@ each grep call to 8 MiB of scanned input. Harbor remains without reviewer
 call-count or cumulative-output limits when those environment variables are
 absent, while inheriting the shared per-file and per-grep scan bounds.
 
+A final spec review found that pi creates unknown-tool and schema-validation
+errors before its `tool_result` extension hook. Cumulative enforcement therefore
+runs as a stateless pre-provider context transform over every final tool result
+in assistant source order. The transform is repeatable across context rebuilds
+and reserves a meaningful truncation notice for every remaining result;
+Harbor callers that omit the reviewer environment variable do not install it.
+
 ### Task 1: Preserve endpoint paths and accept compact JSON fences
 
 **Files:**

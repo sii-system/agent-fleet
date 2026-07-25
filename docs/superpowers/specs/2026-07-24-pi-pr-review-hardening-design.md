@@ -47,12 +47,18 @@ redacting, or formatting results.
 The PR reviewer additionally sets a 16-call limit and a 128 KiB cumulative
 tool-result limit for each diff chunk. Call attempts are counted at
 `tool_execution_start`, before schema validation, so malformed and unknown
-calls cannot bypass the limit. The path gate aborts pi before an over-budget
-call executes, and the Python stream validator rejects any otherwise
-successful stream that reports more than 16 tool executions. Shared Harbor
-analyzers do not set either reviewer-limit environment variable and therefore
-retain an unlimited number of calls and no cumulative result limit. They do
-inherit the per-call output, per-file input, and grep scan caps.
+calls cannot bypass the limit. Before each provider call, a stateless context
+transform applies the cumulative limit to every final tool result in assistant
+source order, including unknown-tool and schema-validation errors that pi
+creates before the `tool_result` extension hook. It reserves a compact,
+model-visible truncation notice for every remaining result, so parallel tool
+completion order cannot change the allocation. The path gate aborts pi before
+an over-budget call executes, and the Python stream validator rejects any
+otherwise successful stream that reports more than 16 tool executions. Shared
+Harbor analyzers do not set either reviewer-limit environment variable and
+therefore retain an unlimited number of calls and no cumulative context
+transform. They do inherit the per-call output, per-file input, and grep scan
+caps.
 
 The subprocess environment remains minimal. It contains the model API key,
 network and certificate settings, the isolated pi runtime directory, and the
@@ -93,8 +99,9 @@ Regression tests are written before implementation and must demonstrate:
   available when the reviewer policy is absent;
 - each PR-review chunk is limited to 16 tool calls while Harbor remains
   unlimited when the reviewer environment variable is absent;
-- malformed tool calls are counted before schema validation, and reviewer tool
-  results remain within a cumulative 128 KiB per chunk;
+- malformed tool calls are counted before schema validation, and every
+  provider-visible reviewer tool result, including immediate pi errors, remains
+  within a cumulative 128 KiB per chunk;
 - read, grep, find, and ls results remain within 50 KiB, with requested find
   and ls limits clamped to 200;
 - read materialization remains within 2 MiB per file and grep stops after
