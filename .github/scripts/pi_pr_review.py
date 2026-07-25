@@ -23,7 +23,6 @@ import llm_pr_review as _review  # noqa: E402
 _PROJECT_ROOT = _SCRIPTS_DIR.parents[1]
 sys.path.insert(0, str(_PROJECT_ROOT))
 from scripts.pi_prompt import (  # noqa: E402
-    API_KEY_ENV,
     PROVIDER,
     PromptFailure,
     final_assistant_message,
@@ -202,9 +201,6 @@ class PiClient:
             return _validate_pi_stream(completed.stdout or "")
 
 
-# -- orchestration (mirrors llm_pr_review.run_review) --------------------
-
-
 def run_review(
     github: _review.GitHubClient,
     pi_client: PiClient,
@@ -212,56 +208,9 @@ def run_review(
     prompt: str,
     review_id: str = PI_REVIEW_ID,
 ) -> str:
-    pull = github.get_pull(pull_number)
-
-    head_sha = pull["head"]["sha"]
-    if _review.has_existing_review(
-        github.list_reviews(pull_number), head_sha, review_id
-    ):
-        return "duplicate"
-
-    files, skipped = _review.collect_files(github.list_files(pull_number))
-    by_path = {item.path: item for item in files}
-    chunks, truncated = _review.build_chunks(files)
-    findings: list[_review.Finding] = []
-    rejected = 0
-    incomplete_chunks = 0
-    for chunk in chunks:
-        payload = pi_client.review(
-            prompt, _review.build_model_input(pull, chunk)
-        )
-        if payload.get("incomplete"):
-            incomplete_chunks += 1
-        chunk_findings, chunk_rejected = _review.validate_findings(
-            payload, by_path
-        )
-        findings.extend(chunk_findings)
-        rejected += chunk_rejected
-
-    # Aggregate dedup pass
-    aggregate_payload = {
-        "findings": [item.__dict__ for item in findings]
-    }
-    findings, aggregate_rejected = _review.validate_findings(
-        aggregate_payload, by_path
+    return _review.run_review(
+        github, pi_client, pull_number, prompt, review_id
     )
-    rejected += aggregate_rejected
-
-    current = github.get_pull(pull_number)
-    if current["head"]["sha"] != head_sha:
-        return "stale"
-
-    summary = _review.build_summary(
-        head_sha,
-        findings,
-        rejected,
-        skipped,
-        truncated,
-        incomplete_chunks=incomplete_chunks,
-        review_id=review_id,
-    )
-    github.create_review(pull_number, head_sha, summary, findings)
-    return "published"
 
 
 def parse_args() -> argparse.Namespace:
