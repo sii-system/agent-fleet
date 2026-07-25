@@ -213,7 +213,7 @@ class StreamOpenClawSessionTest(unittest.TestCase):
             session_dir = root / "agents" / "main" / "sessions"
             session_dir.mkdir(parents=True)
             (session_dir / "sess-1.jsonl").write_text(
-                "\n".join(  # noqa: FLY002 - line list keeps JSONL fixtures readable
+                "\n".join(
                     [
                         (
                             '{"type":"message","timestamp":"2026-04-22T10:00:00Z","message":{"role":"user",'

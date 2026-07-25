@@ -1,6 +1,7 @@
 import importlib.util
 import tempfile
 import unittest
+from datetime import datetime
 from pathlib import Path
 from unittest import mock
 
@@ -45,7 +46,7 @@ class BenchmarkCommandTests(unittest.TestCase):
             for task_id in ("task_a", "task_b", "task_c"):
                 self._write_task(tasks_dir, task_id)
             (tasks_dir / "manifest.yaml").write_text(
-                "\n".join(  # noqa: FLY002 - line list keeps YAML fixtures readable
+                "\n".join(
                     [
                         "run_first:",
                         "  - task_c",
@@ -71,7 +72,7 @@ class BenchmarkCommandTests(unittest.TestCase):
             for task_id in ("task_a", "task_b", "task_c"):
                 self._write_task(tasks_dir, task_id)
             (tasks_dir / "manifest.yaml").write_text(
-                "\n".join(  # noqa: FLY002 - line list keeps YAML fixtures readable
+                "\n".join(
                     [
                         "categories:",
                         "  coding:",
@@ -96,7 +97,7 @@ class BenchmarkCommandTests(unittest.TestCase):
             for task_id in ("task_a", "task_b", "task_c"):
                 self._write_task(tasks_dir, task_id)
             (tasks_dir / "manifest.yaml").write_text(
-                "\n".join(  # noqa: FLY002 - line list keeps YAML fixtures readable
+                "\n".join(
                     [
                         "core:",
                         "  - task_b",
@@ -488,7 +489,7 @@ class BenchmarkCommandTests(unittest.TestCase):
             iteration=1,
             merged=merged,
             run_dir=Path("/tmp"),
-            started_at=self.runner.datetime.now().astimezone(),
+            started_at=self.runner.datetime.now(),
             completion={
                 "ok": True,
                 "expected_count": 2,
@@ -502,6 +503,29 @@ class BenchmarkCommandTests(unittest.TestCase):
         self.assertEqual(summary["success_count"], 1)
         self.assertEqual(summary["failure_count"], 0)
         self.assertEqual(summary["skipped_web_search_disabled_count"], 1)
+
+    def test_summarize_iteration_preserves_naive_timestamp_format(self):
+        timestamp = datetime(  # noqa: DTZ001 - verifies legacy naive output contract
+            2026, 7, 25, 12, 34, 56
+        )
+        with mock.patch.object(self.runner, "datetime") as datetime_type:
+            datetime_type.now.return_value = timestamp
+            summary = self.runner.summarize_iteration(
+                iteration=1,
+                merged={"tasks": []},
+                run_dir=Path("/tmp"),
+                started_at=timestamp,
+                completion={
+                    "ok": True,
+                    "expected_count": 0,
+                    "actual_count": 0,
+                    "missing_task_ids": [],
+                    "non_terminal_task_ids": [],
+                },
+            )
+
+        self.assertEqual(summary["started_at"], "2026-07-25T12:34:56")
+        self.assertEqual(summary["finished_at"], "2026-07-25T12:34:56")
 
 
 if __name__ == "__main__":

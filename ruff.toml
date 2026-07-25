@@ -4,4 +4,6 @@ required-version = "==0.16.0"
 external = ["E402", "N802"]
 
 [lint.per-file-ignores]
+# Tests use explicit line lists to keep multiline fixtures readable.
+"**/tests/*.py" = ["FLY002"]
 "Agents/Harbor-opencode/__init__.py" = ["N999"]

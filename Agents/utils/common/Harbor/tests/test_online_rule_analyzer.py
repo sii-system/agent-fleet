@@ -25,7 +25,7 @@ class OnlineRuleAnalyzerTest(unittest.TestCase):
             run_dir = Path(root)
             console = run_dir / "1-fix-git.console.log"
             console.write_text(
-                "\n".join(  # noqa: FLY002 - line list keeps log fixtures readable
+                "\n".join(
                     [
                         (
                             '[ONLINE_ENV] {"schema":1,"task_id":null,"phase":"preflight",'

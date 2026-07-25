@@ -944,7 +944,7 @@ def summarize_iteration(
     runtime_failed = len(failed_tasks)
     runtime_skipped = len(skipped_web_search_disabled)
     runtime_succeeded = total - runtime_failed - runtime_skipped
-    finished_at = datetime.now().astimezone()
+    finished_at = datetime.now()  # noqa: DTZ005 - preserve naive persisted timestamps
     return {
         "iteration": iteration,
         "started_at": started_at.isoformat(),
@@ -996,7 +996,7 @@ def write_iterations_summary_files(run_root_dir: Path, iteration_summaries: list
     iterations_summary_json.write_text(
         json.dumps(
             {
-                "generated_at": datetime.now().astimezone().isoformat(),
+                "generated_at": datetime.now().isoformat(),  # noqa: DTZ005
                 "iterations": iteration_summaries,
             },
             indent=2,
@@ -1093,7 +1093,9 @@ def main() -> None:
 
     output_dir = Path(config["PINCHBENCH_OUTPUT_DIR"])
     output_dir.mkdir(parents=True, exist_ok=True)
-    run_root_dir = output_dir / datetime.now().astimezone().strftime("%Y%m%d-%H%M%S")
+    run_root_dir = output_dir / datetime.now().strftime(  # noqa: DTZ005
+        "%Y%m%d-%H%M%S"
+    )
     run_root_dir.mkdir()
 
     suite_name = "core" if args.core else args.suite
@@ -1123,7 +1125,7 @@ def main() -> None:
     had_failures = False
 
     for iteration in range(1, args.iterations + 1):
-        iteration_started_at = datetime.now().astimezone()
+        iteration_started_at = datetime.now()  # noqa: DTZ005
         run_dir = run_root_dir / f"iteration-{iteration:03d}"
         run_dir.mkdir(parents=True, exist_ok=True)
 
