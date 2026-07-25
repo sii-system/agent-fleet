@@ -23,6 +23,13 @@ directory as its working directory. The workflow entrypoint takes the root
 from `GITHUB_WORKSPACE`, which points at the trusted `base.sha` checkout used
 by both `pull_request_target` workflows.
 
+The entrypoint also binds each review to the base and head SHAs recorded in
+the triggering event. Before listing changed files or starting pi, it requires
+the live pull request to still match both event SHAs. It fetches the pull
+request again immediately before publication and repeats both checks. A
+mismatch returns a stale result without publishing, so a base-branch advance
+cannot combine a trusted checkout from one base with a diff from another.
+
 Pi's built-in tools are disabled. The existing Harbor analyzer path-gate
 extension registers replacement `read`, `grep`, `find`, and `ls` tools, and
 its allowlist contains only the repository root. The extension resolves real
@@ -90,7 +97,8 @@ Missing or invalid repository roots and missing path-gate extensions fail
 before pi starts. Pi startup, timeout, provider, lifecycle, and invalid-output
 failures remain explicit workflow failures. An empty successful assistant
 message remains partial coverage rather than silently claiming a complete
-review.
+review. Event/live base or head mismatches are stale reviews and do not invoke
+pi or publish a GitHub review.
 
 ## Verification
 
@@ -113,6 +121,8 @@ Regression tests are written before implementation and must demonstrate:
   scanning 8 MiB in one call;
 - grep and glob inputs are bounded and glob matching does not compile a regular
   expression;
+- event base and head SHAs are checked before file collection and again
+  immediately before publication;
 - custom endpoint prefixes are preserved without an injected `/v1`;
 - compact fenced JSON is accepted while trailing content is rejected;
 - both workflow contracts still use trusted-base checkout and separate review

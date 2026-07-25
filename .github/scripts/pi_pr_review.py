@@ -301,17 +301,35 @@ class PiClient:
 # -- orchestration (mirrors llm_pr_review.run_review) --------------------
 
 
+def _matches_event_revision(
+    pull: dict[str, Any],
+    expected_base_sha: str,
+    expected_head_sha: str,
+) -> bool:
+    return (
+        pull["base"]["sha"] == expected_base_sha
+        and pull["head"]["sha"] == expected_head_sha
+    )
+
+
 def run_review(
     github: _review.GitHubClient,
     pi_client: PiClient,
     pull_number: int,
     prompt: str,
     review_id: str = PI_REVIEW_ID,
+    *,
+    expected_base_sha: str,
+    expected_head_sha: str,
 ) -> str:
     deadline = time.monotonic() + PI_REVIEW_BUDGET_SECONDS
     pull = github.get_pull(pull_number)
+    if not _matches_event_revision(
+        pull, expected_base_sha, expected_head_sha
+    ):
+        return "stale"
 
-    head_sha = pull["head"]["sha"]
+    head_sha = expected_head_sha
     if _review.has_existing_review(
         github.list_reviews(pull_number), head_sha, review_id
     ):
@@ -357,10 +375,6 @@ def run_review(
     )
     rejected += aggregate_rejected
 
-    current = github.get_pull(pull_number)
-    if current["head"]["sha"] != head_sha:
-        return "stale"
-
     summary = _review.build_summary(
         head_sha,
         findings,
@@ -370,6 +384,11 @@ def run_review(
         incomplete_chunks=incomplete_chunks,
         review_id=review_id,
     )
+    current = github.get_pull(pull_number)
+    if not _matches_event_revision(
+        current, expected_base_sha, expected_head_sha
+    ):
+        return "stale"
     github.create_review(pull_number, head_sha, summary, findings)
     return "published"
 
@@ -399,7 +418,8 @@ def main() -> int:
     args = parse_args()
     event = json.loads(args.event_path.read_text())
     repository = require_env("GITHUB_REPOSITORY")
-    pull_number = int(event["pull_request"]["number"])
+    pull_request = event["pull_request"]
+    pull_number = int(pull_request["number"])
     github = _review.GitHubClient(repository, require_env("GITHUB_TOKEN"))
     prompt = args.prompt_path.read_text()
     review_id = os.environ.get("LLM_REVIEW_ID", PI_REVIEW_ID)
@@ -411,7 +431,15 @@ def main() -> int:
             model=require_env("LLM_REVIEW_MODEL"),
             repository_root=Path(require_env("GITHUB_WORKSPACE")),
         )
-        result = run_review(github, pi_client, pull_number, prompt, review_id)
+        result = run_review(
+            github,
+            pi_client,
+            pull_number,
+            prompt,
+            review_id=review_id,
+            expected_base_sha=pull_request["base"]["sha"],
+            expected_head_sha=pull_request["head"]["sha"],
+        )
     except PiReviewError as exc:
         print(f"pi PR review failed: {exc}", file=sys.stderr)
         return 1

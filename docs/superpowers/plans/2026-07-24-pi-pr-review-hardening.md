@@ -387,7 +387,15 @@ class MainTest(unittest.TestCase):
         self.workspace = self.root / "workspace"
         self.workspace.mkdir()
         self.event_path.write_text(
-            json.dumps({"pull_request": {"number": 23}}),
+            json.dumps(
+                {
+                    "pull_request": {
+                        "number": 23,
+                        "base": {"sha": "base-event"},
+                        "head": {"sha": "head-event"},
+                    }
+                }
+            ),
             encoding="utf-8",
         )
         self.prompt_path.write_text("review prompt", encoding="utf-8")
@@ -469,6 +477,7 @@ handler.
 Change `main` so construction and review share the existing failure handler:
 
 ```python
+pull_request = event["pull_request"]
 prompt = args.prompt_path.read_text()
 review_id = os.environ.get("LLM_REVIEW_ID", PI_REVIEW_ID)
 try:
@@ -479,7 +488,15 @@ try:
         model=require_env("LLM_REVIEW_MODEL"),
         repository_root=Path(require_env("GITHUB_WORKSPACE")),
     )
-    result = run_review(github, pi_client, pull_number, prompt, review_id)
+    result = run_review(
+        github,
+        pi_client,
+        pull_number,
+        prompt,
+        review_id=review_id,
+        expected_base_sha=pull_request["base"]["sha"],
+        expected_head_sha=pull_request["head"]["sha"],
+    )
 except PiReviewError as exc:
     print(f"pi PR review failed: {exc}", file=sys.stderr)
     return 1

@@ -1646,6 +1646,7 @@ class FakeGitHub:
         self.pull = {
             "draft": False,
             "head": {"sha": "head-1"},
+            "base": {"sha": "base-1"},
             "title": "Change worker cancellation",
             "body": "Keep child processes from leaking.",
         }
@@ -1708,11 +1709,91 @@ class FakePiClient:
 
 
 class OrchestrationTest(unittest.TestCase):
+    def _run_event_review(
+        self,
+        github: FakeGitHub,
+        pi_client: FakePiClient,
+        *,
+        review_id: str = pi_review.PI_REVIEW_ID,
+    ) -> str:
+        return pi_review.run_review(
+            github,
+            pi_client,
+            7,
+            "prompt",
+            review_id=review_id,
+            expected_base_sha="base-1",
+            expected_head_sha="head-1",
+        )
+
+    def test_event_base_mismatch_stops_before_listing_files(self) -> None:
+        github = FakeGitHub()
+        github.pull["base"]["sha"] = "base-2"
+        github.list_files = mock.Mock(wraps=github.list_files)
+        pi_client = FakePiClient()
+
+        result = pi_review.run_review(
+            github,
+            pi_client,
+            7,
+            "prompt",
+            expected_base_sha="base-1",
+            expected_head_sha="head-1",
+        )
+
+        self.assertEqual(result, "stale")
+        github.list_files.assert_not_called()
+        self.assertEqual(pi_client.inputs, [])
+
+    def test_event_head_mismatch_stops_before_listing_files(self) -> None:
+        github = FakeGitHub()
+        github.pull["head"]["sha"] = "head-2"
+        github.list_files = mock.Mock(wraps=github.list_files)
+        pi_client = FakePiClient()
+
+        result = pi_review.run_review(
+            github,
+            pi_client,
+            7,
+            "prompt",
+            expected_base_sha="base-1",
+            expected_head_sha="head-1",
+        )
+
+        self.assertEqual(result, "stale")
+        github.list_files.assert_not_called()
+        self.assertEqual(pi_client.inputs, [])
+
+    def test_base_change_before_publication_is_not_published(self) -> None:
+        github = FakeGitHub()
+        first = {
+            **github.pull,
+            "base": {**github.pull["base"]},
+            "head": {**github.pull["head"]},
+        }
+        second = {
+            **first,
+            "base": {**first["base"], "sha": "base-2"},
+        }
+        github.get_pull = mock.Mock(side_effect=[first, second])
+
+        result = pi_review.run_review(
+            github,
+            FakePiClient(),
+            7,
+            "prompt",
+            expected_base_sha="base-1",
+            expected_head_sha="head-1",
+        )
+
+        self.assertEqual(result, "stale")
+        self.assertEqual(github.created, [])
+
     def test_publishes_review_with_findings(self) -> None:
         github = FakeGitHub()
         pi_client = FakePiClient()
 
-        result = pi_review.run_review(github, pi_client, 7, "prompt")
+        result = self._run_event_review(github, pi_client)
 
         self.assertEqual(result, "published")
         number, sha, body, findings = github.created[0]
@@ -1724,7 +1805,7 @@ class OrchestrationTest(unittest.TestCase):
         github = FakeGitHub()
         pi_client = FakePiClient([])
 
-        pi_review.run_review(github, pi_client, 7, "prompt")
+        self._run_event_review(github, pi_client)
 
         self.assertIn("no actionable findings", github.created[0][2])
 
@@ -1737,9 +1818,7 @@ class OrchestrationTest(unittest.TestCase):
             }
         ]
 
-        result = pi_review.run_review(
-            github, FakePiClient(), 7, "prompt"
-        )
+        result = self._run_event_review(github, FakePiClient())
 
         self.assertEqual(result, "duplicate")
         self.assertEqual(github.created, [])
@@ -1753,9 +1832,7 @@ class OrchestrationTest(unittest.TestCase):
         }
         github.get_pull = mock.Mock(side_effect=[first, second])
 
-        result = pi_review.run_review(
-            github, FakePiClient(), 7, "prompt"
-        )
+        result = self._run_event_review(github, FakePiClient())
 
         self.assertEqual(result, "stale")
         self.assertEqual(github.created, [])
@@ -1764,7 +1841,7 @@ class OrchestrationTest(unittest.TestCase):
         github = FakeGitHub()
         pi_client = FakePiClient()
 
-        pi_review.run_review(github, pi_client, 7, "prompt")
+        self._run_event_review(github, pi_client)
 
         self.assertIn("PR TITLE:", pi_client.inputs[0])
         self.assertIn("Change worker cancellation", pi_client.inputs[0])
@@ -1779,7 +1856,7 @@ class OrchestrationTest(unittest.TestCase):
             "incomplete": True,
         }
 
-        pi_review.run_review(github, pi_client, 7, "prompt")
+        self._run_event_review(github, pi_client)
 
         body = github.created[0][2]
         self.assertIn("Coverage: Partial", body)
@@ -1788,11 +1865,9 @@ class OrchestrationTest(unittest.TestCase):
     def test_custom_review_id_is_used(self) -> None:
         github = FakeGitHub()
 
-        pi_review.run_review(
+        self._run_event_review(
             github,
             FakePiClient([]),
-            7,
-            "prompt",
             review_id="custom-review-id",
         )
 
@@ -1816,9 +1891,7 @@ class OrchestrationTest(unittest.TestCase):
                 side_effect=[100.0, 100.0, 200.0, 400.0, 700.0],
             ),
         ):
-            result = pi_review.run_review(
-                github, pi_client, 7, "prompt"
-            )
+            result = self._run_event_review(github, pi_client)
 
         self.assertEqual(result, "published")
         expected = [225.0, 800.0 / 3, 300.0, 300.0]
@@ -1843,7 +1916,7 @@ class OrchestrationTest(unittest.TestCase):
             "monotonic",
             side_effect=[0.0, 0.0],
         ):
-            pi_review.run_review(github, pi_client, 7, "prompt")
+            self._run_event_review(github, pi_client)
 
         self.assertEqual(pi_client.timeouts, [30])
 
@@ -1862,7 +1935,7 @@ class OrchestrationTest(unittest.TestCase):
             ),
             self.assertRaises(pi_review.PiReviewError) as ctx,
         ):
-            pi_review.run_review(github, pi_client, 7, "prompt")
+            self._run_event_review(github, pi_client)
 
         self.assertEqual(
             str(ctx.exception),
@@ -1880,7 +1953,15 @@ class MainTest(unittest.TestCase):
         self.root = Path(self.temp_dir.name)
         self.event_path = self.root / "event.json"
         self.event_path.write_text(
-            json.dumps({"pull_request": {"number": 23}}),
+            json.dumps(
+                {
+                    "pull_request": {
+                        "number": 23,
+                        "base": {"sha": "base-event"},
+                        "head": {"sha": "head-event"},
+                    }
+                }
+            ),
             encoding="utf-8",
         )
         self.prompt_path = self.root / "prompt.md"
@@ -1919,7 +2000,7 @@ class MainTest(unittest.TestCase):
             mock.patch.object(pi_review, "PiClient") as pi_client,
             mock.patch.object(
                 pi_review, "run_review", return_value="published"
-            ),
+            ) as run_review,
         ):
             result = pi_review.main()
 
@@ -1927,6 +2008,14 @@ class MainTest(unittest.TestCase):
         self.assertEqual(
             pi_client.call_args.kwargs["repository_root"],
             self.workspace,
+        )
+        self.assertEqual(
+            run_review.call_args.kwargs,
+            {
+                "review_id": pi_review.PI_REVIEW_ID,
+                "expected_base_sha": "base-event",
+                "expected_head_sha": "head-event",
+            },
         )
 
     def test_main_reports_repository_validation_error(self) -> None:
