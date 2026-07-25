@@ -410,6 +410,7 @@ class FakeGitHub:
         self.pull = {
             "draft": False,
             "head": {"sha": "head-1"},
+            "base": {"sha": "base-1"},
             "title": "Change worker cancellation",
             "body": "Keep child processes from leaking.",
         }
@@ -510,6 +511,44 @@ class OrchestrationTest(unittest.TestCase):
         self.assertEqual(result, "stale")
         self.assertEqual(github.created, [])
 
+    def test_event_revision_mismatch_skips_before_model(self) -> None:
+        github = FakeGitHub()
+        pi_client = FakePiClient()
+
+        result = pi_review.run_review(
+            github,
+            pi_client,
+            7,
+            "prompt",
+            expected_head_sha="head-2",
+            expected_base_sha="base-1",
+        )
+
+        self.assertEqual(result, "stale")
+        self.assertEqual(pi_client.inputs, [])
+        self.assertEqual(github.created, [])
+
+    def test_event_base_change_is_not_published(self) -> None:
+        github = FakeGitHub()
+        first = dict(github.pull)
+        second = {
+            **github.pull,
+            "base": {"sha": "base-2"},
+        }
+        github.get_pull = mock.Mock(side_effect=[first, second])
+
+        result = pi_review.run_review(
+            github,
+            FakePiClient(),
+            7,
+            "prompt",
+            expected_head_sha="head-1",
+            expected_base_sha="base-1",
+        )
+
+        self.assertEqual(result, "stale")
+        self.assertEqual(github.created, [])
+
     def test_pr_context_is_passed_to_pi(self) -> None:
         github = FakeGitHub()
         pi_client = FakePiClient()
@@ -579,6 +618,61 @@ class PiWorkflowContractTest(unittest.TestCase):
         self.assertGreater(
             pi_review.PI_TIMEOUT_SECONDS, 600,
             "agent review should allow more time than direct API calls",
+        )
+
+    def test_main_binds_review_to_event_revisions(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            event_path = root / "event.json"
+            prompt_path = root / "prompt.md"
+            event = {
+                "pull_request": {
+                    "number": 7,
+                    "head": {"sha": "event-head"},
+                    "base": {"sha": "event-base"},
+                }
+            }
+            event_path.write_text(
+                json.dumps(event),
+                encoding="utf-8",
+            )
+            prompt_path.write_text("review prompt", encoding="utf-8")
+            args = mock.Mock(
+                event_path=event_path,
+                prompt_path=prompt_path,
+                pi_bin="pi",
+            )
+            environment = {
+                "GITHUB_REPOSITORY": "owner/repository",
+                "GITHUB_TOKEN": "fake-github-token",
+                "GITHUB_WORKSPACE": str(root),
+                "LLM_REVIEW_API_KEY": "fake-model-key",
+                "LLM_REVIEW_BASE_URL": "https://example.com/v1",
+                "LLM_REVIEW_MODEL": "test-model",
+            }
+            with (
+                mock.patch.object(
+                    pi_review, "parse_args", return_value=args
+                ),
+                mock.patch.object(
+                    pi_review,
+                    "require_env",
+                    side_effect=environment.__getitem__,
+                ),
+                mock.patch.object(
+                    pi_review, "run_review", return_value="stale"
+                ) as run_mock,
+                mock.patch("builtins.print"),
+            ):
+                self.assertEqual(pi_review.main(), 0)
+
+        self.assertEqual(
+            run_mock.call_args.kwargs,
+            {
+                "review_id": pi_review.PI_REVIEW_ID,
+                "expected_head_sha": "event-head",
+                "expected_base_sha": "event-base",
+            },
         )
 
 

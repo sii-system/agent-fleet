@@ -461,10 +461,20 @@ def run_review(
     pull_number: int,
     prompt: str,
     review_id: str = DEFAULT_REVIEW_ID,
+    *,
+    expected_head_sha: str | None = None,
+    expected_base_sha: str | None = None,
 ) -> str:
     pull = github.get_pull(pull_number)
 
     head_sha = pull["head"]["sha"]
+    if expected_head_sha is not None and head_sha != expected_head_sha:
+        return "stale"
+    if (
+        expected_base_sha is not None
+        and pull["base"]["sha"] != expected_base_sha
+    ):
+        return "stale"
     if has_existing_review(github.list_reviews(pull_number), head_sha, review_id):
         return "duplicate"
 
@@ -487,7 +497,10 @@ def run_review(
     rejected += aggregate_rejected
 
     current = github.get_pull(pull_number)
-    if current["head"]["sha"] != head_sha:
+    if current["head"]["sha"] != head_sha or (
+        expected_base_sha is not None
+        and current["base"]["sha"] != expected_base_sha
+    ):
         return "stale"
 
     summary = build_summary(

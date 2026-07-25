@@ -214,10 +214,19 @@ def run_review(
     pull_number: int,
     prompt: str,
     review_id: str = PI_REVIEW_ID,
+    *,
+    expected_head_sha: str | None = None,
+    expected_base_sha: str | None = None,
 ) -> str:
     try:
         return _review.run_review(
-            github, pi_client, pull_number, prompt, review_id
+            github,
+            pi_client,
+            pull_number,
+            prompt,
+            review_id,
+            expected_head_sha=expected_head_sha,
+            expected_base_sha=expected_base_sha,
         )
     except _review.ModelResponseError as exc:
         raise PiReviewError(str(exc)) from exc
@@ -248,7 +257,8 @@ def main() -> int:
     args = parse_args()
     event = json.loads(args.event_path.read_text())
     repository = require_env("GITHUB_REPOSITORY")
-    pull_number = int(event["pull_request"]["number"])
+    event_pull = event["pull_request"]
+    pull_number = int(event_pull["number"])
     github = _review.GitHubClient(repository, require_env("GITHUB_TOKEN"))
     pi_client = PiClient(
         pi_binary=args.pi_bin,
@@ -260,7 +270,15 @@ def main() -> int:
     prompt = args.prompt_path.read_text()
     review_id = os.environ.get("LLM_REVIEW_ID", PI_REVIEW_ID)
     try:
-        result = run_review(github, pi_client, pull_number, prompt, review_id)
+        result = run_review(
+            github,
+            pi_client,
+            pull_number,
+            prompt,
+            review_id=review_id,
+            expected_head_sha=event_pull["head"]["sha"],
+            expected_base_sha=event_pull["base"]["sha"],
+        )
     except PiReviewError as exc:
         print(f"pi PR review failed: {exc}", file=sys.stderr)
         return 1
