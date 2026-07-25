@@ -31,10 +31,14 @@ jobs:
           PI_VERSION: "0.81.1"
         run: |
           set -euo pipefail
-          if ! command -v pi >/dev/null 2>&1 || \
-             [[ "$(pi --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)" != "$PI_VERSION" ]]; then
+          INSTALLED_VERSION="$(pi --version 2>/dev/null || true)"
+          if [[ "$INSTALLED_VERSION" != "$PI_VERSION" ]]; then
             npm install -g --ignore-scripts "@earendil-works/pi-coding-agent@${PI_VERSION}" --force
-            pi --version
+          fi
+          INSTALLED_VERSION="$(pi --version 2>/dev/null || true)"
+          if [[ "$INSTALLED_VERSION" != "$PI_VERSION" ]]; then
+            echo "::error::Expected pi version $PI_VERSION, got ${INSTALLED_VERSION:-missing}" >&2
+            exit 1
           fi
 
       - name: Review pull request with pi agent

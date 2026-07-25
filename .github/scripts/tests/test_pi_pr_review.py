@@ -104,6 +104,12 @@ class UrlNormalisationTest(unittest.TestCase):
         )
         self.assertEqual(result, "https://api.example.com/v1")
 
+    def test_strips_chat_completions_suffix_with_trailing_slash(self) -> None:
+        result = pi_review._chat_url_to_base(
+            "https://api.example.com/v1/chat/completions/"
+        )
+        self.assertEqual(result, "https://api.example.com/v1")
+
     def test_strips_chat_completions_and_normalises(self) -> None:
         # normalized_base_url appends /v1 when the path doesn't already
         # end with it, as required by the pi models.json provider contract.

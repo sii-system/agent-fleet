@@ -26,7 +26,15 @@ jobs:
           persist-credentials: false
 
       - name: Verify pi is available
-        run: pi --version
+        env:
+          PI_VERSION: "0.81.1"
+        run: |
+          set -euo pipefail
+          INSTALLED_VERSION="$(pi --version 2>/dev/null || true)"
+          if [[ "$INSTALLED_VERSION" != "$PI_VERSION" ]]; then
+            echo "::error::Expected pi version $PI_VERSION, got ${INSTALLED_VERSION:-missing}" >&2
+            exit 1
+          fi
 
       - name: Review pull request with pi agent
         env:

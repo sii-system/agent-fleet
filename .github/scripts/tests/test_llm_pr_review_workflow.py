@@ -97,6 +97,16 @@ class LlmPrReviewWorkflowTest(unittest.TestCase):
                 self.assertNotIn("base_url_variable", workflow)
                 self.assertNotIn("model_variable", workflow)
 
+    def test_workflows_require_the_same_exact_pi_version(self):
+        for workflow in (self.hosted, self.self_hosted):
+            with self.subTest(workflow=workflow.splitlines()[0]):
+                self.assertIn('PI_VERSION: "0.81.1"', workflow)
+                self.assertIn(
+                    'if [[ "$INSTALLED_VERSION" != "$PI_VERSION" ]]',
+                    workflow,
+                )
+                self.assertIn("Expected pi version", workflow)
+
     def test_reusable_workflow_is_removed(self):
         self.assertFalse(
             WORKFLOWS.joinpath("reusable-llm-pr-review.yml").exists()

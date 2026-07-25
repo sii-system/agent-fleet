@@ -45,7 +45,7 @@ class PiReviewError(RuntimeError):
 def _chat_url_to_base(url: str) -> str:
     """Convert a chat-completions endpoint URL to a pi-compatible base URL."""
     parsed = urlparse(url)
-    path = re.sub(r"/chat/completions$", "", parsed.path)
+    path = re.sub(r"/chat/completions/?$", "", parsed.path)
     base = f"{parsed.scheme}://{parsed.netloc}{path}"
     return normalized_base_url(base)
 
