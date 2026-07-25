@@ -657,7 +657,11 @@ class PiClientTest(unittest.TestCase):
             encoding="utf-8"
         )
 
-        self.assertIn("function wildcardMatches(", source)
+        self.assertIn(
+            'import { compileSimpleGlob } from "./simple_glob_matcher.mjs"',
+            source,
+        )
+        self.assertNotIn("function wildcardMatches(", source)
         self.assertNotIn("simpleGlobToRegExp", source)
 
     def test_missing_repository_root_fails_before_launch(self) -> None:

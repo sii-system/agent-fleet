@@ -2,6 +2,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { constants } from "node:fs";
 import { access, appendFile, lstat, readdir, readFile, realpath, stat } from "node:fs/promises";
 import path from "node:path";
+import { compileSimpleGlob } from "./simple_glob_matcher.mjs";
 
 type AllowedPath = {
 	raw: string;
@@ -220,36 +221,6 @@ function utf8Prefix(text: string, maxBytes: number): string {
 	return buffer.subarray(0, end).toString("utf8");
 }
 
-function wildcardMatches(pattern: string, value: string): boolean {
-	let patternIndex = 0;
-	let valueIndex = 0;
-	let starIndex = -1;
-	let starValueIndex = 0;
-	while (valueIndex < value.length) {
-		if (
-			patternIndex < pattern.length &&
-			(pattern[patternIndex] === "?" || pattern[patternIndex] === value[valueIndex])
-		) {
-			patternIndex++;
-			valueIndex++;
-		} else if (patternIndex < pattern.length && pattern[patternIndex] === "*") {
-			starIndex = patternIndex;
-			patternIndex++;
-			starValueIndex = valueIndex;
-		} else if (starIndex !== -1) {
-			patternIndex = starIndex + 1;
-			starValueIndex++;
-			valueIndex = starValueIndex;
-		} else {
-			return false;
-		}
-	}
-	while (patternIndex < pattern.length && pattern[patternIndex] === "*") {
-		patternIndex++;
-	}
-	return patternIndex === pattern.length;
-}
-
 async function collectFiles(root: string, limit: number): Promise<string[]> {
 	const files: string[] = [];
 	async function visit(current: string) {
@@ -387,12 +358,13 @@ export default function analyzerPathGate(pi: ExtensionAPI) {
 			}
 			const info = await stat(resolved.real);
 			const candidates = info.isDirectory() ? await collectFiles(resolved.real, MAX_GREP_FILES) : [resolved.real];
+			const matcher = compileSimpleGlob(findPattern);
 			const limit = Math.max(1, Math.floor(params.limit ?? DEFAULT_LIMIT));
 			const matches = candidates
 				.filter(
 					(file) =>
-						wildcardMatches(findPattern, path.basename(file)) ||
-						wildcardMatches(findPattern, path.relative(resolved.real, file)),
+						matcher(path.basename(file)) ||
+						matcher(path.relative(resolved.real, file)),
 				)
 				.slice(0, limit);
 			return { content: [{ type: "text", text: matches.join("\n") || "No matches" }], details: { match_count: matches.length } };
@@ -425,7 +397,7 @@ export default function analyzerPathGate(pi: ExtensionAPI) {
 			}
 			const info = await stat(resolved.real);
 			const files = info.isDirectory() ? await collectFiles(resolved.real, MAX_GREP_FILES) : [resolved.real];
-			const glob = params.glob || undefined;
+			const globMatcher = params.glob ? compileSimpleGlob(params.glob) : undefined;
 			const requestedLimit = Math.max(1, Math.floor(params.limit ?? DEFAULT_LIMIT));
 			const limit = Math.min(requestedLimit, DEFAULT_LIMIT);
 			const requestedContext = Math.max(0, Math.floor(params.context ?? 0));
@@ -457,10 +429,10 @@ export default function analyzerPathGate(pi: ExtensionAPI) {
 				}
 				const rel = path.relative(resolved.real, file);
 				if (
-					glob &&
+					globMatcher &&
 					!(
-						wildcardMatches(glob, path.basename(file)) ||
-						wildcardMatches(glob, rel)
+						globMatcher(path.basename(file)) ||
+						globMatcher(rel)
 					)
 				) continue;
 				let text: string | undefined;

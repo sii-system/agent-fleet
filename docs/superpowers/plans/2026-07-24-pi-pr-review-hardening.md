@@ -15,8 +15,20 @@
 - Modify `.github/scripts/pi_pr_review.py`: endpoint adaptation, response parsing, repository-root validation, path-gated pi invocation, and entrypoint wiring.
 - Modify `.github/scripts/tests/test_pi_pr_review.py`: regression coverage for endpoint preservation, compact fences, subprocess cwd, tool confinement, startup validation, and `GITHUB_WORKSPACE`.
 - Verify `.github/scripts/tests/test_llm_pr_review_workflow.py`: preserve trusted-base checkout, separate workflow identities, and current environment contracts; no workflow source change is expected.
-- Reuse `Agents/utils/common/Harbor/scripts/harbor_analyzer/pi_extensions/analyzer_path_gate.ts` unchanged.
+- Modify `Agents/utils/common/Harbor/scripts/harbor_analyzer/pi_extensions/analyzer_path_gate.ts`: bound reviewer-controlled searches, force literal grep only for the PR reviewer, and precompile simple glob matchers.
+- Add `Agents/utils/common/Harbor/scripts/harbor_analyzer/pi_extensions/simple_glob_matcher.mjs`: dependency-free, bitset-NFA `*`/`?` matching with linear work per input code unit.
 - Preserve the user-owned untracked `PLAN.md` unchanged.
+
+### Post-review hardening follow-up
+
+Whole-PR review expanded the original implementation plan after the initial
+tasks were complete. The shared path gate now caps grep results, context,
+output bytes, search-pattern length, and glob length. The PR reviewer opts into
+literal-only grep while Harbor analyzers retain regex grep by default. Simple
+globs are compiled once per tool call into a bitset NFA rather than reparsed or
+backtracked for every candidate. Deterministic Node tests cover fixed legacy
+semantics, seeded equivalence, and 5,000 long worst-case candidates; real pi
+tests cover both reviewer and Harbor policy modes.
 
 ### Task 1: Preserve endpoint paths and accept compact JSON fences
 
