@@ -12,8 +12,9 @@ The refinement primarily changes the new pi reviewer, its workflow contracts,
 and its tests. The existing direct-LLM reviewer remains available for rollback.
 The Harbor analyzer path gate is reused rather than duplicating another
 filesystem policy implementation. That shared extension also gains bounded
-grep/glob inputs and a non-regular-expression wildcard matcher, so Harbor
-analyzer users receive the same input limits and `*`/`?` glob semantics.
+tool outputs, grep/glob inputs, and a non-regular-expression wildcard matcher,
+so Harbor analyzer users receive the same result caps, input limits, and
+`*`/`?` glob semantics.
 
 ## Runtime Design
 
@@ -36,6 +37,15 @@ grep behavior. Grep patterns are limited to 1024 characters, while grep and
 find glob patterns are limited to 256 characters. Glob matching still treats
 only `*` and `?` as wildcards, but no longer compiles model-supplied globs as
 JavaScript regular expressions.
+
+Each `read`, `grep`, `find`, and `ls` result is limited to 50 KiB of UTF-8
+output. Reads remain limited to 1,200 lines, while `find` and `ls` requests are
+clamped to 200 results. The PR reviewer additionally sets a 16-call limit for
+each diff chunk. The path gate aborts pi before an over-budget call executes,
+and the Python stream validator rejects any otherwise successful stream that
+reports more than 16 tool executions. Shared Harbor analyzers do not set the
+call-limit environment variable and therefore retain an unlimited number of
+calls, but their individual tool results receive the shared output caps.
 
 The subprocess environment remains minimal. It contains the model API key,
 network and certificate settings, the isolated pi runtime directory, and the
@@ -74,6 +84,10 @@ Regression tests are written before implementation and must demonstrate:
 - the path-gate extension and repository allowlist reach the subprocess;
 - reviewer grep is forced to literal matching while Harbor regex grep remains
   available when the reviewer policy is absent;
+- each PR-review chunk is limited to 16 tool calls while Harbor remains
+  unlimited when the reviewer environment variable is absent;
+- read, grep, find, and ls results remain within 50 KiB, with requested find
+  and ls limits clamped to 200;
 - grep and glob inputs are bounded and glob matching does not compile a regular
   expression;
 - custom endpoint prefixes are preserved without an injected `/v1`;

@@ -18,6 +18,7 @@ changed file you flag:
    (`literal: true`). Regular-expression grep is disabled by the reviewer
    policy.
 
+Use at most 16 total tool calls per diff chunk.
 Spend at most 4 tool calls per finding. Report only actionable defects
 introduced by the changed lines. Do not report style preferences, broad
 refactors, praise, or issues that cannot be tied to an added RIGHT-side line

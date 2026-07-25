@@ -44,6 +44,7 @@ prompt="${{@: -1}}"
   printf 'cwd=%s\\n' "$PWD"
   printf 'allowed_paths=%s\\n' "${{HARBOR_ANALYZER_ALLOWED_PATHS_JSON:-}}"
   printf 'grep_literal_only=%s\\n' "${{HARBOR_ANALYZER_GREP_LITERAL_ONLY:-}}"
+  printf 'max_tool_calls=%s\\n' "${{HARBOR_ANALYZER_MAX_TOOL_CALLS:-}}"
   printf 'offline=%s\\n' "${{PI_OFFLINE:-}}"
   printf 'token=%s\\n' "${{AGENT_FLEET_API_KEY:-}}"
   printf 'prompt=<%s>\\n' "$prompt"
@@ -99,6 +100,28 @@ def _make_findings_response(
         {"type": "agent_end"},
     ]
     return "\n".join(json.dumps(e) for e in events)
+
+
+def _make_tool_execution_stream(count: int) -> str:
+    events = [
+        json.loads(line)
+        for line in _make_findings_response([]).splitlines()
+    ]
+    insertion = next(
+        index
+        for index, event in enumerate(events)
+        if event["type"] == "turn_end"
+    )
+    events[insertion:insertion] = [
+        {
+            "type": "tool_execution_start",
+            "toolCallId": f"call-{index}",
+            "toolName": "read",
+            "args": {"path": "evidence.txt"},
+        }
+        for index in range(count)
+    ]
+    return "\n".join(json.dumps(event) for event in events)
 
 
 def _require_pi_081(test_case: unittest.TestCase) -> str:
@@ -275,7 +298,9 @@ def _run_real_pi_exchange(
     tool_calls: list[dict],
     files: dict[str, str],
     unset_reviewer_policy: bool = False,
-) -> tuple[dict, list[dict], list[dict]]:
+    expect_error: str | None = None,
+    bypass_stream_validation: bool = False,
+) -> tuple[dict | None, list[dict], list[dict]]:
     pi_binary = _require_pi_081(test_case)
     model = "integration-model"
     response_bodies = [
@@ -313,6 +338,7 @@ def _run_real_pi_exchange(
                     "import os\n"
                     "import sys\n"
                     f"os.environ.pop({pi_review.PI_GREP_LITERAL_ONLY_ENV!r}, None)\n"
+                    f"os.environ.pop({pi_review.PI_MAX_TOOL_CALLS_ENV!r}, None)\n"
                     f"pi_binary = {pi_binary!r}\n"
                     "os.execv(pi_binary, [pi_binary, *sys.argv[1:]])\n"
                 ),
@@ -333,6 +359,8 @@ def _run_real_pi_exchange(
 
         def capture_stream(raw: str) -> dict:
             pi_streams.append(raw)
+            if bypass_stream_validation:
+                return {"findings": []}
             return validate_stream(raw)
 
         with (
@@ -349,16 +377,31 @@ def _run_real_pi_exchange(
                 side_effect=capture_stream,
             ),
         ):
-            result = client.review(
-                "Use the requested tools, then return an empty findings array.",
-                "Inspect the repository as requested.",
-            )
+            if expect_error is None:
+                result = client.review(
+                    "Use the requested tools, then return an empty findings array.",
+                    "Inspect the repository as requested.",
+                )
+            else:
+                with test_case.assertRaisesRegex(
+                    pi_review.PiReviewError,
+                    expect_error,
+                ):
+                    client.review(
+                        "Use the requested tools, then return an empty findings array.",
+                        "Inspect the repository as requested.",
+                    )
+                result = None
 
-    events = [
-        json.loads(line)
-        for line in pi_streams[0].splitlines()
-        if line.strip()
-    ]
+    events = (
+        [
+            json.loads(line)
+            for line in pi_streams[0].splitlines()
+            if line.strip()
+        ]
+        if pi_streams
+        else []
+    )
     return result, requests, events
 
 
@@ -487,6 +530,20 @@ class StreamValidationTest(unittest.TestCase):
             _make_findings_response([])
         )
         self.assertEqual(result["findings"], [])
+
+    def test_exactly_maximum_tool_executions_are_valid(self) -> None:
+        result = pi_review._validate_pi_stream(
+            _make_tool_execution_stream(16)
+        )
+
+        self.assertEqual(result, {"findings": []})
+
+    def test_over_maximum_tool_executions_fail_closed(self) -> None:
+        with self.assertRaisesRegex(
+            pi_review.PiReviewError,
+            "tool-call limit of 16.*observed 17",
+        ):
+            pi_review._validate_pi_stream(_make_tool_execution_stream(17))
 
     def test_missing_session_raises(self) -> None:
         events = [
@@ -651,6 +708,16 @@ class PiClientTest(unittest.TestCase):
 
         captured = self.capture.read_text(encoding="utf-8")
         self.assertIn("grep_literal_only=1", captured)
+
+    def test_limits_reviewer_to_sixteen_tool_calls_per_chunk(self) -> None:
+        _stub_pi_script(self.bin_dir, stdout=_make_findings_response())
+        client = self._make_client()
+
+        client.review("prompt", "diff")
+
+        captured = self.capture.read_text(encoding="utf-8")
+        self.assertEqual(pi_review.PI_MAX_TOOL_CALLS, 16)
+        self.assertIn("max_tool_calls=16", captured)
 
     def test_path_gate_uses_non_regex_wildcard_matching(self) -> None:
         source = pi_review.PI_PATH_GATE_EXTENSION.read_text(
@@ -979,6 +1046,175 @@ class PiRuntimeIntegrationTest(unittest.TestCase):
         self.assertLessEqual(
             grep_event["result"]["details"]["output_bytes"],
             50 * 1024,
+        )
+
+    def test_real_pi_aborts_over_budget_tool_batch_before_follow_up(
+        self,
+    ) -> None:
+        result, requests, events = _run_real_pi_exchange(
+            self,
+            endpoint="/budget/chat/completions",
+            tool_calls=[
+                _tool_call(
+                    index,
+                    f"call-{index}",
+                    "read",
+                    {"path": f"evidence-{index}.txt"},
+                )
+                for index in range(17)
+            ],
+            files={
+                f"evidence-{index}.txt": f"evidence {index}\n"
+                for index in range(17)
+            },
+            expect_error="tool-call limit of 16.*observed 17",
+        )
+
+        self.assertIsNone(result)
+        self.assertEqual(len(requests), 1)
+        completed = [
+            event
+            for event in events
+            if event["type"] == "tool_execution_end"
+        ]
+        self.assertEqual(
+            sum(not event["isError"] for event in completed),
+            16,
+        )
+        over_limit = next(
+            event
+            for event in completed
+            if event["toolCallId"] == "call-16"
+        )
+        self.assertTrue(over_limit["isError"])
+
+    def test_real_pi_caps_read_find_and_ls_outputs(self) -> None:
+        long_files = {
+            f"{index:03d}-{'x' * 180}.txt": "evidence\n"
+            for index in range(220)
+        }
+        result, requests, events = _run_real_pi_exchange(
+            self,
+            endpoint="/caps/chat/completions",
+            tool_calls=[
+                _tool_call(
+                    0,
+                    "call-read-cap",
+                    "read",
+                    {"path": "large.txt", "limit": 1_000_000},
+                ),
+                _tool_call(
+                    1,
+                    "call-find-cap",
+                    "find",
+                    {"pattern": "*", "path": ".", "limit": 1_000_000},
+                ),
+                _tool_call(
+                    2,
+                    "call-ls-cap",
+                    "ls",
+                    {"path": ".", "limit": 1_000_000},
+                ),
+                _tool_call(
+                    3,
+                    "call-denied-cap",
+                    "read",
+                    {"path": "z" * 60_000},
+                ),
+            ],
+            files={
+                "large.txt": (
+                    "API_KEY=sk-abcdefghijklmnop\n"
+                    + "界" * 30_000
+                    + "\n"
+                ),
+                **long_files,
+            },
+        )
+
+        self.assertEqual(result, {"findings": []})
+        tool_results = {
+            message["tool_call_id"]: message["content"]
+            for message in requests[1]["body"]["messages"]
+            if message["role"] == "tool"
+        }
+        for tool_call_id in (
+            "call-read-cap",
+            "call-find-cap",
+            "call-ls-cap",
+            "call-denied-cap",
+        ):
+            output = tool_results[tool_call_id]
+            self.assertLessEqual(len(output.encode("utf-8")), 50 * 1024)
+            self.assertIn(
+                "[Output truncated by analyzer path gate:",
+                output,
+            )
+            self.assertNotIn("\ufffd", output)
+        self.assertIn("<REDACTED>", tool_results["call-read-cap"])
+        self.assertNotIn(
+            "sk-abcdefghijklmnop",
+            tool_results["call-read-cap"],
+        )
+
+        details = {
+            event["toolCallId"]: event["result"]["details"]
+            for event in events
+            if event["type"] == "tool_execution_end"
+        }
+        for tool_call_id in (
+            "call-read-cap",
+            "call-find-cap",
+            "call-ls-cap",
+            "call-denied-cap",
+        ):
+            self.assertTrue(details[tool_call_id]["truncated"])
+            self.assertLessEqual(
+                details[tool_call_id]["output_bytes"],
+                details[tool_call_id]["output_byte_limit"],
+            )
+        self.assertEqual(
+            details["call-read-cap"]["effective_limit"],
+            1200,
+        )
+        self.assertEqual(
+            details["call-find-cap"]["effective_limit"],
+            200,
+        )
+        self.assertEqual(
+            details["call-ls-cap"]["effective_limit"],
+            200,
+        )
+
+    def test_real_pi_has_no_tool_count_limit_without_reviewer_env(
+        self,
+    ) -> None:
+        result, requests, events = _run_real_pi_exchange(
+            self,
+            endpoint="/harbor-unlimited/chat/completions",
+            tool_calls=[
+                _tool_call(
+                    index,
+                    f"call-{index}",
+                    "read",
+                    {"path": "evidence.txt"},
+                )
+                for index in range(17)
+            ],
+            files={"evidence.txt": "shared Harbor evidence\n"},
+            unset_reviewer_policy=True,
+            bypass_stream_validation=True,
+        )
+
+        self.assertEqual(result, {"findings": []})
+        self.assertEqual(len(requests), 2)
+        self.assertEqual(
+            sum(
+                event["type"] == "tool_execution_end"
+                and not event["isError"]
+                for event in events
+            ),
+            17,
         )
 
     def test_real_pi_preserves_regex_grep_without_reviewer_policy(
@@ -1372,6 +1608,14 @@ class PiWorkflowContractTest(unittest.TestCase):
             - pi_review.WORKFLOW_RESERVE_SECONDS,
         )
         self.assertGreater(pi_review.WORKFLOW_RESERVE_SECONDS, 0)
+
+    def test_prompt_states_runtime_and_per_finding_tool_limits(self) -> None:
+        prompt = (SCRIPT_DIR / "pi_review_prompt.md").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("at most 16 total tool calls per diff chunk", prompt)
+        self.assertIn("at most 4 tool calls per finding", prompt)
 
 
 if __name__ == "__main__":

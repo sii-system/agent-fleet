@@ -30,6 +30,13 @@ backtracked for every candidate. Deterministic Node tests cover fixed legacy
 semantics, seeded equivalence, and 5,000 long worst-case candidates; real pi
 tests cover both reviewer and Harbor policy modes.
 
+Final runtime-budget review added a reviewer-only maximum of 16 tool calls per
+diff chunk, enforced by the path-gate hook and checked again in Python JSONL
+validation. The shared extension now also caps every read, grep, find, and ls
+result at 50 KiB, clamps find and ls to 200 results, and emits explicit
+truncation details. Harbor remains unlimited in call count when the reviewer
+environment variable is absent, but inherits the per-call output caps.
+
 ### Task 1: Preserve endpoint paths and accept compact JSON fences
 
 **Files:**
