@@ -140,7 +140,7 @@ console.log(JSON.stringify(failures));
         script = r"""
 import { performance } from "node:perf_hooks";
 const { compileSimpleGlob } = await import(process.argv[1]);
-const matcher = compileSimpleGlob(`${"*a".repeat(127)}b`);
+const matcher = compileSimpleGlob(`*${"a".repeat(254)}b`);
 const candidate = "a".repeat(4096);
 const started = performance.now();
 let matches = 0;
