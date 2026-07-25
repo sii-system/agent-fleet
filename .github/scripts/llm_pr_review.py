@@ -95,7 +95,7 @@ def parse_patch(path: str, patch: str) -> ParsedFile:
             rendered.append(f"- OLD {old_line}: {raw_line[1:]}")
             old_line += 1
         else:
-            content = raw_line[1:] if raw_line.startswith(" ") else raw_line
+            content = raw_line.removeprefix(" ")
             rendered.append(f"  OLD {old_line} RIGHT {new_line}: {content}")
             old_line += 1
             new_line += 1
@@ -313,7 +313,7 @@ class GitHubClient:
                 f"{path}{separator}{urlencode({'per_page': 100, 'page': page})}",
             )
             if not isinstance(batch, list):
-                raise ValueError("GitHub list response must be an array")
+                raise TypeError("GitHub list response must be an array")
             items.extend(batch)
             if len(batch) < 100:
                 return items
@@ -455,8 +455,10 @@ def build_summary(
         lines.extend(
             [
                 "",
-                f"- {incomplete_chunks} diff chunk(s) returned an empty model "
-                "response and were not reviewed.",
+                (
+                    f"- {incomplete_chunks} diff chunk(s) returned an empty model "
+                    "response and were not reviewed."
+                ),
             ]
         )
     return "\n".join(lines)
