@@ -26,23 +26,23 @@ TASK_BLOCKING_ALLOWLIST = {
     ("agent_setup", "agent_configuration", "auth_token_missing"),
 }
 RAW_RULES = (
-    (re.compile(r"Docker Hub preflight failed|cannot reach https://(?:auth|registry-1)\.docker\.io", re.I), "harbor_console_compat", "docker-registry-preflight-degraded", "docker_registry", "warning"),
+    (re.compile(r"Docker Hub preflight failed|cannot reach https://(?:auth|registry-1)\.docker\.io", re.IGNORECASE), "harbor_console_compat", "docker-registry-preflight-degraded", "docker_registry", "warning"),
     (re.compile(r"NonZeroAgentExitCodeError"), "agent_runtime", "agent-process-exit-abnormal", "agent", "warning"),
     (re.compile(r"AgentTimeoutError"), "agent_runtime", "agent-timeout", "agent", "warning"),
 )
 SETA_JOB_LOG_RULES = (
-    (re.compile(r"E: Could not open lock file /var/lib/apt/lists/lock - open \(13: Permission denied\)", re.I), "agent_setup", "apt", "apt-lock-permission-denied"),
-    (re.compile(r"E: Unable to lock directory /var/lib/apt/lists/", re.I), "agent_setup", "apt", "apt-lock-directory-denied"),
-    (re.compile(r"The following packages have unmet dependencies", re.I), "agent_setup", "apt", "apt-unmet-dependencies"),
-    (re.compile(r"Unable to correct problems, you have held broken packages", re.I), "agent_setup", "apt", "apt-held-broken-packages"),
-    (re.compile(r"curl\s*:\s*Depends:\s*libcurl4t64", re.I), "agent_setup", "apt", "apt-curl-libcurl-mismatch"),
-    (re.compile(r"E: Unable to locate package (?:nodejs|npm|curl)\b", re.I), "agent_setup", "apt", "apt-setup-package-unavailable"),
-    (re.compile(r"Docker compose command failed for environment\b", re.I), "environment_build", "docker", "docker-compose-env-failed"),
-    (re.compile(r"failed to solve: process .+ did not complete successfully", re.I), "environment_build", "docker", "docker-build-step-failed"),
-    (re.compile(r"Error response from daemon: invalid reference format", re.I), "environment_setup", "docker", "docker-daemon-invalid-reference"),
-    (re.compile(r"no space left on device", re.I), "environment_setup", "storage", "storage-no-space-left"),
+    (re.compile(r"E: Could not open lock file /var/lib/apt/lists/lock - open \(13: Permission denied\)", re.IGNORECASE), "agent_setup", "apt", "apt-lock-permission-denied"),
+    (re.compile(r"E: Unable to lock directory /var/lib/apt/lists/", re.IGNORECASE), "agent_setup", "apt", "apt-lock-directory-denied"),
+    (re.compile(r"The following packages have unmet dependencies", re.IGNORECASE), "agent_setup", "apt", "apt-unmet-dependencies"),
+    (re.compile(r"Unable to correct problems, you have held broken packages", re.IGNORECASE), "agent_setup", "apt", "apt-held-broken-packages"),
+    (re.compile(r"curl\s*:\s*Depends:\s*libcurl4t64", re.IGNORECASE), "agent_setup", "apt", "apt-curl-libcurl-mismatch"),
+    (re.compile(r"E: Unable to locate package (?:nodejs|npm|curl)\b", re.IGNORECASE), "agent_setup", "apt", "apt-setup-package-unavailable"),
+    (re.compile(r"Docker compose command failed for environment\b", re.IGNORECASE), "environment_build", "docker", "docker-compose-env-failed"),
+    (re.compile(r"failed to solve: process .+ did not complete successfully", re.IGNORECASE), "environment_build", "docker", "docker-build-step-failed"),
+    (re.compile(r"Error response from daemon: invalid reference format", re.IGNORECASE), "environment_setup", "docker", "docker-daemon-invalid-reference"),
+    (re.compile(r"no space left on device", re.IGNORECASE), "environment_setup", "storage", "storage-no-space-left"),
 )
-IGNORED_RAW = (re.compile(r"No module named ['\"]botocore['\"]", re.I),)
+IGNORED_RAW = (re.compile(r"No module named ['\"]botocore['\"]", re.IGNORECASE),)
 
 
 def utc_now() -> str:

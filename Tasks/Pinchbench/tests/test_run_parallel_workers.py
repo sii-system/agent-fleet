@@ -4,7 +4,6 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-
 MODULE_PATH = (
     Path(__file__).resolve().parents[1] / "scripts" / "run-parallel-workers.py"
 )
@@ -46,7 +45,7 @@ class BenchmarkCommandTests(unittest.TestCase):
             for task_id in ("task_a", "task_b", "task_c"):
                 self._write_task(tasks_dir, task_id)
             (tasks_dir / "manifest.yaml").write_text(
-                "\n".join(
+                "\n".join(  # noqa: FLY002 - line list keeps YAML fixtures readable
                     [
                         "run_first:",
                         "  - task_c",
@@ -72,7 +71,7 @@ class BenchmarkCommandTests(unittest.TestCase):
             for task_id in ("task_a", "task_b", "task_c"):
                 self._write_task(tasks_dir, task_id)
             (tasks_dir / "manifest.yaml").write_text(
-                "\n".join(
+                "\n".join(  # noqa: FLY002 - line list keeps YAML fixtures readable
                     [
                         "categories:",
                         "  coding:",
@@ -97,7 +96,7 @@ class BenchmarkCommandTests(unittest.TestCase):
             for task_id in ("task_a", "task_b", "task_c"):
                 self._write_task(tasks_dir, task_id)
             (tasks_dir / "manifest.yaml").write_text(
-                "\n".join(
+                "\n".join(  # noqa: FLY002 - line list keeps YAML fixtures readable
                     [
                         "core:",
                         "  - task_b",
@@ -489,7 +488,7 @@ class BenchmarkCommandTests(unittest.TestCase):
             iteration=1,
             merged=merged,
             run_dir=Path("/tmp"),
-            started_at=self.runner.datetime.now(),
+            started_at=self.runner.datetime.now().astimezone(),
             completion={
                 "ok": True,
                 "expected_count": 2,

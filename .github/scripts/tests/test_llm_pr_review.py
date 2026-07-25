@@ -201,7 +201,7 @@ class FakeResponse:
     def __init__(self, payload: object) -> None:
         self.body = json.dumps(payload).encode()
 
-    def __enter__(self) -> FakeResponse:
+    def __enter__(self) -> FakeResponse:  # noqa: PYI034 - keep Python 3.10 compatibility
         return self
 
     def __exit__(self, *_args: object) -> None:

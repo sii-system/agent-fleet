@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Tests for per-request rollout context propagation."""
 
 from __future__ import annotations
@@ -10,7 +9,6 @@ import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
-
 
 SCRIPT = Path(__file__).resolve().parents[1] / "rollout_remote_harbor.py"
 SPEC = importlib.util.spec_from_file_location("rollout_remote_harbor", SCRIPT)

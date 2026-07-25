@@ -7,6 +7,7 @@ from typing import Any
 
 from .artifacts import TaskInput, read_result_json, to_float_value
 
+
 def classify_task_status(
     task: TaskInput,
     result_base_dirs: list[Path],
@@ -146,9 +147,8 @@ def classify_benchmark_status(
         return "blocked", "unknown_or_conflicting_fields"
     finished = finished_count
     finished_delta = finished_deltas[-1] if finished_deltas else 0
-    if finished_delta < 0:
-        # defensive: avoid unstable data
-        finished_delta = 0
+    # Defensive: avoid unstable data.
+    finished_delta = max(finished_delta, 0)
     unclaimed_remaining = remaining if remaining is not None else (total - claimed if claimed is not None else None)
     if unclaimed_remaining is not None:
         unclaimed_remaining = max(0, unclaimed_remaining)

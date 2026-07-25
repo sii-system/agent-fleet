@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Regression tests for Claude Code command compatibility patches."""
 
 from __future__ import annotations
@@ -11,7 +10,6 @@ import types
 import unittest
 from pathlib import Path
 from unittest import mock
-
 
 SCRIPT_DIR = Path(__file__).parents[1]
 SCRIPT = SCRIPT_DIR / "sitecustomize.py"

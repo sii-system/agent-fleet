@@ -16,7 +16,6 @@ from urllib.parse import urlparse
 
 from .io import canonical_json, write_text_atomic
 
-
 ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 PI_EXTENSION_PATH = Path(__file__).resolve().parent / "pi_extensions" / "analyzer_path_gate.ts"
 
@@ -216,9 +215,8 @@ def _final_output_block_reason(
         return f"pi_provider_request_failed:{_reason_code(provider_error)}", provider_error
     final_message = _final_assistant_message(events)
     stop_reason = str((final_message or {}).get("stopReason") or "")
-    if stop_reason:
-        if stop_reason == "length":
-            return "pi_final_message_truncated", None
+    if stop_reason == "length":
+        return "pi_final_message_truncated", None
     return None, None
 
 
@@ -530,11 +528,10 @@ def dispatch_to_child(
     if final_stop_reason:
         provenance["pi_final_stop_reason"] = final_stop_reason
     final_text = _final_assistant_text(events)
-    if not final_text:
-        if output_block_reason:
-            if provider_error:
-                provenance["pi_provider_final_error"] = provider_error
-            return DispatchResult(None, provenance, output_block_reason, stderr[-4000:])
+    if not final_text and output_block_reason:
+        if provider_error:
+            provenance["pi_provider_final_error"] = provider_error
+        return DispatchResult(None, provenance, output_block_reason, stderr[-4000:])
     report, extracted_from_text = _loads_final_json(final_text)
     if report is None:
         if output_block_reason:

@@ -29,7 +29,6 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
-
 SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_DIR = SCRIPT_DIR.parent
 
@@ -167,13 +166,14 @@ def validate_required(cfg: dict[str, Any]) -> None:
         )
         raise _ParserError(msg)
 
-    if cfg["OPIK_PLUGIN"] == "enabled":
-        if not cfg["OPIK_URL"] or not cfg["OPIK_PROJECT_NAME"]:
-            raise _ParserError(
-                "Error: OPIK_PLUGIN is enabled but OPIK_URL and OPIK_PROJECT_NAME are required.\n"
-                f'  OPIK_PLUGIN=enabled OPIK_URL="https://opik.example.com/api/" '
-                f'OPIK_PROJECT_NAME="my-project" {SCRIPT_DIR}/setup.sh {cfg["COUNT"]}'
-            )
+    if cfg["OPIK_PLUGIN"] == "enabled" and (
+        not cfg["OPIK_URL"] or not cfg["OPIK_PROJECT_NAME"]
+    ):
+        raise _ParserError(
+            "Error: OPIK_PLUGIN is enabled but OPIK_URL and OPIK_PROJECT_NAME are required.\n"
+            f'  OPIK_PLUGIN=enabled OPIK_URL="https://opik.example.com/api/" '
+            f'OPIK_PROJECT_NAME="my-project" {SCRIPT_DIR}/setup.sh {cfg["COUNT"]}'
+        )
 
     if not TEMPLATE_FILE.exists():
         raise _ParserError(f"Error: template not found: {TEMPLATE_FILE}")
@@ -275,28 +275,28 @@ def render_compose_service(svc: str, *, token_var: str, gw_port: int, image_defa
     lines: list[str] = []
     lines.append(f"  {svc}:")
     lines.append(f"    image: ${{OPENCLAW_IMAGE:-{image_default}}}")
-    lines.append(f"    pull_policy: never")
+    lines.append("    pull_policy: never")
     lines.append(f"    container_name: {svc}")
     if cfg.get("OPENCLAW_CONTAINER_USER"):
         lines.append(f'    user: "{cfg["OPENCLAW_CONTAINER_USER"]}:{cfg["OPENCLAW_GID"]}"')
     else:
         lines.append(f'    user: "{cfg["OPENCLAW_UID"]}:{cfg["OPENCLAW_GID"]}"')
-    lines.append(f"    networks:")
+    lines.append("    networks:")
     lines.append(f"      - net-{svc}")
-    lines.append(f"    environment:")
-    lines.append(f"      HOME: /home/node")
-    lines.append(f"      TERM: xterm-256color")
+    lines.append("    environment:")
+    lines.append("      HOME: /home/node")
+    lines.append("      TERM: xterm-256color")
     lines.append(f"      OPENCLAW_STATE_DIR: {CONTAINER_STATE_DIR}")
     lines.append(f"      OPENCLAW_CONFIG_PATH: {CONTAINER_CONFIG_PATH}")
     lines.append(f"      OPENCLAW_WORKSPACE_DIR: {CONTAINER_WORKSPACE_DIR}")
     lines.append(f'      OPENCLAW_GATEWAY_TOKEN: "${{{token_var}}}"  # injected at runtime from .env')
-    lines.append(f'      TZ: "${{TZ:-Asia/Shanghai}}"')
+    lines.append('      TZ: "${TZ:-Asia/Shanghai}"')
     for key in ("NPM_CONFIG_REGISTRY", "PIP_INDEX_URL", "PIP_EXTRA_INDEX_URL", "PIP_TRUSTED_HOST"):
         if cfg.get(key):
             lines.append(f"      {key}: {yaml_double_quote(str(cfg[key]))}")
     if cfg["OPIK_PLUGIN"] == "enabled":
-        lines.append(f'      OC_OPIK_PROCESS_TIMEOUT_S: "60"')
-    lines.append(f"    volumes:")
+        lines.append('      OC_OPIK_PROCESS_TIMEOUT_S: "60"')
+    lines.append("    volumes:")
     lines.append(f"      - {config_dir}:{CONTAINER_STATE_DIR}         # per-instance OpenClaw state")
     lines.append(f"      - {workspace_dir}:{CONTAINER_WORKSPACE_DIR}  # per-instance agent workspace")
     lines.append(f"      - {npm_cache}:/home/node/.npm             # shared npm cache (read/write safe)")
@@ -305,35 +305,35 @@ def render_compose_service(svc: str, *, token_var: str, gw_port: int, image_defa
         lines.append(f"      - {opik_state_dir}:/home/node/.openclaw/state  # opik tracer state only")
     if plugin_cache is not None and plugin_cache.is_dir():
         lines.append(f"      - {plugin_cache}:/opt/plugin-cache:ro   # shared plugin cache (read-only)")
-    lines.append(f"    ports:")
+    lines.append("    ports:")
     lines.append(f'      - "{gw_port}:{BASE_GW_PORT}"')
-    lines.append(f"    deploy:")
-    lines.append(f"      resources:")
-    lines.append(f"        limits:")
+    lines.append("    deploy:")
+    lines.append("      resources:")
+    lines.append("        limits:")
     lines.append(f'          cpus: "{cfg["CPU_LIMIT"]}"')
     lines.append(f"          memory: {cfg['MEM_LIMIT']}")
-    lines.append(f"    init: true                        # reap zombie processes")
-    lines.append(f"    restart: unless-stopped")
-    lines.append(f"    cap_drop:")
-    lines.append(f"      - ALL                           # drop all Linux capabilities")
-    lines.append(f"    security_opt:")
-    lines.append(f"      - no-new-privileges:true")
+    lines.append("    init: true                        # reap zombie processes")
+    lines.append("    restart: unless-stopped")
+    lines.append("    cap_drop:")
+    lines.append("      - ALL                           # drop all Linux capabilities")
+    lines.append("    security_opt:")
+    lines.append("      - no-new-privileges:true")
     lines.append(f"    read_only: {cfg['DOCKER_COMPOSE_READ_ONLY']}")
-    lines.append(f"    tmpfs:")
-    lines.append(f"      - /tmp                          # ephemeral scratch space")
-    lines.append(f"    command:")
+    lines.append("    tmpfs:")
+    lines.append("      - /tmp                          # ephemeral scratch space")
+    lines.append("    command:")
     lines.append(f'      ["node", "dist/index.js", "gateway", "--bind", "lan", "--port", "{BASE_GW_PORT}"]')
-    lines.append(f"    healthcheck:")
-    lines.append(f"      test:")
-    lines.append(f'        ["CMD", "node", "-e",')
+    lines.append("    healthcheck:")
+    lines.append("      test:")
+    lines.append('        ["CMD", "node", "-e",')
     lines.append(
         f"         \"fetch('http://127.0.0.1:{BASE_GW_PORT}/healthz')"
         f".then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\"]"
     )
-    lines.append(f"      interval: 30s")
-    lines.append(f"      timeout: 5s")
-    lines.append(f"      retries: 5")
-    lines.append(f"      start_period: 20s")
+    lines.append("      interval: 30s")
+    lines.append("      timeout: 5s")
+    lines.append("      retries: 5")
+    lines.append("      start_period: 20s")
     lines.append("")  # blank line between services
     return "\n".join(lines) + "\n"
 
@@ -345,7 +345,7 @@ def render_networks(prefix: str, count: int) -> str:
     out: list[str] = ["", "networks:"]
     for i in range(1, count + 1):
         out.append(f"  net-{prefix}-{i}:")
-        out.append(f"    driver: bridge")
+        out.append("    driver: bridge")
     return "\n".join(out) + "\n"
 
 

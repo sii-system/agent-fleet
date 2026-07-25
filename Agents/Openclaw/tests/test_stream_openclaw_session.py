@@ -1,8 +1,8 @@
 import importlib.util
 import json
-from pathlib import Path
 import tempfile
 import unittest
+from pathlib import Path
 from unittest import mock
 
 
@@ -213,14 +213,20 @@ class StreamOpenClawSessionTest(unittest.TestCase):
             session_dir = root / "agents" / "main" / "sessions"
             session_dir.mkdir(parents=True)
             (session_dir / "sess-1.jsonl").write_text(
-                "\n".join(
+                "\n".join(  # noqa: FLY002 - line list keeps JSONL fixtures readable
                     [
-                        '{"type":"message","timestamp":"2026-04-22T10:00:00Z","message":{"role":"user",'
-                        '"content":[{"type":"text","text":"hello"}]}}',
-                        '{"type":"message","timestamp":"2026-04-22T10:00:10Z","message":{"role":"assistant",'
-                        '"content":[{"type":"text","text":"world"}]}}',
-                        '{"type":"message","timestamp":"2026-04-22T10:01:00Z","message":{"role":"user",'
-                        '"content":[{"type":"text","text":"store root wins"}]}}',
+                        (
+                            '{"type":"message","timestamp":"2026-04-22T10:00:00Z","message":{"role":"user",'
+                            '"content":[{"type":"text","text":"hello"}]}}'
+                        ),
+                        (
+                            '{"type":"message","timestamp":"2026-04-22T10:00:10Z","message":{"role":"assistant",'
+                            '"content":[{"type":"text","text":"world"}]}}'
+                        ),
+                        (
+                            '{"type":"message","timestamp":"2026-04-22T10:01:00Z","message":{"role":"user",'
+                            '"content":[{"type":"text","text":"store root wins"}]}}'
+                        ),
                     ]
                 ),
                 encoding="utf-8",

@@ -24,7 +24,6 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 from uuid import uuid4
 
-
 SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_DATASET_NAME = os.environ.get("RL_DATASET_NAME", "seta")
 DEFAULT_DATASET_ROOT = Path(os.environ.get("RL_DATASET_ROOT", "/workspace/seta-env/Harbor-Dataset"))
@@ -182,8 +181,7 @@ def _zellij_session_exists(session_name: str) -> bool:
             ["zellij", "list-sessions", "--short"],
             cwd=str(SCRIPT_DIR),
             text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
             timeout=5,
             check=False,
         )
@@ -426,13 +424,13 @@ class Handler(BaseHTTPRequestHandler):
             return {}
         data = json.loads(self.rfile.read(length).decode("utf-8"))
         if not isinstance(data, dict):
-            raise ValueError("request body must be a JSON object")
+            raise TypeError("request body must be a JSON object")
         return data
 
     def log_message(self, fmt: str, *args: Any) -> None:
         print(f"{self.address_string()} - {fmt % args}", flush=True)
 
-    def do_GET(self) -> None:  # noqa: N802
+    def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler protocol
         parsed = urlparse(self.path)
         query = parse_qs(parsed.query)
         try:
@@ -470,10 +468,10 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(HTTPStatus.OK, {"dataset_name": dataset_name, "task_count": len(tasks), "task_ids": tasks, "disabled_task_ids": sorted(_disabled_task_ids())})
                 return
             self._send_json(HTTPStatus.NOT_FOUND, {"detail": "not found"})
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - HTTP boundary returns structured failures
             self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"detail": {"exception_type": type(exc).__name__, "exception_message": str(exc)}})
 
-    def do_POST(self) -> None:  # noqa: N802
+    def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler protocol
         if urlparse(self.path).path != "/run_trial":
             self._send_json(HTTPStatus.NOT_FOUND, {"detail": "not found"})
             return
@@ -494,7 +492,7 @@ class Handler(BaseHTTPRequestHandler):
                 "duration_sec": round(time.monotonic() - started, 3),
             })
             self._send_json(HTTPStatus.OK, result)
-        except ValueError as exc:
+        except (TypeError, ValueError) as exc:
             detail = {"exception_type": type(exc).__name__, "exception_message": str(exc)}
             _append_trace({
                 "event": "error",
@@ -505,7 +503,7 @@ class Handler(BaseHTTPRequestHandler):
                 "exception_info": detail,
             })
             self._send_json(HTTPStatus.BAD_REQUEST, {"detail": detail})
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - HTTP boundary returns structured failures
             detail = {"exception_type": type(exc).__name__, "exception_message": str(exc)}
             _append_trace({
                 "event": "error",

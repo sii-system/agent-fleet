@@ -5,7 +5,6 @@ setup.sh -> setup.py wrapper end-to-end. The tests here target the pure
 functions so failures point at a specific transformation."""
 
 import importlib.util
-import io
 import json
 import os
 import sys
@@ -42,8 +41,10 @@ class AnsibleFleetTemplateTests(unittest.TestCase):
         self.assertEqual(
             trace_lines,
             [
-                "TRACE_TO_OPIK={{ 'false' if (trace_to_opik | default(true) | string | lower) "
-                "in ['false', '0'] else 'true' }}"
+                (
+                    "TRACE_TO_OPIK={{ 'false' if (trace_to_opik | default(true) | string | lower) "
+                    "in ['false', '0'] else 'true' }}"
+                ),
             ],
         )
 

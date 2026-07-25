@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Tests for Harbor analyzer runtime artifact and handover helpers."""
 
 from __future__ import annotations
@@ -23,6 +22,10 @@ from Agents.utils.common.Harbor.scripts.analyzer_subagent import (
     _record_follow_failure,
 )
 from Agents.utils.common.Harbor.scripts.harbor_analyzer import runner as analyzer_runner
+from Agents.utils.common.Harbor.scripts.harbor_analyzer.pi import (
+    _models_config,
+    dispatch_to_child,
+)
 from Agents.utils.common.Harbor.scripts.harbor_analyzer.runner import (
     AnalyzerConfig,
     _task_allowed_paths,
@@ -30,9 +33,9 @@ from Agents.utils.common.Harbor.scripts.harbor_analyzer.runner import (
     _write_outputs,
     run_handover,
 )
-from Agents.utils.common.Harbor.scripts.harbor_analyzer.pi import _models_config, dispatch_to_child
-from Agents.utils.common.Harbor.scripts.harbor_monitor.contracts import build_analyzer_handover
-
+from Agents.utils.common.Harbor.scripts.harbor_monitor.contracts import (
+    build_analyzer_handover,
+)
 
 HANDOVER_ID = "sha256-" + ("b" * 64)
 RUN_ID = "run-1"
