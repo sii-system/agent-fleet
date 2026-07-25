@@ -495,6 +495,55 @@ class OrchestrationTest(unittest.TestCase):
         self.assertEqual(result, "duplicate")
         self.assertEqual(github.created, [])
 
+    def test_same_head_on_a_different_base_is_reviewed(self) -> None:
+        github = FakeGitHub()
+        github.reviews = [
+            {
+                "user": {"login": "github-actions[bot]"},
+                "body": "<!-- pi-pr-review:head-1 -->",
+            },
+            {
+                "user": {"login": "github-actions[bot]"},
+                "body": "<!-- pi-pr-review:head-1:base-0 -->",
+            },
+        ]
+
+        result = pi_review.run_review(
+            github,
+            FakePiClient([]),
+            7,
+            "prompt",
+            expected_head_sha="head-1",
+            expected_base_sha="base-1",
+        )
+
+        self.assertEqual(result, "published")
+        self.assertIn(
+            "<!-- pi-pr-review:head-1:base-1 -->",
+            github.created[0][2],
+        )
+
+    def test_same_head_and_base_is_duplicate(self) -> None:
+        github = FakeGitHub()
+        github.reviews = [
+            {
+                "user": {"login": "github-actions[bot]"},
+                "body": "<!-- pi-pr-review:head-1:base-1 -->",
+            }
+        ]
+
+        result = pi_review.run_review(
+            github,
+            FakePiClient([]),
+            7,
+            "prompt",
+            expected_head_sha="head-1",
+            expected_base_sha="base-1",
+        )
+
+        self.assertEqual(result, "duplicate")
+        self.assertEqual(github.created, [])
+
     def test_stale_head_is_not_published(self) -> None:
         github = FakeGitHub()
         first = dict(github.pull)
