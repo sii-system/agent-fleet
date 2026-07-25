@@ -40,12 +40,19 @@ JavaScript regular expressions.
 
 Each `read`, `grep`, `find`, and `ls` result is limited to 50 KiB of UTF-8
 output. Reads remain limited to 1,200 lines, while `find` and `ls` requests are
-clamped to 200 results. The PR reviewer additionally sets a 16-call limit for
-each diff chunk. The path gate aborts pi before an over-budget call executes,
-and the Python stream validator rejects any otherwise successful stream that
-reports more than 16 tool executions. Shared Harbor analyzers do not set the
-call-limit environment variable and therefore retain an unlimited number of
-calls, but their individual tool results receive the shared output caps.
+clamped to 200 results. File reads materialize at most 2 MiB, and each grep
+call scans at most 8 MiB across those bounded file reads before decoding,
+redacting, or formatting results.
+
+The PR reviewer additionally sets a 16-call limit and a 128 KiB cumulative
+tool-result limit for each diff chunk. Call attempts are counted at
+`tool_execution_start`, before schema validation, so malformed and unknown
+calls cannot bypass the limit. The path gate aborts pi before an over-budget
+call executes, and the Python stream validator rejects any otherwise
+successful stream that reports more than 16 tool executions. Shared Harbor
+analyzers do not set either reviewer-limit environment variable and therefore
+retain an unlimited number of calls and no cumulative result limit. They do
+inherit the per-call output, per-file input, and grep scan caps.
 
 The subprocess environment remains minimal. It contains the model API key,
 network and certificate settings, the isolated pi runtime directory, and the
@@ -86,8 +93,12 @@ Regression tests are written before implementation and must demonstrate:
   available when the reviewer policy is absent;
 - each PR-review chunk is limited to 16 tool calls while Harbor remains
   unlimited when the reviewer environment variable is absent;
+- malformed tool calls are counted before schema validation, and reviewer tool
+  results remain within a cumulative 128 KiB per chunk;
 - read, grep, find, and ls results remain within 50 KiB, with requested find
   and ls limits clamped to 200;
+- read materialization remains within 2 MiB per file and grep stops after
+  scanning 8 MiB in one call;
 - grep and glob inputs are bounded and glob matching does not compile a regular
   expression;
 - custom endpoint prefixes are preserved without an injected `/v1`;

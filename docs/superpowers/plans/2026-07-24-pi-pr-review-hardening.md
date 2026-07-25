@@ -37,6 +37,13 @@ result at 50 KiB, clamps find and ls to 200 results, and emits explicit
 truncation details. Harbor remains unlimited in call count when the reviewer
 environment variable is absent, but inherits the per-call output caps.
 
+Follow-up quality review moved call accounting to `tool_execution_start` so
+schema-invalid calls are included, added a reviewer-only 128 KiB cumulative
+tool-result cap, limited file materialization to 2 MiB per file, and limited
+each grep call to 8 MiB of scanned input. Harbor remains without reviewer
+call-count or cumulative-output limits when those environment variables are
+absent, while inheriting the shared per-file and per-grep scan bounds.
+
 ### Task 1: Preserve endpoint paths and accept compact JSON fences
 
 **Files:**

@@ -36,6 +36,9 @@ PI_PATH_GATE_EXTENSION = (
 PI_ALLOWED_PATHS_ENV = "HARBOR_ANALYZER_ALLOWED_PATHS_JSON"
 PI_GREP_LITERAL_ONLY_ENV = "HARBOR_ANALYZER_GREP_LITERAL_ONLY"
 PI_MAX_TOOL_CALLS_ENV = "HARBOR_ANALYZER_MAX_TOOL_CALLS"
+PI_MAX_TOTAL_TOOL_OUTPUT_ENV = (
+    "HARBOR_ANALYZER_MAX_TOTAL_TOOL_OUTPUT_BYTES"
+)
 sys.path.insert(0, str(_PROJECT_ROOT))
 from scripts.pi_prompt import (  # noqa: E402
     PROVIDER,
@@ -56,6 +59,7 @@ PI_REVIEW_BUDGET_SECONDS = (
     WORKFLOW_TIMEOUT_SECONDS - WORKFLOW_RESERVE_SECONDS
 )
 PI_MAX_TOOL_CALLS = 16
+PI_MAX_TOTAL_TOOL_OUTPUT_BYTES = 128 * 1024
 
 
 class PiReviewError(RuntimeError):
@@ -241,6 +245,9 @@ class PiClient:
             )
             environment[PI_GREP_LITERAL_ONLY_ENV] = "1"
             environment[PI_MAX_TOOL_CALLS_ENV] = str(PI_MAX_TOOL_CALLS)
+            environment[PI_MAX_TOTAL_TOOL_OUTPUT_ENV] = str(
+                PI_MAX_TOTAL_TOOL_OUTPUT_BYTES
+            )
 
             command = [
                 self.pi_binary,

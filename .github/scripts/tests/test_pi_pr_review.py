@@ -45,6 +45,7 @@ prompt="${{@: -1}}"
   printf 'allowed_paths=%s\\n' "${{HARBOR_ANALYZER_ALLOWED_PATHS_JSON:-}}"
   printf 'grep_literal_only=%s\\n' "${{HARBOR_ANALYZER_GREP_LITERAL_ONLY:-}}"
   printf 'max_tool_calls=%s\\n' "${{HARBOR_ANALYZER_MAX_TOOL_CALLS:-}}"
+  printf 'max_total_tool_output_bytes=%s\\n' "${{HARBOR_ANALYZER_MAX_TOTAL_TOOL_OUTPUT_BYTES:-}}"
   printf 'offline=%s\\n' "${{PI_OFFLINE:-}}"
   printf 'token=%s\\n' "${{AGENT_FLEET_API_KEY:-}}"
   printf 'prompt=<%s>\\n' "$prompt"
@@ -298,6 +299,7 @@ def _run_real_pi_exchange(
     tool_calls: list[dict],
     files: dict[str, str],
     unset_reviewer_policy: bool = False,
+    unset_cumulative_output_policy: bool = False,
     expect_error: str | None = None,
     bypass_stream_validation: bool = False,
 ) -> tuple[dict | None, list[dict], list[dict]]:
@@ -330,18 +332,25 @@ def _run_real_pi_exchange(
                 encoding="utf-8",
             )
         launch_binary = pi_binary
-        if unset_reviewer_policy:
+        if unset_reviewer_policy or unset_cumulative_output_policy:
             wrapper = Path(temp_dir) / "pi-without-reviewer-policy"
+            unset_lines = [
+                f"os.environ.pop({pi_review.PI_MAX_TOTAL_TOOL_OUTPUT_ENV!r}, None)\n"
+            ]
+            if unset_reviewer_policy:
+                unset_lines.extend(
+                    [
+                        f"os.environ.pop({pi_review.PI_GREP_LITERAL_ONLY_ENV!r}, None)\n",
+                        f"os.environ.pop({pi_review.PI_MAX_TOOL_CALLS_ENV!r}, None)\n",
+                    ]
+                )
             wrapper.write_text(
-                (
-                    "#!/usr/bin/env python3\n"
-                    "import os\n"
-                    "import sys\n"
-                    f"os.environ.pop({pi_review.PI_GREP_LITERAL_ONLY_ENV!r}, None)\n"
-                    f"os.environ.pop({pi_review.PI_MAX_TOOL_CALLS_ENV!r}, None)\n"
-                    f"pi_binary = {pi_binary!r}\n"
-                    "os.execv(pi_binary, [pi_binary, *sys.argv[1:]])\n"
-                ),
+                "#!/usr/bin/env python3\n"
+                "import os\n"
+                "import sys\n"
+                + "".join(unset_lines)
+                + f"pi_binary = {pi_binary!r}\n"
+                + "os.execv(pi_binary, [pi_binary, *sys.argv[1:]])\n",
                 encoding="utf-8",
             )
             wrapper.chmod(0o755)
@@ -719,6 +728,22 @@ class PiClientTest(unittest.TestCase):
         self.assertEqual(pi_review.PI_MAX_TOOL_CALLS, 16)
         self.assertIn("max_tool_calls=16", captured)
 
+    def test_limits_reviewer_total_tool_output_per_chunk(self) -> None:
+        _stub_pi_script(self.bin_dir, stdout=_make_findings_response())
+        client = self._make_client()
+
+        client.review("prompt", "diff")
+
+        captured = self.capture.read_text(encoding="utf-8")
+        self.assertEqual(
+            pi_review.PI_MAX_TOTAL_TOOL_OUTPUT_BYTES,
+            128 * 1024,
+        )
+        self.assertIn(
+            f"max_total_tool_output_bytes={128 * 1024}",
+            captured,
+        )
+
     def test_path_gate_uses_non_regex_wildcard_matching(self) -> None:
         source = pi_review.PI_PATH_GATE_EXTENSION.read_text(
             encoding="utf-8"
@@ -1088,6 +1113,87 @@ class PiRuntimeIntegrationTest(unittest.TestCase):
         )
         self.assertTrue(over_limit["isError"])
 
+    def test_real_pi_counts_invalid_calls_before_schema_validation(
+        self,
+    ) -> None:
+        result, requests, events = _run_real_pi_exchange(
+            self,
+            endpoint="/invalid-budget/chat/completions",
+            tool_calls=[
+                _tool_call(index, f"call-{index}", "read", {})
+                for index in range(17)
+            ],
+            files={},
+            expect_error="tool-call limit of 16.*observed 17",
+        )
+
+        self.assertIsNone(result)
+        self.assertEqual(len(requests), 1)
+        completed = [
+            event
+            for event in events
+            if event["type"] == "tool_execution_end"
+        ]
+        self.assertEqual(len(completed), 17)
+        self.assertTrue(all(event["isError"] for event in completed))
+
+    def test_real_pi_caps_cumulative_reviewer_tool_output(self) -> None:
+        result, requests, events = _run_real_pi_exchange(
+            self,
+            endpoint="/cumulative-cap/chat/completions",
+            tool_calls=[
+                _tool_call(
+                    index,
+                    f"call-{index}",
+                    "read",
+                    {"path": "large.txt"},
+                )
+                for index in range(16)
+            ],
+            files={"large.txt": "界" * 40_000 + "\n"},
+        )
+
+        self.assertEqual(result, {"findings": []})
+        tool_results = [
+            message["content"]
+            for message in requests[1]["body"]["messages"]
+            if message["role"] == "tool"
+        ]
+        total_bytes = sum(
+            len(content.encode("utf-8")) for content in tool_results
+        )
+        self.assertLessEqual(total_bytes, 128 * 1024)
+        self.assertLess(
+            len(
+                json.dumps(
+                    requests[1]["body"],
+                    ensure_ascii=False,
+                ).encode("utf-8")
+            ),
+            180 * 1024,
+        )
+        self.assertNotIn(
+            "\ufffd",
+            "".join(tool_results),
+        )
+        cumulative_details = [
+            event["result"]["details"]
+            for event in events
+            if event["type"] == "tool_execution_end"
+        ]
+        self.assertTrue(
+            any(
+                details["cumulative_output_byte_limit_reached"]
+                for details in cumulative_details
+            )
+        )
+        self.assertTrue(
+            all(
+                details["cumulative_output_byte_limit"] == 128 * 1024
+                for details in cumulative_details
+            )
+        )
+
     def test_real_pi_caps_read_find_and_ls_outputs(self) -> None:
         long_files = {
             f"{index:03d}-{'x' * 180}.txt": "evidence\n"
@@ -1130,6 +1236,7 @@ class PiRuntimeIntegrationTest(unittest.TestCase):
                 ),
                 **long_files,
             },
+            unset_cumulative_output_policy=True,
         )
 
         self.assertEqual(result, {"findings": []})
@@ -1186,6 +1293,75 @@ class PiRuntimeIntegrationTest(unittest.TestCase):
             200,
         )
 
+    def test_real_pi_bounds_file_reads_and_total_grep_scan(self) -> None:
+        scan_file = "x" * (2 * 1024 * 1024 + 1024)
+        result, requests, events = _run_real_pi_exchange(
+            self,
+            endpoint="/input-bounds/chat/completions",
+            tool_calls=[
+                _tool_call(
+                    0,
+                    "call-large-read",
+                    "read",
+                    {"path": "large-read.txt"},
+                ),
+                _tool_call(
+                    1,
+                    "call-scan-limit",
+                    "grep",
+                    {
+                        "pattern": "missing-marker",
+                        "path": ".",
+                        "literal": True,
+                    },
+                ),
+            ],
+            files={
+                "large-read.txt": (
+                    "API_KEY=sk-abcdefghijklmnop\n"
+                    + "界" * 800_000
+                    + "\n"
+                ),
+                **{
+                    f"scan-{index}.txt": scan_file
+                    for index in range(5)
+                },
+            },
+        )
+
+        self.assertEqual(result, {"findings": []})
+        tool_results = {
+            message["tool_call_id"]: message["content"]
+            for message in requests[1]["body"]["messages"]
+            if message["role"] == "tool"
+        }
+        self.assertIn("2MiB input", tool_results["call-large-read"])
+        self.assertIn("8MiB total scan", tool_results["call-scan-limit"])
+        self.assertNotIn("\ufffd", tool_results["call-large-read"])
+        self.assertIn("<REDACTED>", tool_results["call-large-read"])
+
+        details = {
+            event["toolCallId"]: event["result"]["details"]
+            for event in events
+            if event["type"] == "tool_execution_end"
+        }
+        read_details = details["call-large-read"]
+        self.assertTrue(read_details["input_truncated"])
+        self.assertLessEqual(
+            read_details["input_bytes"],
+            read_details["input_byte_limit"],
+        )
+        self.assertEqual(read_details["input_byte_limit"], 2 * 1024 * 1024)
+
+        grep_details = details["call-scan-limit"]
+        self.assertTrue(grep_details["input_truncated"])
+        self.assertTrue(grep_details["scan_limit_reached"])
+        self.assertLessEqual(
+            grep_details["scan_bytes"],
+            grep_details["scan_byte_limit"],
+        )
+        self.assertEqual(grep_details["scan_byte_limit"], 8 * 1024 * 1024)
+
     def test_real_pi_has_no_tool_count_limit_without_reviewer_env(
         self,
     ) -> None:
@@ -1201,7 +1377,7 @@ class PiRuntimeIntegrationTest(unittest.TestCase):
                 )
                 for index in range(17)
             ],
-            files={"evidence.txt": "shared Harbor evidence\n"},
+            files={"evidence.txt": "shared Harbor evidence\n" * 5_000},
             unset_reviewer_policy=True,
             bypass_stream_validation=True,
         )
@@ -1215,6 +1391,15 @@ class PiRuntimeIntegrationTest(unittest.TestCase):
                 for event in events
             ),
             17,
+        )
+        tool_results = [
+            message["content"]
+            for message in requests[1]["body"]["messages"]
+            if message["role"] == "tool"
+        ]
+        self.assertGreater(
+            sum(len(content.encode("utf-8")) for content in tool_results),
+            128 * 1024,
         )
 
     def test_real_pi_preserves_regex_grep_without_reviewer_policy(
