@@ -42,7 +42,10 @@ Each `read`, `grep`, `find`, and `ls` result is limited to 50 KiB of UTF-8
 output. Reads remain limited to 1,200 lines, while `find` and `ls` requests are
 clamped to 200 results. File reads materialize at most 2 MiB, and each grep
 call scans at most 8 MiB across those bounded file reads before decoding,
-redacting, or formatting results.
+redacting, or formatting results. In reviewer mode, the pre-provider context
+transform applies the same per-result cap to pi-generated validation errors,
+which occur before the shared `tool_result` hook. Unknown-tool errors are not
+path-gated tool results and remain subject only to the cumulative reviewer cap.
 
 The PR reviewer additionally sets a 16-call limit and a 128 KiB cumulative
 tool-result limit for each diff chunk. Call attempts are counted at
@@ -51,14 +54,15 @@ calls cannot bypass the limit. Before each provider call, a stateless context
 transform applies the cumulative limit to every final tool result in assistant
 source order, including unknown-tool and schema-validation errors that pi
 creates before the `tool_result` extension hook. It reserves a compact,
-model-visible truncation notice for every remaining result, so parallel tool
+model-visible truncation notice for every remaining result, and preserves an
+allowed tool's per-result notice when both limits apply, so parallel tool
 completion order cannot change the allocation. The path gate aborts pi before
 an over-budget call executes, and the Python stream validator rejects any
 otherwise successful stream that reports more than 16 tool executions. Shared
 Harbor analyzers do not set either reviewer-limit environment variable and
 therefore retain an unlimited number of calls and no cumulative context
 transform. They do inherit the per-call output, per-file input, and grep scan
-caps.
+caps for successfully executed tools.
 
 The subprocess environment remains minimal. It contains the model API key,
 network and certificate settings, the isolated pi runtime directory, and the
@@ -102,8 +106,9 @@ Regression tests are written before implementation and must demonstrate:
 - malformed tool calls are counted before schema validation, and every
   provider-visible reviewer tool result, including immediate pi errors, remains
   within a cumulative 128 KiB per chunk;
-- read, grep, find, and ls results remain within 50 KiB, with requested find
-  and ls limits clamped to 200;
+- read, grep, find, and ls results, including immediate validation errors in
+  reviewer mode, remain within 50 KiB, with requested find and ls limits
+  clamped to 200;
 - read materialization remains within 2 MiB per file and grep stops after
   scanning 8 MiB in one call;
 - grep and glob inputs are bounded and glob matching does not compile a regular

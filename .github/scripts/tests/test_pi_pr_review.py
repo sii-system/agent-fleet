@@ -1185,6 +1185,10 @@ class PiRuntimeIntegrationTest(unittest.TestCase):
         self.assertIn("Path:", results_by_id["call-1"])
         for index in range(2, 16):
             self.assertIn(
+                "50KB UTF-8 output",
+                results_by_id[f"call-{index}"],
+            )
+            self.assertIn(
                 "[tool output truncated]",
                 results_by_id[f"call-{index}"],
             )
@@ -1292,6 +1296,89 @@ class PiRuntimeIntegrationTest(unittest.TestCase):
             self.assertTrue(errors_by_id[f"call-unknown-{index}"])
         self.assertTrue(errors_by_id["call-invalid"])
         self.assertFalse(errors_by_id["call-read-first"])
+
+    def test_real_pi_caps_immediate_allowed_tool_errors_per_result(
+        self,
+    ) -> None:
+        oversized_value = ["x" * 200_000]
+        cases = {
+            "read": {"path": oversized_value},
+            "grep": {"pattern": oversized_value},
+            "find": {"pattern": oversized_value},
+            "ls": {"path": oversized_value},
+        }
+        for tool_name, arguments in cases.items():
+            with self.subTest(tool=tool_name):
+                result, requests, events = _run_real_pi_exchange(
+                    self,
+                    endpoint=f"/invalid-{tool_name}-cap/chat/completions",
+                    tool_calls=[
+                        _tool_call(
+                            0,
+                            f"call-invalid-{tool_name}",
+                            tool_name,
+                            arguments,
+                        )
+                    ],
+                    files={},
+                )
+
+                self.assertEqual(result, {"findings": []})
+                tool_result = next(
+                    message["content"]
+                    for message in requests[1]["body"]["messages"]
+                    if message["role"] == "tool"
+                )
+                encoded_result = tool_result.encode("utf-8")
+                self.assertLessEqual(len(encoded_result), 50 * 1024)
+                self.assertEqual(
+                    encoded_result.decode("utf-8"),
+                    tool_result,
+                )
+                self.assertNotIn("\ufffd", tool_result)
+                self.assertIn(
+                    "maximum 50KB UTF-8 output",
+                    tool_result,
+                )
+                self.assertTrue(
+                    next(
+                        event["isError"]
+                        for event in events
+                        if event["type"] == "tool_execution_end"
+                    )
+                )
+
+    def test_real_pi_keeps_unknown_tool_results_cumulative_only(
+        self,
+    ) -> None:
+        unknown_name = "unknown-" + ("x" * 60_000)
+        result, requests, events = _run_real_pi_exchange(
+            self,
+            endpoint="/unknown-cumulative-only/chat/completions",
+            tool_calls=[
+                _tool_call(0, "call-unknown-large", unknown_name, {})
+            ],
+            files={},
+        )
+
+        self.assertEqual(result, {"findings": []})
+        tool_result = next(
+            message["content"]
+            for message in requests[1]["body"]["messages"]
+            if message["role"] == "tool"
+        )
+        self.assertEqual(tool_result, f"Tool {unknown_name} not found")
+        result_bytes = tool_result.encode("utf-8")
+        self.assertGreater(len(result_bytes), 50 * 1024)
+        self.assertLessEqual(len(result_bytes), 128 * 1024)
+        self.assertEqual(result_bytes.decode("utf-8"), tool_result)
+        self.assertTrue(
+            next(
+                event["isError"]
+                for event in events
+                if event["type"] == "tool_execution_end"
+            )
+        )
 
     def test_real_pi_caps_read_find_and_ls_outputs(self) -> None:
         long_files = {

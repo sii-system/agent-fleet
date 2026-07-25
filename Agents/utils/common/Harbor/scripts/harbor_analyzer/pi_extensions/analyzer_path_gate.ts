@@ -35,12 +35,9 @@ const LS_TRUNCATION_NOTICE =
 const TOOL_TRUNCATION_NOTICE =
 	`[Output truncated by analyzer path gate: maximum ${MAX_TOOL_OUTPUT_BYTES / 1024}KB UTF-8 output.]`;
 const CUMULATIVE_TOOL_TRUNCATION_NOTICE = "[tool output truncated]";
-const CUMULATIVE_TOOL_TRUNCATION_BYTES = Buffer.byteLength(
-	`\n${CUMULATIVE_TOOL_TRUNCATION_NOTICE}`,
-	"utf8",
-);
 const GREP_TRUNCATION_NOTICE =
 	`[Output truncated by analyzer path gate: maximum ${MAX_FILE_READ_BYTES / (1024 * 1024)}MiB input per file, ${MAX_GREP_SCAN_BYTES / (1024 * 1024)}MiB total scan, ${DEFAULT_LIMIT} matches, ${MAX_GREP_CONTEXT} context lines, and ${MAX_TOOL_OUTPUT_BYTES / 1024}KB UTF-8 output. Refine the search.]`;
+const PATH_GATED_TOOL_NAMES = new Set(["read", "grep", "find", "ls"]);
 
 const readSchema = {
 	type: "object",
@@ -319,6 +316,39 @@ function toolResultText(
 	return text ? `${text}\n${omission}` : omission;
 }
 
+function toolTruncationNotice(
+	toolName: string,
+	text: string,
+): string | undefined {
+	let toolNotice: string | undefined;
+	switch (toolName) {
+		case "read":
+			toolNotice = READ_TRUNCATION_NOTICE;
+			break;
+		case "grep":
+			toolNotice = GREP_TRUNCATION_NOTICE;
+			break;
+		case "find":
+			toolNotice = FIND_TRUNCATION_NOTICE;
+			break;
+		case "ls":
+			toolNotice = LS_TRUNCATION_NOTICE;
+			break;
+	}
+	const hasNotice = (notice: string) =>
+		text.endsWith(notice) ||
+		text.endsWith(
+			`${notice}\n${CUMULATIVE_TOOL_TRUNCATION_NOTICE}`,
+		);
+	if (toolNotice !== undefined && hasNotice(toolNotice)) {
+		return toolNotice;
+	}
+	if (hasNotice(TOOL_TRUNCATION_NOTICE)) {
+		return TOOL_TRUNCATION_NOTICE;
+	}
+	return undefined;
+}
+
 async function collectFiles(root: string, limit: number): Promise<string[]> {
 	const files: string[] = [];
 	async function visit(current: string) {
@@ -422,26 +452,63 @@ export default function analyzerPathGate(pi: ExtensionAPI) {
 	}
 	if (totalOutputLimit !== undefined) {
 		pi.on("context", async (event) => {
-			const toolResultCount = event.messages.filter(
-				(message) => message.role === "toolResult",
-			).length;
-			let toolResultsSeen = 0;
+			const toolResults = event.messages
+				.filter((message) => message.role === "toolResult")
+				.map((message) => {
+					const rawText = toolResultText(message.content);
+					if (!PATH_GATED_TOOL_NAMES.has(message.toolName)) {
+						return {
+							text: rawText,
+							cumulativeNotice:
+								CUMULATIVE_TOOL_TRUNCATION_NOTICE,
+						};
+					}
+					const perCallOutput = boundedOutput(
+						rawText,
+						false,
+						TOOL_TRUNCATION_NOTICE,
+					);
+					const perCallNotice = toolTruncationNotice(
+						message.toolName,
+						perCallOutput.text,
+					);
+					return {
+						text: perCallOutput.text,
+						cumulativeNotice:
+							perCallNotice === undefined
+								? CUMULATIVE_TOOL_TRUNCATION_NOTICE
+								: `${perCallNotice}\n${CUMULATIVE_TOOL_TRUNCATION_NOTICE}`,
+					};
+				});
+			let remainingNoticeBytes = toolResults.reduce(
+				(total, result) =>
+					total +
+					Buffer.byteLength(
+						`\n${result.cumulativeNotice}`,
+						"utf8",
+					),
+				0,
+			);
+			let toolResultIndex = 0;
 			let totalOutputBytes = 0;
 			const messages = event.messages.map((message) => {
 				if (message.role !== "toolResult") return message;
-				toolResultsSeen++;
-				const remainingResults = toolResultCount - toolResultsSeen;
+				const toolResult = toolResults[toolResultIndex++];
+				const noticeBytes = Buffer.byteLength(
+					`\n${toolResult.cumulativeNotice}`,
+					"utf8",
+				);
+				remainingNoticeBytes -= noticeBytes;
 				const availableBytes = Math.max(
 					0,
 					totalOutputLimit -
 						totalOutputBytes -
-						remainingResults *
-							CUMULATIVE_TOOL_TRUNCATION_BYTES,
+						remainingNoticeBytes,
 				);
 				const output = boundedOutput(
-					toolResultText(message.content),
+					toolResult.text,
 					false,
-					CUMULATIVE_TOOL_TRUNCATION_NOTICE,
+					toolResult.cumulativeNotice,
 					availableBytes,
 				);
 				totalOutputBytes += output.outputBytes;
@@ -454,7 +521,7 @@ export default function analyzerPathGate(pi: ExtensionAPI) {
 		});
 	}
 	pi.on("tool_result", async (event) => {
-		if (!["read", "grep", "find", "ls"].includes(event.toolName)) {
+		if (!PATH_GATED_TOOL_NAMES.has(event.toolName)) {
 			return undefined;
 		}
 		if (event.content.length !== 1 || event.content[0].type !== "text") {

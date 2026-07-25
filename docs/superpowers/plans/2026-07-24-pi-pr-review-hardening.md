@@ -51,6 +51,13 @@ in assistant source order. The transform is repeatable across context rebuilds
 and reserves a meaningful truncation notice for every remaining result;
 Harbor callers that omit the reviewer environment variable do not install it.
 
+The same context transform applies the 50 KiB per-result cap to immediate
+validation errors for read, grep, find, and ls before cumulative allocation.
+When both caps truncate a result, the final model-visible output retains the
+per-result notice as well as the cumulative notice. Unknown-tool errors remain
+cumulative-only, and successful shared analyzer audit/details behavior remains
+in the `tool_result` hook.
+
 ### Task 1: Preserve endpoint paths and accept compact JSON fences
 
 **Files:**
