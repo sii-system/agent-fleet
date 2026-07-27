@@ -427,6 +427,26 @@ class Handler(BaseHTTPRequestHandler):
             raise TypeError("request body must be a JSON object")
         return data
 
+    def _send_failure(
+        self,
+        status: int,
+        exc: Exception,
+        *,
+        started: float,
+        request: dict[str, Any],
+        request_id: str,
+    ) -> None:
+        detail = {"exception_type": type(exc).__name__, "exception_message": str(exc)}
+        _append_trace({
+            "event": "error",
+            "timestamp": _now(),
+            "request_id": request_id,
+            "task_id": request.get("task_id") or request.get("task_path") or "<unknown>",
+            "duration_sec": round(time.monotonic() - started, 3),
+            "exception_info": detail,
+        })
+        self._send_json(status, {"detail": detail})
+
     def log_message(self, fmt: str, *args: Any) -> None:
         print(f"{self.address_string()} - {fmt % args}", flush=True)
 
@@ -480,8 +500,18 @@ class Handler(BaseHTTPRequestHandler):
         request_id = ""
         try:
             request = self._read_json()
-            request_id, result_path = _enqueue_request(request)
             wait_timeout = float(request.get("request_timeout") or request.get("timeout") or DEFAULT_TIMEOUT)
+        except (TypeError, ValueError) as exc:
+            self._send_failure(
+                HTTPStatus.BAD_REQUEST,
+                exc,
+                started=started,
+                request=request,
+                request_id=request_id,
+            )
+            return
+        try:
+            request_id, result_path = _enqueue_request(request)
             result = _wait_result(result_path, wait_timeout)
             _append_trace({
                 "event": "returned",
@@ -492,28 +522,22 @@ class Handler(BaseHTTPRequestHandler):
                 "duration_sec": round(time.monotonic() - started, 3),
             })
             self._send_json(HTTPStatus.OK, result)
-        except (TypeError, ValueError) as exc:
-            detail = {"exception_type": type(exc).__name__, "exception_message": str(exc)}
-            _append_trace({
-                "event": "error",
-                "timestamp": _now(),
-                "request_id": request_id,
-                "task_id": request.get("task_id") or request.get("task_path") or "<unknown>",
-                "duration_sec": round(time.monotonic() - started, 3),
-                "exception_info": detail,
-            })
-            self._send_json(HTTPStatus.BAD_REQUEST, {"detail": detail})
+        except ValueError as exc:
+            self._send_failure(
+                HTTPStatus.BAD_REQUEST,
+                exc,
+                started=started,
+                request=request,
+                request_id=request_id,
+            )
         except Exception as exc:  # noqa: BLE001 - HTTP boundary returns structured failures
-            detail = {"exception_type": type(exc).__name__, "exception_message": str(exc)}
-            _append_trace({
-                "event": "error",
-                "timestamp": _now(),
-                "request_id": request_id,
-                "task_id": request.get("task_id") or request.get("task_path") or "<unknown>",
-                "duration_sec": round(time.monotonic() - started, 3),
-                "exception_info": detail,
-            })
-            self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"detail": detail})
+            self._send_failure(
+                HTTPStatus.INTERNAL_SERVER_ERROR,
+                exc,
+                started=started,
+                request=request,
+                request_id=request_id,
+            )
 
 
 def main() -> int:
