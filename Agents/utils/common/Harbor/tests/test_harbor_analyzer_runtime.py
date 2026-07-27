@@ -18,6 +18,7 @@ if str(SCRIPT_DIR) not in sys.path:
 from Agents.utils.common.Harbor.scripts.analyzer_subagent import (
     FOLLOW_MAX_FAILURE_ATTEMPTS,
     _default_model,
+    _load_follow_state,
     _pending_handovers,
     _record_follow_failure,
 )
@@ -269,6 +270,30 @@ class HarborAnalyzerRuntimeTest(unittest.TestCase):
                 ["attempt-1", "attempt-2"],
             )
             self.assertEqual(len({item[2] for item in pending}), 2)
+
+    def test_follow_state_recovers_from_non_object_json(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            state_path = Path(root) / ".analyzer_state.json"
+            state_path.write_text("[]", encoding="utf-8")
+
+            self.assertEqual(_load_follow_state(state_path), (set(), {}))
+
+    def test_pending_handovers_skip_non_object_json(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            handoff_dir = Path(root) / "handoffs"
+            handoff_dir.mkdir()
+            (handoff_dir / "1.json").write_text("[]", encoding="utf-8")
+
+            self.assertEqual(
+                _pending_handovers(
+                    latest_path=Path(root) / "latest.json",
+                    handoff_dir=handoff_dir,
+                    processed=set(),
+                    failed={},
+                    now=0.0,
+                ),
+                [],
+            )
 
     def test_pending_handovers_stop_after_follow_failure_limit(self) -> None:
         with tempfile.TemporaryDirectory() as root:

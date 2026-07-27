@@ -195,7 +195,7 @@ def read_result_json(result_path: str | None, base_dirs: list[Path]) -> tuple[bo
         return False, None, None, None
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except (OSError, ValueError):
         return False, None, None, None
 
     verifier = payload.get("verifier_result") if isinstance(payload, dict) else None
@@ -259,7 +259,7 @@ def load_state(state_path: Path) -> dict[str, Any]:
         return {"retry_count": 0, "history": [], "adaptive_S": None}
     try:
         return json.loads(state_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except (OSError, ValueError):
         return {"retry_count": 0, "history": [], "adaptive_S": None}
 
 
