@@ -114,5 +114,62 @@ class LlmPrReviewWorkflowTest(unittest.TestCase):
         )
 
 
+class PiPrSummaryWorkflowTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.path = WORKFLOWS / "pi-pr-summary.yml"
+
+    def _workflow(self) -> str:
+        self.assertTrue(self.path.exists(), "pi-pr-summary.yml must exist")
+        return self.path.read_text(encoding="utf-8")
+
+    def test_runs_once_only_for_initial_non_draft_open(self) -> None:
+        workflow = self._workflow()
+
+        self.assertIn('"on":\n  pull_request_target:\n    types: [opened]', workflow)
+        self.assertIn("if: ${{ !github.event.pull_request.draft }}", workflow)
+        self.assertNotIn("reopened", workflow)
+        self.assertNotIn("synchronize", workflow)
+        self.assertNotIn("ready_for_review", workflow)
+
+    def test_uses_hosted_trusted_base_and_shared_model_configuration(self) -> None:
+        workflow = self._workflow()
+        expected = (
+            "name: Pi PR Summary",
+            "contents: read",
+            "pull-requests: write",
+            "runs-on: ubuntu-latest",
+            "environment: llm-pr-review",
+            "pull_request.base.sha",
+            "persist-credentials: false",
+            'PI_VERSION: "0.81.1"',
+            "secrets.LLM_REVIEW_API_KEY",
+            "vars.LLM_REVIEW_BASE_URL",
+            "vars.LLM_REVIEW_MODEL",
+            "python3 .github/scripts/pi_pr_summary.py",
+            "--prompt-path .github/scripts/pi_summary_prompt.md",
+        )
+        for setting in expected:
+            with self.subTest(setting=setting):
+                self.assertIn(setting, workflow)
+        self.assertEqual(workflow.count("pi_pr_summary.py"), 1)
+        self.assertRegex(
+            workflow,
+            re.compile(r"uses: actions/checkout@[0-9a-f]{40}"),
+        )
+
+    def test_prompt_requires_only_the_three_summary_sections(self) -> None:
+        prompt_path = ROOT / ".github" / "scripts" / "pi_summary_prompt.md"
+        self.assertTrue(prompt_path.exists(), "pi_summary_prompt.md must exist")
+        prompt = prompt_path.read_text(encoding="utf-8")
+
+        self.assertIn("untrusted data", prompt)
+        self.assertIn('"description"', prompt)
+        self.assertIn('"diagram"', prompt)
+        self.assertIn('"assessment"', prompt)
+        self.assertIn("trusted base checkout", prompt)
+        self.assertNotIn('"findings"', prompt)
+        self.assertNotIn("labels", prompt.casefold())
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -328,6 +328,13 @@ class GitHubClient:
     def list_reviews(self, number: int) -> list[dict[str, Any]]:
         return self._list_pages(f"/pulls/{number}/reviews")
 
+    def create_issue_comment(self, number: int, body: str) -> dict[str, Any]:
+        return self._request(
+            "POST",
+            f"/issues/{number}/comments",
+            {"body": body},
+        )
+
     def create_review(
         self,
         number: int,

@@ -409,6 +409,18 @@ class ApiClientTest(unittest.TestCase):
         self.assertNotIn("@all-maintainers", comment)
         self.assertIn("@\u200bsecurity-team", comment)
 
+    def test_create_issue_comment_posts_standalone_body(self) -> None:
+        opener = mock.Mock(return_value=FakeResponse({"id": 123}))
+        client = review.GitHubClient("owner/repo", "token", opener=opener)
+        self.assertTrue(hasattr(client, "create_issue_comment"))
+
+        client.create_issue_comment(7, "PR summary")
+
+        request = opener.call_args.args[0]
+        self.assertEqual(request.get_method(), "POST")
+        self.assertTrue(request.full_url.endswith("/issues/7/comments"))
+        self.assertEqual(json.loads(request.data), {"body": "PR summary"})
+
 
 class FakeGitHub:
     def __init__(self) -> None:
