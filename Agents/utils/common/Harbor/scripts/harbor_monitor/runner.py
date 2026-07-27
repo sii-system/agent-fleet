@@ -107,14 +107,6 @@ def read_exit_code(exit_file: Path | None) -> int | None:
         return None
 
 
-def native_harbor_running_count(
-    snapshot_running: int,
-    *,
-    benchmark_alive: bool,
-) -> int:
-    return max(snapshot_running, 1) if benchmark_alive else 0
-
-
 def run_loop(
     run_dir: Path,
     done_path: Path,
@@ -174,7 +166,6 @@ def run_loop(
         task_records = None
         terminal_artifacts_missing = None
         run_finalized = True
-        benchmark_exit_code = read_exit_code(harbor_exit_file)
         if harbor_job_dir_file is not None:
             if native_snapshot is None:
                 # Give the native Harbor process its normal startup window. If it
@@ -192,13 +183,10 @@ def run_loop(
                 remaining = native_snapshot.remaining
                 running = native_snapshot.running
                 benchmark_alive = process_is_alive(harbor_pid_file)
-                running = native_harbor_running_count(
-                    running,
-                    benchmark_alive=benchmark_alive,
-                )
+                running = max(running, 1) if benchmark_alive else 0
                 task_records = native_snapshot.tasks
                 terminal_artifacts_missing = False
-                run_finalized = native_snapshot.finished and benchmark_exit_code == 0
+                run_finalized = native_snapshot.finished and read_exit_code(harbor_exit_file) == 0
         if total is None and tasks_manifest:
             total = len(tasks_manifest)
         if claimed is None:
@@ -525,7 +513,8 @@ def run_loop(
                 handover_id = str(handoff.get("handover_id") or "")
                 if handover_id:
                     spool_path = analyzer_handover_output.parent / "analyzer-handoffs" / f"{handover_id}.json"
-                    write_json(spool_path, handoff)
+                    if not spool_path.exists():
+                        write_json(spool_path, handoff)
                     state["analyzer_spooled_terminal_fingerprints"] = sorted(
                         spooled | set(new_fingerprints)
                     )

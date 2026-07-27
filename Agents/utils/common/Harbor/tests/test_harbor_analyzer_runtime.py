@@ -35,7 +35,6 @@ from Agents.utils.common.Harbor.scripts.harbor_analyzer.runner import (
     _write_outputs,
     run_handover,
 )
-from Agents.utils.common.Harbor.scripts.harbor_monitor import runner as monitor_runner
 from Agents.utils.common.Harbor.scripts.harbor_monitor.contracts import (
     build_analyzer_handover,
 )
@@ -162,96 +161,6 @@ def write_outputs_process(root: str, marker: str) -> None:
 
 
 class HarborAnalyzerRuntimeTest(unittest.TestCase):
-    def test_native_harbor_running_count_discards_snapshot_when_process_dies(self) -> None:
-        self.assertEqual(
-            monitor_runner.native_harbor_running_count(
-                0,
-                benchmark_alive=True,
-            ),
-            1,
-        )
-        self.assertEqual(
-            monitor_runner.native_harbor_running_count(
-                2,
-                benchmark_alive=False,
-            ),
-            0,
-        )
-
-    def test_monitor_rewrites_corrupt_analyzer_spool_file(self) -> None:
-        with tempfile.TemporaryDirectory() as root:
-            run_dir = Path(root) / "run"
-            queue_dir = run_dir / "queue"
-            run_dir.mkdir()
-            analyzer_handover_output = run_dir / "analyzer-handover.json"
-            expected_handover = build_analyzer_handover(
-                monitor_output("attempt-1"),
-                run_dir=run_dir,
-                queue_dir=queue_dir,
-            )
-            spool_path = (
-                run_dir
-                / "analyzer-handoffs"
-                / f"{expected_handover['handover_id']}.json"
-            )
-            spool_path.parent.mkdir()
-            spool_path.write_text("{", encoding="utf-8")
-            output = {
-                "timestamp": "2026-07-20T00:00:00+00:00",
-                "benchmark_status": "completed",
-                "status_reason": "finished",
-                "finished_delta": 0,
-                "task_summary": {},
-            }
-
-            with (
-                mock.patch.object(
-                    monitor_runner,
-                    "evaluate_once",
-                    return_value=(output, {"type": "wait"}, [], {}),
-                ),
-                mock.patch.object(monitor_runner, "build_user_notify", return_value={}),
-                mock.patch.object(
-                    monitor_runner,
-                    "build_analyzer_handover",
-                    return_value=expected_handover,
-                ),
-                mock.patch.object(monitor_runner, "build_runner_action", return_value={}),
-                mock.patch("builtins.print"),
-            ):
-                monitor_runner.run_loop(
-                    run_dir=run_dir,
-                    done_path=run_dir / "done",
-                    failed_path=run_dir / "failed",
-                    queue_dir=queue_dir,
-                    task_manifest_path=None,
-                    task_file_path=None,
-                    restart_cmd=None,
-                    stop_cmd=None,
-                    output_path=None,
-                    poll_interval=1,
-                    max_retries=1,
-                    S_default=1,
-                    S_min=1,
-                    S_max=1,
-                    startup_grace=1,
-                    configured_timeout=None,
-                    total_override=1,
-                    running_override=0,
-                    claimed_override=1,
-                    remaining_override=0,
-                    user_report_output=None,
-                    analyzer_handover_output=analyzer_handover_output,
-                    runner_action_output=None,
-                    loop_once=True,
-                    include_unknown_not_complete=False,
-                )
-
-            self.assertEqual(
-                json.loads(spool_path.read_text(encoding="utf-8")),
-                expected_handover,
-            )
-
     def test_analyzer_model_has_no_glm_default(self) -> None:
         with mock.patch.dict("os.environ", {}, clear=True):
             self.assertEqual(_default_model(), "")
@@ -443,8 +352,10 @@ class HarborAnalyzerRuntimeTest(unittest.TestCase):
             handoff_dir = root_path / "handoffs"
             handoff_dir.mkdir()
             tasks = [
-                task(task_index="1", attempt_id="attempt-1"),
-                task(task_index="2", attempt_id="attempt-2"),
+                task(task_index="1", attempt_id="attempt-1")
+                | {"terminal_fingerprint": "fingerprint-1"},
+                task(task_index="2", attempt_id="attempt-2")
+                | {"terminal_fingerprint": "fingerprint-2"},
             ]
             for index, handover_task in enumerate(tasks, start=1):
                 (handoff_dir / f"{index}.json").write_text(
