@@ -10,7 +10,6 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-
 HARBOR_DIR = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location(
     "harbor_prepare_runner_cli", HARBOR_DIR / "harbor_prepare_runner_cli.py"

@@ -5,7 +5,6 @@ import tempfile
 import unittest
 from pathlib import Path
 
-
 SETUP = Path(__file__).resolve().parents[1] / "setup.sh"
 
 

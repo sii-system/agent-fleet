@@ -2,12 +2,11 @@ from __future__ import annotations
 
 import json
 import os
-from pathlib import Path
 import subprocess
 import tempfile
 import textwrap
 import unittest
-
+from pathlib import Path
 
 HARBOR_DIR = Path(__file__).resolve().parents[1]
 WRAPPER = HARBOR_DIR / "model-fusion" / "run_one_tb21_task.sh"

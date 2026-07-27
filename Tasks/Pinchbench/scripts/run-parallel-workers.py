@@ -9,9 +9,9 @@ import os
 import shlex
 import subprocess
 import sys
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
-from typing import Callable
 from urllib.parse import urlsplit, urlunsplit
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -525,10 +525,20 @@ def validate(args: argparse.Namespace, config: dict[str, str]) -> None:
 def apply_patch(pinchbench_dir: Path, patch_file: Path) -> None:
     git = ["git", "-C", str(pinchbench_dir)]
     # Accept both a clean checkout and one where the target patch is already present.
-    if subprocess.run(git + ["apply", "--check", str(patch_file)], capture_output=True).returncode == 0:
+    forward_check = subprocess.run(
+        git + ["apply", "--check", str(patch_file)],
+        capture_output=True,
+        check=False,
+    )
+    if forward_check.returncode == 0:
         subprocess.run(git + ["apply", str(patch_file)], check=True)
         return
-    if subprocess.run(git + ["apply", "-R", "--check", str(patch_file)], capture_output=True).returncode == 0:
+    reverse_check = subprocess.run(
+        git + ["apply", "-R", "--check", str(patch_file)],
+        capture_output=True,
+        check=False,
+    )
+    if reverse_check.returncode == 0:
         return  # patch already applied
     sys.exit(f"Error: failed to apply patch {patch_file} to {pinchbench_dir}")
 
@@ -934,7 +944,7 @@ def summarize_iteration(
     runtime_failed = len(failed_tasks)
     runtime_skipped = len(skipped_web_search_disabled)
     runtime_succeeded = total - runtime_failed - runtime_skipped
-    finished_at = datetime.now()
+    finished_at = datetime.now()  # noqa: DTZ005 - preserve naive persisted timestamps
     return {
         "iteration": iteration,
         "started_at": started_at.isoformat(),
@@ -986,7 +996,7 @@ def write_iterations_summary_files(run_root_dir: Path, iteration_summaries: list
     iterations_summary_json.write_text(
         json.dumps(
             {
-                "generated_at": datetime.now().isoformat(),
+                "generated_at": datetime.now().isoformat(),  # noqa: DTZ005
                 "iterations": iteration_summaries,
             },
             indent=2,
@@ -1061,6 +1071,7 @@ def main() -> None:
     image_missing = subprocess.run(
         ["docker", "image", "inspect", config["PINCHBENCH_DOCKER_IMAGE"]],
         capture_output=True,
+        check=False,
     ).returncode != 0
     force_build = config_bool(config.get("PINCHBENCH_FORCE_BUILD"), False)
     image_unusable = False
@@ -1071,6 +1082,7 @@ def main() -> None:
                 tracing_enabled=tracing_enabled,
             ),
             capture_output=True,
+            check=False,
         ).returncode != 0
 
     if force_build or image_missing or image_unusable:
@@ -1081,7 +1093,9 @@ def main() -> None:
 
     output_dir = Path(config["PINCHBENCH_OUTPUT_DIR"])
     output_dir.mkdir(parents=True, exist_ok=True)
-    run_root_dir = output_dir / datetime.now().strftime("%Y%m%d-%H%M%S")
+    run_root_dir = output_dir / datetime.now().strftime(  # noqa: DTZ005
+        "%Y%m%d-%H%M%S"
+    )
     run_root_dir.mkdir()
 
     suite_name = "core" if args.core else args.suite
@@ -1111,7 +1125,7 @@ def main() -> None:
     had_failures = False
 
     for iteration in range(1, args.iterations + 1):
-        iteration_started_at = datetime.now()
+        iteration_started_at = datetime.now()  # noqa: DTZ005
         run_dir = run_root_dir / f"iteration-{iteration:03d}"
         run_dir.mkdir(parents=True, exist_ok=True)
 

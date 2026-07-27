@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Tests for Harbor analyzer runtime artifact and handover helpers."""
 
 from __future__ import annotations
@@ -19,11 +18,16 @@ if str(SCRIPT_DIR) not in sys.path:
 from Agents.utils.common.Harbor.scripts.analyzer_subagent import (
     FOLLOW_MAX_FAILURE_ATTEMPTS,
     _default_model,
-    analyzer_drain_budget_seconds,
+    _load_follow_state,
     _pending_handovers,
     _record_follow_failure,
+    analyzer_drain_budget_seconds,
 )
 from Agents.utils.common.Harbor.scripts.harbor_analyzer import runner as analyzer_runner
+from Agents.utils.common.Harbor.scripts.harbor_analyzer.pi import (
+    _models_config,
+    dispatch_to_child,
+)
 from Agents.utils.common.Harbor.scripts.harbor_analyzer.runner import (
     AnalyzerConfig,
     _task_allowed_paths,
@@ -31,9 +35,9 @@ from Agents.utils.common.Harbor.scripts.harbor_analyzer.runner import (
     _write_outputs,
     run_handover,
 )
-from Agents.utils.common.Harbor.scripts.harbor_analyzer.pi import _models_config, dispatch_to_child
-from Agents.utils.common.Harbor.scripts.harbor_monitor.contracts import build_analyzer_handover
-
+from Agents.utils.common.Harbor.scripts.harbor_monitor.contracts import (
+    build_analyzer_handover,
+)
 
 HANDOVER_ID = "sha256-" + ("b" * 64)
 RUN_ID = "run-1"
@@ -267,6 +271,30 @@ class HarborAnalyzerRuntimeTest(unittest.TestCase):
                 ["attempt-1", "attempt-2"],
             )
             self.assertEqual(len({item[2] for item in pending}), 2)
+
+    def test_follow_state_recovers_from_non_object_json(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            state_path = Path(root) / ".analyzer_state.json"
+            state_path.write_text("[]", encoding="utf-8")
+
+            self.assertEqual(_load_follow_state(state_path), (set(), {}))
+
+    def test_pending_handovers_skip_non_object_json(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            handoff_dir = Path(root) / "handoffs"
+            handoff_dir.mkdir()
+            (handoff_dir / "1.json").write_text("[]", encoding="utf-8")
+
+            self.assertEqual(
+                _pending_handovers(
+                    latest_path=Path(root) / "latest.json",
+                    handoff_dir=handoff_dir,
+                    processed=set(),
+                    failed={},
+                    now=0.0,
+                ),
+                [],
+            )
 
     def test_pending_handovers_stop_after_follow_failure_limit(self) -> None:
         with tempfile.TemporaryDirectory() as root:

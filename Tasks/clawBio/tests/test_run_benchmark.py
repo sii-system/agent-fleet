@@ -6,7 +6,6 @@ import unittest
 from datetime import datetime, timezone
 from pathlib import Path
 
-
 MODULE_PATH = Path(__file__).resolve().parents[1] / "scripts" / "run-benchmark.py"
 SPEC = importlib.util.spec_from_file_location("clawbio_run_benchmark", MODULE_PATH)
 run_benchmark = importlib.util.module_from_spec(SPEC)
@@ -53,14 +52,12 @@ class ClawBioRunnerTest(unittest.TestCase):
             self.assertFalse(outputs.exists())
 
     def test_clear_artifact_paths_rejects_escape(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            with self.assertRaises(ValueError):
-                run_benchmark.clear_artifact_paths(Path(tmp), ["../outside"])
+        with tempfile.TemporaryDirectory() as tmp, self.assertRaises(ValueError):
+            run_benchmark.clear_artifact_paths(Path(tmp), ["../outside"])
 
     def test_clear_artifact_paths_rejects_workspace_root(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            with self.assertRaises(ValueError):
-                run_benchmark.clear_artifact_paths(Path(tmp), ["."])
+        with tempfile.TemporaryDirectory() as tmp, self.assertRaises(ValueError):
+            run_benchmark.clear_artifact_paths(Path(tmp), ["."])
 
     def test_task_session_id_is_stable_across_worker_assignment(self) -> None:
         started_at = datetime(2026, 5, 6, 3, 4, 5, 123456, tzinfo=timezone.utc)

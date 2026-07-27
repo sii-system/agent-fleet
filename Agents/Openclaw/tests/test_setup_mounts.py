@@ -7,7 +7,6 @@ import tempfile
 import unittest
 from pathlib import Path
 
-
 OPENCLAW_DIR = Path(__file__).resolve().parents[1]
 
 

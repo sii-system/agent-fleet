@@ -8,7 +8,6 @@ import time
 import unittest
 from pathlib import Path
 
-
 SCRIPT = Path(__file__).resolve().parents[1] / "fleet_batch.sh"
 HARBOR_START = SCRIPT.parents[1] / "Agents/utils/common/Harbor/start.sh"
 HARBOR_RUN_STATE_VARS = (

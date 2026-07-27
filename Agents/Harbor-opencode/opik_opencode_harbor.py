@@ -17,15 +17,14 @@ from __future__ import annotations
 import asyncio
 import os
 import shlex
+from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import Awaitable, Callable
 from urllib.parse import urlsplit, urlunsplit
 
 from harbor.agents.installed.base import with_prompt_template
 from harbor.agents.installed.opencode import OpenCode
 from harbor.environments.base import BaseEnvironment
 from harbor.models.agent.context import AgentContext
-
 
 ROOT = Path(__file__).resolve().parent
 REPO_ROOT = ROOT.parents[1]
@@ -74,7 +73,7 @@ def _rewrite_container_proxy(value: str) -> str:
     Other URLs returned unchanged. Malformed inputs returned as-is."""
     try:
         parts = urlsplit(value)
-    except Exception:
+    except ValueError:
         return value
 
     hostname = parts.hostname
@@ -98,7 +97,7 @@ def _rewrite_container_opik_url(value: str) -> str:
     value = _rewrite_container_proxy(value)
     try:
         parts = urlsplit(value)
-    except Exception:
+    except ValueError:
         return value
     if parts.port == 5173 and parts.path in {"", "/"}:
         return urlunsplit(
@@ -142,7 +141,7 @@ async def _retry_async(
             return False
         try:
             return bool(await sanity_check())
-        except Exception:
+        except Exception:  # noqa: BLE001 - optional sanity checks must not abort setup
             return False
 
     if await _check_sanity():
@@ -155,7 +154,7 @@ async def _retry_async(
             await runner()
             print(f"[opik-cold] {label}: ok on attempt {attempt}/{attempts}", flush=True)
             return
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - retry arbitrary installer failures
             last_exc = exc
             print(
                 f"[opik-cold] {label}: attempt {attempt}/{attempts} failed: "
@@ -278,7 +277,7 @@ class OpikOpenCodeHarbor(OpenCode):
                     ),
                 )
                 return True
-            except Exception:
+            except Exception:  # noqa: BLE001 - command failure means the tool is absent
                 return False
 
         async def _run_local_opencode_install() -> None:
@@ -536,7 +535,6 @@ class OpikOpenCodeHarbor(OpenCode):
                 if key in env:
                     env[key] = _rewrite_container_opik_url(env[key])
 
-        env["OPENCODE_FAKE_VCS"] = "git"
         if trace_enabled:
             # Harbor only downloads EnvironmentPaths.agent_dir after timeout.
             # Keep the hook runtime backup there so the outer worker can replay

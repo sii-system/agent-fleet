@@ -11,7 +11,6 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-
 MODULE_DIR = Path(__file__).resolve().parents[1]
 
 
@@ -177,6 +176,10 @@ class OpenCodeTraceDisabledTests(unittest.TestCase):
         self.assertNotIn("finalize_opencode_sessions.py", commands)
         self.assertNotIn(
             "OC_OPIK_LOGS_DIR",
+            agent.agent_commands[-1].get("env", {}),
+        )
+        self.assertNotIn(
+            "OPENCODE_FAKE_VCS",
             agent.agent_commands[-1].get("env", {}),
         )
 

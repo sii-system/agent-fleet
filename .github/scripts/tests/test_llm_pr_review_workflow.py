@@ -2,7 +2,6 @@ import re
 import unittest
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[3]
 WORKFLOWS = ROOT / ".github" / "workflows"
 
@@ -53,8 +52,10 @@ class LlmPrReviewWorkflowTest(unittest.TestCase):
     def test_self_hosted_workflow_keeps_distinct_configuration(self):
         expected = (
             "name: Self-Hosted LLM PR Review",
-            "group: self-hosted-llm-pr-review-"
-            "${{ github.event.pull_request.number }}",
+            (
+                "group: self-hosted-llm-pr-review-"
+                "${{ github.event.pull_request.number }}"
+            ),
             "runs-on: [self-hosted, Linux, X64]",
             "environment: self-hosted-env",
             "LLM_REVIEW_ID: self-hosted-pi-pr-review",

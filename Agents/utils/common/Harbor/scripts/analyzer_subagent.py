@@ -12,9 +12,18 @@ import time
 from pathlib import Path
 from typing import Any
 
-from harbor_analyzer.io import load_json, stable_hash, utc_now, write_json_atomic, write_text_atomic
-from harbor_analyzer.runner import AnalyzerConfig, run_handover, task_analysis_timeout_budget_seconds
-
+from harbor_analyzer.io import (
+    load_json,
+    stable_hash,
+    utc_now,
+    write_json_atomic,
+    write_text_atomic,
+)
+from harbor_analyzer.runner import (
+    AnalyzerConfig,
+    run_handover,
+    task_analysis_timeout_budget_seconds,
+)
 
 FOLLOW_MAX_BACKOFF_SECONDS = 300.0
 FOLLOW_MAX_FAILURE_ATTEMPTS = 3

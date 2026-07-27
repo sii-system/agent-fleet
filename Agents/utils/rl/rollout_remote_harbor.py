@@ -24,7 +24,6 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 from uuid import uuid4
 
-
 SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_DATASET_NAME = os.environ.get("RL_DATASET_NAME", "seta")
 DEFAULT_DATASET_ROOT = Path(os.environ.get("RL_DATASET_ROOT", "/workspace/seta-env/Harbor-Dataset"))
@@ -182,8 +181,7 @@ def _zellij_session_exists(session_name: str) -> bool:
             ["zellij", "list-sessions", "--short"],
             cwd=str(SCRIPT_DIR),
             text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
             timeout=5,
             check=False,
         )
@@ -426,13 +424,33 @@ class Handler(BaseHTTPRequestHandler):
             return {}
         data = json.loads(self.rfile.read(length).decode("utf-8"))
         if not isinstance(data, dict):
-            raise ValueError("request body must be a JSON object")
+            raise TypeError("request body must be a JSON object")
         return data
+
+    def _send_failure(
+        self,
+        status: int,
+        exc: Exception,
+        *,
+        started: float,
+        request: dict[str, Any],
+        request_id: str,
+    ) -> None:
+        detail = {"exception_type": type(exc).__name__, "exception_message": str(exc)}
+        _append_trace({
+            "event": "error",
+            "timestamp": _now(),
+            "request_id": request_id,
+            "task_id": request.get("task_id") or request.get("task_path") or "<unknown>",
+            "duration_sec": round(time.monotonic() - started, 3),
+            "exception_info": detail,
+        })
+        self._send_json(status, {"detail": detail})
 
     def log_message(self, fmt: str, *args: Any) -> None:
         print(f"{self.address_string()} - {fmt % args}", flush=True)
 
-    def do_GET(self) -> None:  # noqa: N802
+    def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler protocol
         parsed = urlparse(self.path)
         query = parse_qs(parsed.query)
         try:
@@ -470,10 +488,10 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(HTTPStatus.OK, {"dataset_name": dataset_name, "task_count": len(tasks), "task_ids": tasks, "disabled_task_ids": sorted(_disabled_task_ids())})
                 return
             self._send_json(HTTPStatus.NOT_FOUND, {"detail": "not found"})
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - HTTP boundary returns structured failures
             self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"detail": {"exception_type": type(exc).__name__, "exception_message": str(exc)}})
 
-    def do_POST(self) -> None:  # noqa: N802
+    def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler protocol
         if urlparse(self.path).path != "/run_trial":
             self._send_json(HTTPStatus.NOT_FOUND, {"detail": "not found"})
             return
@@ -482,8 +500,27 @@ class Handler(BaseHTTPRequestHandler):
         request_id = ""
         try:
             request = self._read_json()
-            request_id, result_path = _enqueue_request(request)
             wait_timeout = float(request.get("request_timeout") or request.get("timeout") or DEFAULT_TIMEOUT)
+        except (TypeError, ValueError) as exc:
+            self._send_failure(
+                HTTPStatus.BAD_REQUEST,
+                exc,
+                started=started,
+                request=request,
+                request_id=request_id,
+            )
+            return
+        except Exception as exc:  # noqa: BLE001 - HTTP boundary returns structured failures
+            self._send_failure(
+                HTTPStatus.INTERNAL_SERVER_ERROR,
+                exc,
+                started=started,
+                request=request,
+                request_id=request_id,
+            )
+            return
+        try:
+            request_id, result_path = _enqueue_request(request)
             result = _wait_result(result_path, wait_timeout)
             _append_trace({
                 "event": "returned",
@@ -495,27 +532,21 @@ class Handler(BaseHTTPRequestHandler):
             })
             self._send_json(HTTPStatus.OK, result)
         except ValueError as exc:
-            detail = {"exception_type": type(exc).__name__, "exception_message": str(exc)}
-            _append_trace({
-                "event": "error",
-                "timestamp": _now(),
-                "request_id": request_id,
-                "task_id": request.get("task_id") or request.get("task_path") or "<unknown>",
-                "duration_sec": round(time.monotonic() - started, 3),
-                "exception_info": detail,
-            })
-            self._send_json(HTTPStatus.BAD_REQUEST, {"detail": detail})
-        except Exception as exc:
-            detail = {"exception_type": type(exc).__name__, "exception_message": str(exc)}
-            _append_trace({
-                "event": "error",
-                "timestamp": _now(),
-                "request_id": request_id,
-                "task_id": request.get("task_id") or request.get("task_path") or "<unknown>",
-                "duration_sec": round(time.monotonic() - started, 3),
-                "exception_info": detail,
-            })
-            self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"detail": detail})
+            self._send_failure(
+                HTTPStatus.BAD_REQUEST,
+                exc,
+                started=started,
+                request=request,
+                request_id=request_id,
+            )
+        except Exception as exc:  # noqa: BLE001 - HTTP boundary returns structured failures
+            self._send_failure(
+                HTTPStatus.INTERNAL_SERVER_ERROR,
+                exc,
+                started=started,
+                request=request,
+                request_id=request_id,
+            )
 
 
 def main() -> int:

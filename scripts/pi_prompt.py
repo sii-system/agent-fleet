@@ -14,7 +14,6 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
-
 PROVIDER = "sii-gateway"
 API_KEY_ENV = "AGENT_FLEET_API_KEY"
 
@@ -276,8 +275,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 env=minimal_environment(runtime_dir, api_key),
                 stdin=subprocess.DEVNULL,
                 text=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
+                capture_output=True,
                 shell=False,
                 check=False,
             )

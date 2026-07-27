@@ -22,7 +22,6 @@ from .taxonomy import (
     expected_final_class_for_root_cause,
 )
 
-
 ROOT_CAUSE_CODE_RE = re.compile(r"^[a-z][a-z0-9]*(?:_[a-z0-9]+){1,11}$")
 
 REQUIRED_TASK_REPORT_KEYS = {

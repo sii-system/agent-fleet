@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import json
 import fcntl
+import json
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -15,10 +15,13 @@ from . import PROMPT_VERSION, SCHEMA_VERSION, TAXONOMY_VERSION
 from .contract import validate_handover
 from .io import stable_hash, utc_now, write_json_atomic, write_text_atomic
 from .pi import dispatch_to_child
-from .prompt import build_dispatch_retry_prompt, build_task_prompt, build_validation_retry_prompt
+from .prompt import (
+    build_dispatch_retry_prompt,
+    build_task_prompt,
+    build_validation_retry_prompt,
+)
 from .taxonomy import ENV_INFRA_CLASSES, FINAL_CLASSES, UNKNOWN_ROOT_CAUSE
 from .validation import validate_final_json, validate_task_analysis
-
 
 AGENT_NAME = "harbor_analyzer_pi_subagent"
 MAX_TASK_ATTEMPTS = 2
