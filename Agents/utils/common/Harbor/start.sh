@@ -244,7 +244,7 @@ harbor_start_analyzer_if_enabled() {
         --ready-file "$ready_file" \
         --follow \
         --poll-interval "$HARBOR_ANALYZER_POLL_INTERVAL" \
-        >>"$HARBOR_ANALYZER_LOG_FILE" 2>&1 &
+        >>"$HARBOR_ANALYZER_LOG_FILE" 2>&1 9>&- &
       analyzer_pid="$!"
       ;;
     *)
@@ -317,6 +317,7 @@ pending = _pending_handovers(
     processed=processed,
     failed=failed,
     now=time.time(),
+    include_deferred_retries=True,
 )
 raise SystemExit(0 if not pending else 1)
 PY
@@ -497,10 +498,31 @@ if [[ $# -gt 0 ]]; then
       exit 1
     fi
   fi
+  command_pid=""
+  command_signal=""
+  trap 'command_signal=TERM; [[ -z "$command_pid" ]] || kill -TERM "$command_pid" 2>/dev/null || true' TERM
+  trap 'command_signal=INT; [[ -z "$command_pid" ]] || kill -INT "$command_pid" 2>/dev/null || true' INT
+  (
+    trap - TERM INT
+    exec "$@"
+  ) <&0 &
+  command_pid="$!"
+  if [[ -n "$command_signal" ]]; then
+    kill "-$command_signal" "$command_pid" 2>/dev/null || true
+  fi
   set +e
-  "$@"
+  wait "$command_pid"
   command_rc="$?"
+  if [[ -n "$command_signal" ]] && kill -0 "$command_pid" 2>/dev/null; then
+    wait "$command_pid"
+    command_rc="$?"
+  fi
   set -e
+  trap - TERM INT
+  if [[ -n "$command_signal" ]]; then
+    harbor_rollback_analyzer_startup
+    kill "-$command_signal" "$$"
+  fi
   harbor_finish_analyzer_lifecycle
   exit "$command_rc"
 fi
@@ -562,7 +584,12 @@ if [[ "$DETACH_MODE" == "true" ]]; then
     zellij delete-session "$ZELLIJ_SESSION_NAME" >/dev/null 2>&1 || true
     exit 1
   fi
-  harbor_start_detached_analyzer_supervisor_if_enabled
+  if ! harbor_start_detached_analyzer_supervisor_if_enabled; then
+    harbor_rollback_analyzer_startup
+    zellij kill-session "$ZELLIJ_SESSION_NAME" >/dev/null 2>&1 || true
+    zellij delete-session "$ZELLIJ_SESSION_NAME" >/dev/null 2>&1 || true
+    exit 1
+  fi
 
   harbor_print_run_receipt
   printf '[RUN] attach: zellij attach %s\n' "$ZELLIJ_SESSION_NAME"
