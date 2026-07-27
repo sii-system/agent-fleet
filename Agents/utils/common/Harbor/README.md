@@ -13,10 +13,15 @@ bash start.sh --detach
 Use `bash start.sh` instead of `--detach` for an interactive zellij session.
 
 When every task has finished, the monitor writes a final summary to
-`$OUTPUT_PATH/summary.txt` (counts, reward rollup, result paths). Fixed
-benchmark sessions close by default; set `HARBOR_ZELLIJ_CLOSE_ON_COMPLETE=0`
-to keep the final pane open for inspection. All per-task results stay on disk
-under `$OUTPUT_PATH`.
+`$OUTPUT_PATH/summary.txt` (counts, reward rollup, result paths); registry
+summaries also record completion status and Harbor's exit code. Successful
+fixed benchmark sessions close by default, and a foreground `start.sh` prints
+that summary and returns Harbor's exit code. Interactive or detached failed
+registry runs keep the final pane open so diagnostics do not disappear behind
+Zellij's exit message; press `Ctrl-q` after inspection. Noninteractive
+foreground failures return immediately. Set
+`HARBOR_ZELLIJ_CLOSE_ON_COMPLETE=0` to keep successful final panes open too.
+All per-task results stay on disk under `$OUTPUT_PATH`.
 
 This completion switch does not apply to RL rollout sessions, whose workers
 serve a dynamic request queue rather than a fixed task total.

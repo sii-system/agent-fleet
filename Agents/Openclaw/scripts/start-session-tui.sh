@@ -3,6 +3,11 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+REPO_ROOT="$(cd "$PROJECT_DIR/../.." && pwd)"
+# shellcheck source=../../../scripts/prerequisites.sh
+source "$REPO_ROOT/scripts/prerequisites.sh"
+agent_fleet_prerequisite_init_path
+agent_fleet_prerequisite_init_runtime
 ENV_FILE="$PROJECT_DIR/.env"
 RUNTIME_DIR="${OPENCLAW_TUI_RUNTIME_DIR:-$PROJECT_DIR/.runtime}"
 LAYOUT_FILE="$RUNTIME_DIR/session-tui-layout.kdl"

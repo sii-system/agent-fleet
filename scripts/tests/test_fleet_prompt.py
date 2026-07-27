@@ -1,6 +1,7 @@
 import json
 import os
 import pty
+import shlex
 import signal
 import subprocess
 import tempfile
@@ -31,7 +32,8 @@ class FleetGoalTest(unittest.TestCase):
         (self.repo / "config.local.env").write_text(
             "BASE_URL=https://local.example.invalid/v1\n"
             "API_KEY=fake-local-token\n"
-            "MODEL=local-model\n",
+            "MODEL=local-model\n"
+            "TRACE_TO_OPIK=false\n",
             encoding="utf-8",
         )
 
@@ -152,6 +154,10 @@ exit "${STUB_EXIT:-0}"
             "API_KEY",
             "BASE_URL",
             "MODEL",
+            "TRACE_TO_OPIK",
+            "OPIK_URL",
+            "PI_BIN",
+            "AGENT_FLEET_NPM_BIN_DIR",
         ):
             env.pop(name, None)
         env.update(
@@ -208,6 +214,32 @@ exit "${STUB_EXIT:-0}"
                 "workers": 2,
             },
         )
+
+    def test_prompt_prefers_managed_pi_over_path_shadow(self):
+        managed_bin = self.root / "managed-npm-bin"
+        managed_bin.mkdir()
+        managed_capture = self.root / "managed-pi-capture.txt"
+        managed_pi = managed_bin / "pi"
+        managed_pi.write_text(
+            f"""#!/usr/bin/env bash
+set -euo pipefail
+printf 'called\\n' >{shlex.quote(str(managed_capture))}
+exec {shlex.quote(str(self.bin_dir / "pi"))} "$@"
+""",
+            encoding="utf-8",
+        )
+        managed_pi.chmod(0o755)
+
+        result = self.run_goal(
+            "--prompt",
+            "Run terminal-bench/terminal-bench-2",
+            extra_env={
+                "AGENT_FLEET_NPM_BIN_DIR": str(managed_bin),
+            },
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(managed_capture.read_text(encoding="utf-8"), "called\n")
 
     def test_prompt_runs_openclaw_without_printing_the_spec(self):
         result = self.run_goal("--prompt", "Run pinchbench", response=self.response(

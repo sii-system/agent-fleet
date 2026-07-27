@@ -20,6 +20,13 @@ FOLLOW_MAX_BACKOFF_SECONDS = 300.0
 FOLLOW_MAX_FAILURE_ATTEMPTS = 3
 
 
+def _follow_backoff_seconds(attempt_count: int, poll_interval: float) -> float:
+    return min(
+        max(poll_interval, 1.0) * (2 ** (attempt_count - 1)),
+        FOLLOW_MAX_BACKOFF_SECONDS,
+    )
+
+
 def _default_base_url() -> str:
     value = (
         os.environ.get("HARBOR_ANALYZER_BASE_URL") or os.environ.get("BASE_URL") or ""
@@ -157,7 +164,7 @@ def _record_follow_failure(
         else 0
     )
     attempt_count = previous_count + 1
-    delay = min(max(poll_interval, 1.0) * (2 ** (attempt_count - 1)), FOLLOW_MAX_BACKOFF_SECONDS)
+    delay = _follow_backoff_seconds(attempt_count, poll_interval)
     now = time.time()
     retry_exhausted = attempt_count >= FOLLOW_MAX_FAILURE_ATTEMPTS
     failed[handover_id] = {
@@ -244,6 +251,7 @@ def analyzer_drain_budget_seconds(
     state_path: Path,
     timeout_seconds: int,
     max_concurrency: int,
+    poll_interval_seconds: float,
     now: float,
 ) -> int:
     processed, failed = _load_follow_state(state_path)
@@ -278,7 +286,19 @@ def analyzer_drain_budget_seconds(
                 else 0
             )
             remaining_attempts = max(1, FOLLOW_MAX_FAILURE_ATTEMPTS - attempt_count)
-            total_budget += retry_wait + waves * task_budget * remaining_attempts
+            future_retry_wait = math.ceil(
+                sum(
+                    _follow_backoff_seconds(failure_count, poll_interval_seconds)
+                    for failure_count in range(
+                        attempt_count + 1, FOLLOW_MAX_FAILURE_ATTEMPTS
+                    )
+                )
+            )
+            total_budget += (
+                retry_wait
+                + future_retry_wait
+                + waves * task_budget * remaining_attempts
+            )
     return max(timeout_seconds, total_budget)
 
 

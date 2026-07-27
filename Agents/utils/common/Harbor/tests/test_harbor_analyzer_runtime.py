@@ -334,9 +334,10 @@ class HarborAnalyzerRuntimeTest(unittest.TestCase):
                     state_path=state_path,
                     timeout_seconds=900,
                     max_concurrency=1,
+                    poll_interval_seconds=5.0,
                     now=0.0,
                 ),
-                8100,
+                8115,
             )
 
     def test_analyzer_drain_budget_includes_follow_retry_backoff(self) -> None:
@@ -386,9 +387,10 @@ class HarborAnalyzerRuntimeTest(unittest.TestCase):
                     state_path=state_path,
                     timeout_seconds=900,
                     max_concurrency=1,
+                    poll_interval_seconds=5.0,
                     now=0.0,
                 ),
-                5405,
+                5415,
             )
 
     def test_run_handover_keeps_task_evidence_paths_per_publication(self) -> None:

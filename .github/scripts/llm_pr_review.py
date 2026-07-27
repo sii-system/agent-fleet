@@ -29,10 +29,11 @@ MAX_FIELD_CHARS = 2_000
 MAX_RESPONSE_TOKENS = 12_000
 SEVERITY_ORDER = {"P0": 0, "P1": 1, "P2": 2, "P3": 3}
 API_VERSION = "2022-11-28"
-REQUEST_TIMEOUT_SECONDS = 90
+REQUEST_TIMEOUT_SECONDS = 600
 RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504})
 MAX_PR_METADATA_CHARS = 4_000
 MAX_SKIPPED_PATHS_IN_SUMMARY = 50
+DEFAULT_REVIEW_ID = "llm-pr-review"
 
 
 @dataclass(frozen=True)
@@ -378,8 +379,13 @@ def collect_files(
     return parsed, skipped
 
 
-def review_marker(head_sha: str) -> str:
-    return f"<!-- llm-pr-review:{head_sha} -->"
+def review_marker(
+    head_sha: str,
+    review_id: str = DEFAULT_REVIEW_ID,
+    base_sha: str | None = None,
+) -> str:
+    revision = f"{head_sha}:{base_sha}" if base_sha is not None else head_sha
+    return f"<!-- {review_id}:{revision} -->"
 
 
 def build_model_input(pull: dict[str, Any], chunk: str) -> str:
@@ -392,8 +398,13 @@ def build_model_input(pull: dict[str, Any], chunk: str) -> str:
     )
 
 
-def has_existing_review(reviews: list[dict[str, Any]], head_sha: str) -> bool:
-    marker = review_marker(head_sha)
+def has_existing_review(
+    reviews: list[dict[str, Any]],
+    head_sha: str,
+    review_id: str = DEFAULT_REVIEW_ID,
+    base_sha: str | None = None,
+) -> bool:
+    marker = review_marker(head_sha, review_id, base_sha)
     return any(
         (item.get("user") or {}).get("login") == "github-actions[bot]"
         and marker in (item.get("body") or "")
@@ -407,7 +418,9 @@ def build_summary(
     rejected: int,
     skipped: list[tuple[str, str]],
     truncated: bool,
-    incomplete_chunks: int,
+    incomplete_chunks: int = 0,
+    review_id: str = DEFAULT_REVIEW_ID,
+    base_sha: str | None = None,
 ) -> str:
     coverage = (
         "Partial" if skipped or truncated or incomplete_chunks else "Complete"
@@ -418,7 +431,7 @@ def build_summary(
         else "Automated review found no actionable findings."
     )
     lines = [
-        review_marker(head_sha),
+        review_marker(head_sha, review_id, base_sha),
         headline,
         "",
         f"Reviewed head: `{head_sha}`",
@@ -454,13 +467,27 @@ def run_review(
     llm: LlmClient,
     pull_number: int,
     prompt: str,
+    review_id: str = DEFAULT_REVIEW_ID,
+    *,
+    expected_head_sha: str | None = None,
+    expected_base_sha: str | None = None,
 ) -> str:
     pull = github.get_pull(pull_number)
-    if pull.get("draft"):
-        return "draft"
 
     head_sha = pull["head"]["sha"]
-    if has_existing_review(github.list_reviews(pull_number), head_sha):
+    if expected_head_sha is not None and head_sha != expected_head_sha:
+        return "stale"
+    if (
+        expected_base_sha is not None
+        and pull["base"]["sha"] != expected_base_sha
+    ):
+        return "stale"
+    if has_existing_review(
+        github.list_reviews(pull_number),
+        head_sha,
+        review_id,
+        expected_base_sha,
+    ):
         return "duplicate"
 
     files, skipped = collect_files(github.list_files(pull_number))
@@ -482,11 +509,21 @@ def run_review(
     rejected += aggregate_rejected
 
     current = github.get_pull(pull_number)
-    if current["head"]["sha"] != head_sha:
+    if current["head"]["sha"] != head_sha or (
+        expected_base_sha is not None
+        and current["base"]["sha"] != expected_base_sha
+    ):
         return "stale"
 
     summary = build_summary(
-        head_sha, findings, rejected, skipped, truncated, incomplete_chunks
+        head_sha,
+        findings,
+        rejected,
+        skipped,
+        truncated,
+        incomplete_chunks=incomplete_chunks,
+        review_id=review_id,
+        base_sha=expected_base_sha,
     )
     github.create_review(pull_number, head_sha, summary, findings)
     return "published"
@@ -518,7 +555,8 @@ def main() -> int:
         require_env("LLM_REVIEW_MODEL"),
     )
     prompt = args.prompt_path.read_text()
-    result = run_review(github, llm, pull_number, prompt)
+    review_id = os.environ.get("LLM_REVIEW_ID", DEFAULT_REVIEW_ID)
+    result = run_review(github, llm, pull_number, prompt, review_id)
     print(f"LLM PR review result: {result}")
     return 0
 

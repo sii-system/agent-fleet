@@ -99,13 +99,15 @@ Typical dataset paths:
 | `TOTAL_WORKERS` | Number of zellij workers |
 | `TB_N_CONCURRENT` | Harbor concurrency, normally the same as `TOTAL_WORKERS` |
 | `RUN_ID` | Run name |
-| `OUTPUT_ROOT` | Parent directory for runs |
+| `OUTPUT_ROOT` | Parent directory for runs; defaults to `<repo>/runs` |
 | `OUTPUT_PATH` | Full output directory |
+| `HARBOR_ZELLIJ_SESSION_NAME` | Safe default session name derived from the effective agent, dataset, model, and timestamp |
 | `HARBOR_ZELLIJ_CLOSE_ON_COMPLETE` | `1` closes fixed benchmark sessions after summary generation; `0` keeps the final pane open |
+| `HARBOR_ZELLIJ_KEEP_ON_FAILURE` | Defaults to `1` for interactive or detached launches and `0` for noninteractive foreground runs |
 | `OPIK_URL` | Opik API URL, usually ending in `/api` |
 | `OPIK_URL_OVERRIDE` | Opik API URL forwarded into task containers |
 | `OPIK_API_KEY` | Opik API key |
-| `OPIK_PROJECT_NAME` | Opik project name |
+| `OPIK_PROJECT_NAME` | Opik project name; defaults to the effective agent, dataset, model, and timestamp |
 | `TRACE_PLUGIN_SOURCE_DIR` | Tracing source path, defaults to `third_party/agent-opik-plugin` |
 | `TRACE_TO_OPIK` | Enables or disables trace upload |
 | `CLAUDE_CODE_VERSION` | Claude Code package version used by local dependency cache |
@@ -215,8 +217,11 @@ OpenCode:
 
 Native registry runs use the single-pane layout; `run_harbor_registry.sh`
 wraps `harboropik.sh`, which writes the same summary path from Harbor's job
-result. The wrapper keeps the final registry pane open when the completion
-switch is `0`.
+result. The wrapper exits automatically only when Harbor returns zero and an
+aggregate result was found. It keeps failed or incomplete runs open for
+diagnosis, while foreground `start.sh` prints the final summary and returns
+the recorded Harbor status after Zellij exits. The wrapper also keeps a
+successful final pane open when the completion switch is `0`.
 
 RL rollout flow:
 

@@ -297,11 +297,14 @@ assert_registry_summary() {
   local summary="$1"
   local pattern
   for pattern in \
+    '^status: +complete$' \
     '^DATASET_NAME: codepde@1\.0$' \
     '^harbor_exit_code: 0$' \
     '^total: +2$' \
     '^completed: +2$' \
     '^errored: +1$' \
+    '^mean_reward: +0\.5$' \
+    '^  reward=1\.0: 1$' \
     '^Harbor stats:$' \
     '^ +"1\.0": \[$' \
     '^ +"RuntimeError": \[$' \
@@ -313,6 +316,20 @@ assert_registry_summary() {
       return 1
     fi
   done
+}
+
+assert_registry_summary_requires_result() {
+  local output="$1"
+  local summary="$output/summary.txt"
+  mkdir -p "$output"
+
+  RUN_ID="missing-result" AGENT="claude-code" \
+    python3 "$HARBOR_DIR/scripts/write_harbor_registry_summary.py" \
+      "$output/missing-job" "$summary" 0 "codepde@1.0"
+
+  grep -Eq '^status: +failed$' "$summary"
+  grep -q '^failure_reason: Harbor exited without an aggregate result$' "$summary"
+  grep -q '^Harbor result summary: unavailable$' "$summary"
 }
 
 main() {
@@ -341,6 +358,7 @@ main() {
     "claude-code" "$capture_bin" "$registry_capture" "$tmp/claude-registry" \
     "codepde@1.0" "" "true" "0"
   assert_registry_summary "$tmp/claude-registry/run/summary.txt"
+  assert_registry_summary_requires_result "$tmp/registry-missing-result"
 
   opencode_capture="$tmp/opencode-default.args"
   run_harboropik \

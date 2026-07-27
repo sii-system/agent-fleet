@@ -9,6 +9,7 @@ Benchmarks, task lists, and automated task workflows.
 | [`SWE-rebench-v2/`](./SWE-rebench-v2/) | SWE-rebench-v2 Harbor Hub entrypoint. |
 | [`SWE-verify/`](./SWE-verify/) | SWE-bench Verified task list for Harbor. |
 | [`SWE-smith/`](./SWE-smith/) | SWE-Smith task list for Harbor. |
+| [`TMax/`](./TMax/) | TMax Harbor registry dataset entrypoint. |
 | [`Terminal-bench-2/`](./Terminal-bench-2/) | Terminal-Bench task lists for Harbor. |
 | [`SETA/`](./SETA/) | SETA task lists. |
 

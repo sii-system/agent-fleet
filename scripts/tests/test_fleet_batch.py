@@ -105,6 +105,13 @@ fi
 """,
             encoding="utf-8",
         )
+        (self.repo / "config.local.env").write_text(
+            "BASE_URL=https://gateway.example.invalid\n"
+            "API_KEY=fake-runner-key\n"
+            "MODEL=test-model\n"
+            "TRACE_TO_OPIK=false\n",
+            encoding="utf-8",
+        )
 
     def tearDown(self):
         self.temp_dir.cleanup()
@@ -115,6 +122,12 @@ fi
             "RUN_ID",
             "ZELLIJ_SESSION_NAME",
             "DATASET_NAME",
+            "BASE_URL",
+            "API_KEY",
+            "AUTH_TOKEN",
+            "MODEL",
+            "TRACE_TO_OPIK",
+            "OPIK_URL",
             *HARBOR_RUN_STATE_VARS,
         ):
             env.pop(name, None)

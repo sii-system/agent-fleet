@@ -16,9 +16,60 @@ if [[ "${1:-}" == "--detach" ]]; then
   DETACH_MODE=true
   shift
 fi
+if [[ -z "$HARBOR_ZELLIJ_KEEP_ON_FAILURE" ]]; then
+  if [[ "$DETACH_MODE" == "true" || ( -t 0 && -t 1 ) ]]; then
+    HARBOR_ZELLIJ_KEEP_ON_FAILURE=1
+  else
+    HARBOR_ZELLIJ_KEEP_ON_FAILURE=0
+  fi
+fi
+case "$HARBOR_ZELLIJ_KEEP_ON_FAILURE" in
+  0|1) export HARBOR_ZELLIJ_KEEP_ON_FAILURE ;;
+  *)
+    printf '[ERROR] HARBOR_ZELLIJ_KEEP_ON_FAILURE must be 0 or 1\n' >&2
+    exit 2
+    ;;
+esac
 
 # Explicit names still win for normal benchmark zellij sessions.
-ZELLIJ_SESSION_NAME="${ZELLIJ_SESSION_NAME:-${RL_ZELLIJ_SESSION_NAME:-$OPIK_PROJECT_NAME}}"
+ZELLIJ_SESSION_NAME="${ZELLIJ_SESSION_NAME:-${RL_ZELLIJ_SESSION_NAME:-$HARBOR_ZELLIJ_SESSION_NAME}}"
+
+harbor_print_run_receipt() {
+  printf '[RUN] status: starting\n'
+  printf '[RUN] RUN_ID: %s\n' "$RUN_ID"
+  printf '[RUN] Zellij session: %s\n' "$ZELLIJ_SESSION_NAME"
+  printf '[RUN] output: %s\n' "$OUTPUT_PATH"
+  printf '[RUN] summary: %s/summary.txt\n' "$OUTPUT_PATH"
+}
+
+harbor_report_foreground_result() {
+  local zellij_status="$1"
+  local benchmark_status=""
+
+  echo
+  if [[ -f "$OUTPUT_PATH/summary.txt" ]]; then
+    cat "$OUTPUT_PATH/summary.txt"
+  else
+    echo "[ERROR] summary unavailable: $OUTPUT_PATH/summary.txt" >&2
+  fi
+
+  if harbor_uses_registry_dataset; then
+    if [[ -s "$HARBOR_BENCHMARK_EXIT_FILE" ]]; then
+      benchmark_status="$(cat "$HARBOR_BENCHMARK_EXIT_FILE" 2>/dev/null || true)"
+    fi
+    if [[ "$benchmark_status" =~ ^([0-9]|[1-9][0-9]|1[0-9][0-9]|2[0-4][0-9]|25[0-5])$ ]]; then
+      return "$benchmark_status"
+    fi
+  elif [[ -f "$OUTPUT_PATH/summary.txt" && "$zellij_status" -eq 0 ]]; then
+    return 0
+  fi
+  if [[ "$zellij_status" -ne 0 ]]; then
+    echo "[ERROR] Zellij exited with status $zellij_status before Harbor recorded completion." >&2
+    return "$zellij_status"
+  fi
+  echo "[ERROR] Zellij ended before Harbor recorded a completion status." >&2
+  return 1
+}
 
 harbor_stop_rollout_zellij_sessions() {
   local session
@@ -90,10 +141,6 @@ harbor_start_monitor_if_enabled() {
     rm -f "$HARBOR_MONITOR_PID_FILE"
   fi
 
-  if harbor_uses_registry_dataset; then
-    : > "$HARBOR_JOB_DIR_FILE"
-    rm -f "$HARBOR_BENCHMARK_EXIT_FILE"
-  fi
   local -a monitor_args=(
     --run-dir "$OUTPUT_PATH"
     --queue-dir "$QUEUE_DIR"
@@ -306,10 +353,11 @@ harbor_finish_analyzer_lifecycle() {
 }
 
 harbor_analyzer_shutdown_timeout() {
-  local configured_timeout analyzer_timeout max_concurrency derived_timeout
+  local configured_timeout analyzer_timeout max_concurrency poll_interval derived_timeout
   configured_timeout="${HARBOR_ANALYZER_DRAIN_TIMEOUT:-0}"
   analyzer_timeout="${HARBOR_ANALYZER_TIMEOUT:-900}"
   max_concurrency="${HARBOR_ANALYZER_MAX_CONCURRENCY:-1}"
+  poll_interval="${HARBOR_ANALYZER_POLL_INTERVAL:-5}"
   [[ "$configured_timeout" =~ ^[0-9]+$ ]] || configured_timeout=0
   [[ "$analyzer_timeout" =~ ^[0-9]+$ ]] || analyzer_timeout=900
   [[ "$max_concurrency" =~ ^[0-9]+$ && "$max_concurrency" -gt 0 ]] || max_concurrency=1
@@ -321,7 +369,8 @@ harbor_analyzer_shutdown_timeout() {
         "$HARBOR_MONITOR_DIR/analyzer-handoffs" \
         "$HARBOR_ANALYZER_OUTPUT_DIR/.analyzer_state.json" \
         "$analyzer_timeout" \
-        "$max_concurrency" <<'PY'
+        "$max_concurrency" \
+        "$poll_interval" <<'PY'
 import sys
 import time
 from pathlib import Path
@@ -335,12 +384,14 @@ handoff_dir = Path(sys.argv[3])
 state_path = Path(sys.argv[4])
 timeout = int(sys.argv[5])
 max_concurrency = max(1, int(sys.argv[6]))
+poll_interval = float(sys.argv[7])
 print(analyzer_drain_budget_seconds(
     latest_path=latest_path,
     handoff_dir=handoff_dir,
     state_path=state_path,
     timeout_seconds=timeout,
     max_concurrency=max_concurrency,
+    poll_interval_seconds=poll_interval,
     now=time.time(),
 ))
 PY
@@ -406,6 +457,10 @@ harbor_rollback_analyzer_startup() {
 }
 
 harbor_init_run_dirs
+if [[ "$ROLLOUT" != "1" ]] && harbor_uses_registry_dataset; then
+  : > "$HARBOR_JOB_DIR_FILE"
+  rm -f "$HARBOR_BENCHMARK_PID_FILE" "$HARBOR_BENCHMARK_EXIT_FILE"
+fi
 if [[ "$ROLLOUT" != "1" ]]; then
   harbor_validate_agent
   harbor_ensure_dataset
@@ -492,6 +547,7 @@ if [[ "$DETACH_MODE" == "true" ]]; then
 
   if [[ "$started" != "true" ]]; then
     echo "failed to create zellij session: $ZELLIJ_SESSION_NAME" >&2
+    echo "zellij log: $RUNTIME_DIR/zellij-${ZELLIJ_SESSION_NAME}.log" >&2
     exit 1
   fi
 
@@ -508,6 +564,8 @@ if [[ "$DETACH_MODE" == "true" ]]; then
   fi
   harbor_start_detached_analyzer_supervisor_if_enabled
 
+  harbor_print_run_receipt
+  printf '[RUN] attach: zellij attach %s\n' "$ZELLIJ_SESSION_NAME"
   printf '%s\n' "$ZELLIJ_SESSION_NAME"
   exit 0
 fi
@@ -517,9 +575,12 @@ if ! harbor_start_analyzer_if_enabled; then
   harbor_rollback_analyzer_startup
   exit 1
 fi
-set +e
-env -u ZELLIJ_SESSION_NAME zellij --session "$ZELLIJ_SESSION_NAME" --new-session-with-layout "$LAYOUT_FILE"
-zellij_rc="$?"
-set -e
+harbor_print_run_receipt
+zellij_status=0
+env -u ZELLIJ_SESSION_NAME zellij \
+  --session "$ZELLIJ_SESSION_NAME" \
+  --new-session-with-layout "$LAYOUT_FILE" || zellij_status="$?"
 harbor_finish_analyzer_lifecycle
-exit "$zellij_rc"
+final_status=0
+harbor_report_foreground_result "$zellij_status" || final_status="$?"
+exit "$final_status"
