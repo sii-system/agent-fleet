@@ -34,10 +34,12 @@ class RuffWorkflowContractTest(unittest.TestCase):
             "278981a28ce3188b1e39527901f38254bf3aac89 # v4.1.0",
             self.workflow,
         )
-        self.assertEqual(
-            len(re.findall(r"uses: [^\s@]+@[0-9a-f]{40}", self.workflow)),
-            2,
+        action_refs = re.findall(r"uses:\s+([^\s#]+)", self.workflow)
+        pinned_action_refs = re.findall(
+            r"uses:\s+([^\s@]+@[0-9a-f]{40})(?=\s|$)",
+            self.workflow,
         )
+        self.assertEqual(action_refs, pinned_action_refs)
         self.assertIn("persist-credentials: false", self.workflow)
 
     def test_runs_only_pinned_ruff_lint_with_the_repository_config(self):
