@@ -25,6 +25,9 @@ MAX_SUMMARY_DIFF_CHARS = _review.MAX_CHUNK_CHARS
 MAX_SUMMARY_INPUT_BYTES = 90_000
 MAX_FILE_INVENTORY = 100
 MAX_FILE_INVENTORY_BYTES = 20_000
+MARKDOWN_ESCAPE_TABLE = str.maketrans(
+    {character: f"\\{character}" for character in r"\`*_{}[]()#+-.!|~:/?="}
+)
 
 
 class PiSummaryError(RuntimeError):
@@ -84,7 +87,8 @@ def validate_summary(payload: dict[str, Any]) -> Summary:
 
 
 def _safe_prose(value: str) -> str:
-    return html.escape(value.replace("@", "@\u200b"))
+    escaped = value.replace("@", "@\u200b").translate(MARKDOWN_ESCAPE_TABLE)
+    return html.escape(escaped)
 
 
 def _truncate_utf8(value: str, limit: int) -> str:

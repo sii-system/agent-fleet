@@ -95,6 +95,29 @@ class SummaryRenderingTest(unittest.TestCase):
 
         self.assertNotIn("<summary>Diagram</summary>", body)
 
+    def test_escapes_markdown_links_in_untrusted_prose(self) -> None:
+        value = summary.Summary(
+            description=("**Deploy now**",),
+            diagram=None,
+            assessment="![status](https://attacker.example/pixel)",
+        )
+
+        body = summary.render_summary(
+            "[Release report](https://attacker.example)",
+            value,
+        )
+
+        self.assertIn(
+            r"\[Release report\]\(https\:\/\/attacker\.example\)",
+            body,
+        )
+        self.assertIn(r"\*\*Deploy now\*\*", body)
+        self.assertIn(
+            r"\!\[status\]\(https\:\/\/attacker\.example\/pixel\)",
+            body,
+        )
+        self.assertNotIn("[Release report](https://attacker.example)", body)
+
 
 class FakeGitHub:
     def __init__(self) -> None:
