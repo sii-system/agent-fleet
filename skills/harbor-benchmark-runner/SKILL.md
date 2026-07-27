@@ -86,7 +86,7 @@ orchestration ownership in `Agents/utils/common/Harbor/`.
 - For mounted Claude Code tgz problems, inspect `TB_CC_CLAUDE_TGZ_SOURCE`,
   `TB_CC_PY_WHEEL_DIR_SOURCE`, `TB_CC_CLAUDE_TGZ_MOUNT_PATH`, and
   `TB_CC_NPM_CACHE_MOUNT_PATH`, then grep task logs for public installer URLs.
-- For tracing problems, verify `third_party/sii-opik-plugin` and the agent
+- For tracing problems, verify `third_party/agent-opik-plugin` and the agent
   integration file listed in `Agents/utils/common/Harbor/STRUCT.md`.
 
 ## Output Contract

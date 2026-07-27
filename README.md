@@ -1,6 +1,6 @@
-# SII Agent Fleet
+# Agent Fleet
 
-SII Agent Fleet provides runnable integrations and benchmark tasksets for
+Agent Fleet provides runnable integrations and benchmark tasksets for
 evaluating Claude Code, OpenCode, and OpenClaw.
 
 ## Quick Start
@@ -9,13 +9,11 @@ evaluating Claude Code, OpenCode, and OpenClaw.
 
 - Docker with Docker Compose v2
 - Python 3.9 or newer
-- `git`, `curl`, `jq`, `openssl`, `tmux`, and `zellij`
+- `git`, `curl`, and `jq`
 
-Install tmux with your package manager and install Zellij from its
-[releases page](https://github.com/zellij-org/zellij/releases). `setup.sh`
-below installs Node.js and Pi for the control-plane Prompt workflow. Harbor
-task containers still install and run the selected benchmark agent, including
-Claude Code.
+Install these with your system package manager. `setup.sh` checks the few
+remaining system tools (preinstalled on most distros) and reports anything
+missing; everything else is installed automatically.
 
 ### 2. Clone the repository
 
@@ -27,22 +25,24 @@ cd agent-fleet
 ### 3. Configure and set up
 
 Run the commands below, replacing the example values with your model gateway
-credentials. Opik tracing is on by default; setup persists whichever tracing
-choice you make:
+credentials. Setup asks whether to enable Opik tracing and defaults to no; it
+persists the choice in `config.local.env`:
 
 ```bash
 export BASE_URL=https://your-model-gateway.example.com  # Do not include /v1
 export API_KEY=your-api-key
 export MODEL=your-model-id
 
-export TRACE_TO_OPIK=false                       # run without an Opik server
-# export OPIK_URL=https://your-opik-host/api     # or keep tracing on and point it here
+# Optional automation override; omit it to answer the setup prompt.
+export TRACE_TO_OPIK=false
+# To enable tracing instead, set TRACE_TO_OPIK=true and OPIK_URL.
 
-REPO_DIR="$PWD" ./scripts/setup.sh
+./scripts/setup.sh
 ```
 
-`REPO_DIR="$PWD"` points setup at this checkout instead of its default
-`$HOME/agent-fleet` clone.
+Setup stores your credentials in the git-ignored `config.local.env` and puts
+every managed tool on `PATH`, so the runner scripts work in this and future
+shells with no manual environment changes.
 
 ### 4. Run one benchmark
 
@@ -63,10 +63,16 @@ Then start the full benchmark, with direct arguments or in natural language
 ./scripts/run_fleet.sh --prompt "Run terminalbench21 with claude-code and 10 workers"
 ```
 
-The first run is slower while Harbor downloads the taskset and Docker images.
-Rerun `setup.sh` only when configuration changes.
+The run shows live progress and final results on screen. The first run is
+slower while the taskset and Docker images download; rerun `setup.sh` only
+when configuration changes.
 
 ## FleetSpec runs
+
+A FleetSpec is a small JSON file that declares one benchmark run — taskset,
+agent, and worker count — so runs are reproducible and can be launched in
+batches. See [scripts/README.md § FleetSpec JSON](./scripts/README.md#fleetspec-json)
+for the full format.
 
 ```bash
 # One saved FleetSpec file
@@ -78,17 +84,16 @@ Rerun `setup.sh` only when configuration changes.
 
 | Flag | Short | Purpose |
 | --- | --- | --- |
-| `--taskset` | `-t` | Taskset to run |
+| `--taskset` | `-t` | Taskset to run ([available tasksets](./scripts/README.md#fleet-launch-modes)) |
 | `--agent` | `-a` | `claude-code`, `opencode`, or `openclaw` |
 | `--workers` | `-n` | Concurrency |
 | `--prompt` | `-p` | Natural-language run request (AI mode) |
 | `--spec` | `-s` | FleetSpec file(s) |
 | `--output` | `-o` | Save the validated spec |
 | `--dry-run` | — | Preview the commands without running |
-| `--detach` | `-d` | Harbor detached mode (automatic for multi-run) |
+| `--detach` | `-d` | Detached mode (automatic for multi-run) |
 
-See [scripts/README.md](./scripts/README.md) for the FleetSpec format,
-tasksets, and agents.
+## Docker-in-Docker runs
 
 On hosts where Docker Hub needs registry mirrors, wrap the same arguments with
 the Docker-in-Docker launcher instead:
@@ -97,10 +102,16 @@ the Docker-in-Docker launcher instead:
 ./scripts/dind-run.sh --taskset terminalbench21 --agent claude-code --workers 1
 ```
 
+See [scripts/README.md § dind-run.sh](./scripts/README.md#dind-runsh) for
+configuration and caveats.
+
 ## More details
 
 - Launch modes and limitations:
   [scripts/README.md](./scripts/README.md#current-limitations)
+- Tasksets: [Tasks/README.md](./Tasks/README.md)
 - Skills: [skills/README.md](./skills/README.md)
 - Repository structure: [STRUCT.md](./STRUCT.md)
+- Tips and troubleshooting:
+  [scripts/README.md](./scripts/README.md#tips--caveats)
 - Harbor runner: [Agents/utils/common/Harbor/STRUCT.md](./Agents/utils/common/Harbor/STRUCT.md)

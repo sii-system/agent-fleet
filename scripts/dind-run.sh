@@ -18,14 +18,14 @@ overridden in config.local.env:
   scripts/dind-run.sh --taskset terminalbench21 --agent claude-code --workers 1
 
 Useful overrides:
-  DIND_NAME                 Container name (default: sii-agent-fleet-dind)
+  DIND_NAME                 Container name (default: agent-fleet-dind)
   DIND_IMAGE                DinD runner image (default tag follows its build inputs; built locally if missing)
   DIND_IMAGE_DOCKERFILE     Dockerfile for default image build (default: scripts/dind/Dockerfile)
   DIND_BASE_IMAGE           Base image used when building default image
   DIND_UV_IMAGE             uv image used when building default image
   DIND_DOCKER_VOLUME        /var/lib/docker volume (default: <name>-docker)
   DIND_HOME_VOLUME          benchmark-user home volume (default: <name>-home)
-  DIND_USER                 user for the benchmark launcher (default: sii)
+  DIND_USER                 user for the benchmark launcher (default: agent)
   DIND_HOME_DIR             benchmark-user home path (default: /home/<DIND_USER>)
   DIND_USER_UID/GID         launcher uid/gid (default: current host user)
   DIND_PORTS                Comma-separated docker -p entries
@@ -92,7 +92,7 @@ fi
 eval "$caller_env"
 unset caller_env
 
-DIND_NAME="${DIND_NAME:-sii-agent-fleet-dind}"
+DIND_NAME="${DIND_NAME:-agent-fleet-dind}"
 DIND_IMAGE_DOCKERFILE="${DIND_IMAGE_DOCKERFILE:-$REPO_ROOT/scripts/dind/Dockerfile}"
 DIND_BASE_IMAGE="${DIND_BASE_IMAGE:-m.daocloud.io/docker.io/library/debian:bookworm-slim@sha256:7b140f374b289a7c2befc338f42ebe6441b7ea838a042bbd5acbfca6ec875818}"
 DIND_UV_IMAGE="${DIND_UV_IMAGE:-m.daocloud.io/ghcr.io/astral-sh/uv:0.11.28}"
@@ -111,11 +111,11 @@ DIND_IMAGE_FINGERPRINT="$({
   printf '%s\n' "$DIND_BASE_IMAGE" "$DIND_UV_IMAGE"
   cat "$DIND_IMAGE_DOCKERFILE" "$DIND_DOCKERD_ENTRYPOINT_FILE" "$DIND_RUNNER_REQUIREMENTS_FILE"
 } | sha256sum | cut -c1-12)"
-DIND_DEFAULT_IMAGE="sii-agent-fleet-dind:28-$DIND_IMAGE_FINGERPRINT"
+DIND_DEFAULT_IMAGE="agent-fleet-dind:28-$DIND_IMAGE_FINGERPRINT"
 DIND_IMAGE="${DIND_IMAGE:-$DIND_DEFAULT_IMAGE}"
 DIND_DOCKER_VOLUME="${DIND_DOCKER_VOLUME:-${DIND_NAME}-docker}"
 DIND_HOME_VOLUME="${DIND_HOME_VOLUME:-${DIND_NAME}-home}"
-DIND_USER="${DIND_USER:-sii}"
+DIND_USER="${DIND_USER:-agent}"
 DIND_HOME_DIR="${DIND_HOME_DIR:-/home/${DIND_USER}}"
 DIND_USER_UID="${DIND_USER_UID:-$(id -u)}"
 DIND_USER_GID="${DIND_USER_GID:-$(id -g)}"
@@ -272,9 +272,9 @@ if ! container_exists; then
   docker_run_args=(
     run -d --privileged
     --name "$DIND_NAME"
-    --label "sii.agent-fleet.runner-image=$DIND_IMAGE"
-    --label "sii.agent-fleet.registry-mirrors=$registry_mirrors"
-    --label "sii.agent-fleet.default-address-pools=$default_address_pools"
+    --label "agent-fleet.runner-image=$DIND_IMAGE"
+    --label "agent-fleet.registry-mirrors=$registry_mirrors"
+    --label "agent-fleet.default-address-pools=$default_address_pools"
     -e DOCKER_TLS_CERTDIR=
     -v "$DIND_DOCKER_VOLUME:/var/lib/docker"
     -v "$DIND_HOME_VOLUME:$DIND_HOME_DIR"
@@ -295,7 +295,7 @@ if ! container_exists; then
   fi
   docker "${docker_run_args[@]}"
 else
-  existing_runner_image="$(docker inspect -f '{{ index .Config.Labels "sii.agent-fleet.runner-image" }}' "$DIND_NAME" 2>/dev/null || true)"
+  existing_runner_image="$(docker inspect -f '{{ index .Config.Labels "agent-fleet.runner-image" }}' "$DIND_NAME" 2>/dev/null || true)"
   if [[ "$existing_runner_image" != "$DIND_IMAGE" ]]; then
     err "existing DinD container $DIND_NAME uses a different runner image"
     err "existing: ${existing_runner_image:-<unlabeled>}"
@@ -303,7 +303,7 @@ else
     err "rerun with DIND_RECREATE=1 to recreate the DinD container while preserving Docker storage"
     exit 1
   fi
-  existing_mirrors="$(docker inspect -f '{{ index .Config.Labels "sii.agent-fleet.registry-mirrors" }}' "$DIND_NAME" 2>/dev/null || true)"
+  existing_mirrors="$(docker inspect -f '{{ index .Config.Labels "agent-fleet.registry-mirrors" }}' "$DIND_NAME" 2>/dev/null || true)"
   if [[ "$existing_mirrors" != "$registry_mirrors" ]]; then
     err "existing DinD container $DIND_NAME was created with different registry mirrors"
     err "existing: ${existing_mirrors:-<empty>}"
@@ -311,7 +311,7 @@ else
     err "rerun with DIND_RECREATE=1 to recreate the DinD daemon while preserving Docker storage"
     exit 1
   fi
-  existing_address_pools="$(docker inspect -f '{{ index .Config.Labels "sii.agent-fleet.default-address-pools" }}' "$DIND_NAME" 2>/dev/null || true)"
+  existing_address_pools="$(docker inspect -f '{{ index .Config.Labels "agent-fleet.default-address-pools" }}' "$DIND_NAME" 2>/dev/null || true)"
   if [[ "$existing_address_pools" != "$default_address_pools" ]]; then
     err "existing DinD container $DIND_NAME was created with different default address pools"
     err "existing: ${existing_address_pools:-<empty>}"

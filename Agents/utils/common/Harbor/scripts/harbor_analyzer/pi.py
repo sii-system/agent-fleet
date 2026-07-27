@@ -1,4 +1,4 @@
-"""Launch an isolated read-only Pi process pinned to the GLM-5.2 analyzer model."""
+"""Launch an isolated read-only Pi process for the configured analyzer model."""
 
 from __future__ import annotations
 
@@ -15,7 +15,6 @@ from typing import Any
 from urllib.parse import urlparse
 
 from .io import canonical_json, write_text_atomic
-
 
 ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 PI_EXTENSION_PATH = Path(__file__).resolve().parent / "pi_extensions" / "analyzer_path_gate.ts"
@@ -101,6 +100,7 @@ def _models_config(
                 "baseUrl": base_url,
                 "api": "openai-completions",
                 "apiKey": f"${api_key_env}",
+                "authHeader": True,
                 "compat": {
                     "supportsDeveloperRole": False,
                     "supportsReasoningEffort": False,
@@ -215,9 +215,8 @@ def _final_output_block_reason(
         return f"pi_provider_request_failed:{_reason_code(provider_error)}", provider_error
     final_message = _final_assistant_message(events)
     stop_reason = str((final_message or {}).get("stopReason") or "")
-    if stop_reason:
-        if stop_reason == "length":
-            return "pi_final_message_truncated", None
+    if stop_reason == "length":
+        return "pi_final_message_truncated", None
     return None, None
 
 
@@ -347,6 +346,8 @@ def dispatch_to_child(
         return DispatchResult(None, provenance, "pi_binary_not_found", "")
     if not provider.strip():
         return DispatchResult(None, provenance, "pi_provider_not_configured", "")
+    if not model.strip():
+        return DispatchResult(None, provenance, "pi_model_not_configured", "")
     if not ENV_NAME_RE.fullmatch(api_key_env):
         return DispatchResult(None, provenance, "analyzer_api_key_env_invalid", "")
     if not os.environ.get(api_key_env):
@@ -527,11 +528,10 @@ def dispatch_to_child(
     if final_stop_reason:
         provenance["pi_final_stop_reason"] = final_stop_reason
     final_text = _final_assistant_text(events)
-    if not final_text:
-        if output_block_reason:
-            if provider_error:
-                provenance["pi_provider_final_error"] = provider_error
-            return DispatchResult(None, provenance, output_block_reason, stderr[-4000:])
+    if not final_text and output_block_reason:
+        if provider_error:
+            provenance["pi_provider_final_error"] = provider_error
+        return DispatchResult(None, provenance, output_block_reason, stderr[-4000:])
     report, extracted_from_text = _loads_final_json(final_text)
     if report is None:
         if output_block_reason:

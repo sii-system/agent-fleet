@@ -1,9 +1,9 @@
-"""Run per-task Pi/GLM Analyzer subagents and persist aggregate outputs."""
+"""Run per-task Pi Analyzer subagents and persist aggregate outputs."""
 
 from __future__ import annotations
 
-import json
 import fcntl
+import json
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -15,10 +15,13 @@ from . import PROMPT_VERSION, SCHEMA_VERSION, TAXONOMY_VERSION
 from .contract import validate_handover
 from .io import stable_hash, utc_now, write_json_atomic, write_text_atomic
 from .pi import dispatch_to_child
-from .prompt import build_dispatch_retry_prompt, build_task_prompt, build_validation_retry_prompt
+from .prompt import (
+    build_dispatch_retry_prompt,
+    build_task_prompt,
+    build_validation_retry_prompt,
+)
 from .taxonomy import ENV_INFRA_CLASSES, FINAL_CLASSES, UNKNOWN_ROOT_CAUSE
 from .validation import validate_final_json, validate_task_analysis
-
 
 AGENT_NAME = "harbor_analyzer_pi_subagent"
 MAX_TASK_ATTEMPTS = 2
@@ -41,7 +44,7 @@ class AnalyzerConfig:
     run_id: str | None = None
     pi_bin: str = "pi"
     provider: str = "harbor-analyzer"
-    model: str = "glm5.2"
+    model: str = ""
     base_url: str = ""
     api_key_env: str = "HARBOR_ANALYZER_API_KEY"
     timeout_seconds: int = 900
@@ -83,6 +86,16 @@ def _publication_id(*, handover_id: str, run_id: Any) -> str:
 
 def _timeout_retry_seconds(timeout_seconds: int) -> int:
     return min(max(timeout_seconds * 2, timeout_seconds + 300), MAX_RETRY_TIMEOUT_SECONDS)
+
+
+def task_analysis_timeout_budget_seconds(timeout_seconds: int) -> int:
+    total = 0
+    attempt_timeout = timeout_seconds
+    for attempt in range(1, MAX_TASK_ATTEMPTS + 1):
+        total += attempt_timeout
+        if attempt < MAX_TASK_ATTEMPTS:
+            attempt_timeout = _timeout_retry_seconds(attempt_timeout)
+    return total
 
 
 def _is_retryable_block_reason(reason: str) -> bool:

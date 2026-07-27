@@ -16,7 +16,7 @@ def latest_result(root: Path) -> int:
     for path in sorted(root.rglob("result.json"), reverse=True):
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
-        except Exception:
+        except (OSError, json.JSONDecodeError):
             continue
         if isinstance(data, dict) and (
             "verifier_result" in data or "is_resolved" in data
@@ -29,7 +29,7 @@ def latest_result(root: Path) -> int:
 def summarize_result(result_file: Path) -> int:
     try:
         data = json.loads(result_file.read_text(encoding="utf-8"))
-    except Exception:
+    except (OSError, json.JSONDecodeError):
         return 1
 
     reward = None
@@ -74,7 +74,7 @@ def stream_claude_log(task_root: Path) -> int:
                 continue
             try:
                 event = json.loads(line)
-            except Exception:
+            except json.JSONDecodeError:
                 continue
 
             typ = event.get("type")
@@ -120,7 +120,7 @@ def stream_opencode_log(task_root: Path) -> int:
                 continue
             try:
                 event = json.loads(line)
-            except Exception:
+            except json.JSONDecodeError:
                 continue
 
             part = event.get("part") if isinstance(event.get("part"), dict) else {}
@@ -161,7 +161,7 @@ def prepare_claude_timeout_backup(logs_dir: Path, project_name: str) -> int:
 
     try:
         state = json.loads(state_file.read_text(encoding="utf-8"))
-    except Exception:
+    except (OSError, json.JSONDecodeError):
         return 1
     if not isinstance(state, dict) or not state:
         return 1
@@ -192,7 +192,7 @@ def online_early_stop_reason(events_path: Path, task_id: int) -> str | None:
         for line in handle:
             try:
                 event = json.loads(line)
-            except Exception:
+            except json.JSONDecodeError:
                 continue
             if not isinstance(event, dict):
                 continue

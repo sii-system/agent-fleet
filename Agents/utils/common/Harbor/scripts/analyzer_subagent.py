@@ -1,22 +1,39 @@
 #!/usr/bin/env python3
-"""Run the Harbor Analyzer entrypoint that launches Pi + GLM-5.2."""
+"""Run the Harbor Analyzer entrypoint that launches Pi."""
 
 from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import sys
 import time
 from pathlib import Path
 from typing import Any
 
-from harbor_analyzer.io import load_json, stable_hash, utc_now, write_json_atomic
-from harbor_analyzer.runner import AnalyzerConfig, run_handover
-
+from harbor_analyzer.io import (
+    load_json,
+    stable_hash,
+    utc_now,
+    write_json_atomic,
+    write_text_atomic,
+)
+from harbor_analyzer.runner import (
+    AnalyzerConfig,
+    run_handover,
+    task_analysis_timeout_budget_seconds,
+)
 
 FOLLOW_MAX_BACKOFF_SECONDS = 300.0
 FOLLOW_MAX_FAILURE_ATTEMPTS = 3
+
+
+def _follow_backoff_seconds(attempt_count: int, poll_interval: float) -> float:
+    return min(
+        max(poll_interval, 1.0) * (2 ** (attempt_count - 1)),
+        FOLLOW_MAX_BACKOFF_SECONDS,
+    )
 
 
 def _default_base_url() -> str:
@@ -29,7 +46,7 @@ def _default_base_url() -> str:
 
 
 def _default_model() -> str:
-    return os.environ.get("HARBOR_ANALYZER_MODEL") or os.environ.get("MODEL") or "glm5.2"
+    return os.environ.get("HARBOR_ANALYZER_MODEL") or os.environ.get("MODEL") or ""
 
 
 def _ensure_analyzer_env_defaults() -> None:
@@ -67,6 +84,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--follow", action="store_true")
     parser.add_argument("--poll-interval", type=float, default=5.0)
+    parser.add_argument("--ready-file", type=Path)
     args = parser.parse_args()
     if args.timeout <= 0:
         parser.error("--timeout must be positive")
@@ -155,7 +173,7 @@ def _record_follow_failure(
         else 0
     )
     attempt_count = previous_count + 1
-    delay = min(max(poll_interval, 1.0) * (2 ** (attempt_count - 1)), FOLLOW_MAX_BACKOFF_SECONDS)
+    delay = _follow_backoff_seconds(attempt_count, poll_interval)
     now = time.time()
     retry_exhausted = attempt_count >= FOLLOW_MAX_FAILURE_ATTEMPTS
     failed[handover_id] = {
@@ -199,6 +217,7 @@ def _pending_handovers(
     processed: set[str],
     failed: dict[str, dict[str, Any]],
     now: float,
+    include_deferred_retries: bool = False,
 ) -> list[tuple[dict[str, Any], Path, str]]:
     candidates = sorted(handoff_dir.glob("*.json")) if handoff_dir.is_dir() else []
     if not candidates and latest_path.is_file():
@@ -221,7 +240,11 @@ def _pending_handovers(
             if isinstance(failed_record, dict)
             else None
         )
-        if isinstance(next_retry_at, (int, float)) and next_retry_at > now:
+        if (
+            not include_deferred_retries
+            and isinstance(next_retry_at, (int, float))
+            and next_retry_at > now
+        ):
             continue
         unique[follow_key] = (handover, path, follow_key)
     return sorted(
@@ -230,16 +253,80 @@ def _pending_handovers(
     )
 
 
+def analyzer_drain_budget_seconds(
+    *,
+    latest_path: Path,
+    handoff_dir: Path,
+    state_path: Path,
+    timeout_seconds: int,
+    max_concurrency: int,
+    poll_interval_seconds: float,
+    now: float,
+) -> int:
+    processed, failed = _load_follow_state(state_path)
+    pending = _pending_handovers(
+        latest_path=latest_path,
+        handoff_dir=handoff_dir,
+        processed=processed,
+        failed=failed,
+        now=now,
+        include_deferred_retries=True,
+    )
+    task_budget = task_analysis_timeout_budget_seconds(timeout_seconds)
+    total_budget = 0
+    for handover, _path, follow_key in pending:
+        tasks = handover.get("tasks")
+        if isinstance(tasks, list) and tasks:
+            waves = math.ceil(len(tasks) / max(1, max_concurrency))
+            failed_record = failed.get(follow_key)
+            attempt_count = (
+                int(failed_record.get("attempt_count") or 0)
+                if isinstance(failed_record, dict)
+                else 0
+            )
+            next_retry_at = (
+                failed_record.get("next_retry_at")
+                if isinstance(failed_record, dict)
+                else None
+            )
+            retry_wait = (
+                math.ceil(max(0.0, float(next_retry_at) - now))
+                if isinstance(next_retry_at, (int, float))
+                else 0
+            )
+            remaining_attempts = max(1, FOLLOW_MAX_FAILURE_ATTEMPTS - attempt_count)
+            future_retry_wait = math.ceil(
+                sum(
+                    _follow_backoff_seconds(failure_count, poll_interval_seconds)
+                    for failure_count in range(
+                        attempt_count + 1, FOLLOW_MAX_FAILURE_ATTEMPTS
+                    )
+                )
+            )
+            total_budget += (
+                retry_wait
+                + future_retry_wait
+                + waves * task_budget * remaining_attempts
+            )
+    return max(timeout_seconds, total_budget)
+
+
 def _run_one(handover: dict[str, Any], source_path: Path, config: AnalyzerConfig) -> int:
     aggregate, exit_code = run_handover(handover, handover_path=source_path, config=config)
     print(json.dumps(aggregate, ensure_ascii=False, indent=2, sort_keys=True))
     return exit_code
 
 
+def _write_ready_file(path: Path | None) -> None:
+    if path is not None:
+        write_text_atomic(path, f"{os.getpid()}\n")
+
+
 def main() -> int:
     _ensure_analyzer_env_defaults()
     args = parse_args()
     config = _config(args)
+    _write_ready_file(args.ready_file)
     if not args.follow:
         return _run_one(load_json(args.handover), args.handover, config)
 

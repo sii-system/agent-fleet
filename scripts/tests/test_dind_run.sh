@@ -27,6 +27,7 @@ path.write_text(text.replace(old, new, 1), encoding="utf-8")
 PY
 cp "$REPO_ROOT/scripts/dind/dockerd-entrypoint.sh" "$PROJECT_DIR/scripts/dind/dockerd-entrypoint.sh"
 cp "$REPO_ROOT/scripts/run_fleet.sh" "$PROJECT_DIR/scripts/run_fleet.sh"
+cp "$REPO_ROOT/scripts/prerequisites.sh" "$PROJECT_DIR/scripts/prerequisites.sh"
 cp "$REPO_ROOT/scripts/fleet_spec_io.sh" "$PROJECT_DIR/scripts/fleet_spec_io.sh"
 cp "$REPO_ROOT/scripts/fleet_spec_validate.jq" "$PROJECT_DIR/scripts/fleet_spec_validate.jq"
 cp \
@@ -95,15 +96,15 @@ grep -q -- '--registry-mirror=https://docker.m.daocloud.io' "$LOG"
 grep -q -- '--registry-mirror=https://mirror.ccs.tencentyun.com' "$LOG"
 grep -q -- '--default-address-pool=base=10.200.0.0/13,size=21' "$LOG"
 grep -q -- '--default-address-pool=base=172.16.0.0/12,size=20' "$LOG"
-grep -q -- '<--label> <sii.agent-fleet.default-address-pools=base=10.200.0.0/13,size=21;base=172.16.0.0/12,size=20>' "$LOG"
-grep -q -- '<-v> <sii-agent-fleet-dind-docker:/var/lib/docker>' "$LOG"
-grep -q -- '<-v> <sii-agent-fleet-dind-home:/home/sii>' "$LOG"
+grep -q -- '<--label> <agent-fleet.default-address-pools=base=10.200.0.0/13,size=21;base=172.16.0.0/12,size=20>' "$LOG"
+grep -q -- '<-v> <agent-fleet-dind-docker:/var/lib/docker>' "$LOG"
+grep -q -- '<-v> <agent-fleet-dind-home:/home/agent>' "$LOG"
 grep -q -- "<-v> <$PROJECT_DIR:$PROJECT_DIR>" "$LOG"
 grep -q -- '<-e> <HTTP_PROXY=http://proxy.invalid:8080>' "$LOG"
 grep -q -- '<-e> <HTTPS_PROXY=http://proxy.invalid:8443>' "$LOG"
 grep -q -- '<-e> <NO_PROXY=existing.example,127.0.0.1,localhost,host.docker.internal,local.example.com>' "$LOG"
 grep -q -- '<-e> <no_proxy=existing.example,127.0.0.1,localhost,host.docker.internal,local.example.com>' "$LOG"
-RUNNER_IMAGE="$(grep -Eo 'sii-agent-fleet-dind:28-[0-9a-f]{12}' "$LOG" | head -n 1 || true)"
+RUNNER_IMAGE="$(grep -Eo 'agent-fleet-dind:28-[0-9a-f]{12}' "$LOG" | head -n 1 || true)"
 if [[ -z "$RUNNER_IMAGE" ]]; then
   echo "default runner image tag is not fingerprinted" >&2
   exit 1
@@ -111,7 +112,8 @@ fi
 grep -q -- '<--build-arg> <DIND_BASE_IMAGE=m.daocloud.io/docker.io/library/debian:bookworm-slim@sha256:7b140f374b289a7c2befc338f42ebe6441b7ea838a042bbd5acbfca6ec875818>' "$LOG"
 grep -q -- '<--build-arg> <UV_IMAGE=m.daocloud.io/ghcr.io/astral-sh/uv:0.11.28>' "$LOG"
 grep -q -- "<-f> <$PROJECT_DIR/scripts/dind/Dockerfile> <-t> <$RUNNER_IMAGE> <$PROJECT_DIR>" "$LOG"
-grep -q -- "<--label> <sii.agent-fleet.runner-image=$RUNNER_IMAGE>" "$LOG"
+grep -q -- "<--label> <agent-fleet.runner-image=$RUNNER_IMAGE>" "$LOG"
+grep -q -- "^docker <run> .* <-w> <$PROJECT_DIR> <$RUNNER_IMAGE> " "$LOG"
 grep -q -- '<env> <REPO_DIR='"$PROJECT_DIR"'> <BASE_URL=https://local.example.com> <API_KEY=sk-local> <MODEL=local-model>' "$LOG"
 # The documented no-Opik escape must survive the DinD env handoff.
 grep -q -- '<TRACE_TO_OPIK=false>' "$LOG"
@@ -126,11 +128,11 @@ mkdir -p "$TMP_DIR/existing-bin"
 cat > "$TMP_DIR/existing-bin/docker" <<'MOCK'
 #!/usr/bin/env bash
 if [[ "${1:-}" == "ps" ]]; then
-  printf '%s\n' 'sii-agent-fleet-dind'
+  printf '%s\n' 'agent-fleet-dind'
   exit 0
 fi
-if [[ "${1:-}" == "inspect" && "$*" == *"sii.agent-fleet.runner-image"* ]]; then
-  printf '%s\n' 'sii-agent-fleet-dind:stale'
+if [[ "${1:-}" == "inspect" && "$*" == *"agent-fleet.runner-image"* ]]; then
+  printf '%s\n' 'agent-fleet-dind:stale'
   exit 0
 fi
 exit 0
@@ -139,7 +141,7 @@ chmod +x "$TMP_DIR/existing-bin/docker"
 
 STALE_LOG="$TMP_DIR/stale.log"
 if PATH="$TMP_DIR/existing-bin:$PATH" \
-  DIND_IMAGE=sii-agent-fleet-dind:current \
+  DIND_IMAGE=agent-fleet-dind:current \
   "$PROJECT_DIR/scripts/dind-run.sh" \
     --taskset terminalbench21 --agent claude-code --workers 1 \
     > "$STALE_LOG" 2>&1; then
@@ -157,7 +159,7 @@ DIND_BOOTSTRAP=skip \
 "$PROJECT_DIR/scripts/dind-run.sh" \
   --taskset terminalbench21 --agent claude-code --workers 1 \
   > "$RECREATE_LOG"
-grep -q -- '^rm -f sii-agent-fleet-dind$' "$DOCKER_ACTION_LOG"
+grep -q -- '^rm -f agent-fleet-dind$' "$DOCKER_ACTION_LOG"
 if grep -q -- '^volume rm ' "$DOCKER_ACTION_LOG"; then
   echo "DIND_RECREATE removed the Docker storage volume" >&2
   exit 1
@@ -169,8 +171,8 @@ PI_VERSION=0.81.1 \
 "$PROJECT_DIR/scripts/dind-run.sh" --taskset terminalbench21 --agent claude-code --workers 1 > "$LOG"
 
 grep -qF -- '<sh> <-c> <command -v pi >/dev/null 2>&1 && [ "$(pi --version 2>/dev/null | grep -oE "[0-9]+\.[0-9]+\.[0-9]+" | head -n 1)" = "$3" ] && test -f "$1" && test -d "$2">' "$LOG"
-grep -q -- '</home/sii/.pi/agent/models.json>' "$LOG"
-grep -q -- '</home/sii/.pi/agent/skills/harbor-benchmark-runner>' "$LOG"
+grep -q -- '</home/agent/.pi/agent/models.json>' "$LOG"
+grep -q -- '</home/agent/.pi/agent/skills/harbor-benchmark-runner>' "$LOG"
 grep -q -- '<0.81.1>' "$LOG"
 grep -q -- '<PI_VERSION=0.81.1>' "$LOG"
 if grep -q -- 'command -v claude' "$LOG"; then

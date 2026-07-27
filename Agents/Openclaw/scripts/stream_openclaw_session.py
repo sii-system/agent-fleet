@@ -24,13 +24,12 @@ from __future__ import annotations
 import argparse
 import json
 import os
-from shlex import quote as shlex_quote
 import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+from shlex import quote as shlex_quote
 from typing import Any
-
 
 ACTIVE_STATUSES = {"active", "running", "live", "open", "busy"}
 HEARTBEAT_PREFIX = "Read HEARTBEAT.md if it exists"

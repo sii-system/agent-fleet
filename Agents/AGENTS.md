@@ -32,7 +32,7 @@ TOTAL_WORKERS="80"         # zellij worker panes
 TB_N_CONCURRENT="80"       # Harbor concurrency, normally = TOTAL_WORKERS
 ```
 
-Outputs land in `OUTPUT_PATH` (default `/workspace/runs/<RUN_ID>`).
+Outputs land in `OUTPUT_PATH` (default `<repo>/runs/<RUN_ID>`).
 `RESET_RUN=1` clears run state (including online-analysis state) before
 restarting.
 

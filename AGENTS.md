@@ -1,4 +1,4 @@
-# AGENTS.md — SII Agent Fleet
+# AGENTS.md — Agent Fleet
 
 Guidance for coding agents working in this repository. Subsystem runbooks
 live in [Agents/AGENTS.md](Agents/AGENTS.md) and
@@ -18,7 +18,7 @@ gateway fleet, and its benchmarks (PinchBench, ClawBio).
 | `Agents/Harbor-claude-code/`, `Agents/Harbor-opencode/` | Agent-specific Harbor integration | per-directory `STRUCT.md` |
 | `Agents/Openclaw/` | Dockerized OpenClaw gateway fleet | `Agents/AGENTS.md` |
 | `Tasks/` | Harbor task lists; PinchBench and ClawBio runners | `Tasks/AGENTS.md` |
-| `third_party/sii-opik-plugin/` | Opik tracing plugin (git submodule, tag `v0.1.0`) | — |
+| `third_party/agent-opik-plugin/` | Opik tracing plugin (git submodule, tag `v0.1.0`) | — |
 
 ## First-Time Setup
 

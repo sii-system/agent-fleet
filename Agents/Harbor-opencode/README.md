@@ -18,6 +18,6 @@ bash start.sh
 
 This directory is not usually launched directly. Use `Agents/utils/common/Harbor/start.sh`.
 For traced runs, the realtime plugin and hook are loaded from the
-`third_party/sii-opik-plugin` submodule; trace-off runs do not require it.
+`third_party/agent-opik-plugin` submodule; trace-off runs do not require it.
 
 Structure details: [STRUCT.md](./STRUCT.md)

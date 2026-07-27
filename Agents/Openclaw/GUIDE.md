@@ -252,7 +252,7 @@ To enable tracing, set `trace_to_opik=true`, `opik_plugin=enabled`,
 ## Files Layout
 
 ```
-sii-agent-fleet/
+agent-fleet/
 ├── Agents/
 │   └── Openclaw/
 │       ├── Dockerfile.opik                # Derived image with opik-tracer plugin

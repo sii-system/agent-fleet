@@ -2,7 +2,6 @@ import re
 import unittest
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[1]
 EXPECTED_SKILLS = {
     "harbor-benchmark-runner": {
@@ -33,7 +32,7 @@ EXPECTED_SKILLS = {
 
 
 def parse_frontmatter(text):
-    match = re.match(r"\A---\n(.*?)\n---\n", text, flags=re.S)
+    match = re.match(r"\A---\n(.*?)\n---\n", text, flags=re.DOTALL)
     if not match:
         raise AssertionError("missing YAML frontmatter")
 
@@ -77,11 +76,15 @@ class SkillDocsTest(unittest.TestCase):
 
     def test_root_readme_advertises_supported_runner_agents(self):
         root_readme = (ROOT / "README.md").read_text(encoding="utf-8")
-        agent_options = re.search(r"`--agent[ \t]+([^`]+)`", root_readme)
+        agent_row = re.search(
+            r"^\|\s*`--agent`\s*\|\s*`-a`\s*\|\s*(.+?)\s*\|$",
+            root_readme,
+            re.MULTILINE,
+        )
 
-        self.assertIsNotNone(agent_options)
+        self.assertIsNotNone(agent_row)
         self.assertEqual(
-            {option.strip() for option in agent_options.group(1).split("|")},
+            set(re.findall(r"`([^`]+)`", agent_row.group(1))),
             {"claude-code", "opencode", "openclaw"},
         )
         self.assertNotIn("Terminus-2", root_readme)

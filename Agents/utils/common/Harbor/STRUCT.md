@@ -99,14 +99,16 @@ Typical dataset paths:
 | `TOTAL_WORKERS` | Number of zellij workers |
 | `TB_N_CONCURRENT` | Harbor concurrency, normally the same as `TOTAL_WORKERS` |
 | `RUN_ID` | Run name |
-| `OUTPUT_ROOT` | Parent directory for runs |
+| `OUTPUT_ROOT` | Parent directory for runs; defaults to `<repo>/runs` |
 | `OUTPUT_PATH` | Full output directory |
+| `HARBOR_ZELLIJ_SESSION_NAME` | Safe default session name derived from the effective agent, dataset, model, and timestamp |
 | `HARBOR_ZELLIJ_CLOSE_ON_COMPLETE` | `1` closes fixed benchmark sessions after summary generation; `0` keeps the final pane open |
+| `HARBOR_ZELLIJ_KEEP_ON_FAILURE` | Defaults to `1` for interactive or detached launches and `0` for noninteractive foreground runs |
 | `OPIK_URL` | Opik API URL, usually ending in `/api` |
 | `OPIK_URL_OVERRIDE` | Opik API URL forwarded into task containers |
 | `OPIK_API_KEY` | Opik API key |
-| `OPIK_PROJECT_NAME` | Opik project name |
-| `TRACE_PLUGIN_SOURCE_DIR` | Tracing source path, defaults to `third_party/sii-opik-plugin` |
+| `OPIK_PROJECT_NAME` | Opik project name; defaults to the effective agent, dataset, model, and timestamp |
+| `TRACE_PLUGIN_SOURCE_DIR` | Tracing source path, defaults to `third_party/agent-opik-plugin` |
 | `TRACE_TO_OPIK` | Enables or disables trace upload |
 | `CLAUDE_CODE_VERSION` | Claude Code package version used by local dependency cache |
 | `OPENCODE_VERSION` | OpenCode package version used by local dependency cache |
@@ -121,6 +123,12 @@ Typical dataset paths:
 | `TB_AGENT_SETUP_TIMEOUT_MULTIPLIER` | Agent setup timeout multiplier |
 | `HARBOR_ONLINE_ANALYSIS` | Enables console-only online analysis, default `0` |
 | `HARBOR_EARLY_STOP` | Stops the current SETA task on matching task-blocking online-analysis events when set to `1`, default `0` |
+| `HARBOR_ANALYZER_ENABLED` | Starts the Pi-backed analyzer from `start.sh` after the monitor is ready, defaults to `HARBOR_MONITOR_ENABLED` |
+| `HARBOR_ANALYZER_MODE` | Analyzer launch mode, currently only `handover-follow` |
+| `HARBOR_ANALYZER_OUTPUT_DIR` | Analyzer output directory, defaults to `<OUTPUT_PATH>/analyzer` |
+| `HARBOR_ANALYZER_POLL_INTERVAL` | Analyzer handover polling interval in seconds, default `5` |
+| `HARBOR_ANALYZER_TIMEOUT` | Per-task analyzer Pi timeout in seconds, default `900` |
+| `HARBOR_ANALYZER_MAX_CONCURRENCY` | Maximum concurrent per-task analyzer Pi subprocesses, default `1` |
 
 ## RL Rollout Variables
 
@@ -180,7 +188,7 @@ OpenCode specific defaults:
 ## Opik Plugin Submodule
 
 The tracing plugin is linked as a Git submodule at
-`third_party/sii-opik-plugin`, pinned to tag `v0.1.0`. Initialize it before
+`third_party/agent-opik-plugin`, pinned to tag `v0.1.0`. Initialize it before
 running:
 
 ```bash
@@ -191,11 +199,11 @@ The runner checks these files when tracing is enabled:
 
 ```text
 Claude Code:
-  third_party/sii-opik-plugin/src/sii_opik_plugin/claude_code/claude_realtime_trace.py
+  third_party/agent-opik-plugin/src/sii_opik_plugin/claude_code/claude_realtime_trace.py
 
 OpenCode:
-  third_party/sii-opik-plugin/harness/opencode/opik-trace.ts
-  third_party/sii-opik-plugin/src/sii_opik_plugin/opencode/opencode_realtime_trace.py
+  third_party/agent-opik-plugin/harness/opencode/opik-trace.ts
+  third_party/agent-opik-plugin/src/sii_opik_plugin/opencode/opencode_realtime_trace.py
 ```
 
 ## Execution Flow
@@ -209,8 +217,11 @@ OpenCode:
 
 Native registry runs use the single-pane layout; `run_harbor_registry.sh`
 wraps `harboropik.sh`, which writes the same summary path from Harbor's job
-result. The wrapper keeps the final registry pane open when the completion
-switch is `0`.
+result. The wrapper exits automatically only when Harbor returns zero and an
+aggregate result was found. It keeps failed or incomplete runs open for
+diagnosis, while foreground `start.sh` prints the final summary and returns
+the recorded Harbor status after Zellij exits. The wrapper also keeps a
+successful final pane open when the completion switch is `0`.
 
 RL rollout flow:
 
@@ -265,3 +276,9 @@ Outputs:
 <OUTPUT_PATH>/online-analysis/environment-events.jsonl
 <OUTPUT_PATH>/online-analysis/environment-summary.json
 ```
+
+When the monitor is enabled, `start.sh` also starts
+`scripts/analyzer_subagent.py --follow` after the monitor has produced
+`monitor/analyzer-handover-latest.json`. The analyzer consumes that latest file
+and `monitor/analyzer-handoffs/`, writes reports under `<OUTPUT_PATH>/analyzer`,
+and remains outside the monitor's restart/stop decision logic.

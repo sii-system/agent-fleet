@@ -30,7 +30,7 @@ def load_json(path: Path) -> dict[str, Any]:
     except (OSError, json.JSONDecodeError) as exc:
         raise ValueError(f"Cannot read JSON file {path}: {exc}") from exc
     if not isinstance(payload, dict):
-        raise ValueError(f"Expected a JSON object in {path}")
+        raise ValueError(f"Expected a JSON object in {path}")  # noqa: TRY004 - compatibility contract
     return payload
 
 

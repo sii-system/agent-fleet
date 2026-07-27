@@ -2,6 +2,9 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=prerequisites.sh
+source "$SCRIPT_DIR/prerequisites.sh"
+agent_fleet_prerequisite_init_path
 REPO_DIR="${REPO_DIR:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 # shellcheck source=fleet_spec_io.sh
 source "$SCRIPT_DIR/fleet_spec_io.sh"
@@ -47,6 +50,70 @@ run_command() {
   exec "$@"
 }
 
+load_run_config() {
+  local entry file name
+  local -a caller_env=()
+
+  # Normalize supported caller aliases before the snapshot so they also
+  # override canonical values stored in config.local.env.
+  if [[ -z "${BASE_URL:-}" && -n "${ANTHROPIC_BASE_URL:-}" ]]; then
+    BASE_URL="$ANTHROPIC_BASE_URL"
+    export BASE_URL
+  fi
+  if [[ -z "${API_KEY:-}" ]]; then
+    if [[ -n "${AUTH_TOKEN:-}" ]]; then
+      API_KEY="$AUTH_TOKEN"
+    elif [[ -n "${ANTHROPIC_AUTH_TOKEN:-}" ]]; then
+      API_KEY="$ANTHROPIC_AUTH_TOKEN"
+    fi
+  fi
+  if [[ -n "${API_KEY:-}" ]]; then
+    export API_KEY
+  fi
+  if [[ -z "${MODEL:-}" && -n "${TB_MODEL:-}" ]]; then
+    MODEL="$TB_MODEL"
+    export MODEL
+  fi
+  while IFS= read -r -d '' entry; do
+    caller_env+=("$entry")
+  done < <(env -0)
+  for file in "$REPO_DIR/config.env" "$REPO_DIR/config.local.env"; do
+    if [[ -f "$file" ]]; then
+      set -a
+      # shellcheck source=/dev/null
+      . "$file"
+      set +a
+    fi
+  done
+  for entry in "${caller_env[@]}"; do
+    name="${entry%%=*}"
+    [[ "$name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
+    export "$entry"
+  done
+}
+
+validate_run_config() {
+  local -a missing=()
+  local required
+
+  BASE_URL="${BASE_URL:-${ANTHROPIC_BASE_URL:-}}"
+  API_KEY="${API_KEY:-${AUTH_TOKEN:-${ANTHROPIC_AUTH_TOKEN:-}}}"
+  MODEL="${MODEL:-${TB_MODEL:-}}"
+  export BASE_URL API_KEY MODEL
+  for required in BASE_URL API_KEY MODEL; do
+    [[ -n "${!required:-}" ]] || missing+=("$required")
+  done
+  case "${TRACE_TO_OPIK:-true}" in
+    false|0) ;;
+    *) [[ -n "${OPIK_URL:-}" ]] || missing+=("OPIK_URL (required when TRACE_TO_OPIK=true)") ;;
+  esac
+  if [[ ${#missing[@]} -gt 0 ]]; then
+    printf '[ERROR] missing required configuration: %s\n' "${missing[*]}" >&2
+    printf '[ERROR] run ./scripts/setup.sh or add the values to config.local.env\n' >&2
+    return 1
+  fi
+}
+
 apply_fleet_spec() {
   TASKSET="$(jq -r '.taskset' <<<"$FLEET_SPEC_JSON")"
   AGENT_ARG="$(jq -r 'if has("agent") then .agent else "" end' <<<"$FLEET_SPEC_JSON")"
@@ -79,6 +146,10 @@ done
 fleet_spec_validate_output_path "$OUTPUT" || exit $?
 
 [[ -n "$TASKSET" ]] || { usage >&2; exit 2; }
+if (( ! DRY_RUN )); then
+  load_run_config
+  validate_run_config || exit 1
+fi
 if [[ -n "$OUTPUT" ]]; then
   if [[ -z "$FLEET_SPEC_JSON" ]]; then
     fleet_spec_from_taskset_args "$TASKSET" "$AGENT_ARG" "$WORKERS"

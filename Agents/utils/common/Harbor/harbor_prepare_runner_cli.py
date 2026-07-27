@@ -9,7 +9,6 @@ import sys
 from pathlib import Path
 from typing import TextIO
 
-
 DEFAULT_REQUIREMENTS_FILE = Path(__file__).with_name("runner-requirements.txt")
 VERSION_PROBE = (
     "import importlib.metadata as m, sys; "
@@ -57,6 +56,7 @@ def validate_runner(log: TextIO) -> bool:
             [str(python), "-c", PYTHON_VERSION_PROBE],
             capture_output=True,
             text=True,
+            check=False,
         )
     except OSError as exc:
         log.write(f"failed to query runner Python version: {exc}\n")
@@ -75,6 +75,7 @@ def validate_runner(log: TextIO) -> bool:
                 [str(python), "-c", VERSION_PROBE, package],
                 capture_output=True,
                 text=True,
+                check=False,
             )
         except OSError as exc:
             log.write(f"failed to query {package}: {exc}\n")
@@ -89,7 +90,12 @@ def validate_runner(log: TextIO) -> bool:
 
     for command in ([str(opik), "harbor", "run", "--help"], [str(harbor), "run", "--help"]):
         try:
-            result = subprocess.run(command, capture_output=True, text=True)
+            result = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
         except OSError as exc:
             log.write(f"failed to execute {command[0]}: {exc}\n")
             return False

@@ -14,9 +14,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
-
 PROVIDER = "sii-gateway"
-API_KEY_ENV = "SII_AGENT_FLEET_API_KEY"
+API_KEY_ENV = "AGENT_FLEET_API_KEY"
 
 
 class PromptFailure(RuntimeError):
@@ -37,7 +36,7 @@ def models_config(
     base_url: str,
     model: str,
     *,
-    display_name: str = "SII Agent Fleet Prompt Translator",
+    display_name: str = "Agent Fleet Prompt Translator",
 ) -> dict[str, Any]:
     """Keep this provider contract aligned with the merged Pi analyzer."""
 
@@ -276,8 +275,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 env=minimal_environment(runtime_dir, api_key),
                 stdin=subprocess.DEVNULL,
                 text=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
+                capture_output=True,
                 shell=False,
                 check=False,
             )

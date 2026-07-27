@@ -1,0 +1,46 @@
+name: PR Quick CI
+
+"on":
+  pull_request:
+    types: [opened, reopened, synchronize, ready_for_review]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-quick-ci-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  quick-checks:
+    name: Quick checks
+    if: ${{ !github.event.pull_request.draft && github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: [self-hosted, Linux, X64]
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out pull request
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Show runtime versions
+        run: |
+          set -euo pipefail
+          python3 --version
+          bash --version | head -n 1
+
+      - name: Validate shell syntax
+        run: |
+          set -euo pipefail
+          while IFS= read -r -d '' script; do
+            bash -n "$script"
+          done < <(git ls-files -z '*.sh')
+
+      - name: Run quick unit tests
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover -s tests -v
+          python3 -m unittest discover -s scripts/tests -v
+          bash scripts/tests/test_dind_run.sh
+          python3 -m unittest discover -s .github/scripts/tests -v

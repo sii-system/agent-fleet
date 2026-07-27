@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Tests for Harbor analyzer contract and validation helpers."""
 
 from __future__ import annotations
@@ -9,12 +8,13 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from Agents.utils.common.Harbor.scripts.harbor_analyzer.contract import validate_handover
+from Agents.utils.common.Harbor.scripts.harbor_analyzer.contract import (
+    validate_handover,
+)
 from Agents.utils.common.Harbor.scripts.harbor_analyzer.validation import (
     validate_final_json,
     validate_task_analysis,
 )
-
 
 HANDOVER_ID = "sha256-" + ("a" * 64)
 RUN_ID = "run-1"

@@ -1,16 +1,15 @@
-#!/usr/bin/env python3
 """Tests for per-request rollout context propagation."""
 
 from __future__ import annotations
 
 import importlib.util
+import io
 import json
 import os
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
-
 
 SCRIPT = Path(__file__).resolve().parents[1] / "rollout_remote_harbor.py"
 SPEC = importlib.util.spec_from_file_location("rollout_remote_harbor", SCRIPT)
@@ -20,6 +19,79 @@ SPEC.loader.exec_module(MODULE)
 
 
 class RolloutRequestContextTest(unittest.TestCase):
+    def _handler(self, body: bytes):
+        handler = object.__new__(MODULE.Handler)
+        handler.path = "/run_trial"
+        handler.headers = {"Content-Length": str(len(body))}
+        handler.rfile = io.BytesIO(body)
+        handler._send_json = mock.Mock()
+        return handler
+
+    def test_invalid_json_bodies_return_bad_request(self) -> None:
+        invalid_bodies = (
+            (b"[1, 2, 3]", "TypeError"),
+            (b"{", "JSONDecodeError"),
+        )
+        for body, exception_type in invalid_bodies:
+            with self.subTest(body=body):
+                handler = self._handler(body)
+                with mock.patch.object(MODULE, "_append_trace"):
+                    handler.do_POST()
+
+                status, payload = handler._send_json.call_args.args
+                self.assertEqual(status, MODULE.HTTPStatus.BAD_REQUEST)
+                self.assertEqual(
+                    payload["detail"]["exception_type"],
+                    exception_type,
+                )
+
+    def test_invalid_timeout_is_rejected_before_enqueue(self) -> None:
+        body = json.dumps({"request_timeout": "not-a-number"}).encode("utf-8")
+        handler = self._handler(body)
+        enqueue = mock.Mock(return_value=("request-1", Path("unused-result.json")))
+
+        with (
+            mock.patch.object(MODULE, "_enqueue_request", enqueue),
+            mock.patch.object(MODULE, "_append_trace"),
+        ):
+            handler.do_POST()
+
+        enqueue.assert_not_called()
+        self.assertEqual(
+            handler._send_json.call_args.args[0],
+            MODULE.HTTPStatus.BAD_REQUEST,
+        )
+
+    def test_internal_type_error_returns_server_error(self) -> None:
+        handler = self._handler(b"{}")
+
+        with (
+            mock.patch.object(
+                MODULE,
+                "_enqueue_request",
+                side_effect=TypeError("internal failure"),
+            ),
+            mock.patch.object(MODULE, "_append_trace"),
+        ):
+            handler.do_POST()
+
+        self.assertEqual(
+            handler._send_json.call_args.args[0],
+            MODULE.HTTPStatus.INTERNAL_SERVER_ERROR,
+        )
+
+    def test_unexpected_request_parsing_error_returns_server_error(self) -> None:
+        handler = self._handler(b"{}")
+        handler._read_json = mock.Mock(side_effect=RecursionError("deep JSON"))
+
+        with mock.patch.object(MODULE, "_append_trace"):
+            handler.do_POST()
+
+        self.assertEqual(
+            handler._send_json.call_args.args[0],
+            MODULE.HTTPStatus.INTERNAL_SERVER_ERROR,
+        )
+
     def test_only_top_level_ray_submission_id_is_used(self) -> None:
         self.assertEqual(
             MODULE._extract_ray_submission_id({

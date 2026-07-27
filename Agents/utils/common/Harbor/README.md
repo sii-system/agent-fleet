@@ -13,10 +13,15 @@ bash start.sh --detach
 Use `bash start.sh` instead of `--detach` for an interactive zellij session.
 
 When every task has finished, the monitor writes a final summary to
-`$OUTPUT_PATH/summary.txt` (counts, reward rollup, result paths). Fixed
-benchmark sessions close by default; set `HARBOR_ZELLIJ_CLOSE_ON_COMPLETE=0`
-to keep the final pane open for inspection. All per-task results stay on disk
-under `$OUTPUT_PATH`.
+`$OUTPUT_PATH/summary.txt` (counts, reward rollup, result paths); registry
+summaries also record completion status and Harbor's exit code. Successful
+fixed benchmark sessions close by default, and a foreground `start.sh` prints
+that summary and returns Harbor's exit code. Interactive or detached failed
+registry runs keep the final pane open so diagnostics do not disappear behind
+Zellij's exit message; press `Ctrl-q` after inspection. Noninteractive
+foreground failures return immediately. Set
+`HARBOR_ZELLIJ_CLOSE_ON_COMPLETE=0` to keep successful final panes open too.
+All per-task results stay on disk under `$OUTPUT_PATH`.
 
 This completion switch does not apply to RL rollout sessions, whose workers
 serve a dynamic request queue rather than a fixed task total.
@@ -61,7 +66,7 @@ TB_N_CONCURRENT="80"
 ```
 
 When `TRACE_TO_OPIK=true` (the default), the Opik tracing plugin is loaded from
-the `third_party/sii-opik-plugin` submodule. Initialize it before a traced run:
+the `third_party/agent-opik-plugin` submodule. Initialize it before a traced run:
 
 ```bash
 git submodule update --init --recursive
@@ -69,7 +74,7 @@ git submodule update --init --recursive
 
 For a direct host run, first execute `./scripts/setup.sh` from the repository
 root. It creates a pinned Harbor/Opik control environment under
-`~/.local/share/sii-agent-fleet/harbor-runner`. The DinD runner uses the
+`~/.local/share/agent-fleet/harbor-runner`. The DinD runner uses the
 image-owned `/opt/harbor-runner` environment instead. Workload startup only
 validates the selected environment and never installs or repairs it.
 
@@ -146,17 +151,17 @@ container. Build the runner directly from this repository first:
 ```bash
 docker build \
   -f scripts/dind/Dockerfile \
-  -t sii-agent-fleet-harbor-runner:local \
+  -t agent-fleet-harbor-runner:local \
   .
 
 docker run -d --name harbor-rollout \
   -p 19001:19001 \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -v /workspace:/workspace \
-  sii-agent-fleet-harbor-runner:local sleep infinity
+  agent-fleet-harbor-runner:local sleep infinity
 
 docker exec harbor-rollout bash -lc '
-  cd /workspace/sii-agent-fleet/Agents/utils/common/Harbor
+  cd /workspace/agent-fleet/Agents/utils/common/Harbor
   ROLLOUT=1 RL_HOST=0.0.0.0 RL_PORT=19001 bash start.sh --detach
 '
 ```
@@ -172,9 +177,11 @@ ROLLOUT=1 bash start.sh
 
 ## Harbor Monitor
 
-`start.sh` automatically starts one monitor for each Harbor benchmark run.
-Set `HARBOR_MONITOR_ENABLED=0` to disable it. The monitor reads Fleet queue
-artifacts for local datasets and Harbor job/trial results for registry datasets.
+`start.sh` automatically starts one monitor for each Harbor benchmark run,
+including detached zellij runs and command-mode runs such as
+`bash start.sh ./harboropik.sh`. Set `HARBOR_MONITOR_ENABLED=0` to disable it.
+The monitor reads Fleet queue artifacts for local datasets and Harbor job/trial
+results for registry datasets.
 
 Equivalent queue monitor command:
 
@@ -218,6 +225,30 @@ All files are refreshed on each sample. The actual action is
 | Every task has a terminal queue record | `stop` |
 
 Automatic restart is only used when tasks remain and no worker is alive.
+
+## Harbor Analyzer
+
+`start.sh` starts the Pi-backed analyzer under the same Harbor run lifecycle by
+default when the monitor is enabled. Set `HARBOR_ANALYZER_ENABLED=0` to disable it:
+
+```bash
+HARBOR_ANALYZER_ENABLED=0 ./start.sh --detach
+```
+
+For a foreground run without zellij, pass the Harbor command to `start.sh`:
+
+```bash
+bash start.sh ./harboropik.sh
+```
+
+The analyzer depends on the monitor. It follows
+`monitor/analyzer-handover-latest.json` and `monitor/analyzer-handoffs/`, writes
+reports under `$OUTPUT_PATH/analyzer`, and does not restart, stop, or otherwise
+control the benchmark run. Before using the default analyzer path, configure
+`BASE_URL`, `API_KEY`, and `MODEL`, or set the analyzer-specific
+`HARBOR_ANALYZER_BASE_URL`, `HARBOR_ANALYZER_API_KEY`, and
+`HARBOR_ANALYZER_MODEL` overrides. If no analyzer model gateway should be used
+for a run, set `HARBOR_ANALYZER_ENABLED=0`.
 
 ## More Details
 

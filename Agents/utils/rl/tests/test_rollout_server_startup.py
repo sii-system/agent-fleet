@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Tests for rollout listener startup preflight behavior."""
 
 from __future__ import annotations
@@ -8,7 +7,6 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
-
 
 SCRIPT = Path(__file__).resolve().parents[1] / "run_rl_rollout_server.sh"
 

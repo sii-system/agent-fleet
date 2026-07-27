@@ -8,12 +8,12 @@ trap 'rm -rf "$TMP_DIR"' EXIT
 PROJECT_DIR="$TMP_DIR/Agents/Openclaw"
 mkdir -p "$PROJECT_DIR/scripts" \
          "$PROJECT_DIR/cache/openclaw/.git" \
-         "$TMP_DIR/third_party/sii-opik-plugin/harness/openclaw" \
-         "$TMP_DIR/third_party/sii-opik-plugin/src/sii_opik_plugin/openclaw" \
+         "$TMP_DIR/third_party/agent-opik-plugin/harness/openclaw" \
+         "$TMP_DIR/third_party/agent-opik-plugin/src/sii_opik_plugin/openclaw" \
          "$TMP_DIR/bin"
-touch "$TMP_DIR/third_party/sii-opik-plugin/src/sii_opik_plugin/openclaw/openclaw_opik_tracer.py"
-touch "$TMP_DIR/third_party/sii-opik-plugin/requirements.txt"
-printf '{"scripts":{"build":"true"}}\n' > "$TMP_DIR/third_party/sii-opik-plugin/harness/openclaw/package.json"
+touch "$TMP_DIR/third_party/agent-opik-plugin/src/sii_opik_plugin/openclaw/openclaw_opik_tracer.py"
+touch "$TMP_DIR/third_party/agent-opik-plugin/requirements.txt"
+printf '{"scripts":{"build":"true"}}\n' > "$TMP_DIR/third_party/agent-opik-plugin/harness/openclaw/package.json"
 
 cp "$OPENCLAW_DIR/scripts/build-openclaw-image.sh" "$PROJECT_DIR/scripts/build-openclaw-image.sh"
 cp "$OPENCLAW_DIR/Dockerfile.opik" "$PROJECT_DIR/Dockerfile.opik"
@@ -49,7 +49,6 @@ chmod +x "$TMP_DIR/bin/git" "$TMP_DIR/bin/docker" "$TMP_DIR/bin/npm"
 PATH="$TMP_DIR/bin:$PATH" \
 LOG="$LOG" \
 OPIK_PLUGIN=enabled \
-TRACE_PLUGIN_SOURCE_DIR="$TMP_DIR/third_party/sii-opik-plugin" \
 NPM_CONFIG_REGISTRY="https://registry.npmmirror.com" \
 PIP_INDEX_URL="https://pypi.tuna.tsinghua.edu.cn/simple" \
 PIP_EXTRA_INDEX_URL="https://pypi.example.com/simple" \
@@ -106,7 +105,6 @@ PATH="$TMP_DIR/bin:$PATH" \
 LOG="$LOG" \
 TRACE_TO_OPIK=true \
 OPIK_PLUGIN=enabled \
-TRACE_PLUGIN_SOURCE_DIR="$TMP_DIR/third_party/sii-opik-plugin" \
 "$PROJECT_DIR/scripts/build-openclaw-image.sh" >/dev/null
 
 grep -q -- 'openclaw:local-opik' "$LOG"

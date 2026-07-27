@@ -73,7 +73,7 @@ commands you actually ran. The expected bar:
 ## Portability
 
 - **Scripts work from any clone or worktree** — derive paths from `SCRIPT_DIR`;
-  don't hardcode `$HOME/sii-agent-fleet`. Keep an explicit override where useful.
+  don't hardcode `$HOME/agent-fleet`. Keep an explicit override where useful.
 - **Portable shell** — prefer a Python helper over fragile in-place edits such
   as `sed -i`.
 - **Every shell script starts with `set -euo pipefail`.**

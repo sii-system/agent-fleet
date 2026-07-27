@@ -9,7 +9,6 @@ from typing import Any
 
 from .classification import SIGNAL_DEFINITIONS
 
-
 RUNTIME_EVIDENCE_KEYS = {
     "elapsed_since_run_start",
     "blocked_duration",

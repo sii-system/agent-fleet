@@ -1,7 +1,7 @@
 - hosts: openclaw_nodes
   become: true
   vars:
-    repo_url: "https://github.com/sii-system/sii-agent-fleet.git"
+    repo_url: "https://github.com/sii-system/agent-fleet.git"
     repo_dest: "/opt/agent-fleet"
     repo_branch: "main"
   tasks:

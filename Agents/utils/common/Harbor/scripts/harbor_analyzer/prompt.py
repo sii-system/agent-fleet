@@ -1,4 +1,4 @@
-"""Build fixed prompts used to launch Pi/GLM analyzer subagents."""
+"""Build fixed prompts used to launch Pi analyzer subagents."""
 
 from __future__ import annotations
 
@@ -6,7 +6,12 @@ import json
 from pathlib import Path
 
 from . import PROMPT_VERSION, TAXONOMY_VERSION
-from .taxonomy import FAILURE_STAGES, FINAL_CLASSES, SCOPES, UNMAPPED_ROOT_CAUSE_BY_CLASS
+from .taxonomy import (
+    FAILURE_STAGES,
+    FINAL_CLASSES,
+    SCOPES,
+    UNMAPPED_ROOT_CAUSE_BY_CLASS,
+)
 
 
 def _task_identity(task: dict) -> dict[str, object]:
