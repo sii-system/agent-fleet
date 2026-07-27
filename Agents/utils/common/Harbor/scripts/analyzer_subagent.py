@@ -188,11 +188,10 @@ def _record_follow_failure(
     }
 
 
-def _handover_follow_key(handover: dict[str, Any]) -> str:
-    handover_id = str(handover.get("handover_id") or "")
+def _handover_task_identities(handover: dict[str, Any]) -> list[dict[str, Any]]:
     tasks = handover.get("tasks")
     if not isinstance(tasks, list):
-        return handover_id
+        return []
     identities: list[dict[str, Any]] = []
     for task in tasks:
         if not isinstance(task, dict):
@@ -205,6 +204,12 @@ def _handover_follow_key(handover: dict[str, Any]) -> str:
                 "terminal_fingerprint": task.get("terminal_fingerprint"),
             }
         )
+    return identities
+
+
+def _handover_follow_key(handover: dict[str, Any]) -> str:
+    handover_id = str(handover.get("handover_id") or "")
+    identities = _handover_task_identities(handover)
     if not identities:
         return handover_id
     return f"{handover_id}:{stable_hash(identities)}"
@@ -223,6 +228,7 @@ def _pending_handovers(
     if latest_path.is_file():
         candidates.append(latest_path)
     unique: dict[str, tuple[dict[str, Any], Path, str]] = {}
+    spool_task_keys: set[str] = set()
     for path in candidates:
         try:
             handover = load_json(path)
@@ -230,10 +236,23 @@ def _pending_handovers(
             continue
         handover_id = str(handover.get("handover_id") or "")
         follow_key = _handover_follow_key(handover)
-        if not handover_id or follow_key in processed or follow_key in unique:
+        if not handover_id or follow_key in unique:
             continue
         failed_record = failed.get(follow_key)
-        if isinstance(failed_record, dict) and failed_record.get("retry_exhausted") is True:
+        retry_exhausted = (
+            isinstance(failed_record, dict)
+            and failed_record.get("retry_exhausted") is True
+        )
+        task_keys = {
+            stable_hash(identity)
+            for identity in _handover_task_identities(handover)
+        }
+        if path == latest_path:
+            if task_keys and task_keys.issubset(spool_task_keys):
+                continue
+        elif not retry_exhausted:
+            spool_task_keys.update(task_keys)
+        if follow_key in processed or retry_exhausted:
             continue
         next_retry_at = (
             failed_record.get("next_retry_at")

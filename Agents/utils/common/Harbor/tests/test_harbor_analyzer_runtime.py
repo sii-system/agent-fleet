@@ -437,6 +437,58 @@ class HarborAnalyzerRuntimeTest(unittest.TestCase):
 
             self.assertEqual([item[1] for item in pending], [latest_path])
 
+    def test_pending_handovers_skip_latest_covered_by_incremental_spool(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            root_path = Path(root)
+            handoff_dir = root_path / "handoffs"
+            handoff_dir.mkdir()
+            tasks = [
+                task(task_index="1", attempt_id="attempt-1"),
+                task(task_index="2", attempt_id="attempt-2"),
+            ]
+            for index, handover_task in enumerate(tasks, start=1):
+                (handoff_dir / f"{index}.json").write_text(
+                    json.dumps(
+                        {
+                            "handover_id": f"handover-{index}",
+                            "generated_at": f"2026-07-20T00:00:0{index}+00:00",
+                            "tasks": [handover_task],
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+            latest_path = root_path / "latest.json"
+            latest_path.write_text(
+                json.dumps(
+                    {
+                        "handover_id": "handover-latest",
+                        "generated_at": "2026-07-20T00:00:03+00:00",
+                        "tasks": tasks,
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            pending = _pending_handovers(
+                latest_path=latest_path,
+                handoff_dir=handoff_dir,
+                processed=set(),
+                failed={},
+                now=0.0,
+            )
+
+            self.assertEqual([item[1].parent for item in pending], [handoff_dir, handoff_dir])
+            self.assertEqual(
+                _pending_handovers(
+                    latest_path=latest_path,
+                    handoff_dir=handoff_dir,
+                    processed={item[2] for item in pending},
+                    failed={},
+                    now=0.0,
+                ),
+                [],
+            )
+
     def test_pending_handovers_stop_after_follow_failure_limit(self) -> None:
         with tempfile.TemporaryDirectory() as root:
             handoff_dir = Path(root) / "handoffs"
