@@ -162,20 +162,11 @@ def write_outputs_process(root: str, marker: str) -> None:
 
 
 class HarborAnalyzerRuntimeTest(unittest.TestCase):
-    def test_native_harbor_running_count_discards_snapshot_after_exit(self) -> None:
-        self.assertEqual(
-            monitor_runner.native_harbor_running_count(
-                1,
-                benchmark_alive=False,
-                benchmark_exited=True,
-            ),
-            0,
-        )
+    def test_native_harbor_running_count_discards_snapshot_when_process_dies(self) -> None:
         self.assertEqual(
             monitor_runner.native_harbor_running_count(
                 0,
                 benchmark_alive=True,
-                benchmark_exited=False,
             ),
             1,
         )
@@ -183,9 +174,8 @@ class HarborAnalyzerRuntimeTest(unittest.TestCase):
             monitor_runner.native_harbor_running_count(
                 2,
                 benchmark_alive=False,
-                benchmark_exited=False,
             ),
-            2,
+            0,
         )
 
     def test_monitor_rewrites_corrupt_analyzer_spool_file(self) -> None:
@@ -419,6 +409,33 @@ class HarborAnalyzerRuntimeTest(unittest.TestCase):
                 ),
                 [],
             )
+
+    def test_pending_handovers_use_latest_after_corrupt_spool_entry(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            handoff_dir = Path(root) / "handoffs"
+            handoff_dir.mkdir()
+            (handoff_dir / "1.json").write_text("{", encoding="utf-8")
+            latest_path = Path(root) / "latest.json"
+            latest_path.write_text(
+                json.dumps(
+                    {
+                        "handover_id": HANDOVER_ID,
+                        "generated_at": "2026-07-20T00:00:00+00:00",
+                        "tasks": [task()],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            pending = _pending_handovers(
+                latest_path=latest_path,
+                handoff_dir=handoff_dir,
+                processed=set(),
+                failed={},
+                now=0.0,
+            )
+
+            self.assertEqual([item[1] for item in pending], [latest_path])
 
     def test_pending_handovers_stop_after_follow_failure_limit(self) -> None:
         with tempfile.TemporaryDirectory() as root:

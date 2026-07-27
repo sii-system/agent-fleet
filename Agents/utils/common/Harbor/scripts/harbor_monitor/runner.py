@@ -111,11 +111,8 @@ def native_harbor_running_count(
     snapshot_running: int,
     *,
     benchmark_alive: bool,
-    benchmark_exited: bool,
 ) -> int:
-    if benchmark_exited:
-        return 0
-    return max(snapshot_running, 1) if benchmark_alive else snapshot_running
+    return max(snapshot_running, 1) if benchmark_alive else 0
 
 
 def run_loop(
@@ -198,7 +195,6 @@ def run_loop(
                 running = native_harbor_running_count(
                     running,
                     benchmark_alive=benchmark_alive,
-                    benchmark_exited=benchmark_exit_code is not None,
                 )
                 task_records = native_snapshot.tasks
                 terminal_artifacts_missing = False
