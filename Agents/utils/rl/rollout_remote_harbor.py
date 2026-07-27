@@ -510,6 +510,15 @@ class Handler(BaseHTTPRequestHandler):
                 request_id=request_id,
             )
             return
+        except Exception as exc:  # noqa: BLE001 - HTTP boundary returns structured failures
+            self._send_failure(
+                HTTPStatus.INTERNAL_SERVER_ERROR,
+                exc,
+                started=started,
+                request=request,
+                request_id=request_id,
+            )
+            return
         try:
             request_id, result_path = _enqueue_request(request)
             result = _wait_result(result_path, wait_timeout)

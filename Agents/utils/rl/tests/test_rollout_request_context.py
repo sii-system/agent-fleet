@@ -80,6 +80,18 @@ class RolloutRequestContextTest(unittest.TestCase):
             MODULE.HTTPStatus.INTERNAL_SERVER_ERROR,
         )
 
+    def test_unexpected_request_parsing_error_returns_server_error(self) -> None:
+        handler = self._handler(b"{}")
+        handler._read_json = mock.Mock(side_effect=RecursionError("deep JSON"))
+
+        with mock.patch.object(MODULE, "_append_trace"):
+            handler.do_POST()
+
+        self.assertEqual(
+            handler._send_json.call_args.args[0],
+            MODULE.HTTPStatus.INTERNAL_SERVER_ERROR,
+        )
+
     def test_only_top_level_ray_submission_id_is_used(self) -> None:
         self.assertEqual(
             MODULE._extract_ray_submission_id({
