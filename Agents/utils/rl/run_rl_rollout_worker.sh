@@ -258,12 +258,13 @@ while true; do
   fi
 
   request_id="$(json_get "$request_file" request_id)"
+  request_file_id="$(json_get "$request_file" request_file_id)"
+  request_file_id="${request_file_id:-$request_id}"
   task_name="$(json_get "$request_file" task_id)"
   dataset_root="$(json_get "$request_file" dataset_root)"
   model_name="$(json_get "$request_file" model_name)"
   api_base="$(json_get_first "$request_file" api_base trial_config.agent.kwargs.api_base)"
-  api_key="$(json_get_first "$request_file" api_key trial_config.agent.kwargs.api_key trial_config.agent.kwargs.llm_kwargs.api_key)"
-  api_key="${api_key:-${RL_API_KEY:-}}"
+  api_key="${RL_API_KEY:-${API_KEY:-}}"
   session_id="$(json_get "$request_file" session_id)"
   ray_submission_id="$(json_get "$request_file" ray_submission_id)"
   opik_project_name="$(json_get "$request_file" opik_project_name)"
@@ -291,7 +292,7 @@ while true; do
   task_safe="$(safe_name "$display_name")"
   task_jobs_root="$JOBS_ROOT/rl-worker-${WORKER_ID}/${request_id}-${task_safe}"
   task_console_log="$task_jobs_root/console.log"
-  result_out="$RESULTS_DIR/${request_id}.json"
+  result_out="$RESULTS_DIR/${request_file_id}.json"
 
   mkdir -p "$task_jobs_root"
   printf '%s\t%s\t%s\t%s\t%s\n' "$request_id" "$task_name" "$display_name" "$ray_submission_id" "$polar_task_id" > "$CURRENT_FILE"
@@ -374,18 +375,23 @@ PY
       export API_KEY="$api_key"
       export TB_ANTHROPIC_AUTH_TOKEN="$api_key"
     fi
-    python3 - "$api_key" "$session_id" \
-      "${temperature:-${RL_TEMPERATURE:-}}" \
-      "${top_p:-${RL_TOP_P:-}}" \
-      "${top_k:-${RL_TOP_K:-}}" \
-      "${min_p:-${RL_MIN_P:-}}" \
-      "${llm_timeout:-${RL_LLM_TIMEOUT:-}}" \
-      "${llm_max_retries:-${RL_LLM_MAX_RETRIES:-}}" <<'PY' > "$task_jobs_root/llm_kwargs.json"
+    export TB_LLM_KWARGS="$(
+      python3 - "$session_id" \
+        "${temperature:-${RL_TEMPERATURE:-}}" \
+        "${top_p:-${RL_TOP_P:-}}" \
+        "${top_k:-${RL_TOP_K:-}}" \
+        "${min_p:-${RL_MIN_P:-}}" \
+        "${llm_timeout:-${RL_LLM_TIMEOUT:-}}" \
+        "${llm_max_retries:-${RL_LLM_MAX_RETRIES:-}}" <<'PY'
 import json
+import os
 import sys
 
-api_key, session_id, temperature, top_p, top_k, min_p, timeout, max_retries = sys.argv[1:9]
-payload = {"api_key": api_key}
+session_id, temperature, top_p, top_k, min_p, timeout, max_retries = sys.argv[1:8]
+payload = {}
+api_key = os.environ.get("API_KEY", "")
+if api_key:
+    payload["api_key"] = api_key
 
 def add_number(name, value, cast=float):
     value = str(value).strip()
@@ -409,7 +415,7 @@ if session_id:
     }
 print(json.dumps(payload, separators=(",", ":")))
 PY
-    export TB_LLM_KWARGS="$(cat "$task_jobs_root/llm_kwargs.json")"
+    )"
     export TB_TASK_ID="$task_name"
     export TB_INCLUDE_TASKS="$task_name"
     export INCLUDE_TASKS="$task_name"
