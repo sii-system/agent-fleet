@@ -15,7 +15,7 @@ from typing import Any
 
 _SCRIPTS_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(_SCRIPTS_DIR))
-import llm_pr_review as _review  # noqa: E402
+import pr_review_common as _review  # noqa: E402
 from pi_pr_review import PiClient, PiReviewError  # noqa: E402
 
 MAX_DESCRIPTION_ITEMS = 6

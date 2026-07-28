@@ -20,7 +20,7 @@ from urllib.parse import urlparse
 # -- shared review components from the existing Python reviewer ----------
 _SCRIPTS_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(_SCRIPTS_DIR))
-import llm_pr_review as _review  # noqa: E402
+import pr_review_common as _review  # noqa: E402
 
 # -- pi integration helpers from the control-plane prompt translator -----
 _PROJECT_ROOT = _SCRIPTS_DIR.parents[1]
@@ -394,35 +394,13 @@ def run_review(
             findings,
             by_path,
         )
-        fast_review_id = _review.DEFAULT_REVIEW_ID
-        if review_id.endswith("-canary"):
-            fast_review_id += "-canary"
-        latest_reviews = github.list_reviews(pull_number)
-        fast_anchors = _review.existing_inline_anchors(
-            latest_reviews,
-            github.list_review_comments(pull_number),
-            head_sha,
-            fast_review_id,
-            expected_base_sha,
-        )
-        suppressed = [
-            item
-            for item in inline_findings
-            if (item.path, item.line) in fast_anchors
-        ]
-        inline_findings = [
-            item
-            for item in inline_findings
-            if (item.path, item.line) not in fast_anchors
-        ]
-        summary_findings.extend(suppressed)
         summary = _review.build_summary(
             head_sha,
             findings,
             rejected,
             skipped,
             truncated,
-            incomplete_chunks=incomplete_lenses,
+            incomplete_lenses=incomplete_lenses,
             review_id=review_id,
             base_sha=expected_base_sha,
             summary_findings=summary_findings,
@@ -430,7 +408,6 @@ def run_review(
             label=label,
             failed_lenses=tuple(failed_lenses),
             tool_calls=tool_calls,
-            suppressed_inline=len(suppressed),
         )
         github.create_review(
             pull_number,

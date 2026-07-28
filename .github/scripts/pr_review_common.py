@@ -1,16 +1,11 @@
 from __future__ import annotations
 
-import argparse
 import json
-import os
 import re
-import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
-from urllib.error import HTTPError
-from urllib.parse import urlencode, urlparse
+from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 MAX_FILE_PATCH_CHARS = 60_000
@@ -26,14 +21,12 @@ MAX_CHUNK_CHARS = 50_000
 MAX_TOTAL_CHARS = 200_000
 MAX_COMMENTS = 20
 MAX_FIELD_CHARS = 2_000
-MAX_RESPONSE_TOKENS = 12_000
 SEVERITY_ORDER = {"P0": 0, "P1": 1, "P2": 2, "P3": 3}
 API_VERSION = "2022-11-28"
 REQUEST_TIMEOUT_SECONDS = 600
-RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504})
 MAX_PR_METADATA_CHARS = 4_000
 MAX_SKIPPED_PATHS_IN_SUMMARY = 50
-DEFAULT_REVIEW_ID = "llm-pr-review"
+DEFAULT_REVIEW_ID = "pi-pr-review"
 
 
 @dataclass(frozen=True)
@@ -138,21 +131,6 @@ def build_chunks(
     return chunks, cursor < len(source)
 
 
-def extract_json(content: str) -> dict[str, Any]:
-    text = content.strip()
-    opening, separator, fenced = text.partition("\n")
-    if separator and opening in {"```", "```json"} and fenced.endswith("```"):
-        text = fenced[:-3].strip()
-    decoder = json.JSONDecoder()
-    try:
-        value, end = decoder.raw_decode(text)
-    except json.JSONDecodeError as exc:
-        raise ModelResponseError("model response is not valid JSON") from exc
-    if text[end:].strip() or not isinstance(value, dict):
-        raise ModelResponseError("model response must contain one JSON object")
-    return value
-
-
 def _bounded_text(value: Any) -> str | None:
     if not isinstance(value, str):
         return None
@@ -254,75 +232,6 @@ def _json_request(
         return json.loads(response.read())
 
 
-def _chat_completions_url(base_url: str) -> str:
-    parsed = urlparse(base_url.strip())
-    path = parsed.path.rstrip("/")
-    if not path.endswith("/chat/completions"):
-        suffix = (
-            "/chat/completions"
-            if re.search(r"/v\d+$", path)
-            else "/v1/chat/completions"
-        )
-        path += suffix
-    return parsed._replace(path=path).geturl()
-
-
-class LlmClient:
-    def __init__(
-        self,
-        base_url: str,
-        api_key: str,
-        model: str,
-        opener: Callable[..., Any] = urlopen,
-        sleeper: Callable[[float], None] = time.sleep,
-    ) -> None:
-        self.base_url = _chat_completions_url(base_url)
-        self.api_key = api_key
-        self.model = model
-        self.opener = opener
-        self.sleeper = sleeper
-
-    def review(self, system_prompt: str, diff_chunk: str) -> dict[str, Any]:
-        payload = {
-            "model": self.model,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": diff_chunk},
-            ],
-            "temperature": 0.1,
-            "max_tokens": MAX_RESPONSE_TOKENS,
-        }
-        request = Request(
-            self.base_url,
-            data=json.dumps(payload).encode(),
-            headers={
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json",
-            },
-            method="POST",
-        )
-
-        for attempt in range(3):
-            try:
-                response = _json_request(request, opener=self.opener)
-                content = response["choices"][0]["message"].get("content")
-                if not isinstance(content, str):
-                    raise ModelResponseError("model content must be text")
-                if not content.strip():
-                    return {"findings": [], "incomplete": True}
-                return extract_json(content)
-            except HTTPError as exc:
-                if exc.code not in RETRYABLE_STATUS or attempt == 2:
-                    raise
-                self.sleeper(attempt + 1)
-            except (KeyError, IndexError, TypeError, AttributeError) as exc:
-                raise ModelResponseError(
-                    "unexpected chat completion response"
-                ) from exc
-
-        raise AssertionError("retry loop exhausted")
-
-
 class GitHubClient:
     def __init__(
         self,
@@ -372,9 +281,6 @@ class GitHubClient:
 
     def list_reviews(self, number: int) -> list[dict[str, Any]]:
         return self._list_pages(f"/pulls/{number}/reviews")
-
-    def list_review_comments(self, number: int) -> list[dict[str, Any]]:
-        return self._list_pages(f"/pulls/{number}/comments")
 
     def create_issue_comment(self, number: int, body: str) -> dict[str, Any]:
         return self._request(
@@ -468,43 +374,13 @@ def has_existing_review(
     )
 
 
-def existing_inline_anchors(
-    reviews: list[dict[str, Any]],
-    comments: list[dict[str, Any]],
-    head_sha: str,
-    review_id: str,
-    base_sha: str | None = None,
-) -> frozenset[tuple[str, int]]:
-    marker = review_marker(head_sha, review_id, base_sha)
-    review_ids = {
-        item.get("id")
-        for item in reviews
-        if (item.get("user") or {}).get("login") == "github-actions[bot]"
-        and marker in (item.get("body") or "")
-        and type(item.get("id")) is int
-    }
-    anchors: set[tuple[str, int]] = set()
-    for item in comments:
-        path = item.get("path")
-        line = item.get("line")
-        if (
-            item.get("pull_request_review_id") in review_ids
-            and (item.get("user") or {}).get("login") == "github-actions[bot]"
-            and item.get("commit_id") == head_sha
-            and isinstance(path, str)
-            and type(line) is int
-        ):
-            anchors.add((path, line))
-    return frozenset(anchors)
-
-
 def build_summary(
     head_sha: str,
     findings: list[Finding],
     rejected: int,
     skipped: list[tuple[str, str]],
     truncated: bool,
-    incomplete_chunks: int = 0,
+    incomplete_lenses: int = 0,
     review_id: str = DEFAULT_REVIEW_ID,
     base_sha: str | None = None,
     summary_findings: list[Finding] | None = None,
@@ -512,11 +388,10 @@ def build_summary(
     label: str | None = None,
     failed_lenses: tuple[str, ...] = (),
     tool_calls: dict[str, int] | None = None,
-    suppressed_inline: int = 0,
 ) -> str:
     coverage = (
         "Partial"
-        if skipped or truncated or incomplete_chunks or failed_lenses
+        if skipped or truncated or incomplete_lenses or failed_lenses
         else "Complete"
     )
     headline = (
@@ -551,12 +426,12 @@ def build_summary(
         lines.extend(
             ["", "- Additional diff content exceeded the total review budget."]
         )
-    if incomplete_chunks:
+    if incomplete_lenses:
         lines.extend(
             [
                 "",
                 (
-                    f"- {incomplete_chunks} diff chunk(s) returned an empty model "
+                    f"- {incomplete_lenses} review lens(es) returned an empty model "
                     "response and were not reviewed."
                 ),
             ]
@@ -569,10 +444,6 @@ def build_summary(
             for lens, count in tool_calls.items()
         )
         lines.extend(["", f"Tool calls: {counts}"])
-    if suppressed_inline:
-        lines.extend(
-            ["", f"Suppressed fast-review inline overlaps: {suppressed_inline}"]
-        )
     if summary_findings:
         changed = [
             item
@@ -609,121 +480,3 @@ def _summary_finding(finding: Finding) -> str:
         f"Suggested remediation: {_neutralize_mentions(finding.remediation)}"
         f"{_lens_attribution(finding)}"
     )
-
-
-def run_review(
-    github: GitHubClient,
-    llm: LlmClient,
-    pull_number: int,
-    prompt: str,
-    review_id: str = DEFAULT_REVIEW_ID,
-    *,
-    expected_head_sha: str | None = None,
-    expected_base_sha: str | None = None,
-    label: str | None = None,
-) -> str:
-    pull = github.get_pull(pull_number)
-
-    head_sha = pull["head"]["sha"]
-    if expected_head_sha is not None and head_sha != expected_head_sha:
-        return "stale"
-    if (
-        expected_base_sha is not None
-        and pull["base"]["sha"] != expected_base_sha
-    ):
-        return "stale"
-    if has_existing_review(
-        github.list_reviews(pull_number),
-        head_sha,
-        review_id,
-        expected_base_sha,
-    ):
-        return "duplicate"
-
-    files, skipped = collect_files(github.list_files(pull_number))
-    by_path = {item.path: item for item in files}
-    chunks, truncated = build_chunks(files)
-    findings: list[Finding] = []
-    rejected = 0
-    incomplete_chunks = 0
-    for chunk in chunks:
-        payload = llm.review(prompt, build_model_input(pull, chunk))
-        if payload.get("incomplete"):
-            incomplete_chunks += 1
-        chunk_findings, chunk_rejected = validate_findings(payload, by_path)
-        findings.extend(chunk_findings)
-        rejected += chunk_rejected
-
-    aggregate_payload = {"findings": [item.__dict__ for item in findings]}
-    findings, aggregate_rejected = validate_findings(aggregate_payload, by_path)
-    rejected += aggregate_rejected
-
-    current = github.get_pull(pull_number)
-    if current["head"]["sha"] != head_sha or (
-        expected_base_sha is not None
-        and current["base"]["sha"] != expected_base_sha
-    ):
-        return "stale"
-
-    inline_findings, summary_findings = route_findings(findings, by_path)
-    summary = build_summary(
-        head_sha,
-        findings,
-        rejected,
-        skipped,
-        truncated,
-        incomplete_chunks=incomplete_chunks,
-        review_id=review_id,
-        base_sha=expected_base_sha,
-        summary_findings=summary_findings,
-        changed_paths=frozenset(by_path),
-        label=label,
-    )
-    github.create_review(pull_number, head_sha, summary, inline_findings)
-    return "published"
-
-
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--event-path", required=True, type=Path)
-    parser.add_argument("--prompt-path", required=True, type=Path)
-    return parser.parse_args()
-
-
-def require_env(name: str) -> str:
-    value = os.environ.get(name)
-    if not value:
-        raise RuntimeError(f"required environment variable is missing: {name}")
-    return value
-
-
-def main() -> int:
-    args = parse_args()
-    event = json.loads(args.event_path.read_text())
-    repository = require_env("GITHUB_REPOSITORY")
-    event_pull = event["pull_request"]
-    pull_number = int(event_pull["number"])
-    github = GitHubClient(repository, require_env("GITHUB_TOKEN"))
-    llm = LlmClient(
-        require_env("LLM_REVIEW_BASE_URL"),
-        require_env("LLM_REVIEW_API_KEY"),
-        require_env("LLM_REVIEW_MODEL"),
-    )
-    prompt = args.prompt_path.read_text()
-    review_id = os.environ.get("LLM_REVIEW_ID", DEFAULT_REVIEW_ID)
-    result = run_review(
-        github,
-        llm,
-        pull_number,
-        prompt,
-        review_id,
-        expected_head_sha=event_pull["head"]["sha"],
-        expected_base_sha=event_pull["base"]["sha"],
-        label=os.environ.get("LLM_REVIEW_LABEL"),
-    )
-    print(f"LLM PR review result: {result}")
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

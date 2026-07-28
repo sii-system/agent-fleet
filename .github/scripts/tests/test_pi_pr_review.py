@@ -455,7 +455,6 @@ class FakeGitHub:
             }
         ]
         self.reviews: list[dict] = []
-        self.review_comments: list[dict] = []
         self.created: list[tuple] = []
 
     def get_pull(self, _number: int) -> dict:
@@ -466,9 +465,6 @@ class FakeGitHub:
 
     def list_reviews(self, _number: int) -> list[dict]:
         return self.reviews
-
-    def list_review_comments(self, _number: int) -> list[dict]:
-        return self.review_comments
 
     def create_review(self, *args: object) -> dict[str, int]:
         self.created.append(args)
@@ -694,104 +690,6 @@ class OrchestrationTest(unittest.TestCase):
             {item.title for item in findings},
             {"Cancellation cleanup missing", "Credential leak"},
         )
-
-    def test_suppresses_fast_review_inline_overlap(self) -> None:
-        github = FakeGitHub()
-        github.reviews = [
-            {
-                "id": 41,
-                "user": {"login": "github-actions[bot]"},
-                "body": "<!-- llm-pr-review:head-1:base-1 -->",
-            }
-        ]
-        github.review_comments = [
-            {
-                "pull_request_review_id": 41,
-                "user": {"login": "github-actions[bot]"},
-                "commit_id": "head-1",
-                "path": "worker.py",
-                "line": 2,
-            }
-        ]
-
-        pi_review.run_review(
-            github,
-            FakePiClient(),
-            7,
-            "{{LENS}}",
-            expected_head_sha="head-1",
-            expected_base_sha="base-1",
-        )
-
-        body = github.created[0][2]
-        self.assertEqual(github.created[0][3], [])
-        self.assertIn("Cancellation not forwarded", body)
-        self.assertIn("Suppressed fast-review inline overlaps: 1", body)
-
-    def test_canary_deep_review_suppresses_canary_fast_overlap(self) -> None:
-        github = FakeGitHub()
-        github.reviews = [
-            {
-                "id": 42,
-                "user": {"login": "github-actions[bot]"},
-                "body": "<!-- llm-pr-review-canary:head-1:base-1 -->",
-            }
-        ]
-        github.review_comments = [
-            {
-                "pull_request_review_id": 42,
-                "user": {"login": "github-actions[bot]"},
-                "commit_id": "head-1",
-                "path": "worker.py",
-                "line": 2,
-            }
-        ]
-
-        pi_review.run_review(
-            github,
-            FakePiClient(),
-            7,
-            "{{LENS}}",
-            review_id="self-hosted-pi-pr-review-canary",
-            expected_head_sha="head-1",
-            expected_base_sha="base-1",
-        )
-
-        self.assertEqual(github.created[0][3], [])
-        self.assertIn(
-            "Suppressed fast-review inline overlaps: 1",
-            github.created[0][2],
-        )
-
-    def test_refreshes_fast_review_state_after_lens_fanout(self) -> None:
-        github = FakeGitHub()
-        fast_review = {
-            "id": 43,
-            "user": {"login": "github-actions[bot]"},
-            "body": "<!-- llm-pr-review:head-1:base-1 -->",
-        }
-        github.list_reviews = mock.Mock(side_effect=[[], [fast_review]])
-        github.review_comments = [
-            {
-                "pull_request_review_id": 43,
-                "user": {"login": "github-actions[bot]"},
-                "commit_id": "head-1",
-                "path": "worker.py",
-                "line": 2,
-            }
-        ]
-
-        pi_review.run_review(
-            github,
-            FakePiClient(),
-            7,
-            "{{LENS}}",
-            expected_head_sha="head-1",
-            expected_base_sha="base-1",
-        )
-
-        self.assertEqual(github.created[0][3], [])
-        self.assertEqual(github.list_reviews.call_count, 2)
 
     def test_publishes_review_with_findings(self) -> None:
         github = FakeGitHub()

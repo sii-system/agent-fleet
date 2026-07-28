@@ -1,4 +1,4 @@
-name: Self-Hosted LLM PR Review
+name: Pi PR Review
 
 "on":
   pull_request_target:
@@ -110,7 +110,7 @@ jobs:
             ${{ github.event_name == 'workflow_dispatch' &&
             'self-hosted-pi-pr-review-canary' ||
             'self-hosted-pi-pr-review' }}
-          LLM_REVIEW_LABEL: Deep review — 3 lenses, codebase context
+          LLM_REVIEW_LABEL: Pi review — 3 lenses, codebase context
         run: >-
           python3 .github/scripts/pi_pr_review.py
           --event-path "${{ steps.target.outputs.event_path }}"
