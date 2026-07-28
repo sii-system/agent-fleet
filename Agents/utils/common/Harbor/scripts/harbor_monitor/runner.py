@@ -488,7 +488,6 @@ def run_loop(
             output_path.write_text(output_json + "\n", encoding="utf-8")
         write_json(user_report_output, output["user_notify"])
         analyzer_handover = output["analyzer_handover"]
-        write_json(analyzer_handover_output, analyzer_handover)
         if analyzer_handover_output and analyzer_handover.get("should_run_analyzer"):
             spooled_raw = state.get("analyzer_spooled_terminal_fingerprints")
             spooled = {
@@ -518,6 +517,7 @@ def run_loop(
                     state["analyzer_spooled_terminal_fingerprints"] = sorted(
                         spooled | set(new_fingerprints)
                     )
+        write_json(analyzer_handover_output, analyzer_handover)
         write_json(runner_action_output, output["runner_action"])
         print(output_json)
         save_state(state_path, state)

@@ -105,7 +105,7 @@ def _find_harbor_job_result_path(job_dir: Path) -> tuple[Path, dict[str, Any]] |
         return direct, payload
 
     candidates: list[tuple[float, Path, dict[str, Any]]] = []
-    for result_path in job_dir.glob("*/result.json"):
+    for result_path in job_dir.rglob("result.json"):
         payload = _load_result_payload(result_path)
         if payload is None:
             continue
@@ -142,7 +142,7 @@ def load_harbor_job_snapshot(job_dir: Path) -> HarborJobSnapshot | None:
         if not isinstance(trial, dict):
             continue
         trial_name = str(trial.get("trial_name") or trial_result_path.parent.name)
-        task_name = str(trial.get("task_name") or "")
+        task_name = str(trial.get("task_name") or trial_name)
         exception = trial.get("exception_info")
         exception_type = ""
         if isinstance(exception, dict):
