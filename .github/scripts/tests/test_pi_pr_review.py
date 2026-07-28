@@ -5,6 +5,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from dataclasses import dataclass
 from pathlib import Path
 from unittest import mock
 
@@ -94,6 +95,15 @@ def _make_findings_response(
         ]
     text = json.dumps({"findings": findings}, separators=(",", ":"))
     return _make_text_response(text, stop_reason=stop_reason)
+
+
+def _with_tool_calls(response: str, *tool_names: str) -> str:
+    events = [json.loads(line) for line in response.splitlines()]
+    events[3:3] = [
+        {"type": "tool_execution_start", "toolName": name}
+        for name in tool_names
+    ]
+    return "\n".join(json.dumps(event) for event in events)
 
 
 # -- URL normalisation ----------------------------------------------------
@@ -193,6 +203,13 @@ class StreamValidationTest(unittest.TestCase):
         )
         self.assertEqual(result["findings"], [])
 
+    def test_counts_tool_calls_in_valid_stream(self) -> None:
+        result = pi_review._validate_pi_stream(
+            _with_tool_calls(_make_findings_response([]), "grep", "read")
+        )
+
+        self.assertEqual(result["_pi_tool_calls"], 2)
+
     def test_missing_session_raises(self) -> None:
         events = [
             {"type": "agent_start"},
@@ -267,7 +284,14 @@ class StreamValidationTest(unittest.TestCase):
         ]
         raw = "\n".join(json.dumps(e) for e in events)
         result = pi_review._validate_pi_stream(raw)
-        self.assertEqual(result, {"findings": [], "incomplete": True})
+        self.assertEqual(
+            result,
+            {
+                "findings": [],
+                "incomplete": True,
+                "_pi_tool_calls": 0,
+            },
+        )
 
     def test_no_final_assistant_message_raises(self) -> None:
         events = [
@@ -412,13 +436,17 @@ class PiClientTest(unittest.TestCase):
         malformed = subprocess.CompletedProcess(
             args=[],
             returncode=0,
-            stdout=_make_text_response("not JSON"),
+            stdout=_with_tool_calls(_make_text_response("not JSON"), "read"),
             stderr="",
         )
         valid = subprocess.CompletedProcess(
             args=[],
             returncode=0,
-            stdout=_make_findings_response([]),
+            stdout=_with_tool_calls(
+                _make_findings_response([]),
+                "grep",
+                "read",
+            ),
             stderr="",
         )
 
@@ -428,7 +456,7 @@ class PiClientTest(unittest.TestCase):
         ) as run_mock:
             result = client.review("prompt", "diff", timeout=20)
 
-        self.assertEqual(result, {"findings": []})
+        self.assertEqual(result, {"findings": [], "_pi_tool_calls": 3})
         self.assertEqual(run_mock.call_count, 2)
 
 
@@ -541,6 +569,34 @@ class OrchestrationTest(unittest.TestCase):
         self.assertIn("Failed lenses: security", body)
         self.assertNotIn("provider detail", body)
 
+    def test_reports_tool_calls_by_lens(self) -> None:
+        github = FakeGitHub()
+        pi_client = mock.Mock()
+
+        def review_lens(
+            prompt: str,
+            _chunk: str,
+            **_kwargs: object,
+        ) -> dict:
+            if "runtime correctness" in prompt:
+                count = 1
+            elif "trust boundaries" in prompt:
+                count = 2
+            else:
+                count = 3
+            return {"findings": [], "_pi_tool_calls": count}
+
+        pi_client.review.side_effect = review_lens
+
+        pi_review.run_review(github, pi_client, 7, "{{LENS}}")
+
+        body = github.created[0][2]
+        self.assertIn(
+            "Tool calls by lens: correctness=1, security=2, "
+            "tests/regression=3",
+            body,
+        )
+
     def test_all_lens_failures_fail_without_publishing(self) -> None:
         github = FakeGitHub()
         pi_client = mock.Mock()
@@ -600,6 +656,33 @@ class OrchestrationTest(unittest.TestCase):
         findings = github.created[0][3]
         self.assertEqual(len(findings), 1)
         self.assertEqual(findings[0].severity, "P1")
+
+    def test_merged_finding_retains_all_lens_attribution(self) -> None:
+        @dataclass(frozen=True)
+        class AttributedFinding:
+            severity: str
+            path: str
+            line: int
+            title: str
+            failure_scenario: str
+            remediation: str
+            lenses: tuple[str, ...] = ()
+
+        github = FakeGitHub()
+
+        with mock.patch.object(
+            pi_review._review,
+            "Finding",
+            AttributedFinding,
+        ):
+            pi_review.run_review(github, FakePiClient(), 7, "{{LENS}}")
+
+        findings = github.created[0][3]
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(
+            findings[0].lenses,
+            ("correctness", "security", "tests/regression"),
+        )
 
     def test_caps_merged_inline_findings_across_lenses(self) -> None:
         github = FakeGitHub()

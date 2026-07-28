@@ -12,6 +12,7 @@ import sys
 import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -66,12 +67,26 @@ class PiReviewError(RuntimeError):
 class PiResponseFormatError(PiReviewError):
     """pi completed but its final response was not one JSON object."""
 
+    def __init__(self, message: str, *, tool_calls: int = 0) -> None:
+        super().__init__(message)
+        self.tool_calls = tool_calls
+
 
 def _title_similarity(left: str, right: str) -> float:
     left_tokens = set(re.findall(r"[a-z0-9]+", left.casefold()))
     right_tokens = set(re.findall(r"[a-z0-9]+", right.casefold()))
     union = left_tokens | right_tokens
     return len(left_tokens & right_tokens) / len(union) if union else 0.0
+
+
+def _attribute_lens(
+    finding: _review.Finding,
+    lens: str,
+) -> _review.Finding:
+    fields = getattr(_review.Finding, "__dataclass_fields__", {})
+    if "lenses" not in fields:
+        return finding
+    return replace(finding, lenses=(lens,))
 
 
 def merge_lens_findings(
@@ -85,10 +100,16 @@ def merge_lens_findings(
                 and existing.line == finding.line
                 and _title_similarity(existing.title, finding.title) >= 0.5
             ):
-                merged[index] = min(
+                winner = min(
                     (existing, finding),
                     key=lambda item: _review.SEVERITY_ORDER[item.severity],
                 )
+                if hasattr(winner, "lenses"):
+                    lenses = tuple(
+                        dict.fromkeys(existing.lenses + finding.lenses)
+                    )
+                    winner = replace(winner, lenses=lenses)
+                merged[index] = winner
                 break
         else:
             merged.append(finding)
@@ -197,9 +218,24 @@ def _validate_pi_stream(raw_stdout: str) -> dict[str, Any]:
         )
 
     text = message_text(message)
+    tool_calls = sum(
+        event.get("type") == "tool_execution_start" for event in events
+    )
     if not text:
-        return {"findings": [], "incomplete": True}
-    return _extract_json(text)
+        return {
+            "findings": [],
+            "incomplete": True,
+            "_pi_tool_calls": tool_calls,
+        }
+    try:
+        payload = _extract_json(text)
+    except PiResponseFormatError as exc:
+        raise PiResponseFormatError(
+            str(exc),
+            tool_calls=tool_calls,
+        ) from exc
+    payload["_pi_tool_calls"] = tool_calls
+    return payload
 
 
 class PiClient:
@@ -261,6 +297,7 @@ class PiClient:
             ]
 
             format_error: PiResponseFormatError | None = None
+            prior_tool_calls = 0
             for attempt in range(2):
                 remaining = max(0.0, deadline - time.monotonic())
                 if attempt and remaining == 0:
@@ -294,9 +331,12 @@ class PiClient:
                     )
 
                 try:
-                    return _validate_pi_stream(completed.stdout or "")
+                    payload = _validate_pi_stream(completed.stdout or "")
+                    payload["_pi_tool_calls"] += prior_tool_calls
+                    return payload
                 except PiResponseFormatError as exc:
                     format_error = exc
+                    prior_tool_calls += exc.tool_calls
             assert format_error is not None
             raise format_error
 
@@ -358,9 +398,16 @@ def run_review(
         rejected = 0
         incomplete_lenses = 0
         failed_lenses: list[str] = []
+        tool_calls_by_lens: dict[str, int] = {}
         for lens, future in futures.items():
             try:
                 payload = future.result()
+                raw_tool_calls = payload.get("_pi_tool_calls", 0)
+                tool_calls_by_lens[lens] = (
+                    raw_tool_calls
+                    if type(raw_tool_calls) is int and raw_tool_calls >= 0
+                    else 0
+                )
                 if payload.get("incomplete"):
                     incomplete_lenses += 1
                 if _shared_routing_available():
@@ -375,7 +422,10 @@ def run_review(
             except (PiReviewError, _review.ModelResponseError):
                 failed_lenses.append(lens)
                 continue
-            findings.extend(lens_findings)
+            findings.extend(
+                _attribute_lens(finding, lens)
+                for finding in lens_findings
+            )
             rejected += lens_rejected
 
         if len(failed_lenses) == len(LENS_INSTRUCTIONS):
@@ -415,6 +465,11 @@ def run_review(
             truncated,
             **summary_options,
         )
+        tool_call_counts = ", ".join(
+            f"{lens}={tool_calls_by_lens.get(lens, 'unavailable')}"
+            for lens in LENS_INSTRUCTIONS
+        )
+        summary += f"\n\nTool calls by lens: {tool_call_counts}"
         if incomplete_lenses or failed_lenses:
             summary = summary.replace(
                 "Coverage: Complete",
