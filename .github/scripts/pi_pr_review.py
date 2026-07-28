@@ -63,6 +63,10 @@ class PiReviewError(RuntimeError):
     """pi subprocess failed and the review could not be completed."""
 
 
+class PiResponseFormatError(PiReviewError):
+    """pi completed but its final response was not one JSON object."""
+
+
 def _title_similarity(left: str, right: str) -> float:
     left_tokens = set(re.findall(r"[a-z0-9]+", left.casefold()))
     right_tokens = set(re.findall(r"[a-z0-9]+", right.casefold()))
@@ -135,9 +139,11 @@ def _extract_json(text: str) -> dict[str, Any]:
     try:
         value, end = decoder.raw_decode(content)
     except json.JSONDecodeError as exc:
-        raise PiReviewError("pi response is not valid JSON") from exc
+        raise PiResponseFormatError("pi response is not valid JSON") from exc
     if content[end:].strip() or not isinstance(value, dict):
-        raise PiReviewError("pi response must contain one JSON object")
+        raise PiResponseFormatError(
+            "pi response must contain one JSON object"
+        )
     return value
 
 
@@ -227,6 +233,7 @@ class PiClient:
         effective_timeout = (
             self.timeout if timeout is None else min(self.timeout, timeout)
         )
+        deadline = time.monotonic() + effective_timeout
         with tempfile.TemporaryDirectory(prefix="pi-pr-review-") as tmp:
             root = Path(tmp)
             runtime_dir = root / "pi-agent"
@@ -253,32 +260,45 @@ class PiClient:
                 diff_chunk,
             ]
 
-            try:
-                completed = subprocess.run(
-                    command,
-                    cwd=self.repository_root,
-                    env=minimal_environment(runtime_dir, self.api_key),
-                    stdin=subprocess.DEVNULL,
-                    text=True,
-                    capture_output=True,
-                    timeout=effective_timeout,
-                    check=False,
-                )
-            except subprocess.TimeoutExpired as exc:
-                raise PiReviewError(
-                    f"pi timed out after {effective_timeout:g}s"
-                ) from exc
-            except OSError as exc:
-                raise PiReviewError(f"could not launch pi: {exc}") from exc
+            format_error: PiResponseFormatError | None = None
+            for attempt in range(2):
+                remaining = max(0.0, deadline - time.monotonic())
+                if attempt and remaining == 0:
+                    assert format_error is not None
+                    raise format_error
+                try:
+                    completed = subprocess.run(
+                        command,
+                        cwd=self.repository_root,
+                        env=minimal_environment(runtime_dir, self.api_key),
+                        stdin=subprocess.DEVNULL,
+                        text=True,
+                        capture_output=True,
+                        timeout=remaining,
+                        check=False,
+                    )
+                except subprocess.TimeoutExpired as exc:
+                    raise PiReviewError(
+                        f"pi timed out after {remaining:g}s"
+                    ) from exc
+                except OSError as exc:
+                    raise PiReviewError(
+                        f"could not launch pi: {exc}"
+                    ) from exc
 
-            if completed.returncode != 0:
-                detail = (completed.stderr or "").strip().splitlines()
-                suffix = f": {detail[-1]}" if detail else ""
-                raise PiReviewError(
-                    f"pi exited with code {completed.returncode}{suffix}"
-                )
+                if completed.returncode != 0:
+                    detail = (completed.stderr or "").strip().splitlines()
+                    suffix = f": {detail[-1]}" if detail else ""
+                    raise PiReviewError(
+                        f"pi exited with code {completed.returncode}{suffix}"
+                    )
 
-            return _validate_pi_stream(completed.stdout or "")
+                try:
+                    return _validate_pi_stream(completed.stdout or "")
+                except PiResponseFormatError as exc:
+                    format_error = exc
+            assert format_error is not None
+            raise format_error
 
 
 def run_review(

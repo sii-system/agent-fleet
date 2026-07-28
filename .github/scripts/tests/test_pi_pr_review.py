@@ -58,6 +58,23 @@ exit {exit_code}
     return pi
 
 
+def _make_text_response(text: str, *, stop_reason: str = "stop") -> str:
+    assistant = {
+        "role": "assistant",
+        "content": [{"type": "text", "text": text}],
+        "stopReason": stop_reason,
+    }
+    events = [
+        {"type": "session", "id": "session-1"},
+        {"type": "agent_start"},
+        {"type": "turn_start"},
+        {"type": "message_end", "message": assistant},
+        {"type": "turn_end", "message": assistant},
+        {"type": "agent_end"},
+    ]
+    return "\n".join(json.dumps(e) for e in events)
+
+
 def _make_findings_response(
     findings: list[dict] | None = None,
     *,
@@ -76,20 +93,7 @@ def _make_findings_response(
             }
         ]
     text = json.dumps({"findings": findings}, separators=(",", ":"))
-    assistant = {
-        "role": "assistant",
-        "content": [{"type": "text", "text": text}],
-        "stopReason": stop_reason,
-    }
-    events = [
-        {"type": "session", "id": "session-1"},
-        {"type": "agent_start"},
-        {"type": "turn_start"},
-        {"type": "message_end", "message": assistant},
-        {"type": "turn_end", "message": assistant},
-        {"type": "agent_end"},
-    ]
-    return "\n".join(json.dumps(e) for e in events)
+    return _make_text_response(text, stop_reason=stop_reason)
 
 
 # -- URL normalisation ----------------------------------------------------
@@ -402,6 +406,30 @@ class PiClientTest(unittest.TestCase):
         with self.assertRaises(pi_review.PiReviewError) as ctx:
             client.review("prompt", "diff")
         self.assertIn("invalid jsonl", str(ctx.exception).lower())
+
+    def test_retries_one_malformed_model_response(self) -> None:
+        client = self._make_client()
+        malformed = subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout=_make_text_response("not JSON"),
+            stderr="",
+        )
+        valid = subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout=_make_findings_response([]),
+            stderr="",
+        )
+
+        with mock.patch(
+            "subprocess.run",
+            side_effect=[malformed, valid],
+        ) as run_mock:
+            result = client.review("prompt", "diff", timeout=20)
+
+        self.assertEqual(result, {"findings": []})
+        self.assertEqual(run_mock.call_count, 2)
 
 
 # -- orchestration tests --------------------------------------------------
