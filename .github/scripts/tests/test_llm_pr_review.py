@@ -659,6 +659,14 @@ class OrchestrationTest(unittest.TestCase):
                     "failure_scenario": "Diagnostics are misleading.",
                     "remediation": "Correct the diagnostic.",
                 },
+                {
+                    "severity": "P2",
+                    "path": "helper.py",
+                    "line": None,
+                    "title": "Related-path defect",
+                    "failure_scenario": "A deleted caller leaves the helper stale.",
+                    "remediation": "Update the related helper.",
+                },
             ]
         }
 
@@ -668,7 +676,9 @@ class OrchestrationTest(unittest.TestCase):
         self.assertEqual([item.title for item in inline], ["Inline defect"])
         self.assertIn("Context defect", body)
         self.assertIn("Minor defect", body)
-        self.assertIn("Automated review found 3 actionable finding(s).", body)
+        self.assertIn("### Other observations", body)
+        self.assertIn("Related-path defect", body)
+        self.assertIn("Automated review found 4 actionable finding(s).", body)
 
     def test_no_findings_still_posts_sha_summary(self) -> None:
         github = FakeGitHub()
