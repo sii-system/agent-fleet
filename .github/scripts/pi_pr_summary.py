@@ -30,18 +30,18 @@ MARKDOWN_ESCAPE_TABLE = str.maketrans(
     {character: f"\\{character}" for character in r"\`*_{}[]()#+-.!|~:/?="}
 )
 MERMAID_IMAGE_NODE_RE = re.compile(r"@\{\s*img\s*:", re.IGNORECASE)
-FLOWCHART_NODE_RE = re.compile(
+FLOWCHART_NODE_START_RE = re.compile(
     r"""
     (?P<prefix>
         ^[ \t]*(?:subgraph[ \t]+)?
         |
-        (?:--+>|==+>|-\.\->|---|~~~)(?:\|[^|\n]*\|)?[ \t]*
+        (?:(?:--+>|==+>|-\.\->|---|~~~)(?:\|[^|\n]*\|)?|&)[ \t]*
     )
     (?P<node>[A-Za-z0-9_]+)
-    (?:
-        \[(?![\[({/>\\])(?P<rect>"[^"\n]*"|[^\]\n]*)\]
+    (?P<opening>
+        \[(?![\[({/>\\])
         |
-        \{(?!\{)(?P<diamond>"[^"\n]*"|[^{}\n]*)\}
+        \{(?!\{)
     )
     """,
     re.MULTILINE | re.VERBOSE,
@@ -91,22 +91,59 @@ def _validate_diagram(value: Any) -> str | None:
 
 
 def _quote_flowchart_labels(diagram: str) -> str:
-    def quoted(match: re.Match[str]) -> str:
-        label = match.group("rect")
-        opening, closing = "[", "]"
-        if label is None:
-            label = match.group("diamond")
-            opening, closing = "{", "}"
-        assert label is not None
-        if label.startswith('"') and label.endswith('"'):
-            return match.group(0)
-        label = label.replace('"', "#quot;")
-        return (
-            f'{match.group("prefix")}{match.group("node")}'
-            f'{opening}"{label}"{closing}'
-        )
+    def inside_text(index: int) -> bool:
+        line_start = diagram.rfind("\n", 0, index) + 1
+        quoted = False
+        edge_text = False
+        for character in diagram[line_start:index]:
+            if character == '"':
+                quoted = not quoted
+            elif character == "|" and not quoted:
+                edge_text = not edge_text
+        return quoted or edge_text
 
-    return FLOWCHART_NODE_RE.sub(quoted, diagram)
+    def node_end(start: int, opening: str) -> int | None:
+        closing = "]" if opening == "[" else "}"
+        depth = 1
+        quoted = False
+        for index in range(start, len(diagram)):
+            character = diagram[index]
+            if character == "\n":
+                return None
+            if character == '"':
+                quoted = not quoted
+            elif not quoted:
+                if character == opening:
+                    depth += 1
+                elif character == closing:
+                    depth -= 1
+                    if depth == 0:
+                        return index
+        return None
+
+    parts: list[str] = []
+    cursor = 0
+    search_from = 0
+    while match := FLOWCHART_NODE_START_RE.search(diagram, search_from):
+        if inside_text(match.start()):
+            search_from = match.start() + 1
+            continue
+        opening = match.group("opening")
+        end = node_end(match.end(), opening)
+        if end is None:
+            raise PiSummaryError("diagram contains an unterminated node")
+        label = diagram[match.end() : end]
+        parts.append(diagram[cursor : match.end()])
+        if label.startswith('"') and label.endswith('"'):
+            parts.append(label)
+        else:
+            label = label.replace('"', "#quot;")
+            parts.append(f'"{label}"')
+        parts.append(diagram[end])
+        cursor = end + 1
+        search_from = cursor
+    parts.append(diagram[cursor:])
+    return "".join(parts)
 
 
 def validate_summary(payload: dict[str, Any]) -> Summary:

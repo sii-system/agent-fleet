@@ -151,6 +151,38 @@ class SummaryContractTest(unittest.TestCase):
             'flowchart TD\n  A["config{mode}"]',
         )
 
+    def test_quotes_nodes_after_multi_node_connectors(self) -> None:
+        result = summary.validate_summary(
+            {
+                "description": ["Describes parallel targets."],
+                "diagram": (
+                    "flowchart TD\n"
+                    "  A[Start] --> B[One] & C[GET /repos/{owner}]"
+                ),
+                "assessment": "The flow fans out.",
+            }
+        )
+
+        self.assertEqual(
+            result.diagram,
+            "flowchart TD\n"
+            '  A["Start"] --> B["One"] & C["GET /repos/{owner}"]',
+        )
+
+    def test_quotes_balanced_braces_inside_diamond_text(self) -> None:
+        result = summary.validate_summary(
+            {
+                "description": ["Describes a configuration decision."],
+                "diagram": "flowchart TD\n  R{Check config{mode}}",
+                "assessment": "The flow branches on configuration.",
+            }
+        )
+
+        self.assertEqual(
+            result.diagram,
+            'flowchart TD\n  R{"Check config{mode}"}',
+        )
+
 
 class SummaryRenderingTest(unittest.TestCase):
     def setUp(self) -> None:
