@@ -19,4 +19,6 @@ Return exactly one JSON object and no surrounding prose:
 
 Use a Mermaid `sequenceDiagram`, `flowchart`, or `graph` only when component
 interaction is meaningful. Return Mermaid source without code fences. Otherwise
-set `diagram` to null.
+set `diagram` to null. For flowcharts and graphs, use simple alphanumeric node
+IDs, rectangular or diamond nodes, and double-quote all node text, for example
+`A["Start"] --> B{"Ready?"}`. Keep edge text to simple words.

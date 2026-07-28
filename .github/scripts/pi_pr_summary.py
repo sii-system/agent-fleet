@@ -30,6 +30,12 @@ MARKDOWN_ESCAPE_TABLE = str.maketrans(
     {character: f"\\{character}" for character in r"\`*_{}[]()#+-.!|~:/?="}
 )
 MERMAID_IMAGE_NODE_RE = re.compile(r"@\{\s*img\s*:", re.IGNORECASE)
+FLOWCHART_RECT_NODE_RE = re.compile(
+    r"(?P<node>\b[A-Za-z_][A-Za-z0-9_]*)\[(?![\[({/>\\])(?P<label>[^\]\n]*)\]"
+)
+FLOWCHART_DIAMOND_NODE_RE = re.compile(
+    r"(?P<node>\b[A-Za-z_][A-Za-z0-9_]*)\{(?!\{)(?P<label>[^{}\n]*)\}"
+)
 
 
 class PiSummaryError(RuntimeError):
@@ -69,7 +75,27 @@ def _validate_diagram(value: Any) -> str | None:
         raise PiSummaryError("diagram contains unsupported content")
     if MERMAID_IMAGE_NODE_RE.search(diagram):
         raise PiSummaryError("diagram contains unsupported image node")
+    if first_line.startswith(("flowchart ", "graph ")):
+        diagram = _quote_flowchart_labels(diagram)
     return diagram
+
+
+def _quote_flowchart_labels(diagram: str) -> str:
+    def quoted(match: re.Match[str], opening: str, closing: str) -> str:
+        label = match.group("label")
+        if label.startswith('"') and label.endswith('"'):
+            return match.group(0)
+        label = label.replace('"', "#quot;")
+        return f'{match.group("node")}{opening}"{label}"{closing}'
+
+    diagram = FLOWCHART_RECT_NODE_RE.sub(
+        lambda match: quoted(match, "[", "]"),
+        diagram,
+    )
+    return FLOWCHART_DIAMOND_NODE_RE.sub(
+        lambda match: quoted(match, "{", "}"),
+        diagram,
+    )
 
 
 def validate_summary(payload: dict[str, Any]) -> Summary:
@@ -106,6 +132,13 @@ def render_summary(title: str, summary: Summary) -> str:
         _safe_prose(title),
         "",
         "<details>",
+        "<summary>High-Level Assessment</summary>",
+        "",
+        _safe_prose(summary.assessment),
+        "",
+        "</details>",
+        "",
+        "<details>",
         "<summary>AI Description</summary>",
         "",
     ]
@@ -125,17 +158,6 @@ def render_summary(title: str, summary: Summary) -> str:
                 "</details>",
             ]
         )
-    lines.extend(
-        [
-            "",
-            "<details>",
-            "<summary>High-Level Assessment</summary>",
-            "",
-            _safe_prose(summary.assessment),
-            "",
-            "</details>",
-        ]
-    )
     return "\n".join(lines)
 
 

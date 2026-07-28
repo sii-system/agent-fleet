@@ -73,6 +73,26 @@ class SummaryContractTest(unittest.TestCase):
                 }
             )
 
+    def test_quotes_generated_flowchart_labels(self) -> None:
+        result = summary.validate_summary(
+            {
+                "description": ["Adds a manual canary."],
+                "diagram": (
+                    "flowchart TD\n"
+                    "  A[pull_request_target] --> R{Resolve review target}\n"
+                    "  R --> API[GET /repos/{owner}/{repo}/pulls/{n}]"
+                ),
+                "assessment": "The canary reuses the existing review path.",
+            }
+        )
+
+        self.assertEqual(
+            result.diagram,
+            "flowchart TD\n"
+            '  A["pull_request_target"] --> R{"Resolve review target"}\n'
+            '  R --> API["GET /repos/{owner}/{repo}/pulls/{n}"]',
+        )
+
 
 class SummaryRenderingTest(unittest.TestCase):
     def setUp(self) -> None:
@@ -95,6 +115,14 @@ class SummaryRenderingTest(unittest.TestCase):
         self.assertIn("<summary>High-Level Assessment</summary>", body)
         self.assertIn("@\u200bmaintainers", body)
         self.assertIn("&lt;deployment&gt;", body)
+        self.assertLess(
+            body.index("<summary>High-Level Assessment</summary>"),
+            body.index("<summary>AI Description</summary>"),
+        )
+        self.assertLess(
+            body.index("<summary>AI Description</summary>"),
+            body.index("<summary>Diagram</summary>"),
+        )
 
     def test_omits_empty_diagram_section(self) -> None:
         value = summary.Summary(
