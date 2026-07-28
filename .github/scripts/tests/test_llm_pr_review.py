@@ -632,25 +632,28 @@ class OrchestrationTest(unittest.TestCase):
 
 
 class WorkflowContractTest(unittest.TestCase):
-    def test_workflow_uses_trusted_event_and_allows_forks(self) -> None:
-        workflow = SCRIPT_DIR.parent.joinpath("workflows/llm-pr-review.yml").read_text()
+    def test_self_hosted_workflow_uses_trusted_event_and_allows_forks(self) -> None:
+        workflow = SCRIPT_DIR.parent.joinpath(
+            "workflows/self-hosted-llm-pr-review.yml"
+        ).read_text()
 
         self.assertIn("pull_request_target:", workflow)
         self.assertNotIn("head.repo.full_name == github.repository", workflow)
-        self.assertIn("!github.event.pull_request.draft", workflow)
+        self.assertNotIn("!github.event.pull_request.draft", workflow)
         self.assertNotIn("pull_request.head.sha", workflow)
         self.assertNotIn("pull_request.head.ref", workflow)
 
     def test_workflow_has_least_permissions_and_base_checkout(self) -> None:
-        for name in ("llm-pr-review.yml", "self-hosted-llm-pr-review.yml"):
-            workflow = SCRIPT_DIR.parent.joinpath("workflows", name).read_text()
-            with self.subTest(workflow=name):
-                self.assertIn("contents: read", workflow)
-                self.assertIn("pull-requests: write", workflow)
-                self.assertNotIn("issues: write", workflow)
-                self.assertIn("cancel-in-progress: true", workflow)
-                self.assertIn("pull_request.base.sha", workflow)
-                self.assertIn("persist-credentials: false", workflow)
+        workflow = SCRIPT_DIR.parent.joinpath(
+            "workflows/self-hosted-llm-pr-review.yml"
+        ).read_text()
+
+        self.assertIn("contents: read", workflow)
+        self.assertIn("pull-requests: write", workflow)
+        self.assertNotIn("issues: write", workflow)
+        self.assertIn("cancel-in-progress: true", workflow)
+        self.assertIn("pull_request.base.sha", workflow)
+        self.assertIn("persist-credentials: false", workflow)
 
 
 if __name__ == "__main__":

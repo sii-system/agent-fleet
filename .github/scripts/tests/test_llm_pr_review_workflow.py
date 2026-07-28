@@ -6,48 +6,33 @@ ROOT = Path(__file__).resolve().parents[3]
 WORKFLOWS = ROOT / ".github" / "workflows"
 
 
-class LlmPrReviewWorkflowTest(unittest.TestCase):
+class PiPrReviewWorkflowTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.hosted = WORKFLOWS.joinpath("llm-pr-review.yml").read_text(
-            encoding="utf-8"
-        )
         cls.self_hosted = WORKFLOWS.joinpath(
             "self-hosted-llm-pr-review.yml"
         ).read_text(encoding="utf-8")
 
-    def test_reviewers_remain_separate_top_level_workflows(self):
-        for workflow in (self.hosted, self.self_hosted):
-            with self.subTest(workflow=workflow.splitlines()[0]):
-                self.assertIn('"on":\n  pull_request_target:', workflow)
-                self.assertIn(
-                    "permissions:\n  contents: read\n  pull-requests: write",
-                    workflow,
-                )
-                self.assertNotIn("reusable-llm-pr-review.yml", workflow)
-                self.assertNotIn("secrets: inherit", workflow)
-                self.assertIn("actions/checkout@", workflow)
-                self.assertIn("pi_pr_review.py", workflow)
+    def test_duplicate_hosted_workflow_is_removed(self):
+        self.assertFalse(WORKFLOWS.joinpath("llm-pr-review.yml").exists())
 
-    def test_hosted_skips_drafts_while_self_hosted_reviews_them(self):
-        self.assertIn("!github.event.pull_request.draft", self.hosted)
+    def test_self_hosted_reviewer_is_the_only_review_entrypoint(self):
+        self.assertIn('"on":\n  pull_request_target:', self.self_hosted)
+        self.assertIn(
+            "permissions:\n  contents: read\n  pull-requests: write",
+            self.self_hosted,
+        )
+        self.assertNotIn("reusable-llm-pr-review.yml", self.self_hosted)
+        self.assertNotIn("secrets: inherit", self.self_hosted)
+        self.assertIn("actions/checkout@", self.self_hosted)
+        self.assertIn("pi_pr_review.py", self.self_hosted)
+
+    def test_self_hosted_reviews_drafts_on_supported_events(self):
         self.assertNotIn("!github.event.pull_request.draft", self.self_hosted)
         self.assertIn(
             "types: [opened, reopened, synchronize, ready_for_review]",
             self.self_hosted,
         )
-
-    def test_hosted_workflow_keeps_hosted_configuration(self):
-        expected = (
-            "name: LLM PR Review",
-            "group: llm-pr-review-${{ github.event.pull_request.number }}",
-            "runs-on: ubuntu-latest",
-            "environment: llm-pr-review",
-            "LLM_REVIEW_ID: pi-pr-review",
-        )
-        for setting in expected:
-            with self.subTest(setting=setting):
-                self.assertIn(setting, self.hosted)
 
     def test_self_hosted_workflow_keeps_distinct_configuration(self):
         expected = (
@@ -64,7 +49,7 @@ class LlmPrReviewWorkflowTest(unittest.TestCase):
             with self.subTest(setting=setting):
                 self.assertIn(setting, self.self_hosted)
 
-    def test_workflows_keep_the_same_review_execution_policy(self):
+    def test_self_hosted_keeps_the_review_execution_policy(self):
         expected = (
             "timeout-minutes: 20",
             "pull_request.base.sha",
@@ -74,39 +59,31 @@ class LlmPrReviewWorkflowTest(unittest.TestCase):
             "LLM_REVIEW_MODEL: ${{ vars.LLM_REVIEW_MODEL }}",
             "--prompt-path .github/scripts/pi_review_prompt.md",
         )
-        for workflow in (self.hosted, self.self_hosted):
-            for setting in expected:
-                with self.subTest(
-                    workflow=workflow.splitlines()[0],
-                    setting=setting,
-                ):
-                    self.assertIn(setting, workflow)
-            self.assertRegex(
-                workflow,
-                re.compile(r"uses: actions/checkout@[0-9a-f]{40}"),
-            )
-            self.assertEqual(workflow.count("actions/checkout@"), 1)
-            self.assertEqual(workflow.count("pi_pr_review.py"), 1)
+        for setting in expected:
+            with self.subTest(setting=setting):
+                self.assertIn(setting, self.self_hosted)
+        self.assertRegex(
+            self.self_hosted,
+            re.compile(r"uses: actions/checkout@[0-9a-f]{40}"),
+        )
+        self.assertEqual(self.self_hosted.count("actions/checkout@"), 1)
+        self.assertEqual(self.self_hosted.count("pi_pr_review.py"), 1)
 
     def test_environment_configuration_uses_shared_names(self):
-        for workflow in (self.hosted, self.self_hosted):
-            with self.subTest(workflow=workflow.splitlines()[0]):
-                self.assertIn("secrets.LLM_REVIEW_API_KEY", workflow)
-                self.assertNotIn("secrets[", workflow)
-                self.assertNotIn("vars[", workflow)
-                self.assertNotIn("api_key_secret", workflow)
-                self.assertNotIn("base_url_variable", workflow)
-                self.assertNotIn("model_variable", workflow)
+        self.assertIn("secrets.LLM_REVIEW_API_KEY", self.self_hosted)
+        self.assertNotIn("secrets[", self.self_hosted)
+        self.assertNotIn("vars[", self.self_hosted)
+        self.assertNotIn("api_key_secret", self.self_hosted)
+        self.assertNotIn("base_url_variable", self.self_hosted)
+        self.assertNotIn("model_variable", self.self_hosted)
 
-    def test_workflows_require_the_same_exact_pi_version(self):
-        for workflow in (self.hosted, self.self_hosted):
-            with self.subTest(workflow=workflow.splitlines()[0]):
-                self.assertIn('PI_VERSION: "0.81.1"', workflow)
-                self.assertIn(
-                    'if [[ "$INSTALLED_VERSION" != "$PI_VERSION" ]]',
-                    workflow,
-                )
-                self.assertIn("Expected pi version", workflow)
+    def test_self_hosted_requires_the_exact_pi_version(self):
+        self.assertIn('PI_VERSION: "0.81.1"', self.self_hosted)
+        self.assertIn(
+            'if [[ "$INSTALLED_VERSION" != "$PI_VERSION" ]]',
+            self.self_hosted,
+        )
+        self.assertIn("Expected pi version", self.self_hosted)
 
     def test_reusable_workflow_is_removed(self):
         self.assertFalse(
