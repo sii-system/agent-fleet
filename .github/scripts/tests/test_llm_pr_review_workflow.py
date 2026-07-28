@@ -122,10 +122,14 @@ class PiPrSummaryWorkflowTest(unittest.TestCase):
         self.assertTrue(self.path.exists(), "pi-pr-summary.yml must exist")
         return self.path.read_text(encoding="utf-8")
 
-    def test_runs_once_for_draft_and_fork_pr_open(self) -> None:
+    def test_runs_once_for_draft_and_fork_pr_open_on_main(self) -> None:
         workflow = self._workflow()
 
-        self.assertIn('"on":\n  pull_request_target:\n    types: [opened]', workflow)
+        self.assertIn(
+            '"on":\n  pull_request_target:\n'
+            "    types: [opened]\n    branches: [main]",
+            workflow,
+        )
         self.assertNotIn("github.event.pull_request.draft", workflow)
         self.assertNotIn("github.event.pull_request.head.repo.full_name", workflow)
         self.assertNotIn("reopened", workflow)
