@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -137,7 +138,7 @@ class ModelContractTest(unittest.TestCase):
             {"findings": []},
         )
 
-    def test_validate_findings_rejects_non_right_lines_and_sorts_severity(
+    def test_validate_findings_retains_non_right_lines_and_sorts_severity(
         self,
     ) -> None:
         parsed = {
@@ -157,9 +158,9 @@ class ModelContractTest(unittest.TestCase):
                     "severity": "P0",
                     "path": "src/a.py",
                     "line": 7,
-                    "title": "Invalid anchor",
+                    "title": "Summary anchor",
                     "failure_scenario": "This is not an added line.",
-                    "remediation": "Do not publish this finding.",
+                    "remediation": "Publish this finding in the summary.",
                 },
                 {
                     "severity": "P1",
@@ -174,10 +175,13 @@ class ModelContractTest(unittest.TestCase):
 
         findings, rejected = review.validate_findings(payload, parsed)
 
-        self.assertEqual([item.severity for item in findings], ["P1", "P2"])
-        self.assertEqual(rejected, 1)
+        self.assertEqual(
+            [item.severity for item in findings],
+            ["P0", "P1", "P2"],
+        )
+        self.assertEqual(rejected, 0)
 
-    def test_validation_deduplicates_and_caps_findings(self) -> None:
+    def test_validation_deduplicates_findings(self) -> None:
         parsed = {
             "a.py": review.ParsedFile("a.py", "", frozenset(range(1, 30)))
         }
@@ -191,10 +195,62 @@ class ModelContractTest(unittest.TestCase):
         }
         payload = {"findings": [item, dict(item)]}
 
-        findings, rejected = review.validate_findings(payload, parsed, limit=20)
+        findings, rejected = review.validate_findings(payload, parsed)
 
         self.assertEqual(len(findings), 1)
         self.assertEqual(rejected, 1)
+
+    def test_route_findings_separates_inline_and_summary(self) -> None:
+        files = {
+            "a.py": review.ParsedFile("a.py", "", frozenset({8})),
+        }
+        findings = [
+            review.Finding("P1", "a.py", 8, "Inline", "Failure", "Fix"),
+            review.Finding("P2", "a.py", 7, "Context", "Failure", "Fix"),
+            review.Finding("P3", "a.py", 8, "Minor", "Failure", "Fix"),
+            review.Finding("P1", "helper.py", None, "Other", "Failure", "Fix"),
+        ]
+
+        inline, summary = review.route_findings(findings, files)
+
+        self.assertEqual([item.title for item in inline], ["Inline"])
+        self.assertEqual(
+            [item.title for item in summary],
+            ["Context", "Minor", "Other"],
+        )
+
+    def test_validation_retains_valid_unanchorable_findings(self) -> None:
+        files = {
+            "a.py": review.ParsedFile("a.py", "", frozenset({8})),
+        }
+        payload = {
+            "findings": [
+                {
+                    "severity": "P2",
+                    "path": "a.py",
+                    "line": 7,
+                    "title": "Context finding",
+                    "failure_scenario": "The failure is not on an added line.",
+                    "remediation": "Fix the surrounding logic.",
+                },
+                {
+                    "severity": "P1",
+                    "path": "helper.py",
+                    "line": None,
+                    "title": "Cross-file finding",
+                    "failure_scenario": "The changed caller breaks this helper.",
+                    "remediation": "Keep the helper contract compatible.",
+                },
+            ]
+        }
+
+        findings, rejected = review.validate_findings(payload, files)
+
+        self.assertEqual(
+            [item.title for item in findings],
+            ["Cross-file finding", "Context finding"],
+        )
+        self.assertEqual(rejected, 0)
 
 
 class FakeResponse:
@@ -212,6 +268,38 @@ class FakeResponse:
 
 
 class ApiClientTest(unittest.TestCase):
+    def test_llm_client_normalizes_api_roots_to_chat_completions(self) -> None:
+        cases = {
+            "https://example.invalid": (
+                "https://example.invalid/v1/chat/completions"
+            ),
+            "https://example.invalid/v3": (
+                "https://example.invalid/v3/chat/completions"
+            ),
+            "https://example.invalid/v3/chat/completions?tenant=one": (
+                "https://example.invalid/v3/chat/completions?tenant=one"
+            ),
+        }
+
+        for base_url, expected in cases.items():
+            opener = mock.Mock(
+                return_value=FakeResponse(
+                    {"choices": [{"message": {"content": '{"findings": []}'}}]}
+                )
+            )
+            client = review.LlmClient(
+                base_url,
+                "key",
+                "model",
+                opener=opener,
+                sleeper=mock.Mock(),
+            )
+
+            client.review("system", "diff")
+
+            with self.subTest(base_url=base_url):
+                self.assertEqual(opener.call_args.args[0].full_url, expected)
+
     def test_llm_client_uses_bearer_key_and_expected_model(self) -> None:
         opener = mock.Mock(
             return_value=FakeResponse(
@@ -409,6 +497,25 @@ class ApiClientTest(unittest.TestCase):
         self.assertNotIn("@all-maintainers", comment)
         self.assertIn("@\u200bsecurity-team", comment)
 
+    def test_create_review_includes_lens_attribution(self) -> None:
+        opener = mock.Mock(return_value=FakeResponse({"id": 123}))
+        client = review.GitHubClient("owner/repo", "token", opener=opener)
+        finding = review.Finding(
+            "P1",
+            "a.py",
+            8,
+            "Bug",
+            "Failure",
+            "Fix",
+            ("correctness", "security"),
+        )
+
+        client.create_review(7, "abc123", "summary", [finding])
+
+        request = opener.call_args.args[0]
+        comment = json.loads(request.data)["comments"][0]["body"]
+        self.assertIn("Flagged by: correctness + security", comment)
+
 
 class FakeGitHub:
     def __init__(self) -> None:
@@ -561,6 +668,88 @@ class OrchestrationTest(unittest.TestCase):
         self.assertIn("<!-- llm-pr-review:head-1 -->", body)
         self.assertEqual(len(findings), 1)
 
+    def test_routes_non_inline_findings_into_the_summary(self) -> None:
+        github = FakeGitHub()
+        llm = mock.Mock()
+        llm.review.return_value = {
+            "findings": [
+                {
+                    "severity": "P1",
+                    "path": "worker.py",
+                    "line": 2,
+                    "title": "Inline finding",
+                    "failure_scenario": "This is on the changed line.",
+                    "remediation": "Fix the changed line.",
+                },
+                {
+                    "severity": "P2",
+                    "path": "worker.py",
+                    "line": 1,
+                    "title": "Context finding",
+                    "failure_scenario": "This is outside the changed line.",
+                    "remediation": "Fix the surrounding code.",
+                },
+                {
+                    "severity": "P3",
+                    "path": "worker.py",
+                    "line": 2,
+                    "title": "Minor finding",
+                    "failure_scenario": "This is low severity.",
+                    "remediation": "Apply the minor fix.",
+                },
+                {
+                    "severity": "P1",
+                    "path": "helper.py",
+                    "line": None,
+                    "title": "Other finding",
+                    "failure_scenario": "This affects an unchanged helper.",
+                    "remediation": "Preserve the helper contract.",
+                },
+            ]
+        }
+
+        review.run_review(github, llm, 7, "prompt")
+
+        _number, _sha, body, inline = github.created[0]
+        self.assertEqual([item.title for item in inline], ["Inline finding"])
+        self.assertIn("### `worker.py`", body)
+        self.assertIn("**P2: Context finding**", body)
+        self.assertIn("### Minor", body)
+        self.assertIn("**P3: Minor finding**", body)
+        self.assertIn("### Other observations", body)
+        self.assertIn("**P1: Other finding**", body)
+
+    def test_inline_overflow_is_kept_in_the_summary(self) -> None:
+        github = FakeGitHub()
+        github.files = [
+            {
+                "filename": "worker.py",
+                "patch": "@@ -0,0 +1,21 @@\n"
+                + "\n".join(f"+line-{line}" for line in range(1, 22)),
+            }
+        ]
+        llm = mock.Mock()
+        llm.review.return_value = {
+            "findings": [
+                {
+                    "severity": "P2",
+                    "path": "worker.py",
+                    "line": line,
+                    "title": f"Finding {line}",
+                    "failure_scenario": f"Failure {line}",
+                    "remediation": f"Fix {line}",
+                }
+                for line in range(1, 22)
+            ]
+        }
+
+        review.run_review(github, llm, 7, "prompt")
+
+        _number, _sha, body, inline = github.created[0]
+        self.assertEqual(len(inline), review.MAX_COMMENTS)
+        self.assertIn("**P2: Finding 21**", body)
+        self.assertIn("Rejected model findings: 0", body)
+
     def test_no_findings_still_posts_sha_summary(self) -> None:
         github = FakeGitHub()
         llm = mock.Mock()
@@ -569,6 +758,19 @@ class OrchestrationTest(unittest.TestCase):
         review.run_review(github, llm, 7, "prompt")
 
         self.assertIn("no actionable findings", github.created[0][2])
+
+    def test_summary_identifies_the_review_tier(self) -> None:
+        github = FakeGitHub()
+
+        review.run_review(
+            github,
+            FakeLlm(),
+            7,
+            "prompt",
+            label="Fast review — diff only",
+        )
+
+        self.assertIn("## Fast review — diff only", github.created[0][2])
 
     def test_model_input_contains_bounded_pr_context(self) -> None:
         github = FakeGitHub()
@@ -620,6 +822,61 @@ class OrchestrationTest(unittest.TestCase):
 
 
 class WorkflowContractTest(unittest.TestCase):
+    def test_main_binds_review_to_event_revisions(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            event_path = root / "event.json"
+            prompt_path = root / "prompt.md"
+            event_path.write_text(
+                json.dumps(
+                    {
+                        "pull_request": {
+                            "number": 7,
+                            "head": {"sha": "event-head"},
+                            "base": {"sha": "event-base"},
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            prompt_path.write_text("review prompt", encoding="utf-8")
+            args = mock.Mock(event_path=event_path, prompt_path=prompt_path)
+            environment = {
+                "GITHUB_REPOSITORY": "owner/repository",
+                "GITHUB_TOKEN": "fake-github-token",
+                "LLM_REVIEW_API_KEY": "fake-model-key",
+                "LLM_REVIEW_BASE_URL": "https://example.com/v1/chat/completions",
+                "LLM_REVIEW_MODEL": "test-model",
+            }
+            with (
+                mock.patch.object(review, "parse_args", return_value=args),
+                mock.patch.object(
+                    review,
+                    "require_env",
+                    side_effect=environment.__getitem__,
+                ),
+                mock.patch.object(
+                    review,
+                    "run_review",
+                    return_value="stale",
+                ) as run_mock,
+                mock.patch.dict(
+                    review.os.environ,
+                    {"LLM_REVIEW_LABEL": "Fast review — diff only"},
+                ),
+                mock.patch("builtins.print"),
+            ):
+                self.assertEqual(review.main(), 0)
+
+        self.assertEqual(
+            run_mock.call_args.kwargs,
+            {
+                "expected_head_sha": "event-head",
+                "expected_base_sha": "event-base",
+                "label": "Fast review — diff only",
+            },
+        )
+
     def test_workflow_uses_trusted_event_and_allows_forks(self) -> None:
         workflow = SCRIPT_DIR.parent.joinpath("workflows/llm-pr-review.yml").read_text()
 
@@ -637,7 +894,14 @@ class WorkflowContractTest(unittest.TestCase):
                 self.assertIn("pull-requests: write", workflow)
                 self.assertNotIn("issues: write", workflow)
                 self.assertIn("cancel-in-progress: true", workflow)
-                self.assertIn("pull_request.base.sha", workflow)
+                self.assertIn(
+                    "ref: ${{ steps.target.outputs.base_sha }}",
+                    workflow,
+                )
+                self.assertIn(
+                    're.fullmatch(r"[0-9a-f]{40}", value)',
+                    workflow,
+                )
                 self.assertIn("persist-credentials: false", workflow)
 
 

@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
 from urllib.request import Request, urlopen
 
 MAX_FILE_PATCH_CHARS = 60_000
@@ -47,10 +47,11 @@ class ParsedFile:
 class Finding:
     severity: str
     path: str
-    line: int
+    line: int | None
     title: str
     failure_scenario: str
     remediation: str
+    lenses: tuple[str, ...] = ()
 
 
 class ModelResponseError(ValueError):
@@ -165,18 +166,23 @@ def _neutralize_mentions(text: str) -> str:
     return text.replace("@", "@\u200b")
 
 
+def _lens_attribution(finding: Finding) -> str:
+    if not finding.lenses:
+        return ""
+    labels = " + ".join(_neutralize_mentions(lens) for lens in finding.lenses)
+    return f"\n\n_Flagged by: {labels}_"
+
+
 def validate_findings(
     payload: dict[str, Any],
-    files: dict[str, ParsedFile],
-    *,
-    limit: int = MAX_COMMENTS,
+    _files: dict[str, ParsedFile],
 ) -> tuple[list[Finding], int]:
     raw_findings = payload.get("findings")
     if not isinstance(raw_findings, list):
         raise ModelResponseError("findings must be an array")
 
     valid: list[Finding] = []
-    seen: set[tuple[str, int, str, str]] = set()
+    seen: set[tuple[str, int | None, str, str]] = set()
     rejected = 0
     for raw in raw_findings:
         if not isinstance(raw, dict):
@@ -188,12 +194,10 @@ def validate_findings(
         title = _bounded_text(raw.get("title"))
         scenario = _bounded_text(raw.get("failure_scenario"))
         remediation = _bounded_text(raw.get("remediation"))
-        parsed = files.get(path) if path else None
         if (
             severity not in SEVERITY_ORDER
-            or parsed is None
-            or type(line) is not int
-            or line not in parsed.right_lines
+            or path is None
+            or (line is not None and (type(line) is not int or line < 1))
             or title is None
             or scenario is None
             or remediation is None
@@ -207,9 +211,37 @@ def validate_findings(
         seen.add(key)
         valid.append(Finding(severity, path, line, title, scenario, remediation))
 
-    valid.sort(key=lambda item: (SEVERITY_ORDER[item.severity], item.path, item.line))
-    rejected += max(0, len(valid) - limit)
-    return valid[:limit], rejected
+    valid.sort(
+        key=lambda item: (
+            SEVERITY_ORDER[item.severity],
+            item.path,
+            item.line is None,
+            item.line or 0,
+        )
+    )
+    return valid, rejected
+
+
+def route_findings(
+    findings: list[Finding],
+    files: dict[str, ParsedFile],
+    *,
+    limit: int = MAX_COMMENTS,
+) -> tuple[list[Finding], list[Finding]]:
+    inline: list[Finding] = []
+    summary: list[Finding] = []
+    for finding in findings:
+        parsed = files.get(finding.path)
+        can_inline = (
+            finding.severity != "P3"
+            and parsed is not None
+            and finding.line in parsed.right_lines
+        )
+        if can_inline and len(inline) < limit:
+            inline.append(finding)
+        else:
+            summary.append(finding)
+    return inline, summary
 
 
 def _json_request(
@@ -222,6 +254,19 @@ def _json_request(
         return json.loads(response.read())
 
 
+def _chat_completions_url(base_url: str) -> str:
+    parsed = urlparse(base_url.strip())
+    path = parsed.path.rstrip("/")
+    if not path.endswith("/chat/completions"):
+        suffix = (
+            "/chat/completions"
+            if re.search(r"/v\d+$", path)
+            else "/v1/chat/completions"
+        )
+        path += suffix
+    return parsed._replace(path=path).geturl()
+
+
 class LlmClient:
     def __init__(
         self,
@@ -231,7 +276,7 @@ class LlmClient:
         opener: Callable[..., Any] = urlopen,
         sleeper: Callable[[float], None] = time.sleep,
     ) -> None:
-        self.base_url = base_url
+        self.base_url = _chat_completions_url(base_url)
         self.api_key = api_key
         self.model = model
         self.opener = opener
@@ -328,6 +373,9 @@ class GitHubClient:
     def list_reviews(self, number: int) -> list[dict[str, Any]]:
         return self._list_pages(f"/pulls/{number}/reviews")
 
+    def list_review_comments(self, number: int) -> list[dict[str, Any]]:
+        return self._list_pages(f"/pulls/{number}/comments")
+
     def create_review(
         self,
         number: int,
@@ -345,6 +393,7 @@ class GitHubClient:
                     f"{_neutralize_mentions(item.failure_scenario)}\n\n"
                     "Suggested remediation: "
                     f"{_neutralize_mentions(item.remediation)}"
+                    f"{_lens_attribution(item)}"
                 ),
             }
             for item in findings
@@ -412,6 +461,36 @@ def has_existing_review(
     )
 
 
+def existing_inline_anchors(
+    reviews: list[dict[str, Any]],
+    comments: list[dict[str, Any]],
+    head_sha: str,
+    review_id: str,
+    base_sha: str | None = None,
+) -> frozenset[tuple[str, int]]:
+    marker = review_marker(head_sha, review_id, base_sha)
+    review_ids = {
+        item.get("id")
+        for item in reviews
+        if (item.get("user") or {}).get("login") == "github-actions[bot]"
+        and marker in (item.get("body") or "")
+        and type(item.get("id")) is int
+    }
+    anchors: set[tuple[str, int]] = set()
+    for item in comments:
+        path = item.get("path")
+        line = item.get("line")
+        if (
+            item.get("pull_request_review_id") in review_ids
+            and (item.get("user") or {}).get("login") == "github-actions[bot]"
+            and item.get("commit_id") == head_sha
+            and isinstance(path, str)
+            and type(line) is int
+        ):
+            anchors.add((path, line))
+    return frozenset(anchors)
+
+
 def build_summary(
     head_sha: str,
     findings: list[Finding],
@@ -421,9 +500,17 @@ def build_summary(
     incomplete_chunks: int = 0,
     review_id: str = DEFAULT_REVIEW_ID,
     base_sha: str | None = None,
+    summary_findings: list[Finding] | None = None,
+    changed_paths: frozenset[str] = frozenset(),
+    label: str | None = None,
+    failed_lenses: tuple[str, ...] = (),
+    tool_calls: dict[str, int] | None = None,
+    suppressed_inline: int = 0,
 ) -> str:
     coverage = (
-        "Partial" if skipped or truncated or incomplete_chunks else "Complete"
+        "Partial"
+        if skipped or truncated or incomplete_chunks or failed_lenses
+        else "Complete"
     )
     headline = (
         f"Automated review found {len(findings)} actionable finding(s)."
@@ -432,12 +519,18 @@ def build_summary(
     )
     lines = [
         review_marker(head_sha, review_id, base_sha),
-        headline,
-        "",
-        f"Reviewed head: `{head_sha}`",
-        f"Coverage: {coverage}",
-        f"Rejected model findings: {rejected}",
     ]
+    if label:
+        lines.extend([f"## {_neutralize_mentions(label)}", ""])
+    lines.extend(
+        [
+            headline,
+            "",
+            f"Reviewed head: `{head_sha}`",
+            f"Coverage: {coverage}",
+            f"Rejected model findings: {rejected}",
+        ]
+    )
     if skipped:
         lines.extend(["", "Skipped files:"])
         lines.extend(
@@ -461,7 +554,54 @@ def build_summary(
                 ),
             ]
         )
+    if failed_lenses:
+        lines.extend(["", f"Failed lenses: {', '.join(failed_lenses)}"])
+    if tool_calls:
+        counts = ", ".join(
+            f"{_neutralize_mentions(lens)}={count}"
+            for lens, count in tool_calls.items()
+        )
+        lines.extend(["", f"Tool calls: {counts}"])
+    if suppressed_inline:
+        lines.extend(
+            ["", f"Suppressed fast-review inline overlaps: {suppressed_inline}"]
+        )
+    if summary_findings:
+        changed = [
+            item
+            for item in summary_findings
+            if item.severity != "P3" and item.path in changed_paths
+        ]
+        minor = [item for item in summary_findings if item.severity == "P3"]
+        other = [
+            item
+            for item in summary_findings
+            if item.severity != "P3" and item.path not in changed_paths
+        ]
+        lines.extend(["", "## Summary findings"])
+        for path in dict.fromkeys(item.path for item in changed):
+            lines.extend(["", f"### `{_neutralize_mentions(path)}`"])
+            lines.extend(_summary_finding(item) for item in changed if item.path == path)
+        if minor:
+            lines.extend(["", "### Minor"])
+            lines.extend(_summary_finding(item) for item in minor)
+        if other:
+            lines.extend(["", "### Other observations"])
+            lines.extend(_summary_finding(item) for item in other)
     return "\n".join(lines)
+
+
+def _summary_finding(finding: Finding) -> str:
+    location = f" (`{_neutralize_mentions(finding.path)}"
+    if finding.line is not None:
+        location += f":{finding.line}"
+    location += "`)"
+    return (
+        f"- **{finding.severity}: {_neutralize_mentions(finding.title)}**"
+        f"{location} — {_neutralize_mentions(finding.failure_scenario)} "
+        f"Suggested remediation: {_neutralize_mentions(finding.remediation)}"
+        f"{_lens_attribution(finding)}"
+    )
 
 
 def run_review(
@@ -473,6 +613,7 @@ def run_review(
     *,
     expected_head_sha: str | None = None,
     expected_base_sha: str | None = None,
+    label: str | None = None,
 ) -> str:
     pull = github.get_pull(pull_number)
 
@@ -517,6 +658,7 @@ def run_review(
     ):
         return "stale"
 
+    inline_findings, summary_findings = route_findings(findings, by_path)
     summary = build_summary(
         head_sha,
         findings,
@@ -526,8 +668,11 @@ def run_review(
         incomplete_chunks=incomplete_chunks,
         review_id=review_id,
         base_sha=expected_base_sha,
+        summary_findings=summary_findings,
+        changed_paths=frozenset(by_path),
+        label=label,
     )
-    github.create_review(pull_number, head_sha, summary, findings)
+    github.create_review(pull_number, head_sha, summary, inline_findings)
     return "published"
 
 
@@ -549,7 +694,8 @@ def main() -> int:
     args = parse_args()
     event = json.loads(args.event_path.read_text())
     repository = require_env("GITHUB_REPOSITORY")
-    pull_number = int(event["pull_request"]["number"])
+    event_pull = event["pull_request"]
+    pull_number = int(event_pull["number"])
     github = GitHubClient(repository, require_env("GITHUB_TOKEN"))
     llm = LlmClient(
         require_env("LLM_REVIEW_BASE_URL"),
@@ -558,7 +704,16 @@ def main() -> int:
     )
     prompt = args.prompt_path.read_text()
     review_id = os.environ.get("LLM_REVIEW_ID", DEFAULT_REVIEW_ID)
-    result = run_review(github, llm, pull_number, prompt, review_id)
+    result = run_review(
+        github,
+        llm,
+        pull_number,
+        prompt,
+        review_id,
+        expected_head_sha=event_pull["head"]["sha"],
+        expected_base_sha=event_pull["base"]["sha"],
+        label=os.environ.get("LLM_REVIEW_LABEL"),
+    )
     print(f"LLM PR review result: {result}")
     return 0
 
