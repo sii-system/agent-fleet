@@ -35,7 +35,7 @@ FLOWCHART_NODE_START_RE = re.compile(
     (?P<prefix>
         ^[ \t]*(?:subgraph[ \t]+)?
         |
-        (?:(?:--+[xo]|--+>|==+>|==+|-\.\->|\.\->|-\.\-|---|~~~)(?:\|[^|\n]*\|)?|[&;])[ \t]*
+        (?:(?:--+[xo]|--+>|==+>|==+|-\.\->|\.\->|-\.\-|---|~~~)(?:[ \t]*\|[^|\n]*\|)?|[&;])[ \t]*
     )
     (?P<node>[A-Za-z0-9_]+)
     [ \t]*
@@ -97,6 +97,7 @@ def _quote_flowchart_labels(diagram: str) -> str:
         edge_text = False
         commented = False
         delimiters: list[str] = []
+        closing_for = {"[": "]", "{": "}", "(": ")"}
         prefix = diagram[:index]
         for offset, character in enumerate(prefix):
             if character == "\n":
@@ -118,12 +119,19 @@ def _quote_flowchart_labels(diagram: str) -> str:
             if character == '"':
                 quoted = not quoted
             elif not quoted:
-                if character in "[{(":
-                    delimiters.append({"[": "]", "{": "}", "(": ")"}[character])
-                elif delimiters and character == delimiters[-1]:
-                    delimiters.pop()
-                elif character == "|" and not delimiters:
-                    edge_text = not edge_text
+                if edge_text:
+                    if character == "|":
+                        edge_text = False
+                elif delimiters:
+                    active = delimiters[-1]
+                    if character == active:
+                        delimiters.append(character)
+                    elif character == closing_for[active]:
+                        delimiters.pop()
+                elif character in closing_for:
+                    delimiters.append(character)
+                elif character == "|":
+                    edge_text = True
         return quoted or edge_text or commented or bool(delimiters)
 
     def node_end(start: int, opening: str) -> int | None:

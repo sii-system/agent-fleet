@@ -334,6 +334,42 @@ class SummaryContractTest(unittest.TestCase):
             "  end",
         )
 
+    def test_quotes_targets_after_spaced_edge_labels(self) -> None:
+        result = summary.validate_summary(
+            {
+                "description": ["Describes a labeled transition."],
+                "diagram": (
+                    "flowchart TD\n"
+                    "  A[Start] --> |yes| B[GET /repos/{owner}]"
+                ),
+                "assessment": "The flow has one labeled transition.",
+            }
+        )
+
+        self.assertEqual(
+            result.diagram,
+            "flowchart TD\n"
+            '  A["Start"] --> |yes| B["GET /repos/{owner}"]',
+        )
+
+    def test_ignores_unmatched_punctuation_inside_node_labels(self) -> None:
+        result = summary.validate_summary(
+            {
+                "description": ["Describes raw input."],
+                "diagram": (
+                    "flowchart TD\n"
+                    "  A[Input (raw] --> B[GET /repos/{owner}]"
+                ),
+                "assessment": "The flow has two nodes.",
+            }
+        )
+
+        self.assertEqual(
+            result.diagram,
+            "flowchart TD\n"
+            '  A["Input (raw"] --> B["GET /repos/{owner}"]',
+        )
+
     def test_quotes_balanced_braces_inside_diamond_text(self) -> None:
         result = summary.validate_summary(
             {
