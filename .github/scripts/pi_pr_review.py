@@ -10,6 +10,8 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -36,10 +38,72 @@ from scripts.pi_prompt import (  # noqa: E402
 
 PI_REVIEW_ID = "pi-pr-review"
 PI_TIMEOUT_SECONDS = 900  # 15 min — agent tool calls take longer than raw API
+WORKFLOW_TIMEOUT_SECONDS = 20 * 60
+WORKFLOW_RESERVE_SECONDS = 5 * 60
+PI_REVIEW_BUDGET_SECONDS = WORKFLOW_TIMEOUT_SECONDS - WORKFLOW_RESERVE_SECONDS
+PI_LENS_TIMEOUT_SECONDS = 12 * 60
+PI_READ_ONLY_TOOLS = "read,grep,find,ls"
+LENS_INSTRUCTIONS = {
+    "correctness": (
+        "Focus on runtime correctness, state transitions, error handling, and "
+        "cross-file behavior. Use at most 16 tool calls."
+    ),
+    "security": (
+        "Focus on trust boundaries, injection, credential exposure, permissions, "
+        "and unsafe data flow. Use at most 16 tool calls."
+    ),
+    "tests/regression": (
+        "Focus on behavioral regressions and missing tests that would let a "
+        "concrete defect escape. Use at most 16 tool calls."
+    ),
+}
 
 
 class PiReviewError(RuntimeError):
     """pi subprocess failed and the review could not be completed."""
+
+
+def _title_similarity(left: str, right: str) -> float:
+    left_tokens = set(re.findall(r"[a-z0-9]+", left.casefold()))
+    right_tokens = set(re.findall(r"[a-z0-9]+", right.casefold()))
+    union = left_tokens | right_tokens
+    return len(left_tokens & right_tokens) / len(union) if union else 0.0
+
+
+def merge_lens_findings(
+    findings: list[_review.Finding],
+) -> list[_review.Finding]:
+    merged: list[_review.Finding] = []
+    for finding in findings:
+        for index, existing in enumerate(merged):
+            if (
+                existing.path == finding.path
+                and existing.line == finding.line
+                and _title_similarity(existing.title, finding.title) >= 0.5
+            ):
+                merged[index] = min(
+                    (existing, finding),
+                    key=lambda item: _review.SEVERITY_ORDER[item.severity],
+                )
+                break
+        else:
+            merged.append(finding)
+    return sorted(
+        merged,
+        key=lambda item: (
+            _review.SEVERITY_ORDER[item.severity],
+            item.path,
+            item.line is None,
+            item.line or 0,
+            item.title.casefold(),
+        ),
+    )
+
+
+def _shared_routing_available() -> bool:
+    return callable(getattr(_review, "parse_findings", None)) and callable(
+        getattr(_review, "route_findings", None)
+    )
 
 
 def _chat_url_to_base(url: str) -> str:
@@ -153,7 +217,16 @@ class PiClient:
         self.provider = provider
         self.timeout = timeout
 
-    def review(self, system_prompt: str, diff_chunk: str) -> dict[str, Any]:
+    def review(
+        self,
+        system_prompt: str,
+        diff_chunk: str,
+        *,
+        timeout: float | None = None,
+    ) -> dict[str, Any]:
+        effective_timeout = (
+            self.timeout if timeout is None else min(self.timeout, timeout)
+        )
         with tempfile.TemporaryDirectory(prefix="pi-pr-review-") as tmp:
             root = Path(tmp)
             runtime_dir = root / "pi-agent"
@@ -175,6 +248,7 @@ class PiClient:
                 "--model", self.model,
                 "--no-session",
                 "--approve",
+                "--tools", PI_READ_ONLY_TOOLS,
                 "--system-prompt", system_prompt,
                 diff_chunk,
             ]
@@ -187,12 +261,12 @@ class PiClient:
                     stdin=subprocess.DEVNULL,
                     text=True,
                     capture_output=True,
-                    timeout=self.timeout,
+                    timeout=effective_timeout,
                     check=False,
                 )
             except subprocess.TimeoutExpired as exc:
                 raise PiReviewError(
-                    f"pi timed out after {self.timeout}s"
+                    f"pi timed out after {effective_timeout:g}s"
                 ) from exc
             except OSError as exc:
                 raise PiReviewError(f"could not launch pi: {exc}") from exc
@@ -218,15 +292,124 @@ def run_review(
     expected_base_sha: str | None = None,
 ) -> str:
     try:
-        return _review.run_review(
-            github,
-            pi_client,
-            pull_number,
-            prompt,
+        deadline = time.monotonic() + PI_REVIEW_BUDGET_SECONDS
+        pull = github.get_pull(pull_number)
+        head_sha = pull["head"]["sha"]
+        if expected_head_sha is not None and head_sha != expected_head_sha:
+            return "stale"
+        if (
+            expected_base_sha is not None
+            and pull["base"]["sha"] != expected_base_sha
+        ):
+            return "stale"
+        if _review.has_existing_review(
+            github.list_reviews(pull_number),
+            head_sha,
             review_id,
-            expected_head_sha=expected_head_sha,
-            expected_base_sha=expected_base_sha,
+            expected_base_sha,
+        ):
+            return "duplicate"
+
+        files, skipped = _review.collect_files(github.list_files(pull_number))
+        by_path = {item.path: item for item in files}
+        chunks, truncated = _review.build_chunks(
+            files,
+            max_chunk_chars=_review.MAX_TOTAL_CHARS,
         )
+        whole_diff = chunks[0] if chunks else ""
+        model_input = _review.build_model_input(pull, whole_diff)
+
+        with ThreadPoolExecutor(max_workers=len(LENS_INSTRUCTIONS)) as executor:
+            futures = {}
+            for lens, instruction in LENS_INSTRUCTIONS.items():
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise PiReviewError(
+                        f"pi review deadline exhausted before {lens} lens"
+                    )
+                futures[lens] = executor.submit(
+                    pi_client.review,
+                    prompt.replace("{{LENS}}", instruction),
+                    model_input,
+                    timeout=min(float(PI_LENS_TIMEOUT_SECONDS), remaining),
+                )
+
+        findings: list[_review.Finding] = []
+        rejected = 0
+        incomplete_lenses = 0
+        failed_lenses: list[str] = []
+        for lens, future in futures.items():
+            try:
+                payload = future.result()
+                if payload.get("incomplete"):
+                    incomplete_lenses += 1
+                if _shared_routing_available():
+                    lens_findings, lens_rejected = _review.parse_findings(
+                        payload
+                    )
+                else:
+                    lens_findings, lens_rejected = _review.validate_findings(
+                        payload,
+                        by_path,
+                    )
+            except (PiReviewError, _review.ModelResponseError):
+                failed_lenses.append(lens)
+                continue
+            findings.extend(lens_findings)
+            rejected += lens_rejected
+
+        if len(failed_lenses) == len(LENS_INSTRUCTIONS):
+            raise PiReviewError("all review lenses failed")
+
+        findings = merge_lens_findings(findings)
+        summary_findings: list[_review.Finding] = []
+        if _shared_routing_available():
+            inline_findings, summary_findings = _review.route_findings(
+                findings,
+                by_path,
+            )
+        else:
+            rejected += max(0, len(findings) - _review.MAX_COMMENTS)
+            inline_findings = findings[: _review.MAX_COMMENTS]
+        current = github.get_pull(pull_number)
+        if current["head"]["sha"] != head_sha or (
+            expected_base_sha is not None
+            and current["base"]["sha"] != expected_base_sha
+        ):
+            return "stale"
+
+        summary_options: dict[str, Any] = {
+            "review_id": review_id,
+            "base_sha": expected_base_sha,
+        }
+        if _shared_routing_available():
+            summary_options.update(
+                summary_findings=summary_findings,
+                changed_paths=frozenset(by_path),
+            )
+        summary = _review.build_summary(
+            head_sha,
+            findings,
+            rejected,
+            skipped,
+            truncated,
+            **summary_options,
+        )
+        if incomplete_lenses or failed_lenses:
+            summary = summary.replace(
+                "Coverage: Complete",
+                "Coverage: Partial",
+                1,
+            )
+        if incomplete_lenses:
+            summary += (
+                f"\n\n- {incomplete_lenses} review lens(es) returned an empty "
+                "model response and were not reviewed."
+            )
+        if failed_lenses:
+            summary += f"\n\nFailed lenses: {', '.join(failed_lenses)}"
+        github.create_review(pull_number, head_sha, summary, inline_findings)
+        return "published"
     except _review.ModelResponseError as exc:
         raise PiReviewError(str(exc)) from exc
 

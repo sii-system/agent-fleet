@@ -317,7 +317,11 @@ class PiClientTest(unittest.TestCase):
         self.assertIn("prompt=<FILE worker.py\n+stop()>", captured)
         self.assertIn("arg=<--system-prompt>", captured)
         self.assertIn("arg=<You are a reviewer.>", captured)
-        self.assertNotIn("arg=<--tools>", captured)
+        self.assertIn("arg=<--tools>", captured)
+        self.assertIn("arg=<read,grep,find,ls>", captured)
+        self.assertNotIn("arg=<bash>", captured)
+        self.assertNotIn("arg=<edit>", captured)
+        self.assertNotIn("arg=<write>", captured)
         self.assertNotIn("arg=<--no-extensions>", captured)
         self.assertNotIn("arg=<--no-skills>", captured)
         self.assertNotIn("arg=<--no-context-files>", captured)
@@ -450,13 +454,211 @@ class FakePiClient:
             ]
         self.findings = findings
         self.inputs: list[str] = []
+        self.prompts: list[str] = []
+        self.timeouts: list[float | None] = []
 
-    def review(self, _prompt: str, chunk: str) -> dict:
+    def review(
+        self,
+        prompt: str,
+        chunk: str,
+        *,
+        timeout: float | None = None,
+    ) -> dict:
+        self.prompts.append(prompt)
         self.inputs.append(chunk)
+        self.timeouts.append(timeout)
         return {"findings": list(self.findings)}
 
 
 class OrchestrationTest(unittest.TestCase):
+    def test_fans_out_three_lenses_over_the_whole_diff(self) -> None:
+        github = FakeGitHub()
+        github.files.append(
+            {
+                "filename": "tests/test_worker.py",
+                "patch": "@@ -0,0 +1 @@\n+test_stop()",
+            }
+        )
+        pi_client = FakePiClient([])
+
+        pi_review.run_review(github, pi_client, 7, "base {{LENS}} prompt")
+
+        self.assertEqual(len(pi_client.inputs), 3)
+        for model_input in pi_client.inputs:
+            self.assertIn("FILE worker.py", model_input)
+            self.assertIn("FILE tests/test_worker.py", model_input)
+        self.assertEqual(len(set(pi_client.prompts)), 3)
+        self.assertTrue(all("{{LENS}}" not in prompt for prompt in pi_client.prompts))
+
+    def test_one_lens_failure_publishes_partial_results(self) -> None:
+        github = FakeGitHub()
+        pi_client = mock.Mock()
+
+        def review_lens(
+            prompt: str,
+            _chunk: str,
+            **_kwargs: object,
+        ) -> dict:
+            if "trust boundaries" in prompt:
+                raise pi_review.PiReviewError("provider detail must stay private")
+            return {"findings": []}
+
+        pi_client.review.side_effect = review_lens
+
+        result = pi_review.run_review(github, pi_client, 7, "{{LENS}}")
+
+        self.assertEqual(result, "published")
+        body = github.created[0][2]
+        self.assertIn("Coverage: Partial", body)
+        self.assertIn("Failed lenses: security", body)
+        self.assertNotIn("provider detail", body)
+
+    def test_all_lens_failures_fail_without_publishing(self) -> None:
+        github = FakeGitHub()
+        pi_client = mock.Mock()
+        pi_client.review.side_effect = pi_review.PiReviewError("failed")
+
+        with self.assertRaisesRegex(
+            pi_review.PiReviewError,
+            "all review lenses failed",
+        ):
+            pi_review.run_review(github, pi_client, 7, "{{LENS}}")
+
+        self.assertEqual(github.created, [])
+
+    def test_each_lens_uses_the_bounded_remaining_budget(self) -> None:
+        github = FakeGitHub()
+        pi_client = FakePiClient([])
+
+        with mock.patch("pi_pr_review.time.monotonic", return_value=100.0):
+            pi_review.run_review(github, pi_client, 7, "{{LENS}}")
+
+        self.assertEqual(
+            pi_client.timeouts,
+            [float(pi_review.PI_LENS_TIMEOUT_SECONDS)] * 3,
+        )
+
+    def test_merges_overlapping_findings_at_the_highest_severity(self) -> None:
+        github = FakeGitHub()
+        pi_client = mock.Mock()
+
+        def review_lens(prompt: str, _chunk: str, **_kwargs: object) -> dict:
+            if "runtime correctness" in prompt:
+                severity = "P2"
+                title = "Cancellation cleanup missing"
+            elif "trust boundaries" in prompt:
+                severity = "P1"
+                title = "Cancellation cleanup missing"
+            else:
+                severity = "P2"
+                title = "Cancellation cleanup regression"
+            return {
+                "findings": [
+                    {
+                        "severity": severity,
+                        "path": "worker.py",
+                        "line": 2,
+                        "title": title,
+                        "failure_scenario": "Worker survives wrapper.",
+                        "remediation": "Terminate the process group.",
+                    }
+                ]
+            }
+
+        pi_client.review.side_effect = review_lens
+
+        pi_review.run_review(github, pi_client, 7, "{{LENS}}")
+
+        findings = github.created[0][3]
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0].severity, "P1")
+
+    def test_caps_merged_inline_findings_across_lenses(self) -> None:
+        github = FakeGitHub()
+        pi_client = mock.Mock()
+
+        def review_lens(prompt: str, _chunk: str, **_kwargs: object) -> dict:
+            if "runtime correctness" in prompt:
+                prefix = "correctness"
+            elif "trust boundaries" in prompt:
+                prefix = "security"
+            else:
+                prefix = "regression"
+            return {
+                "findings": [
+                    {
+                        "severity": "P2",
+                        "path": "worker.py",
+                        "line": 2,
+                        "title": f"{prefix}{index}",
+                        "failure_scenario": f"{prefix}{index} fails.",
+                        "remediation": f"Fix {prefix}{index}.",
+                    }
+                    for index in range(10)
+                ]
+            }
+
+        pi_client.review.side_effect = review_lens
+
+        pi_review.run_review(github, pi_client, 7, "{{LENS}}")
+
+        self.assertEqual(len(github.created[0][3]), pi_review._review.MAX_COMMENTS)
+        body = github.created[0][2]
+        if pi_review._shared_routing_available():
+            self.assertIn("Rejected model findings: 0", body)
+            self.assertIn("security0", body)
+        else:
+            self.assertIn("Rejected model findings: 10", body)
+
+    def test_uses_shared_routing_contract_when_available(self) -> None:
+        github = FakeGitHub()
+        pi_client = FakePiClient([])
+        findings = [
+            pi_review._review.Finding(
+                "P1", "worker.py", 2, "Inline", "Failure", "Fix"
+            ),
+            pi_review._review.Finding(
+                "P3", "worker.py", 2, "Minor", "Failure", "Fix"
+            ),
+            pi_review._review.Finding(
+                "P2", "helper.py", None, "Other", "Failure", "Fix"
+            ),
+        ]
+
+        def route(items: list, _files: dict) -> tuple[list, list]:
+            return [items[0]], items[1:]
+
+        with (
+            mock.patch.object(
+                pi_review._review,
+                "parse_findings",
+                return_value=(findings, 0),
+                create=True,
+            ),
+            mock.patch.object(
+                pi_review._review,
+                "route_findings",
+                side_effect=route,
+                create=True,
+            ),
+            mock.patch.object(
+                pi_review._review,
+                "build_summary",
+                return_value="routed summary",
+            ) as build_summary,
+        ):
+            pi_review.run_review(github, pi_client, 7, "{{LENS}}")
+
+        self.assertEqual(
+            [item.title for item in github.created[0][3]],
+            ["Inline"],
+        )
+        summary_findings = build_summary.call_args.kwargs["summary_findings"]
+        self.assertEqual(
+            [item.title for item in summary_findings],
+            ["Other", "Minor"],
+        )
+
     def test_publishes_review_with_findings(self) -> None:
         github = FakeGitHub()
         pi_client = FakePiClient()
@@ -619,6 +821,7 @@ class OrchestrationTest(unittest.TestCase):
         body = github.created[0][2]
         self.assertIn("Coverage: Partial", body)
         self.assertIn("empty model response", body)
+        self.assertIn("review lens(es)", body)
 
     def test_custom_review_id_is_used(self) -> None:
         github = FakeGitHub()
@@ -634,7 +837,7 @@ class OrchestrationTest(unittest.TestCase):
         body = github.created[0][2]
         self.assertIn("<!-- custom-review-id:head-1 -->", body)
 
-    def test_invalid_findings_raise_pi_review_error(self) -> None:
+    def test_all_invalid_lens_payloads_fail_the_review(self) -> None:
         github = FakeGitHub()
         pi_client = mock.Mock()
         pi_client.review.return_value = {"findings": "invalid"}
@@ -642,7 +845,7 @@ class OrchestrationTest(unittest.TestCase):
         with self.assertRaises(pi_review.PiReviewError) as ctx:
             pi_review.run_review(github, pi_client, 7, "prompt")
 
-        self.assertIn("findings must be an array", str(ctx.exception))
+        self.assertIn("all review lenses failed", str(ctx.exception))
 
 
 # -- workflow contract tests -----------------------------------------------
@@ -665,6 +868,18 @@ class PiWorkflowContractTest(unittest.TestCase):
         self.assertGreater(
             pi_review.PI_TIMEOUT_SECONDS, 600,
             "agent review should allow more time than direct API calls",
+        )
+
+    def test_prompt_supports_unanchored_summary_findings(self) -> None:
+        prompt = " ".join(
+            SCRIPT_DIR.joinpath("pi_review_prompt.md").read_text().split()
+        )
+
+        self.assertIn("set line to null", prompt)
+        self.assertIn("exact relevant repository path", prompt)
+        self.assertNotIn(
+            "cannot be tied to an added RIGHT-side line",
+            prompt,
         )
 
     def test_main_binds_review_to_event_revisions(self) -> None:
