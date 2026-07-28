@@ -44,6 +44,12 @@ class PiReviewCanaryWorkflowTest(unittest.TestCase):
             self.workflow,
         )
 
+    def test_requires_a_containerized_code_review_runner(self) -> None:
+        self.assertIn(
+            "runs-on: [self-hosted, Linux, X64, container, code-review]",
+            self.workflow,
+        )
+
     def test_canary_has_a_separate_review_id_and_concurrency_group(self) -> None:
         self.assertIn("self-hosted-pi-pr-review${{", self.workflow)
         self.assertIn("'-canary'", self.workflow)

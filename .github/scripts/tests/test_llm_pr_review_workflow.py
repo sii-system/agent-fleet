@@ -56,7 +56,7 @@ class LlmPrReviewWorkflowTest(unittest.TestCase):
                 "group: self-hosted-llm-pr-review-"
                 "${{ github.event.pull_request.number }}"
             ),
-            "runs-on: [self-hosted, Linux, X64]",
+            "runs-on: [self-hosted, Linux, X64, container, code-review]",
             "environment: self-hosted-env",
             "LLM_REVIEW_ID: self-hosted-pi-pr-review",
         )

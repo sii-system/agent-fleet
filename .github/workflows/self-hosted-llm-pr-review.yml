@@ -21,7 +21,7 @@ concurrency:
 jobs:
   review:
     name: Self-hosted review
-    runs-on: [self-hosted, Linux, X64]
+    runs-on: [self-hosted, Linux, X64, container, code-review]
     environment: self-hosted-env
     timeout-minutes: 20
     steps:
