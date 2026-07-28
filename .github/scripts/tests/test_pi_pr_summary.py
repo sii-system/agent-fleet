@@ -220,6 +220,78 @@ class SummaryContractTest(unittest.TestCase):
 
         self.assertEqual(result.diagram, 'flowchart TD\n  A["{owner}"]')
 
+    def test_quotes_targets_after_dotted_links(self) -> None:
+        result = summary.validate_summary(
+            {
+                "description": ["Describes dotted transitions."],
+                "diagram": (
+                    "flowchart TD\n"
+                    "  A[Start] -. yes .-> B[GET /repos/{owner}]\n"
+                    "  B -.- C[GET /repos/{repo}]"
+                ),
+                "assessment": "The flow uses two dotted link forms.",
+            }
+        )
+
+        self.assertEqual(
+            result.diagram,
+            "flowchart TD\n"
+            '  A["Start"] -. yes .-> B["GET /repos/{owner}"]\n'
+            '  B -.- C["GET /repos/{repo}"]',
+        )
+
+    def test_does_not_treat_pipes_inside_node_labels_as_edge_text(self) -> None:
+        result = summary.validate_summary(
+            {
+                "description": ["Describes piped input."],
+                "diagram": (
+                    "flowchart TD\n"
+                    "  A[Input | output] --> B[GET /repos/{owner}]"
+                ),
+                "assessment": "The flow has two nodes.",
+            }
+        )
+
+        self.assertEqual(
+            result.diagram,
+            "flowchart TD\n"
+            '  A["Input | output"] --> B["GET /repos/{owner}"]',
+        )
+
+    def test_quotes_nodes_after_statement_separators(self) -> None:
+        result = summary.validate_summary(
+            {
+                "description": ["Describes compact Mermaid."],
+                "diagram": (
+                    "flowchart TD; A[GET /repos/{owner}]; "
+                    "B[GET /repos/{repo}]"
+                ),
+                "assessment": "The flow uses compact statements.",
+            }
+        )
+
+        self.assertEqual(
+            result.diagram,
+            "flowchart TD; A[\"GET /repos/{owner}\"]; "
+            'B["GET /repos/{repo}"]',
+        )
+
+    def test_preserves_multiline_quoted_node_labels(self) -> None:
+        result = summary.validate_summary(
+            {
+                "description": ["Describes multiline text."],
+                "diagram": (
+                    'flowchart TD\n  A["`First line\nSecond line`"] --> B[Done]'
+                ),
+                "assessment": "The first node has a Markdown label.",
+            }
+        )
+
+        self.assertEqual(
+            result.diagram,
+            'flowchart TD\n  A["`First line\nSecond line`"] --> B["Done"]',
+        )
+
     def test_quotes_balanced_braces_inside_diamond_text(self) -> None:
         result = summary.validate_summary(
             {

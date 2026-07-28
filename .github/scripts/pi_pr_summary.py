@@ -35,7 +35,7 @@ FLOWCHART_NODE_START_RE = re.compile(
     (?P<prefix>
         ^[ \t]*(?:subgraph[ \t]+)?
         |
-        (?:(?:--+[xo]|--+>|==+>|-\.\->|---|~~~)(?:\|[^|\n]*\|)?|&)[ \t]*
+        (?:(?:--+[xo]|--+>|==+>|-\.\->|\.\->|-\.\-|---|~~~)(?:\|[^|\n]*\|)?|[&;])[ \t]*
     )
     (?P<node>[A-Za-z0-9_]+)
     (?P<opening>
@@ -92,23 +92,38 @@ def _validate_diagram(value: Any) -> str | None:
 
 def _quote_flowchart_labels(diagram: str) -> str:
     def ignored_context(index: int) -> bool:
-        line_start = diagram.rfind("\n", 0, index) + 1
         quoted = False
         edge_text = False
-        line_prefix = diagram[line_start:index]
-        for offset, character in enumerate(line_prefix):
+        commented = False
+        delimiters: list[str] = []
+        prefix = diagram[:index]
+        for offset, character in enumerate(prefix):
+            if character == "\n":
+                commented = False
+                if not quoted:
+                    edge_text = False
+                continue
+            if commented:
+                continue
             if (
                 character == "%"
-                and line_prefix[offset : offset + 2] == "%%"
+                and prefix[offset : offset + 2] == "%%"
                 and not quoted
                 and not edge_text
+                and not delimiters
             ):
-                return True
+                commented = True
+                continue
             if character == '"':
                 quoted = not quoted
-            elif character == "|" and not quoted:
-                edge_text = not edge_text
-        return quoted or edge_text
+            elif not quoted:
+                if character in "[{(":
+                    delimiters.append({"[": "]", "{": "}", "(": ")"}[character])
+                elif delimiters and character == delimiters[-1]:
+                    delimiters.pop()
+                elif character == "|" and not delimiters:
+                    edge_text = not edge_text
+        return quoted or edge_text or commented or bool(delimiters)
 
     def node_end(start: int, opening: str) -> int | None:
         closing = "]" if opening == "[" else "}"
@@ -116,7 +131,7 @@ def _quote_flowchart_labels(diagram: str) -> str:
         quoted = False
         for index in range(start, len(diagram)):
             character = diagram[index]
-            if character == "\n":
+            if character == "\n" and not quoted:
                 return None
             if character == '"':
                 quoted = not quoted
