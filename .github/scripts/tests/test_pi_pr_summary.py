@@ -370,6 +370,20 @@ class SummaryContractTest(unittest.TestCase):
             '  A["Input (raw"] --> B["GET /repos/{owner}"]',
         )
 
+    def test_encodes_quotes_inside_quoted_node_labels(self) -> None:
+        result = summary.validate_summary(
+            {
+                "description": ["Describes a quoted status."],
+                "diagram": 'flowchart TD\n  A["Return "ready" status"]',
+                "assessment": "The flow has one status node.",
+            }
+        )
+
+        self.assertEqual(
+            result.diagram,
+            'flowchart TD\n  A["Return #quot;ready#quot; status"]',
+        )
+
     def test_quotes_balanced_braces_inside_diamond_text(self) -> None:
         result = summary.validate_summary(
             {

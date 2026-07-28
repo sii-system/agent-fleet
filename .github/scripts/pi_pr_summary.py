@@ -167,7 +167,8 @@ def _quote_flowchart_labels(diagram: str) -> str:
         label = diagram[match.end() : end]
         parts.append(diagram[cursor : match.end()])
         if label.startswith('"') and label.endswith('"'):
-            parts.append(label)
+            inner_label = label[1:-1].replace('"', "#quot;")
+            parts.append(f'"{inner_label}"')
         else:
             label = label.replace('"', "#quot;")
             parts.append(f'"{label}"')
