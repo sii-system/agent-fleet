@@ -57,6 +57,17 @@ LENS_INSTRUCTIONS = {
         "concrete defect escape. Use at most 16 tool calls."
     ),
 }
+INLINE_ROUTING_INSTRUCTION = (
+    "Report only defects that can be tied to an added RIGHT-side line shown "
+    "in the input. Use the exact changed path and added line. Prefer no "
+    "finding over an unanchorable finding."
+)
+SUMMARY_ROUTING_INSTRUCTION = (
+    "When a defect is on an added RIGHT-side line, use that line. When a "
+    "concrete defect cannot be anchored to an added line, set line to null "
+    "and use the exact relevant repository path so it can be included in "
+    "the review summary."
+)
 
 
 class PiReviewError(RuntimeError):
@@ -71,7 +82,7 @@ class PiResponseFormatError(PiReviewError):
         self.tool_calls = tool_calls
 
 
-def _title_similarity(left: str, right: str) -> float:
+def _text_similarity(left: str, right: str) -> float:
     left_tokens = set(re.findall(r"[a-z0-9]+", left.casefold()))
     right_tokens = set(re.findall(r"[a-z0-9]+", right.casefold()))
     union = left_tokens | right_tokens
@@ -97,7 +108,12 @@ def merge_lens_findings(
             if (
                 existing.path == finding.path
                 and existing.line == finding.line
-                and _title_similarity(existing.title, finding.title) >= 0.5
+                and _text_similarity(existing.title, finding.title) >= 0.5
+                and _text_similarity(
+                    existing.failure_scenario,
+                    finding.failure_scenario,
+                )
+                >= 0.5
             ):
                 winner = min(
                     (existing, finding),
@@ -292,7 +308,6 @@ class PiClient:
                 "--no-session",
                 "--approve",
                 "--system-prompt", system_prompt,
-                diff_chunk,
             ]
 
             format_error: PiResponseFormatError | None = None
@@ -308,7 +323,7 @@ class PiClient:
                         command,
                         cwd=self.repository_root,
                         env=minimal_environment(runtime_dir, self.api_key),
-                        stdin=subprocess.DEVNULL,
+                        input=diff_chunk,
                         text=True,
                         capture_output=True,
                         timeout=remaining,
@@ -378,6 +393,11 @@ def run_review(
         )
         whole_diff = chunks[0] if chunks else ""
         model_input = _review.build_model_input(pull, whole_diff)
+        routing_instruction = (
+            SUMMARY_ROUTING_INSTRUCTION
+            if _shared_routing_available()
+            else INLINE_ROUTING_INSTRUCTION
+        )
 
         with ThreadPoolExecutor(max_workers=len(LENS_INSTRUCTIONS)) as executor:
             futures = {}
@@ -389,7 +409,10 @@ def run_review(
                     )
                 futures[lens] = executor.submit(
                     pi_client.review,
-                    prompt.replace("{{LENS}}", instruction),
+                    prompt.replace(
+                        "{{ROUTING}}",
+                        routing_instruction,
+                    ).replace("{{LENS}}", instruction),
                     model_input,
                     timeout=min(float(PI_LENS_TIMEOUT_SECONDS), remaining),
                     retry_malformed=True,
@@ -432,6 +455,7 @@ def run_review(
         if len(failed_lenses) == len(LENS_INSTRUCTIONS):
             raise PiReviewError("all review lenses failed")
 
+        partial = bool(incomplete_lenses or failed_lenses)
         findings = merge_lens_findings(findings)
         summary_findings: list[_review.Finding] = []
         if _shared_routing_available():
@@ -450,7 +474,9 @@ def run_review(
             return "stale"
 
         summary_options: dict[str, Any] = {
-            "review_id": review_id,
+            "review_id": (
+                f"{review_id}-partial" if partial else review_id
+            ),
             "base_sha": expected_base_sha,
         }
         if _shared_routing_available():
@@ -471,7 +497,7 @@ def run_review(
             for lens in LENS_INSTRUCTIONS
         )
         summary += f"\n\nTool calls by lens: {tool_call_counts}"
-        if incomplete_lenses or failed_lenses:
+        if partial:
             summary = summary.replace(
                 "Coverage: Complete",
                 "Coverage: Partial",

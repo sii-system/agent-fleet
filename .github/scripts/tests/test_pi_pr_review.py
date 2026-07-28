@@ -31,7 +31,7 @@ def _stub_pi_script(
         f"""#!/usr/bin/env bash
 set -euo pipefail
 stub_dir="$(cd "$(dirname "$0")" && pwd)"
-prompt="${{@: -1}}"
+prompt="$(cat)"
 {{
   printf 'home=%s\\n' "${{HOME:-}}"
   printf 'pi_dir=%s\\n' "${{PI_CODING_AGENT_DIR:-}}"
@@ -355,6 +355,26 @@ class PiClientTest(unittest.TestCase):
         self.assertIn("offline=1", captured)
         self.assertIn(f"cwd={self.repository_root.resolve()}", captured)
 
+    def test_sends_large_diff_through_stdin_not_argv(self) -> None:
+        client = self._make_client()
+        model_input = "x" * 200_000
+        completed = subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout=_make_findings_response([]),
+            stderr="",
+        )
+
+        with mock.patch(
+            "subprocess.run",
+            return_value=completed,
+        ) as run_mock:
+            client.review("prompt", model_input)
+
+        command = run_mock.call_args.args[0]
+        self.assertLess(max(map(len, command)), 10_000)
+        self.assertEqual(run_mock.call_args.kwargs["input"], model_input)
+
     def test_mode_json_and_print_are_set(self) -> None:
         _stub_pi_script(self.bin_dir, stdout=_make_findings_response())
         client = self._make_client()
@@ -598,6 +618,90 @@ class OrchestrationTest(unittest.TestCase):
         self.assertIn("Failed lenses: security", body)
         self.assertNotIn("provider detail", body)
 
+    def test_partial_review_does_not_block_a_complete_rerun(self) -> None:
+        github = FakeGitHub()
+        pi_client = mock.Mock()
+
+        def fail_security(
+            prompt: str,
+            _chunk: str,
+            **_kwargs: object,
+        ) -> dict:
+            if "trust boundaries" in prompt:
+                raise pi_review.PiReviewError("failed")
+            return {"findings": []}
+
+        pi_client.review.side_effect = fail_security
+        first = pi_review.run_review(github, pi_client, 7, "{{LENS}}")
+        partial_body = github.created[0][2]
+        github.reviews = [
+            {
+                "user": {"login": "github-actions[bot]"},
+                "body": partial_body,
+            }
+        ]
+        pi_client.review.side_effect = lambda *_args, **_kwargs: {
+            "findings": []
+        }
+
+        second = pi_review.run_review(github, pi_client, 7, "{{LENS}}")
+
+        self.assertEqual((first, second), ("published", "published"))
+        self.assertIn("<!-- pi-pr-review-partial:head-1 -->", partial_body)
+        self.assertIn("<!-- pi-pr-review:head-1 -->", github.created[1][2])
+
+    def test_fallback_prompt_requests_only_inline_findings(self) -> None:
+        github = FakeGitHub()
+        pi_client = FakePiClient([])
+
+        pi_review.run_review(
+            github,
+            pi_client,
+            7,
+            "{{ROUTING}}\n{{LENS}}",
+        )
+
+        self.assertTrue(
+            all("added RIGHT-side line" in prompt for prompt in pi_client.prompts)
+        )
+        self.assertTrue(
+            all("set line to null" not in prompt for prompt in pi_client.prompts)
+        )
+
+    def test_shared_router_prompt_requests_unanchorable_findings(self) -> None:
+        github = FakeGitHub()
+        pi_client = FakePiClient([])
+
+        with (
+            mock.patch.object(
+                pi_review._review,
+                "parse_findings",
+                side_effect=lambda _payload: ([], 0),
+                create=True,
+            ),
+            mock.patch.object(
+                pi_review._review,
+                "route_findings",
+                side_effect=lambda _findings, _files: ([], []),
+                create=True,
+            ),
+            mock.patch.object(
+                pi_review._review,
+                "build_summary",
+                return_value="summary",
+            ),
+        ):
+            pi_review.run_review(
+                github,
+                pi_client,
+                7,
+                "{{ROUTING}}\n{{LENS}}",
+            )
+
+        self.assertTrue(
+            all("set line to null" in prompt for prompt in pi_client.prompts)
+        )
+
     def test_two_lens_failures_publish_the_remaining_result(self) -> None:
         github = FakeGitHub()
         pi_client = mock.Mock()
@@ -766,6 +870,30 @@ class OrchestrationTest(unittest.TestCase):
         merged = pi_review.merge_lens_findings(findings)
 
         self.assertEqual(len(merged), 3)
+
+    def test_generic_title_overlap_does_not_merge_distinct_failures(self) -> None:
+        findings = [
+            pi_review._review.Finding(
+                "P1",
+                "worker.py",
+                2,
+                "Missing authorization check",
+                "An unauthenticated caller can delete another user's job.",
+                "Require ownership before deletion.",
+            ),
+            pi_review._review.Finding(
+                "P2",
+                "worker.py",
+                2,
+                "Missing null check",
+                "An absent worker result raises AttributeError during cleanup.",
+                "Handle the absent result before dereferencing it.",
+            ),
+        ]
+
+        merged = pi_review.merge_lens_findings(findings)
+
+        self.assertEqual(len(merged), 2)
 
     def test_caps_merged_inline_findings_across_lenses(self) -> None:
         github = FakeGitHub()
@@ -1064,17 +1192,13 @@ class PiWorkflowContractTest(unittest.TestCase):
             "agent review should allow more time than direct API calls",
         )
 
-    def test_prompt_supports_unanchored_summary_findings(self) -> None:
+    def test_prompt_defers_anchor_contract_to_available_router(self) -> None:
         prompt = " ".join(
             SCRIPT_DIR.joinpath("pi_review_prompt.md").read_text().split()
         )
 
-        self.assertIn("set line to null", prompt)
-        self.assertIn("exact relevant repository path", prompt)
-        self.assertNotIn(
-            "cannot be tied to an added RIGHT-side line",
-            prompt,
-        )
+        self.assertIn("{{ROUTING}}", prompt)
+        self.assertIn("{{LENS}}", prompt)
 
     def test_main_binds_review_to_event_revisions(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
