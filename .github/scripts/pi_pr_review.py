@@ -264,6 +264,7 @@ class PiClient:
         diff_chunk: str,
         *,
         timeout: float | None = None,
+        retry_malformed: bool = False,
     ) -> dict[str, Any]:
         effective_timeout = (
             self.timeout if timeout is None else min(self.timeout, timeout)
@@ -296,7 +297,8 @@ class PiClient:
 
             format_error: PiResponseFormatError | None = None
             prior_tool_calls = 0
-            for attempt in range(2):
+            attempts = 2 if retry_malformed else 1
+            for attempt in range(attempts):
                 remaining = max(0.0, deadline - time.monotonic())
                 if attempt and remaining == 0:
                     assert format_error is not None
@@ -390,6 +392,7 @@ def run_review(
                     prompt.replace("{{LENS}}", instruction),
                     model_input,
                     timeout=min(float(PI_LENS_TIMEOUT_SECONDS), remaining),
+                    retry_malformed=True,
                 )
 
         findings: list[_review.Finding] = []

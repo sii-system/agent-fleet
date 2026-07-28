@@ -451,10 +451,38 @@ class PiClientTest(unittest.TestCase):
             "subprocess.run",
             side_effect=[malformed, valid],
         ) as run_mock:
-            result = client.review("prompt", "diff", timeout=20)
+            result = client.review(
+                "prompt",
+                "diff",
+                timeout=20,
+                retry_malformed=True,
+            )
 
         self.assertEqual(result, {"findings": [], "_pi_tool_calls": 3})
         self.assertEqual(run_mock.call_count, 2)
+
+    def test_does_not_retry_malformed_model_response_by_default(self) -> None:
+        client = self._make_client()
+        malformed = subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout=_make_text_response("not JSON"),
+            stderr="",
+        )
+        valid = subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout=_make_findings_response([]),
+            stderr="",
+        )
+
+        with mock.patch(
+            "subprocess.run",
+            side_effect=[malformed, valid],
+        ) as run_mock, self.assertRaises(pi_review.PiResponseFormatError):
+            client.review("prompt", "diff", timeout=20)
+
+        self.assertEqual(run_mock.call_count, 1)
 
 
 # -- orchestration tests --------------------------------------------------
@@ -509,6 +537,7 @@ class FakePiClient:
         self.inputs: list[str] = []
         self.prompts: list[str] = []
         self.timeouts: list[float | None] = []
+        self.retry_malformed: list[bool] = []
 
     def review(
         self,
@@ -516,10 +545,12 @@ class FakePiClient:
         chunk: str,
         *,
         timeout: float | None = None,
+        retry_malformed: bool = False,
     ) -> dict:
         self.prompts.append(prompt)
         self.inputs.append(chunk)
         self.timeouts.append(timeout)
+        self.retry_malformed.append(retry_malformed)
         return {"findings": list(self.findings)}
 
 
@@ -542,6 +573,7 @@ class OrchestrationTest(unittest.TestCase):
             self.assertIn("FILE tests/test_worker.py", model_input)
         self.assertEqual(len(set(pi_client.prompts)), 3)
         self.assertTrue(all("{{LENS}}" not in prompt for prompt in pi_client.prompts))
+        self.assertEqual(pi_client.retry_malformed, [True] * 3)
 
     def test_one_lens_failure_publishes_partial_results(self) -> None:
         github = FakeGitHub()
