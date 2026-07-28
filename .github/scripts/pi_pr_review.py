@@ -43,7 +43,6 @@ WORKFLOW_TIMEOUT_SECONDS = 20 * 60
 WORKFLOW_RESERVE_SECONDS = 5 * 60
 PI_REVIEW_BUDGET_SECONDS = WORKFLOW_TIMEOUT_SECONDS - WORKFLOW_RESERVE_SECONDS
 PI_LENS_TIMEOUT_SECONDS = 12 * 60
-PI_READ_ONLY_TOOLS = "read,grep,find,ls"
 LENS_INSTRUCTIONS = {
     "correctness": (
         "Focus on runtime correctness, state transitions, error handling, and "
@@ -291,7 +290,6 @@ class PiClient:
                 "--model", self.model,
                 "--no-session",
                 "--approve",
-                "--tools", PI_READ_ONLY_TOOLS,
                 "--system-prompt", system_prompt,
                 diff_chunk,
             ]
