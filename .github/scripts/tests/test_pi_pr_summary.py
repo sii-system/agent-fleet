@@ -93,6 +93,64 @@ class SummaryContractTest(unittest.TestCase):
             '  R --> API["GET /repos/{owner}/{repo}/pulls/{n}"]',
         )
 
+    def test_preserves_delimiters_inside_quoted_node_text(self) -> None:
+        result = summary.validate_summary(
+            {
+                "description": ["Describes an indexed lookup."],
+                "diagram": 'flowchart TD\n  A["Read items[0]"] --> B["Done"]',
+                "assessment": "The flow is direct.",
+            }
+        )
+
+        self.assertEqual(
+            result.diagram,
+            'flowchart TD\n  A["Read items[0]"] --> B["Done"]',
+        )
+
+    def test_quotes_node_text_for_numeric_ids(self) -> None:
+        result = summary.validate_summary(
+            {
+                "description": ["Describes an API lookup."],
+                "diagram": "flowchart TD\n  1[GET /repos/{owner}/{repo}]",
+                "assessment": "The flow is direct.",
+            }
+        )
+
+        self.assertEqual(
+            result.diagram,
+            'flowchart TD\n  1["GET /repos/{owner}/{repo}"]',
+        )
+
+    def test_does_not_rewrite_edge_text(self) -> None:
+        result = summary.validate_summary(
+            {
+                "description": ["Describes an edge lookup."],
+                "diagram": (
+                    'flowchart TD\n  A["Start"] -->|"lookup key[x]"| B["Done"]'
+                ),
+                "assessment": "The flow is direct.",
+            }
+        )
+
+        self.assertEqual(
+            result.diagram,
+            'flowchart TD\n  A["Start"] -->|"lookup key[x]"| B["Done"]',
+        )
+
+    def test_quotes_rectangular_text_with_braces_once(self) -> None:
+        result = summary.validate_summary(
+            {
+                "description": ["Describes a configuration lookup."],
+                "diagram": "flowchart TD\n  A[config{mode}]",
+                "assessment": "The flow is direct.",
+            }
+        )
+
+        self.assertEqual(
+            result.diagram,
+            'flowchart TD\n  A["config{mode}"]',
+        )
+
 
 class SummaryRenderingTest(unittest.TestCase):
     def setUp(self) -> None:

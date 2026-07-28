@@ -30,11 +30,21 @@ MARKDOWN_ESCAPE_TABLE = str.maketrans(
     {character: f"\\{character}" for character in r"\`*_{}[]()#+-.!|~:/?="}
 )
 MERMAID_IMAGE_NODE_RE = re.compile(r"@\{\s*img\s*:", re.IGNORECASE)
-FLOWCHART_RECT_NODE_RE = re.compile(
-    r"(?P<node>\b[A-Za-z_][A-Za-z0-9_]*)\[(?![\[({/>\\])(?P<label>[^\]\n]*)\]"
-)
-FLOWCHART_DIAMOND_NODE_RE = re.compile(
-    r"(?P<node>\b[A-Za-z_][A-Za-z0-9_]*)\{(?!\{)(?P<label>[^{}\n]*)\}"
+FLOWCHART_NODE_RE = re.compile(
+    r"""
+    (?P<prefix>
+        ^[ \t]*(?:subgraph[ \t]+)?
+        |
+        (?:--+>|==+>|-\.\->|---|~~~)(?:\|[^|\n]*\|)?[ \t]*
+    )
+    (?P<node>[A-Za-z0-9_]+)
+    (?:
+        \[(?![\[({/>\\])(?P<rect>"[^"\n]*"|[^\]\n]*)\]
+        |
+        \{(?!\{)(?P<diamond>"[^"\n]*"|[^{}\n]*)\}
+    )
+    """,
+    re.MULTILINE | re.VERBOSE,
 )
 
 
@@ -81,21 +91,22 @@ def _validate_diagram(value: Any) -> str | None:
 
 
 def _quote_flowchart_labels(diagram: str) -> str:
-    def quoted(match: re.Match[str], opening: str, closing: str) -> str:
-        label = match.group("label")
+    def quoted(match: re.Match[str]) -> str:
+        label = match.group("rect")
+        opening, closing = "[", "]"
+        if label is None:
+            label = match.group("diamond")
+            opening, closing = "{", "}"
+        assert label is not None
         if label.startswith('"') and label.endswith('"'):
             return match.group(0)
         label = label.replace('"', "#quot;")
-        return f'{match.group("node")}{opening}"{label}"{closing}'
+        return (
+            f'{match.group("prefix")}{match.group("node")}'
+            f'{opening}"{label}"{closing}'
+        )
 
-    diagram = FLOWCHART_RECT_NODE_RE.sub(
-        lambda match: quoted(match, "[", "]"),
-        diagram,
-    )
-    return FLOWCHART_DIAMOND_NODE_RE.sub(
-        lambda match: quoted(match, "{", "}"),
-        diagram,
-    )
+    return FLOWCHART_NODE_RE.sub(quoted, diagram)
 
 
 def validate_summary(payload: dict[str, Any]) -> Summary:
