@@ -137,7 +137,7 @@ class ModelContractTest(unittest.TestCase):
             {"findings": []},
         )
 
-    def test_validate_findings_rejects_non_right_lines_and_sorts_severity(
+    def test_parse_retains_unanchorable_findings_while_validation_filters_them(
         self,
     ) -> None:
         parsed = {
@@ -157,9 +157,9 @@ class ModelContractTest(unittest.TestCase):
                     "severity": "P0",
                     "path": "src/a.py",
                     "line": 7,
-                    "title": "Invalid anchor",
+                    "title": "Summary anchor",
                     "failure_scenario": "This is not an added line.",
-                    "remediation": "Do not publish this finding.",
+                    "remediation": "Publish this finding in the summary.",
                 },
                 {
                     "severity": "P1",
@@ -172,12 +172,15 @@ class ModelContractTest(unittest.TestCase):
             ]
         }
 
-        findings, rejected = review.validate_findings(payload, parsed)
+        findings, rejected = review.parse_findings(payload)
 
-        self.assertEqual([item.severity for item in findings], ["P1", "P2"])
-        self.assertEqual(rejected, 1)
+        self.assertEqual([item.severity for item in findings], ["P0", "P1", "P2"])
+        self.assertEqual(rejected, 0)
+        anchored, anchor_rejected = review.validate_findings(payload, parsed)
+        self.assertEqual([item.severity for item in anchored], ["P1", "P2"])
+        self.assertEqual(anchor_rejected, 1)
 
-    def test_validation_deduplicates_and_caps_findings(self) -> None:
+    def test_validation_deduplicates_findings(self) -> None:
         parsed = {
             "a.py": review.ParsedFile("a.py", "", frozenset(range(1, 30)))
         }
@@ -191,10 +194,64 @@ class ModelContractTest(unittest.TestCase):
         }
         payload = {"findings": [item, dict(item)]}
 
-        findings, rejected = review.validate_findings(payload, parsed, limit=20)
+        findings, rejected = review.validate_findings(payload, parsed)
 
         self.assertEqual(len(findings), 1)
         self.assertEqual(rejected, 1)
+
+    def test_route_findings_keeps_only_high_severity_right_lines_inline(
+        self,
+    ) -> None:
+        files = {
+            "a.py": review.ParsedFile("a.py", "", frozenset({8, 9})),
+        }
+        findings = [
+            review.Finding("P1", "a.py", 8, "Inline", "Failure", "Fix"),
+            review.Finding("P2", "a.py", 7, "Context", "Failure", "Fix"),
+            review.Finding("P3", "a.py", 9, "Minor", "Failure", "Fix"),
+            review.Finding("P1", "helper.py", None, "Other", "Failure", "Fix"),
+        ]
+
+        inline, summary = review.route_findings(findings, files)
+
+        self.assertEqual([item.title for item in inline], ["Inline"])
+        self.assertEqual(
+            [item.title for item in summary],
+            ["Context", "Minor", "Other"],
+        )
+
+    def test_route_findings_sends_inline_overflow_to_summary(self) -> None:
+        files = {
+            "a.py": review.ParsedFile("a.py", "", frozenset({1, 2})),
+        }
+        findings = [
+            review.Finding("P1", "a.py", 1, "First", "Failure", "Fix"),
+            review.Finding("P2", "a.py", 2, "Second", "Failure", "Fix"),
+        ]
+
+        inline, summary = review.route_findings(findings, files, limit=1)
+
+        self.assertEqual([item.title for item in inline], ["First"])
+        self.assertEqual([item.title for item in summary], ["Second"])
+
+    def test_validation_retains_null_line_for_summary(self) -> None:
+        payload = {
+            "findings": [
+                {
+                    "severity": "P1",
+                    "path": "helper.py",
+                    "line": None,
+                    "title": "Cross-file contract breaks",
+                    "failure_scenario": "The changed caller passes an invalid value.",
+                    "remediation": "Keep the helper contract compatible.",
+                }
+            ]
+        }
+
+        findings, rejected = review.parse_findings(payload)
+
+        self.assertEqual(findings[0].line, None)
+        self.assertEqual(rejected, 0)
 
 
 class FakeResponse:
@@ -572,6 +629,46 @@ class OrchestrationTest(unittest.TestCase):
         self.assertEqual((number, sha), (7, "head-1"))
         self.assertIn("<!-- llm-pr-review:head-1 -->", body)
         self.assertEqual(len(findings), 1)
+
+    def test_routes_unanchorable_and_p3_findings_to_review_summary(self) -> None:
+        github = FakeGitHub()
+        llm = mock.Mock()
+        llm.review.return_value = {
+            "findings": [
+                {
+                    "severity": "P1",
+                    "path": "worker.py",
+                    "line": 2,
+                    "title": "Inline defect",
+                    "failure_scenario": "The worker leaks.",
+                    "remediation": "Stop the worker.",
+                },
+                {
+                    "severity": "P2",
+                    "path": "worker.py",
+                    "line": 1,
+                    "title": "Context defect",
+                    "failure_scenario": "The unchanged branch fails.",
+                    "remediation": "Repair the surrounding logic.",
+                },
+                {
+                    "severity": "P3",
+                    "path": "worker.py",
+                    "line": 2,
+                    "title": "Minor defect",
+                    "failure_scenario": "Diagnostics are misleading.",
+                    "remediation": "Correct the diagnostic.",
+                },
+            ]
+        }
+
+        review.run_review(github, llm, 7, "prompt")
+
+        _number, _sha, body, inline = github.created[0]
+        self.assertEqual([item.title for item in inline], ["Inline defect"])
+        self.assertIn("Context defect", body)
+        self.assertIn("Minor defect", body)
+        self.assertIn("Automated review found 3 actionable finding(s).", body)
 
     def test_no_findings_still_posts_sha_summary(self) -> None:
         github = FakeGitHub()

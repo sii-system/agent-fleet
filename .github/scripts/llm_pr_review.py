@@ -47,7 +47,7 @@ class ParsedFile:
 class Finding:
     severity: str
     path: str
-    line: int
+    line: int | None
     title: str
     failure_scenario: str
     remediation: str
@@ -165,18 +165,13 @@ def _neutralize_mentions(text: str) -> str:
     return text.replace("@", "@\u200b")
 
 
-def validate_findings(
-    payload: dict[str, Any],
-    files: dict[str, ParsedFile],
-    *,
-    limit: int = MAX_COMMENTS,
-) -> tuple[list[Finding], int]:
+def parse_findings(payload: dict[str, Any]) -> tuple[list[Finding], int]:
     raw_findings = payload.get("findings")
     if not isinstance(raw_findings, list):
         raise ModelResponseError("findings must be an array")
 
     valid: list[Finding] = []
-    seen: set[tuple[str, int, str, str]] = set()
+    seen: set[tuple[str, int | None, str, str]] = set()
     rejected = 0
     for raw in raw_findings:
         if not isinstance(raw, dict):
@@ -188,12 +183,10 @@ def validate_findings(
         title = _bounded_text(raw.get("title"))
         scenario = _bounded_text(raw.get("failure_scenario"))
         remediation = _bounded_text(raw.get("remediation"))
-        parsed = files.get(path) if path else None
         if (
             severity not in SEVERITY_ORDER
-            or parsed is None
-            or type(line) is not int
-            or line not in parsed.right_lines
+            or path is None
+            or (line is not None and (type(line) is not int or line < 1))
             or title is None
             or scenario is None
             or remediation is None
@@ -207,9 +200,56 @@ def validate_findings(
         seen.add(key)
         valid.append(Finding(severity, path, line, title, scenario, remediation))
 
-    valid.sort(key=lambda item: (SEVERITY_ORDER[item.severity], item.path, item.line))
-    rejected += max(0, len(valid) - limit)
-    return valid[:limit], rejected
+    valid.sort(
+        key=lambda item: (
+            SEVERITY_ORDER[item.severity],
+            item.path,
+            item.line is None,
+            item.line or 0,
+        )
+    )
+    return valid, rejected
+
+
+def validate_findings(
+    payload: dict[str, Any],
+    files: dict[str, ParsedFile],
+    *,
+    limit: int = MAX_COMMENTS,
+) -> tuple[list[Finding], int]:
+    findings, rejected = parse_findings(payload)
+    anchored = [
+        finding
+        for finding in findings
+        if (parsed := files.get(finding.path)) is not None
+        and type(finding.line) is int
+        and finding.line in parsed.right_lines
+    ]
+    rejected += len(findings) - len(anchored)
+    rejected += max(0, len(anchored) - limit)
+    return anchored[:limit], rejected
+
+
+def route_findings(
+    findings: list[Finding],
+    files: dict[str, ParsedFile],
+    *,
+    limit: int = MAX_COMMENTS,
+) -> tuple[list[Finding], list[Finding]]:
+    inline: list[Finding] = []
+    summary: list[Finding] = []
+    for finding in findings:
+        parsed = files.get(finding.path)
+        can_inline = (
+            finding.severity != "P3"
+            and parsed is not None
+            and finding.line in parsed.right_lines
+        )
+        if can_inline and len(inline) < limit:
+            inline.append(finding)
+        else:
+            summary.append(finding)
+    return inline, summary
 
 
 def _json_request(
@@ -428,6 +468,8 @@ def build_summary(
     incomplete_chunks: int = 0,
     review_id: str = DEFAULT_REVIEW_ID,
     base_sha: str | None = None,
+    summary_findings: list[Finding] | None = None,
+    changed_paths: frozenset[str] = frozenset(),
 ) -> str:
     coverage = (
         "Partial" if skipped or truncated or incomplete_chunks else "Complete"
@@ -468,7 +510,41 @@ def build_summary(
                 ),
             ]
         )
+    if summary_findings:
+        changed = [
+            item
+            for item in summary_findings
+            if item.severity != "P3" and item.path in changed_paths
+        ]
+        minor = [item for item in summary_findings if item.severity == "P3"]
+        other = [
+            item
+            for item in summary_findings
+            if item.severity != "P3" and item.path not in changed_paths
+        ]
+        lines.extend(["", "## Summary findings"])
+        for path in dict.fromkeys(item.path for item in changed):
+            lines.extend(["", f"### `{_neutralize_mentions(path)}`"])
+            lines.extend(_summary_finding(item) for item in changed if item.path == path)
+        if minor:
+            lines.extend(["", "### Minor"])
+            lines.extend(_summary_finding(item) for item in minor)
+        if other:
+            lines.extend(["", "### Other observations"])
+            lines.extend(_summary_finding(item) for item in other)
     return "\n".join(lines)
+
+
+def _summary_finding(finding: Finding) -> str:
+    location = f" (`{_neutralize_mentions(finding.path)}"
+    if finding.line is not None:
+        location += f":{finding.line}"
+    location += "`)"
+    return (
+        f"- **{finding.severity}: {_neutralize_mentions(finding.title)}**"
+        f"{location} — {_neutralize_mentions(finding.failure_scenario)} "
+        f"Suggested remediation: {_neutralize_mentions(finding.remediation)}"
+    )
 
 
 def run_review(
@@ -509,12 +585,12 @@ def run_review(
         payload = llm.review(prompt, build_model_input(pull, chunk))
         if payload.get("incomplete"):
             incomplete_chunks += 1
-        chunk_findings, chunk_rejected = validate_findings(payload, by_path)
+        chunk_findings, chunk_rejected = parse_findings(payload)
         findings.extend(chunk_findings)
         rejected += chunk_rejected
 
     aggregate_payload = {"findings": [item.__dict__ for item in findings]}
-    findings, aggregate_rejected = validate_findings(aggregate_payload, by_path)
+    findings, aggregate_rejected = parse_findings(aggregate_payload)
     rejected += aggregate_rejected
 
     current = github.get_pull(pull_number)
@@ -524,6 +600,7 @@ def run_review(
     ):
         return "stale"
 
+    inline_findings, summary_findings = route_findings(findings, by_path)
     summary = build_summary(
         head_sha,
         findings,
@@ -533,8 +610,10 @@ def run_review(
         incomplete_chunks=incomplete_chunks,
         review_id=review_id,
         base_sha=expected_base_sha,
+        summary_findings=summary_findings,
+        changed_paths=frozenset(by_path),
     )
-    github.create_review(pull_number, head_sha, summary, findings)
+    github.create_review(pull_number, head_sha, summary, inline_findings)
     return "published"
 
 
