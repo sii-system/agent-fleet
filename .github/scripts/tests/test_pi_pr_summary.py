@@ -292,6 +292,48 @@ class SummaryContractTest(unittest.TestCase):
             'flowchart TD\n  A["`First line\nSecond line`"] --> B["Done"]',
         )
 
+    def test_quotes_targets_after_thick_open_links(self) -> None:
+        result = summary.validate_summary(
+            {
+                "description": ["Describes thick transitions."],
+                "diagram": (
+                    "flowchart TD\n"
+                    "  A[Start] === B[GET /repos/{owner}]\n"
+                    "  B == yes === C[GET /repos/{repo}]"
+                ),
+                "assessment": "The flow uses two thick open links.",
+            }
+        )
+
+        self.assertEqual(
+            result.diagram,
+            "flowchart TD\n"
+            '  A["Start"] === B["GET /repos/{owner}"]\n'
+            '  B == yes === C["GET /repos/{repo}"]',
+        )
+
+    def test_quotes_explicit_subgraph_titles(self) -> None:
+        result = summary.validate_summary(
+            {
+                "description": ["Describes an API subgraph."],
+                "diagram": (
+                    "flowchart TD\n"
+                    "  subgraph API [GET /repos/{owner}]\n"
+                    "    A[Start]\n"
+                    "  end"
+                ),
+                "assessment": "The flow groups one API node.",
+            }
+        )
+
+        self.assertEqual(
+            result.diagram,
+            "flowchart TD\n"
+            '  subgraph API ["GET /repos/{owner}"]\n'
+            '    A["Start"]\n'
+            "  end",
+        )
+
     def test_quotes_balanced_braces_inside_diamond_text(self) -> None:
         result = summary.validate_summary(
             {
