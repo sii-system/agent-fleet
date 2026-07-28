@@ -169,6 +169,57 @@ class SummaryContractTest(unittest.TestCase):
             '  A["Start"] --> B["One"] & C["GET /repos/{owner}"]',
         )
 
+    def test_quotes_targets_after_circle_and_cross_links(self) -> None:
+        result = summary.validate_summary(
+            {
+                "description": ["Describes alternate outcomes."],
+                "diagram": (
+                    "flowchart TD\n"
+                    "  A[Start] --x B[GET /repos/{owner}]\n"
+                    "  A --o C[GET /repos/{repo}]"
+                ),
+                "assessment": "The flow has two terminal outcomes.",
+            }
+        )
+
+        self.assertEqual(
+            result.diagram,
+            "flowchart TD\n"
+            '  A["Start"] --x B["GET /repos/{owner}"]\n'
+            '  A --o C["GET /repos/{repo}"]',
+        )
+
+    def test_ignores_node_syntax_in_mermaid_comments(self) -> None:
+        result = summary.validate_summary(
+            {
+                "description": ["Describes the active flow."],
+                "diagram": (
+                    "flowchart TD\n"
+                    "  %% old syntax: A --> C[unfinished\n"
+                    "  A[Start] --> B[Done]"
+                ),
+                "assessment": "The commented syntax is inactive.",
+            }
+        )
+
+        self.assertEqual(
+            result.diagram,
+            "flowchart TD\n"
+            "  %% old syntax: A --> C[unfinished\n"
+            '  A["Start"] --> B["Done"]',
+        )
+
+    def test_quotes_rectangular_text_starting_with_a_brace(self) -> None:
+        result = summary.validate_summary(
+            {
+                "description": ["Describes a route parameter."],
+                "diagram": "flowchart TD\n  A[{owner}]",
+                "assessment": "The flow contains one route parameter.",
+            }
+        )
+
+        self.assertEqual(result.diagram, 'flowchart TD\n  A["{owner}"]')
+
     def test_quotes_balanced_braces_inside_diamond_text(self) -> None:
         result = summary.validate_summary(
             {

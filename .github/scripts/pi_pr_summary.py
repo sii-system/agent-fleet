@@ -35,11 +35,11 @@ FLOWCHART_NODE_START_RE = re.compile(
     (?P<prefix>
         ^[ \t]*(?:subgraph[ \t]+)?
         |
-        (?:(?:--+>|==+>|-\.\->|---|~~~)(?:\|[^|\n]*\|)?|&)[ \t]*
+        (?:(?:--+[xo]|--+>|==+>|-\.\->|---|~~~)(?:\|[^|\n]*\|)?|&)[ \t]*
     )
     (?P<node>[A-Za-z0-9_]+)
     (?P<opening>
-        \[(?![\[({/>\\])
+        \[(?![\[(/>\\])
         |
         \{(?!\{)
     )
@@ -91,11 +91,19 @@ def _validate_diagram(value: Any) -> str | None:
 
 
 def _quote_flowchart_labels(diagram: str) -> str:
-    def inside_text(index: int) -> bool:
+    def ignored_context(index: int) -> bool:
         line_start = diagram.rfind("\n", 0, index) + 1
         quoted = False
         edge_text = False
-        for character in diagram[line_start:index]:
+        line_prefix = diagram[line_start:index]
+        for offset, character in enumerate(line_prefix):
+            if (
+                character == "%"
+                and line_prefix[offset : offset + 2] == "%%"
+                and not quoted
+                and not edge_text
+            ):
+                return True
             if character == '"':
                 quoted = not quoted
             elif character == "|" and not quoted:
@@ -125,7 +133,7 @@ def _quote_flowchart_labels(diagram: str) -> str:
     cursor = 0
     search_from = 0
     while match := FLOWCHART_NODE_START_RE.search(diagram, search_from):
-        if inside_text(match.start()):
+        if ignored_context(match.start()):
             search_from = match.start() + 1
             continue
         opening = match.group("opening")
