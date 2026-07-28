@@ -407,13 +407,18 @@ class HarborAnalyzerRuntimeTest(unittest.TestCase):
             payload = {
                 "handover_id": HANDOVER_ID,
                 "generated_at": "2026-07-20T00:00:00+00:00",
-                "tasks": [task()],
+                "tasks": [task() | {"terminal_fingerprint": "fingerprint-1"}],
             }
             handover_path = handoff_dir / "1.json"
             handover_path.write_text(json.dumps(payload), encoding="utf-8")
+            latest_path = Path(root) / "latest.json"
+            latest_path.write_text(
+                json.dumps(payload | {"handover_id": "handover-latest"}),
+                encoding="utf-8",
+            )
             failed: dict[str, dict[str, object]] = {}
             pending = _pending_handovers(
-                latest_path=Path(root) / "latest.json",
+                latest_path=latest_path,
                 handoff_dir=handoff_dir,
                 processed=set(),
                 failed=failed,
@@ -432,7 +437,7 @@ class HarborAnalyzerRuntimeTest(unittest.TestCase):
             self.assertTrue(failed[follow_key]["retry_exhausted"])
             self.assertEqual(
                 _pending_handovers(
-                    latest_path=Path(root) / "latest.json",
+                    latest_path=latest_path,
                     handoff_dir=handoff_dir,
                     processed=set(),
                     failed=failed,

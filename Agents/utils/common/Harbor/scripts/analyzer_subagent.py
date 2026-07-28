@@ -247,7 +247,7 @@ def _pending_handovers(
         if path == latest_path:
             if task_fingerprints and task_fingerprints.issubset(spool_fingerprints):
                 continue
-        elif not retry_exhausted:
+        else:
             spool_fingerprints.update(task_fingerprints)
         if follow_key in processed or retry_exhausted:
             continue

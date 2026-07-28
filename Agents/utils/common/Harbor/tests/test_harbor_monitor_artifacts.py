@@ -44,6 +44,15 @@ class HarborMonitorArtifactsTest(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
+            sidecar_path = job_dir / "sidecar" / "result.json"
+            sidecar_path.parent.mkdir()
+            sidecar_path.write_text(
+                json.dumps({"stats": {"n_running_trials": 1}}),
+                encoding="utf-8",
+            )
+            invalid_path = job_dir / "invalid" / "result.json"
+            invalid_path.parent.mkdir()
+            invalid_path.write_bytes(b"\xff")
 
             snapshot = load_harbor_job_snapshot(job_dir)
 

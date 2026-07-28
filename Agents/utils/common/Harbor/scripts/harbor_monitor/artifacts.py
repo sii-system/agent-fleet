@@ -91,9 +91,13 @@ def _int_field(payload: dict[str, Any], key: str) -> int:
 def _load_result_payload(result_path: Path) -> dict[str, Any] | None:
     try:
         payload = json.loads(result_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except (OSError, ValueError):
         return None
-    if not isinstance(payload, dict) or not isinstance(payload.get("stats"), dict):
+    if (
+        not isinstance(payload, dict)
+        or "n_total_trials" not in payload
+        or not isinstance(payload.get("stats"), dict)
+    ):
         return None
     return payload
 
