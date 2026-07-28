@@ -240,6 +240,24 @@ class SummaryContractTest(unittest.TestCase):
             '  B -.- C["GET /repos/{repo}"]',
         )
 
+    def test_quotes_targets_after_lengthened_dotted_open_links(self) -> None:
+        result = summary.validate_summary(
+            {
+                "description": ["Describes a lengthened dotted transition."],
+                "diagram": (
+                    "flowchart TD\n"
+                    "  A[Start] -..- B[GET /repos/{owner}]"
+                ),
+                "assessment": "The flow uses one lengthened dotted link.",
+            }
+        )
+
+        self.assertEqual(
+            result.diagram,
+            "flowchart TD\n"
+            '  A["Start"] -..- B["GET /repos/{owner}"]',
+        )
+
     def test_does_not_treat_pipes_inside_node_labels_as_edge_text(self) -> None:
         result = summary.validate_summary(
             {
