@@ -1,0 +1,49 @@
+name: Pi PR Summary
+
+"on":
+  pull_request_target:
+    types: [opened]
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: pi-pr-summary-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  summary:
+    name: Self-hosted summary
+    runs-on: [self-hosted, Linux, X64]
+    environment: self-hosted-env
+    timeout-minutes: 20
+    steps:
+      - name: Check out trusted base revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+
+      - name: Verify pi is available
+        env:
+          PI_VERSION: "0.81.1"
+        run: |
+          set -euo pipefail
+          INSTALLED_VERSION="$(pi --version 2>/dev/null || true)"
+          if [[ "$INSTALLED_VERSION" != "$PI_VERSION" ]]; then
+            echo "::error::Expected pi version $PI_VERSION, got ${INSTALLED_VERSION:-missing}" >&2
+            exit 1
+          fi
+
+      - name: Summarize pull request with pi agent
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          LLM_REVIEW_API_KEY: ${{ secrets.LLM_REVIEW_API_KEY }}
+          LLM_REVIEW_BASE_URL: ${{ vars.LLM_REVIEW_BASE_URL }}
+          LLM_REVIEW_MODEL: ${{ vars.LLM_REVIEW_MODEL }}
+        run: >-
+          python3 .github/scripts/pi_pr_summary.py
+          --event-path "$GITHUB_EVENT_PATH"
+          --prompt-path .github/scripts/pi_summary_prompt.md

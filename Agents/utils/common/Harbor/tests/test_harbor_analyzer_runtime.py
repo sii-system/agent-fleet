@@ -243,6 +243,29 @@ class HarborAnalyzerRuntimeTest(unittest.TestCase):
             self.assertNotEqual(first["tasks"][0]["terminal_fingerprint"], second["tasks"][0]["terminal_fingerprint"])
             self.assertNotEqual(first["handover_id"], second["handover_id"])
 
+    def test_analyzer_handover_skips_synthetic_pending_without_task_name(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            payload = {
+                "timestamp": "2026-07-20T00:00:00+00:00",
+                "task_handover": [
+                    {
+                        "task_index": "pending-1",
+                        "task_name": "",
+                        "task_complete_status": "not_complete",
+                        "task_result_signals": ["not_complete_with_no_progress"],
+                    }
+                ],
+                "task_summary": {"not_complete": 1, "total_evaluated": 1},
+            }
+            handover = build_analyzer_handover(
+                payload,
+                run_dir=Path(root) / "run",
+                queue_dir=Path(root) / "queue",
+            )
+
+            self.assertFalse(handover["should_run_analyzer"])
+            self.assertEqual(handover["tasks"], [])
+
     def test_pending_handovers_do_not_deduplicate_distinct_attempts_by_handover_id(self) -> None:
         with tempfile.TemporaryDirectory() as root:
             handoff_dir = Path(root) / "handoffs"
@@ -296,6 +319,87 @@ class HarborAnalyzerRuntimeTest(unittest.TestCase):
                 [],
             )
 
+    def test_pending_handovers_use_latest_after_corrupt_spool_entry(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            handoff_dir = Path(root) / "handoffs"
+            handoff_dir.mkdir()
+            (handoff_dir / "1.json").write_text("{", encoding="utf-8")
+            latest_path = Path(root) / "latest.json"
+            latest_path.write_text(
+                json.dumps(
+                    {
+                        "handover_id": HANDOVER_ID,
+                        "generated_at": "2026-07-20T00:00:00+00:00",
+                        "tasks": [task()],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            pending = _pending_handovers(
+                latest_path=latest_path,
+                handoff_dir=handoff_dir,
+                processed=set(),
+                failed={},
+                now=0.0,
+            )
+
+            self.assertEqual([item[1] for item in pending], [latest_path])
+
+    def test_pending_handovers_skip_latest_covered_by_incremental_spool(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            root_path = Path(root)
+            handoff_dir = root_path / "handoffs"
+            handoff_dir.mkdir()
+            tasks = [
+                task(task_index="1", attempt_id="attempt-1")
+                | {"terminal_fingerprint": "fingerprint-1"},
+                task(task_index="2", attempt_id="attempt-2")
+                | {"terminal_fingerprint": "fingerprint-2"},
+            ]
+            for index, handover_task in enumerate(tasks, start=1):
+                (handoff_dir / f"{index}.json").write_text(
+                    json.dumps(
+                        {
+                            "handover_id": f"handover-{index}",
+                            "generated_at": f"2026-07-20T00:00:0{index}+00:00",
+                            "tasks": [handover_task],
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+            latest_path = root_path / "latest.json"
+            latest_path.write_text(
+                json.dumps(
+                    {
+                        "handover_id": "handover-latest",
+                        "generated_at": "2026-07-20T00:00:03+00:00",
+                        "tasks": tasks,
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            pending = _pending_handovers(
+                latest_path=latest_path,
+                handoff_dir=handoff_dir,
+                processed=set(),
+                failed={},
+                now=0.0,
+            )
+
+            self.assertEqual([item[1].parent for item in pending], [handoff_dir, handoff_dir])
+            self.assertEqual(
+                _pending_handovers(
+                    latest_path=latest_path,
+                    handoff_dir=handoff_dir,
+                    processed={item[2] for item in pending},
+                    failed={},
+                    now=0.0,
+                ),
+                [],
+            )
+
     def test_pending_handovers_stop_after_follow_failure_limit(self) -> None:
         with tempfile.TemporaryDirectory() as root:
             handoff_dir = Path(root) / "handoffs"
@@ -303,13 +407,18 @@ class HarborAnalyzerRuntimeTest(unittest.TestCase):
             payload = {
                 "handover_id": HANDOVER_ID,
                 "generated_at": "2026-07-20T00:00:00+00:00",
-                "tasks": [task()],
+                "tasks": [task() | {"terminal_fingerprint": "fingerprint-1"}],
             }
             handover_path = handoff_dir / "1.json"
             handover_path.write_text(json.dumps(payload), encoding="utf-8")
+            latest_path = Path(root) / "latest.json"
+            latest_path.write_text(
+                json.dumps(payload | {"handover_id": "handover-latest"}),
+                encoding="utf-8",
+            )
             failed: dict[str, dict[str, object]] = {}
             pending = _pending_handovers(
-                latest_path=Path(root) / "latest.json",
+                latest_path=latest_path,
                 handoff_dir=handoff_dir,
                 processed=set(),
                 failed=failed,
@@ -328,7 +437,7 @@ class HarborAnalyzerRuntimeTest(unittest.TestCase):
             self.assertTrue(failed[follow_key]["retry_exhausted"])
             self.assertEqual(
                 _pending_handovers(
-                    latest_path=Path(root) / "latest.json",
+                    latest_path=latest_path,
                     handoff_dir=handoff_dir,
                     processed=set(),
                     failed=failed,

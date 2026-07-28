@@ -124,6 +124,37 @@ def build_user_notify(
     }
 
 
+def _analyzer_handover_id(*, run_id: str | None, tasks: list[dict[str, Any]]) -> str:
+    handover_key = {
+        "schema_version": 2,
+        "run_id": run_id,
+        "tasks": [task.get("terminal_fingerprint") for task in tasks],
+    }
+    handover_encoded = json.dumps(
+        handover_key,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return f"sha256-{hashlib.sha256(handover_encoded).hexdigest()}"
+
+
+def build_analyzer_handover_for_tasks(
+    handover: dict[str, Any],
+    tasks: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Return a handover v2 payload for a task subset using the same identity rules."""
+
+    payload = dict(handover)
+    payload["tasks"] = [dict(task) for task in tasks]
+    payload["should_run_analyzer"] = bool(tasks)
+    payload["handover_id"] = _analyzer_handover_id(
+        run_id=payload.get("run_id") if isinstance(payload.get("run_id"), str) else None,
+        tasks=payload["tasks"],
+    )
+    return payload
+
+
 def build_analyzer_handover(
     output: dict[str, Any],
     *,
@@ -136,6 +167,8 @@ def build_analyzer_handover(
         if not isinstance(raw_task, dict):
             continue
         task = dict(raw_task)
+        if not str(task.get("task_name") or "").strip():
+            continue
         task.setdefault("attempt_id", None)
         evidence = task.get("evidence")
         stable_evidence = (
@@ -174,22 +207,11 @@ def build_analyzer_handover(
             "If tasks are present in another sample, task_result_signals are evidence tags, not final env/model attribution."
         )
     run_id = run_dir.name if run_dir else None
-    handover_key = {
-        "schema_version": 2,
-        "run_id": run_id,
-        "tasks": [task.get("terminal_fingerprint") for task in tasks],
-    }
-    handover_encoded = json.dumps(
-        handover_key,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
     return {
         "schema_version": 2,
         "audience": "analyzer_subagent",
         "kind": "task_analysis_handover",
-        "handover_id": f"sha256-{hashlib.sha256(handover_encoded).hexdigest()}",
+        "handover_id": _analyzer_handover_id(run_id=run_id, tasks=tasks),
         "generated_at": output.get("timestamp"),
         "run_id": run_id,
         "agent": queue_dir.name if queue_dir else None,

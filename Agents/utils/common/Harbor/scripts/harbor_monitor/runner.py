@@ -8,6 +8,7 @@ import shlex
 import subprocess
 import time
 from pathlib import Path
+from typing import Any
 
 from .artifacts import (
     load_harbor_job_snapshot,
@@ -21,6 +22,7 @@ from .artifacts import (
 )
 from .contracts import (
     build_analyzer_handover,
+    build_analyzer_handover_for_tasks,
     build_notify_incident_key,
     build_runner_action,
     build_user_notify,
@@ -145,6 +147,7 @@ def run_loop(
     state.setdefault("notify_recheck_count", 0)
     state.setdefault("notify_recheck_key", None)
     state.setdefault("last_action_required_notify", None)
+    state.setdefault("analyzer_spooled_terminal_fingerprints", [])
 
     tasks_manifest = load_manifest(task_manifest_path)
     if not tasks_manifest:
@@ -484,13 +487,37 @@ def run_loop(
             output_path.parent.mkdir(parents=True, exist_ok=True)
             output_path.write_text(output_json + "\n", encoding="utf-8")
         write_json(user_report_output, output["user_notify"])
-        write_json(analyzer_handover_output, output["analyzer_handover"])
-        if analyzer_handover_output and output["analyzer_handover"].get("should_run_analyzer"):
-            handover_id = str(output["analyzer_handover"].get("handover_id") or "")
-            if handover_id:
-                spool_path = analyzer_handover_output.parent / "analyzer-handoffs" / f"{handover_id}.json"
-                if not spool_path.exists():
-                    write_json(spool_path, output["analyzer_handover"])
+        analyzer_handover = output["analyzer_handover"]
+        if analyzer_handover_output and analyzer_handover.get("should_run_analyzer"):
+            spooled_raw = state.get("analyzer_spooled_terminal_fingerprints")
+            spooled = {
+                str(value)
+                for value in spooled_raw
+                if isinstance(value, str) and value
+            } if isinstance(spooled_raw, list) else set()
+            tasks = analyzer_handover.get("tasks")
+            new_tasks: list[dict[str, Any]] = []
+            new_fingerprints: list[str] = []
+            if isinstance(tasks, list):
+                for task in tasks:
+                    if not isinstance(task, dict):
+                        continue
+                    fingerprint = str(task.get("terminal_fingerprint") or "")
+                    if not fingerprint or fingerprint in spooled:
+                        continue
+                    new_tasks.append(task)
+                    new_fingerprints.append(fingerprint)
+            if new_tasks:
+                handoff = build_analyzer_handover_for_tasks(analyzer_handover, new_tasks)
+                handover_id = str(handoff.get("handover_id") or "")
+                if handover_id:
+                    spool_path = analyzer_handover_output.parent / "analyzer-handoffs" / f"{handover_id}.json"
+                    if not spool_path.exists():
+                        write_json(spool_path, handoff)
+                    state["analyzer_spooled_terminal_fingerprints"] = sorted(
+                        spooled | set(new_fingerprints)
+                    )
+        write_json(analyzer_handover_output, analyzer_handover)
         write_json(runner_action_output, output["runner_action"])
         print(output_json)
         save_state(state_path, state)

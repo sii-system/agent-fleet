@@ -60,6 +60,11 @@ Optional env vars:
 
 Provider/fleet vars are read from environment or the repo-root config.env:
   BASE_URL, API_KEY, MODEL
+
+Required ClawBio benchmark security settings:
+  Loaded from Tasks/clawBio/config/benchmark.env:
+  SANDBOX_MODE=off, EXEC_SECURITY=full, EXEC_ASK=off
+  WORKSPACE_ONLY=false
 EOF
 }
 
@@ -90,11 +95,10 @@ if (( VALIDATE_TASKS_ONLY )) && [[ -z "$SELECTED_TASKS" ]]; then
 fi
 readonly CLI_SELECTED_TASKS="$SELECTED_TASKS"
 
-# Load shared site config (config.env), then private overrides/secrets
-# (config.local.env, git-ignored), then OpenClaw fleet defaults, so
-# launcher-side validation can see values from any of them. fleet.env overrides
-# config.local.env, which overrides config.env; caller-provided env wins over
-# all of them, so snapshot it now and re-apply after sourcing.
+# Load shared site config (config.env), private overrides/secrets
+# (config.local.env, git-ignored), OpenClaw fleet defaults, and finally the
+# committed ClawBio benchmark profile. Caller-provided env wins over all config
+# files, so snapshot it now and re-apply after sourcing.
 __caller_env="$(export -p)"
 root_cfg="$REPO_ROOT/config.env"
 if [[ -f "$root_cfg" ]]; then
@@ -117,6 +121,13 @@ if [[ -f "$fleet_env" ]]; then
   . "$fleet_env"
   set +a
 fi
+clawbio_profile="$BENCH_DIR/config/benchmark.env"
+if [[ -f "$clawbio_profile" ]]; then
+  set -a
+  # shellcheck source=/dev/null
+  . "$clawbio_profile"
+  set +a
+fi
 # Caller-provided env wins over all the config files above.
 eval "$__caller_env"
 unset __caller_env
@@ -129,6 +140,62 @@ if [[ -n "$SELECTED_TASKS" ]]; then
     --validate-tasks-only
 fi
 (( VALIDATE_TASKS_ONLY == 0 )) || exit 0
+
+if [[ ! -f "$clawbio_profile" ]]; then
+  echo "Error: missing ClawBio benchmark profile: $clawbio_profile" >&2
+  exit 2
+fi
+
+# ClawBio loads its skill outside the instance workspace, executes unattended
+# shell/Python/R commands, and writes benchmark artifacts. Resolve the same
+# defaults as setup.py, then reject incompatible settings before creating run
+# directories, building images, preparing caches, or changing the fleet.
+SANDBOX_MODE="${SANDBOX_MODE:-off}"
+EXEC_SECURITY="${EXEC_SECURITY:-deny}"
+EXEC_ASK="${EXEC_ASK:-always}"
+WORKSPACE_ONLY="${WORKSPACE_ONLY:-true}"
+DOCKER_COMPOSE_READ_ONLY="${DOCKER_COMPOSE_READ_ONLY:-true}"
+
+security_mismatches=()
+[[ "$SANDBOX_MODE" == "off" ]] ||
+  security_mismatches+=("SANDBOX_MODE")
+[[ "$EXEC_SECURITY" == "full" ]] ||
+  security_mismatches+=("EXEC_SECURITY")
+[[ "$EXEC_ASK" == "off" ]] ||
+  security_mismatches+=("EXEC_ASK")
+[[ "$WORKSPACE_ONLY" == "false" ]] ||
+  security_mismatches+=("WORKSPACE_ONLY")
+
+if (( ${#security_mismatches[@]} > 0 )); then
+  echo "Error: ClawBio benchmark security preflight failed before fleet setup." >&2
+  echo "ClawBio loads its skill outside the workspace and executes unattended commands." >&2
+  echo "Incompatible settings:" >&2
+  for setting in "${security_mismatches[@]}"; do
+    case "$setting" in
+      SANDBOX_MODE) required="off" ;;
+      EXEC_SECURITY) required="full" ;;
+      EXEC_ASK) required="off" ;;
+      WORKSPACE_ONLY) required="false" ;;
+    esac
+    printf '  %s=%q (required: %q)\n' "$setting" "${!setting}" "$required" >&2
+  done
+  cat >&2 <<EOF
+The dedicated profile is defined in Tasks/clawBio/config/benchmark.env.
+Remove conflicting runtime overrides or restore these profile values:
+  SANDBOX_MODE=off EXEC_SECURITY=full EXEC_ASK=off WORKSPACE_ONLY=false
+See Tasks/clawBio/README.md#clawbio-benchmark-security.
+The general OpenClaw security defaults were not changed.
+EOF
+  exit 2
+fi
+
+cat >&2 <<EOF
+Warning: applying the permissive ClawBio benchmark profile from
+  Tasks/clawBio/config/benchmark.env
+  SANDBOX_MODE=off EXEC_SECURITY=full EXEC_ASK=off WORKSPACE_ONLY=false
+Use it only for the generated ClawBio fleet. The profile remains active until
+that fleet is stopped or regenerated.
+EOF
 
 # TRACE_TO_OPIK is the authoritative switch documented in the root README:
 # tracing off forces the plugin off, even over an explicit
@@ -227,11 +294,13 @@ if [[ -n "$BASE_URL" ]]; then env_args+=("BASE_URL=$BASE_URL"); fi
 if [[ -n "$API_KEY" ]]; then env_args+=("API_KEY=$API_KEY"); fi
 if [[ -n "$MODEL" ]]; then env_args+=("MODEL=$MODEL"); fi
 if [[ -n "$COUNT" ]]; then env_args+=("COUNT=$COUNT"); fi
-if [[ -n "${SANDBOX_MODE:-}" ]]; then env_args+=("SANDBOX_MODE=$SANDBOX_MODE"); fi
-if [[ -n "${EXEC_SECURITY:-}" ]]; then env_args+=("EXEC_SECURITY=$EXEC_SECURITY"); fi
-if [[ -n "${EXEC_ASK:-}" ]]; then env_args+=("EXEC_ASK=$EXEC_ASK"); fi
-if [[ -n "${WORKSPACE_ONLY:-}" ]]; then env_args+=("WORKSPACE_ONLY=$WORKSPACE_ONLY"); fi
-if [[ -n "${DOCKER_COMPOSE_READ_ONLY:-}" ]]; then env_args+=("DOCKER_COMPOSE_READ_ONLY=$DOCKER_COMPOSE_READ_ONLY"); fi
+env_args+=(
+  "SANDBOX_MODE=$SANDBOX_MODE"
+  "EXEC_SECURITY=$EXEC_SECURITY"
+  "EXEC_ASK=$EXEC_ASK"
+  "WORKSPACE_ONLY=$WORKSPACE_ONLY"
+  "DOCKER_COMPOSE_READ_ONLY=$DOCKER_COMPOSE_READ_ONLY"
+)
 
 if [[ -n "$COUNT" ]]; then
   env "${env_args[@]}" "$OPENCLAW_DIR/scripts/setup.sh" "$COUNT"

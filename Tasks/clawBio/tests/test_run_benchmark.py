@@ -20,6 +20,28 @@ SPEC.loader.exec_module(run_benchmark)
 
 class ClawBioRunnerTest(unittest.TestCase):
     @staticmethod
+    def run_wrapper(
+        env_overrides: dict[str, str],
+        *args: str,
+    ) -> subprocess.CompletedProcess[str]:
+        env = os.environ.copy()
+        for setting in (
+            "SANDBOX_MODE",
+            "EXEC_SECURITY",
+            "EXEC_ASK",
+            "WORKSPACE_ONLY",
+        ):
+            env.pop(setting, None)
+        env.update(env_overrides)
+        return subprocess.run(
+            [str(WRAPPER_PATH), *args],
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+    @staticmethod
     def sample_tasks() -> list[dict[str, str]]:
         return [
             {"id": "task-a", "prompt": "A"},
@@ -54,21 +76,14 @@ class ClawBioRunnerTest(unittest.TestCase):
                 '{"defaults":{},"tasks":[{"id":"task-a","prompt":"A"}]}',
                 encoding="utf-8",
             )
-            env = os.environ.copy()
-            env.update(
+            result = self.run_wrapper(
                 {
                     "TASK_CONFIG": str(config),
                     "RUN_ROOT": str(run_root),
                     "TRACE_TO_OPIK": "false",
-                }
-            )
-
-            result = subprocess.run(
-                [str(WRAPPER_PATH), "--tasks", "missing-a,missing-b"],
-                env=env,
-                text=True,
-                capture_output=True,
-                check=False,
+                },
+                "--tasks",
+                "missing-a,missing-b",
             )
 
             self.assertNotEqual(result.returncode, 0)
@@ -76,6 +91,69 @@ class ClawBioRunnerTest(unittest.TestCase):
                 "unknown ClawBio task(s): missing-a, missing-b",
                 result.stderr,
             )
+            self.assertFalse(run_root.exists())
+
+            valid = self.run_wrapper(
+                {
+                    "TASK_CONFIG": str(config),
+                    "RUN_ROOT": str(run_root),
+                    "SANDBOX_MODE": "all",
+                    "EXEC_SECURITY": "deny",
+                    "EXEC_ASK": "always",
+                    "WORKSPACE_ONLY": "true",
+                },
+                "--tasks",
+                "task-a",
+                "--validate-tasks-only",
+            )
+            self.assertEqual(valid.returncode, 0, valid.stderr)
+            self.assertFalse(run_root.exists())
+
+    def test_wrapper_rejects_restrictive_security_before_run_root(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            run_root = Path(tmp) / "run"
+            result = self.run_wrapper(
+                {
+                    "RUN_ROOT": str(run_root),
+                    "TRACE_TO_OPIK": "false",
+                    "SANDBOX_MODE": "non-main",
+                    "EXEC_SECURITY": "deny",
+                    "EXEC_ASK": "always",
+                    "WORKSPACE_ONLY": "true",
+                }
+            )
+
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("security preflight failed before fleet setup", result.stderr)
+            for setting in (
+                "SANDBOX_MODE",
+                "EXEC_SECURITY",
+                "EXEC_ASK",
+                "WORKSPACE_ONLY",
+            ):
+                self.assertIn(setting, result.stderr)
+            self.assertFalse(run_root.exists())
+
+    def test_wrapper_loads_dedicated_benchmark_security(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            run_root = Path(tmp) / "run"
+            result = self.run_wrapper(
+                {
+                    "RUN_ROOT": str(run_root),
+                    "TRACE_TO_OPIK": "true",
+                    "OPIK_PLUGIN": "enabled",
+                    "OPIK_URL": "",
+                    "DOCKER_COMPOSE_READ_ONLY": "true",
+                }
+            )
+
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("OPIK_PLUGIN=enabled requires OPIK_URL", result.stderr)
+            self.assertIn(
+                "applying the permissive ClawBio benchmark profile",
+                result.stderr,
+            )
+            self.assertNotIn("security preflight failed", result.stderr)
             self.assertFalse(run_root.exists())
 
     def test_clear_artifact_paths_removes_declared_outputs_only(self) -> None:

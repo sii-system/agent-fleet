@@ -223,6 +223,7 @@ def _pending_handovers(
     if latest_path.is_file():
         candidates.append(latest_path)
     unique: dict[str, tuple[dict[str, Any], Path, str]] = {}
+    spool_fingerprints: set[str] = set()
     for path in candidates:
         try:
             handover = load_json(path)
@@ -230,10 +231,25 @@ def _pending_handovers(
             continue
         handover_id = str(handover.get("handover_id") or "")
         follow_key = _handover_follow_key(handover)
-        if not handover_id or follow_key in processed or follow_key in unique:
+        if not handover_id or follow_key in unique:
             continue
         failed_record = failed.get(follow_key)
-        if isinstance(failed_record, dict) and failed_record.get("retry_exhausted") is True:
+        retry_exhausted = (
+            isinstance(failed_record, dict)
+            and failed_record.get("retry_exhausted") is True
+        )
+        tasks = handover.get("tasks")
+        task_fingerprints = {
+            str(task.get("terminal_fingerprint"))
+            for task in tasks
+            if isinstance(task, dict) and task.get("terminal_fingerprint")
+        } if isinstance(tasks, list) else set()
+        if path == latest_path:
+            if task_fingerprints and task_fingerprints.issubset(spool_fingerprints):
+                continue
+        else:
+            spool_fingerprints.update(task_fingerprints)
+        if follow_key in processed or retry_exhausted:
             continue
         next_retry_at = (
             failed_record.get("next_retry_at")

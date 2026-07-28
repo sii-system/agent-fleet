@@ -74,12 +74,18 @@ Five-phase pipeline (prewarm plugin cache → fleet `setup.sh` with
 
 ```bash
 ./Tasks/clawBio/scripts/run-openclaw-clawbio.sh
-COUNT=20 ITERATIONS=3 ./Tasks/clawBio/scripts/run-openclaw-clawbio.sh   # overrides
+COUNT=20 ITERATIONS=3 \
+  ./Tasks/clawBio/scripts/run-openclaw-clawbio.sh
 ```
 
 `patch-plugin-config.sh` must run after `setup.sh` and before
 `docker compose up`. The phase-by-phase manual flow with the full
 environment-variable example: [clawBio/README.md](clawBio/README.md).
+The launcher loads and warns about the dedicated execution profile in
+`clawBio/config/benchmark.env`.
+The unified launcher leaves the benchmark fleet running with its run-specific
+execution profile; stop or regenerate it before using OpenClaw for another
+purpose.
 
 Outputs: `Tasks/clawBio/results/latest/` →
 `iterations-summary.{json,md}`, `iteration-NNN/results.{json,md}`, and

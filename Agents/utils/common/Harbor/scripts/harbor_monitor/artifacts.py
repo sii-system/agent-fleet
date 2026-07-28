@@ -88,17 +88,49 @@ def _int_field(payload: dict[str, Any], key: str) -> int:
     return value if isinstance(value, int) and value >= 0 else 0
 
 
-def load_harbor_job_snapshot(job_dir: Path) -> HarborJobSnapshot | None:
-    """Read one native Harbor job without translating it into queue files."""
-    result_path = job_dir / "result.json"
-    if not result_path.is_file():
-        return None
+def _load_result_payload(result_path: Path) -> dict[str, Any] | None:
     try:
         payload = json.loads(result_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except (OSError, ValueError):
         return None
-    if not isinstance(payload, dict) or not isinstance(payload.get("stats"), dict):
+    if (
+        not isinstance(payload, dict)
+        or "n_total_trials" not in payload
+        or not isinstance(payload.get("stats"), dict)
+    ):
         return None
+    return payload
+
+
+def _find_harbor_job_result_path(job_dir: Path) -> tuple[Path, dict[str, Any]] | None:
+    direct = job_dir / "result.json"
+    payload = _load_result_payload(direct) if direct.is_file() else None
+    if payload is not None:
+        return direct, payload
+
+    candidates: list[tuple[float, Path, dict[str, Any]]] = []
+    for result_path in job_dir.rglob("result.json"):
+        payload = _load_result_payload(result_path)
+        if payload is None:
+            continue
+        try:
+            mtime = result_path.stat().st_mtime
+        except OSError:
+            mtime = 0.0
+        candidates.append((mtime, result_path, payload))
+    if not candidates:
+        return None
+
+    _, result_path, payload = max(candidates, key=lambda item: item[0])
+    return result_path, payload
+
+
+def load_harbor_job_snapshot(job_dir: Path) -> HarborJobSnapshot | None:
+    """Read one native Harbor job without translating it into queue files."""
+    found = _find_harbor_job_result_path(job_dir)
+    if found is None:
+        return None
+    result_path, payload = found
 
     stats = payload["stats"]
     total = _int_field(payload, "n_total_trials")
@@ -114,7 +146,7 @@ def load_harbor_job_snapshot(job_dir: Path) -> HarborJobSnapshot | None:
         if not isinstance(trial, dict):
             continue
         trial_name = str(trial.get("trial_name") or trial_result_path.parent.name)
-        task_name = str(trial.get("task_name") or "")
+        task_name = str(trial.get("task_name") or trial_name)
         exception = trial.get("exception_info")
         exception_type = ""
         if isinstance(exception, dict):

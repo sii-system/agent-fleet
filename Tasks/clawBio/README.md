@@ -124,20 +124,21 @@ Generate and start the OpenClaw fleet with plugin cache mounted:
 
 ```bash
 # From repo root
+set -a
+. ./Tasks/clawBio/config/benchmark.env
+set +a
 PLUGIN_CACHE_DIR=$(pwd)/Tasks/clawBio/cache \
 TRACE_TO_OPIK=false \
 BASE_URL="https://api.example.com/v1" \
 API_KEY="sk-xxx" \
 MODEL="your-model" \
-SANDBOX_MODE=off \
-EXEC_SECURITY=full \
-EXEC_ASK=off \
-WORKSPACE_ONLY=false \
-DOCKER_COMPOSE_READ_ONLY=false \
 ./Agents/Openclaw/scripts/setup.sh 4
 ```
 
 > **Required:** `BASE_URL` and `API_KEY` must be set via the repo-root `config.env`, environment variables, or CLI. See [Configuration Reference](#configuration-reference) for all options.
+>
+> **Security:** `config/benchmark.env` is permissive. Source it only for a
+> dedicated ClawBio fleet, then stop or regenerate that fleet before other use.
 
 ### Step 2: Patch Plugin Config
 
@@ -200,12 +201,44 @@ COUNT=20 ITERATIONS=3 ./Tasks/clawBio/scripts/run-openclaw-clawbio.sh
 
 `run-openclaw-clawbio.sh` validates explicit task IDs before it builds an
 image, prepares caches, changes fleet configuration, or restarts containers.
-It then prewarms the cache, generates and patches fleet configs, starts the
-fleet, and invokes `run-benchmark.py`. Run with `-h` to see all environment
-variables. Variable precedence: runtime env →
-`Agents/Openclaw/config/fleet.env` → `config.env` → script defaults.
+It also validates the ClawBio benchmark security settings before creating run
+directories or making any of those changes. It then prewarms the cache,
+generates and patches fleet configs, starts the fleet, and invokes
+`run-benchmark.py`. Run with `-h` to see all environment variables. Variable
+precedence: runtime env →
+`Tasks/clawBio/config/benchmark.env` → `Agents/Openclaw/config/fleet.env` →
+`config.local.env` → `config.env` → script defaults.
 
 Output layout is described under [Output Structure](#output-structure).
+
+### ClawBio Benchmark Security
+
+ClawBio needs to load its skill from the mounted plugin cache, outside the
+instance workspace, and execute unattended shell, Python, and R commands. The
+unified launcher therefore loads a dedicated benchmark configuration:
+
+```bash
+./Tasks/clawBio/scripts/run-openclaw-clawbio.sh
+```
+
+The committed, public-safe `config/benchmark.env` supplies
+`SANDBOX_MODE=off`, `EXEC_SECURITY=full`, `EXEC_ASK=off`, and
+`WORKSPACE_ONLY=false`. The launcher warns before applying this permissive
+profile to the generated fleet. Runtime environment variables still take
+precedence; if they conflict, the launcher lists every incompatible setting and
+exits before creating the run root, building images, preparing caches, or
+changing the fleet.
+
+The launcher does not change the general OpenClaw defaults, but `setup.sh`
+writes this profile into the run-specific generated configs and leaves that
+fleet running after the benchmark. Stop it before using OpenClaw for another
+purpose, or regenerate the fleet with the desired restrictive settings. The
+container root filesystem remains read-only by default; ClawBio writes through
+its dedicated state and workspace mounts plus the `/tmp` tmpfs.
+
+```bash
+docker compose -f Agents/Openclaw/docker-compose.yml down
+```
 
 ---
 
@@ -356,7 +389,11 @@ Run prewarm-cache.sh before setup:
 
 ### Sandbox errors blocking skill execution
 
-If you see errors like "path escapes sandbox" or "workspaceOnly", set `WORKSPACE_ONLY=false` when running `Agents/Openclaw/scripts/setup.sh`.
+The unified launcher now rejects incompatible settings before fleet setup. If
+you use the manual setup flow and see errors such as "path escapes sandbox",
+`workspaceOnly`, or `exec denied`, apply all settings from
+[ClawBio Benchmark Security](#clawbio-benchmark-security), regenerate the
+fleet, and restart it.
 
 ### Artifacts directory is empty
 

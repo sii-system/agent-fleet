@@ -414,11 +414,16 @@ workers to `--instances`, and validates selected IDs against the pinned
 `task_*.md` checkout before image or result creation; the OpenClaw fleet must
 already be configured and running. The `clawbio` taskset calls the existing
 ClawBio unified launcher, maps workers to `COUNT`, and validates selected IDs
-against its task config before setup or fleet restart. Those runners own setup,
-execution, outputs, and failures. If `--agent` conflicts with an OpenClaw
-taskset, the router prints the requested and actual agents, ignores the
-conflicting value, and continues with OpenClaw. OpenClaw runners remain in the
-foreground; `--detach` is ignored with a warning.
+against its task config before setup or fleet restart. The launcher also
+loads and warns about the dedicated execution profile in
+`Tasks/clawBio/config/benchmark.env`; FleetSpec does not store environment
+variables.
+The ClawBio fleet remains running with that run-specific profile until it is
+stopped or regenerated. Those runners own setup, execution, outputs, and
+failures. If `--agent` conflicts with an OpenClaw taskset, the router prints the
+requested and actual agents, ignores the conflicting value, and continues with
+OpenClaw. OpenClaw runners remain in the foreground; `--detach` is ignored with
+a warning.
 
 ### Current limitations
 
