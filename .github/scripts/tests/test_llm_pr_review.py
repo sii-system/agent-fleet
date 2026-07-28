@@ -446,6 +446,35 @@ class ApiClientTest(unittest.TestCase):
         self.assertEqual(payload["comments"][0]["side"], "RIGHT")
         self.assertEqual(payload["comments"][0]["line"], 8)
 
+    def test_create_review_labels_lens_agreement(self) -> None:
+        opener = mock.Mock(return_value=FakeResponse({"id": 123}))
+        client = review.GitHubClient("owner/repo", "token", opener=opener)
+        finding = review.Finding(
+            "P1",
+            "a.py",
+            8,
+            "Bug",
+            "Failure",
+            "Fix",
+            lenses=("correctness", "security"),
+        )
+
+        client.create_review(7, "abc123", "summary", [finding])
+
+        request = opener.call_args.args[0]
+        comment = json.loads(request.data)["comments"][0]["body"]
+        self.assertIn("Flagged by: correctness + security", comment)
+        summary = review.build_summary(
+            "abc123",
+            [finding],
+            0,
+            [],
+            False,
+            summary_findings=[finding],
+            changed_paths=frozenset({"a.py"}),
+        )
+        self.assertIn("Flagged by: correctness + security", summary)
+
     def test_create_review_neutralizes_model_generated_mentions(self) -> None:
         opener = mock.Mock(return_value=FakeResponse({"id": 123}))
         client = review.GitHubClient("owner/repo", "token", opener=opener)

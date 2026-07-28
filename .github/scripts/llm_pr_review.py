@@ -51,6 +51,7 @@ class Finding:
     title: str
     failure_scenario: str
     remediation: str
+    lenses: tuple[str, ...] = ()
 
 
 class ModelResponseError(ValueError):
@@ -392,6 +393,11 @@ class GitHubClient:
                     f"{_neutralize_mentions(item.failure_scenario)}\n\n"
                     "Suggested remediation: "
                     f"{_neutralize_mentions(item.remediation)}"
+                    + (
+                        f"\n\nFlagged by: {' + '.join(item.lenses)}"
+                        if item.lenses
+                        else ""
+                    )
                 ),
             }
             for item in findings
@@ -540,11 +546,14 @@ def _summary_finding(finding: Finding) -> str:
     if finding.line is not None:
         location += f":{finding.line}"
     location += "`)"
-    return (
+    rendered = (
         f"- **{finding.severity}: {_neutralize_mentions(finding.title)}**"
         f"{location} — {_neutralize_mentions(finding.failure_scenario)} "
         f"Suggested remediation: {_neutralize_mentions(finding.remediation)}"
     )
+    if finding.lenses:
+        rendered += f" Flagged by: {' + '.join(finding.lenses)}"
+    return rendered
 
 
 def run_review(
