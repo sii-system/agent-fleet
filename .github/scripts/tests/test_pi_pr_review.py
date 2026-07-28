@@ -566,6 +566,27 @@ class OrchestrationTest(unittest.TestCase):
         self.assertIn("Failed lenses: security", body)
         self.assertNotIn("provider detail", body)
 
+    def test_two_lens_failures_publish_the_remaining_result(self) -> None:
+        github = FakeGitHub()
+        pi_client = mock.Mock()
+
+        def review_lens(
+            prompt: str,
+            _chunk: str,
+            **_kwargs: object,
+        ) -> dict:
+            if "runtime correctness" in prompt:
+                return {"findings": []}
+            raise pi_review.PiReviewError("failed")
+
+        pi_client.review.side_effect = review_lens
+
+        result = pi_review.run_review(github, pi_client, 7, "{{LENS}}")
+
+        self.assertEqual(result, "published")
+        body = github.created[0][2]
+        self.assertIn("Failed lenses: security, tests/regression", body)
+
     def test_reports_tool_calls_by_lens(self) -> None:
         github = FakeGitHub()
         pi_client = mock.Mock()
@@ -618,6 +639,18 @@ class OrchestrationTest(unittest.TestCase):
             pi_client.timeouts,
             [float(pi_review.PI_LENS_TIMEOUT_SECONDS)] * 3,
         )
+
+    def test_each_lens_uses_remaining_budget_below_the_cap(self) -> None:
+        github = FakeGitHub()
+        pi_client = FakePiClient([])
+
+        with mock.patch(
+            "pi_pr_review.time.monotonic",
+            side_effect=[100.0, 700.0, 700.0, 700.0],
+        ):
+            pi_review.run_review(github, pi_client, 7, "{{LENS}}")
+
+        self.assertEqual(pi_client.timeouts, [300.0] * 3)
 
     def test_merges_overlapping_findings_at_the_highest_severity(self) -> None:
         github = FakeGitHub()
@@ -680,6 +713,27 @@ class OrchestrationTest(unittest.TestCase):
             findings[0].lenses,
             ("correctness", "security", "tests/regression"),
         )
+
+    def test_distinct_findings_on_one_line_remain_separate(self) -> None:
+        findings = [
+            pi_review._review.Finding(
+                "P2",
+                "worker.py",
+                2,
+                title,
+                "Failure",
+                "Fix",
+            )
+            for title in (
+                "Cancellation leak",
+                "Credential exposure",
+                "Missing regression coverage",
+            )
+        ]
+
+        merged = pi_review.merge_lens_findings(findings)
+
+        self.assertEqual(len(merged), 3)
 
     def test_caps_merged_inline_findings_across_lenses(self) -> None:
         github = FakeGitHub()
