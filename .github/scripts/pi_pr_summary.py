@@ -7,6 +7,7 @@ import argparse
 import html
 import json
 import os
+import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -28,6 +29,7 @@ MAX_FILE_INVENTORY_BYTES = 20_000
 MARKDOWN_ESCAPE_TABLE = str.maketrans(
     {character: f"\\{character}" for character in r"\`*_{}[]()#+-.!|~:/?="}
 )
+MERMAID_IMAGE_NODE_RE = re.compile(r"@\{\s*img\s*:", re.IGNORECASE)
 
 
 class PiSummaryError(RuntimeError):
@@ -65,6 +67,8 @@ def _validate_diagram(value: Any) -> str | None:
         for token in ("```", "%%{", "click ", "href", "javascript:", "<")
     ):
         raise PiSummaryError("diagram contains unsupported content")
+    if MERMAID_IMAGE_NODE_RE.search(diagram):
+        raise PiSummaryError("diagram contains unsupported image node")
     return diagram
 
 

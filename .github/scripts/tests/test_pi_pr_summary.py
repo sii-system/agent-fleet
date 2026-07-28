@@ -61,6 +61,18 @@ class SummaryContractTest(unittest.TestCase):
                 }
             )
 
+    def test_rejects_mermaid_image_node(self) -> None:
+        with self.assertRaisesRegex(summary.PiSummaryError, "image node"):
+            summary.validate_summary(
+                {
+                    "description": ["Summary."],
+                    "diagram": (
+                        'flowchart TD\n  A@{ img: "https://attacker.example/pixel" }'
+                    ),
+                    "assessment": "Assessment.",
+                }
+            )
+
 
 class SummaryRenderingTest(unittest.TestCase):
     def setUp(self) -> None:
