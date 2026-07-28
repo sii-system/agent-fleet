@@ -654,12 +654,17 @@ class OrchestrationTest(unittest.TestCase):
         github = FakeGitHub()
         pi_client = FakePiClient([])
 
-        pi_review.run_review(
-            github,
-            pi_client,
-            7,
-            "{{ROUTING}}\n{{LENS}}",
-        )
+        with mock.patch.object(
+            pi_review,
+            "_shared_routing_available",
+            return_value=False,
+        ):
+            pi_review.run_review(
+                github,
+                pi_client,
+                7,
+                "{{ROUTING}}\n{{LENS}}",
+            )
 
         self.assertTrue(
             all("added RIGHT-side line" in prompt for prompt in pi_client.prompts)
