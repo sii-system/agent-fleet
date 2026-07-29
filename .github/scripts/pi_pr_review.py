@@ -174,6 +174,37 @@ def _shared_routing_available() -> bool:
     )
 
 
+def _completed_lens_marker(review_id: str, lens: str) -> str:
+    return f"<!-- {review_id}-completed-lens:{lens} -->"
+
+
+def _completed_lenses_from_reviews(
+    reviews: list[dict[str, Any]],
+    head_sha: str,
+    review_id: str,
+    base_sha: str | None,
+) -> set[str]:
+    partial_marker = _review.review_marker(
+        head_sha,
+        f"{review_id}-partial",
+        base_sha,
+    )
+    completed: set[str] = set()
+    for review in reviews:
+        body = review.get("body") or ""
+        if (
+            (review.get("user") or {}).get("login") != "github-actions[bot]"
+            or partial_marker not in body
+        ):
+            continue
+        completed.update(
+            lens
+            for lens in LENS_INSTRUCTIONS
+            if _completed_lens_marker(review_id, lens) in body
+        )
+    return completed
+
+
 def _chat_url_to_base(url: str) -> str:
     """Convert a chat-completions endpoint URL to a pi-compatible base URL."""
     parsed = urlparse(url)
@@ -414,12 +445,26 @@ def run_review(
             and pull["base"]["sha"] != expected_base_sha
         ):
             return "stale"
+        reviews = github.list_reviews(pull_number)
         if _review.has_existing_review(
-            github.list_reviews(pull_number),
+            reviews,
             head_sha,
             review_id,
             expected_base_sha,
         ):
+            return "duplicate"
+        previously_completed_lenses = _completed_lenses_from_reviews(
+            reviews,
+            head_sha,
+            review_id,
+            expected_base_sha,
+        )
+        pending_lenses = {
+            lens: instruction
+            for lens, instruction in LENS_INSTRUCTIONS.items()
+            if lens not in previously_completed_lenses
+        }
+        if not pending_lenses:
             return "duplicate"
 
         files, skipped = _review.collect_files(github.list_files(pull_number))
@@ -449,9 +494,9 @@ def run_review(
                     limit=sys.maxsize,
                 )
 
-        with ThreadPoolExecutor(max_workers=len(LENS_INSTRUCTIONS)) as executor:
+        with ThreadPoolExecutor(max_workers=len(pending_lenses)) as executor:
             futures = {}
-            for lens, instruction in LENS_INSTRUCTIONS.items():
+            for lens, instruction in pending_lenses.items():
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     raise PiReviewError(
@@ -468,7 +513,7 @@ def run_review(
 
         findings: list[_review.Finding] = []
         rejected = 0
-        incomplete_lenses = 0
+        incomplete_lenses: list[str] = []
         failed_lenses: list[str] = []
         tool_calls_by_lens: dict[str, int] = {}
         for lens, future in futures.items():
@@ -481,7 +526,7 @@ def run_review(
                     else 0
                 )
                 if payload.get("incomplete"):
-                    incomplete_lenses += 1
+                    incomplete_lenses.append(lens)
                 if shared_routing:
                     lens_findings, lens_rejected = _review.parse_findings(
                         payload
@@ -501,10 +546,13 @@ def run_review(
             )
             rejected += lens_rejected
 
-        if len(failed_lenses) == len(LENS_INSTRUCTIONS):
+        if len(failed_lenses) == len(futures):
             raise PiReviewError("all review lenses failed")
 
         partial = bool(incomplete_lenses or failed_lenses)
+        completed_lenses = previously_completed_lenses | (
+            set(futures) - set(incomplete_lenses) - set(failed_lenses)
+        )
         findings = merge_lens_findings(findings)
         reported_findings = findings
         summary_findings: list[_review.Finding] = []
@@ -543,12 +591,23 @@ def run_review(
             truncated,
             **summary_options,
         )
+        reported_tool_calls = dict.fromkeys(
+            previously_completed_lenses,
+            "previously completed",
+        )
+        reported_tool_calls.update(tool_calls_by_lens)
         tool_call_counts = ", ".join(
-            f"{lens}={tool_calls_by_lens.get(lens, 'unavailable')}"
+            f"{lens}={reported_tool_calls.get(lens, 'unavailable')}"
             for lens in LENS_INSTRUCTIONS
         )
         summary += f"\n\nTool calls by lens: {tool_call_counts}"
         if partial:
+            markers = "\n".join(
+                _completed_lens_marker(review_id, lens)
+                for lens in LENS_INSTRUCTIONS
+                if lens in completed_lenses
+            )
+            summary += f"\n\n{markers}"
             summary = summary.replace(
                 "Coverage: Complete",
                 "Coverage: Partial",
@@ -556,7 +615,7 @@ def run_review(
             )
         if incomplete_lenses:
             summary += (
-                f"\n\n- {incomplete_lenses} review lens(es) returned an empty "
+                f"\n\n- {len(incomplete_lenses)} review lens(es) returned an empty "
                 "model response and were not reviewed."
             )
         if failed_lenses:

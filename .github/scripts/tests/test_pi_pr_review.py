@@ -722,17 +722,35 @@ class OrchestrationTest(unittest.TestCase):
     def test_partial_review_does_not_block_a_complete_rerun(self) -> None:
         github = FakeGitHub()
         pi_client = mock.Mock()
+        security_fails = True
 
-        def fail_security(
+        def review_lens(
             prompt: str,
             _chunk: str,
             **_kwargs: object,
         ) -> dict:
-            if "trust boundaries" in prompt:
+            if "runtime correctness" in prompt:
+                subject = "correctness"
+            elif "trust boundaries" in prompt:
+                subject = "security"
+            else:
+                subject = "regression"
+            if subject == "security" and security_fails:
                 raise pi_review.PiReviewError("failed")
-            return {"findings": []}
+            return {
+                "findings": [
+                    {
+                        "severity": "P2",
+                        "path": "worker.py",
+                        "line": 2,
+                        "title": f"{subject}-defect",
+                        "failure_scenario": f"{subject}-scenario",
+                        "remediation": f"{subject}-fix",
+                    }
+                ]
+            }
 
-        pi_client.review.side_effect = fail_security
+        pi_client.review.side_effect = review_lens
         first = pi_review.run_review(github, pi_client, 7, "{{LENS}}")
         partial_body = github.created[0][2]
         github.reviews = [
@@ -741,15 +759,23 @@ class OrchestrationTest(unittest.TestCase):
                 "body": partial_body,
             }
         ]
-        pi_client.review.side_effect = lambda *_args, **_kwargs: {
-            "findings": []
-        }
+        security_fails = False
+        pi_client.review.reset_mock()
 
         second = pi_review.run_review(github, pi_client, 7, "{{LENS}}")
 
         self.assertEqual((first, second), ("published", "published"))
         self.assertIn("<!-- pi-pr-review-partial:head-1 -->", partial_body)
         self.assertIn("<!-- pi-pr-review:head-1 -->", github.created[1][2])
+        self.assertEqual(pi_client.review.call_count, 1)
+        self.assertIn(
+            "trust boundaries",
+            pi_client.review.call_args.args[0],
+        )
+        self.assertEqual(
+            [item.title for item in github.created[1][3]],
+            ["security-defect"],
+        )
 
     def test_fallback_prompt_requests_only_inline_findings(self) -> None:
         github = FakeGitHub()
