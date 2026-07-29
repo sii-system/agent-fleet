@@ -618,14 +618,15 @@ if ! harbor_start_analyzer_if_enabled; then
   exit 1
 fi
 trap 'harbor_finish_analyzer_lifecycle' EXIT
-trap 'exit 129' HUP
-trap 'exit 130' INT
-trap 'exit 143' TERM
+trap 'zellij kill-session "$ZELLIJ_SESSION_NAME" >/dev/null 2>&1 || true; exit 129' HUP
+trap 'zellij kill-session "$ZELLIJ_SESSION_NAME" >/dev/null 2>&1 || true; exit 130' INT
+trap 'zellij kill-session "$ZELLIJ_SESSION_NAME" >/dev/null 2>&1 || true; exit 143' TERM
 harbor_print_run_receipt
 zellij_status=0
 env -u ZELLIJ_SESSION_NAME zellij \
   --session "$ZELLIJ_SESSION_NAME" \
-  --new-session-with-layout "$LAYOUT_FILE" || zellij_status="$?"
+  --new-session-with-layout "$LAYOUT_FILE" <&0 &
+wait "$!" || zellij_status="$?"
 harbor_finish_analyzer_lifecycle
 trap - EXIT HUP INT TERM
 final_status=0
