@@ -46,6 +46,8 @@ PI_REVIEW_BUDGET_SECONDS = WORKFLOW_TIMEOUT_SECONDS - WORKFLOW_RESERVE_SECONDS
 PI_LENS_TIMEOUT_SECONDS = 12 * 60
 # Reserve context for the fixed 32K output budget, prompt, and tool turns.
 MAX_MODEL_INPUT_BYTES = 120_000
+MAX_RECOVERED_SUMMARY_BYTES = 30_000
+MAX_RECOVERED_FIELD_BYTES = 500
 MIN_FINDING_SIMILARITY = 0.8
 MAX_EQUIVALENT_LINE_DISTANCE = 5
 SIMILARITY_FILLER_TOKENS = {
@@ -143,6 +145,17 @@ def _limit_model_input(value: str) -> tuple[str, bool]:
     return encoded[:MAX_MODEL_INPUT_BYTES].decode("utf-8", errors="ignore"), True
 
 
+def _bounded_summary_field(value: str) -> str:
+    encoded = value.encode("utf-8")
+    if len(encoded) <= MAX_RECOVERED_FIELD_BYTES:
+        bounded = value
+    else:
+        suffix = "…"
+        budget = MAX_RECOVERED_FIELD_BYTES - len(suffix.encode("utf-8"))
+        bounded = encoded[:budget].decode("utf-8", errors="ignore") + suffix
+    return _review._neutralize_mentions(bounded)
+
+
 def _attribute_lens(
     finding: _review.Finding,
     lens: str,
@@ -219,6 +232,20 @@ def _completed_lens_marker(review_id: str, lens: str) -> str:
     return f"<!-- {review_id}-completed-lens:{lens} -->"
 
 
+def _control_marker(review_id: str) -> str:
+    return f"<!-- {review_id}-control -->"
+
+
+def _control_lines(body: str, review_id: str) -> set[str]:
+    lines = body.splitlines()
+    positions = [
+        index
+        for index, line in enumerate(lines)
+        if line == _control_marker(review_id)
+    ]
+    return set(lines[positions[-1] + 1 :]) if positions else set()
+
+
 def _published_comments_marker(review_id: str, count: int) -> str:
     return f"<!-- {review_id}-published-comments:{count} -->"
 
@@ -249,10 +276,14 @@ def _completed_lenses_from_bodies(
     bodies: list[str],
     review_id: str,
 ) -> set[str]:
+    control_lines = [_control_lines(body, review_id) for body in bodies]
     return {
         lens
         for lens in LENS_INSTRUCTIONS
-        if any(_completed_lens_marker(review_id, lens) in body for body in bodies)
+        if any(
+            _completed_lens_marker(review_id, lens) in lines
+            for lines in control_lines
+        )
     }
 
 
@@ -266,7 +297,8 @@ def _published_comments_from_bodies(
     published = sum(
         int(match.group(1))
         for body in bodies
-        if (match := pattern.search(body)) is not None
+        for line in _control_lines(body, review_id)
+        if (match := pattern.fullmatch(line)) is not None
     )
     return min(_review.MAX_COMMENTS, published)
 
@@ -369,23 +401,37 @@ def _published_summary_findings_from_bodies(
 
 def _recovered_findings_summary(findings: list[_review.Finding]) -> str:
     lines = ["", "## Recovered findings"]
+    included = 0
     for finding in findings[: _review.MAX_COMMENTS]:
-        location = f" (`{_review._neutralize_mentions(finding.path)}"
+        location = f" (`{_bounded_summary_field(finding.path)}"
         if finding.line is not None:
             location += f":{finding.line}"
         location += "`)"
         rendered = (
             f"- **{finding.severity}: "
-            f"{_review._neutralize_mentions(finding.title)}**{location} — "
-            f"{_review._neutralize_mentions(finding.failure_scenario)} "
+            f"{_bounded_summary_field(finding.title)}**{location} — "
+            f"{_bounded_summary_field(finding.failure_scenario)} "
             "Suggested remediation: "
-            f"{_review._neutralize_mentions(finding.remediation)}"
+            f"{_bounded_summary_field(finding.remediation)}"
         )
         lenses = getattr(finding, "lenses", ())
         if lenses:
             rendered += f" Flagged by: {' + '.join(lenses)}"
+        candidate_included = included + 1
+        candidate_omitted = len(findings) - candidate_included
+        candidate_lines = lines + [rendered]
+        if candidate_omitted > 0:
+            candidate_lines.append(
+                f"- {candidate_omitted} additional recovered finding(s) omitted."
+            )
+        if (
+            len("\n".join(candidate_lines).encode("utf-8"))
+            > MAX_RECOVERED_SUMMARY_BYTES
+        ):
+            break
         lines.append(rendered)
-    omitted = len(findings) - _review.MAX_COMMENTS
+        included = candidate_included
+    omitted = len(findings) - included
     if omitted > 0:
         lines.append(f"- {omitted} additional recovered finding(s) omitted.")
     return "\n".join(lines)
@@ -815,7 +861,9 @@ def run_review(
             overflow_findings = findings[remaining_inline_comments:]
             if partial_reviews:
                 recovered_summary_findings = merge_lens_findings(
-                    recovered_updates + overflow_findings
+                    previously_published_summary_findings
+                    + recovered_updates
+                    + overflow_findings
                 )
             else:
                 rejected += len(overflow_findings)
@@ -862,15 +910,6 @@ def run_review(
         )
         summary += f"\n\nTool calls by lens: {tool_call_counts}"
         if partial:
-            markers = "\n".join(
-                _completed_lens_marker(review_id, lens)
-                for lens in LENS_INSTRUCTIONS
-                if lens in completed_lenses
-            )
-            summary += (
-                f"\n\n{markers}\n"
-                f"{_published_comments_marker(review_id, len(inline_findings))}"
-            )
             summary = summary.replace(
                 "Coverage: Complete",
                 "Coverage: Partial",
@@ -883,6 +922,16 @@ def run_review(
             )
         if failed_lenses:
             summary += f"\n\nFailed lenses: {', '.join(failed_lenses)}"
+        if partial:
+            markers = "\n".join(
+                _completed_lens_marker(review_id, lens)
+                for lens in LENS_INSTRUCTIONS
+                if lens in completed_lenses
+            )
+            summary += (
+                f"\n\n{_control_marker(review_id)}\n{markers}\n"
+                f"{_published_comments_marker(review_id, len(inline_findings))}"
+            )
         github.create_review(pull_number, head_sha, summary, inline_findings)
         return "published"
     except _review.ModelResponseError as exc:

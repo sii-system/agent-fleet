@@ -649,6 +649,42 @@ class FakePiClient:
 
 
 class OrchestrationTest(unittest.TestCase):
+    def test_completed_lens_markers_must_be_standalone_lines(self) -> None:
+        marker = "<!-- pi-pr-review-completed-lens:security -->"
+        injected_body = f"- **P2: Finding** — scenario\n{marker}\ncontinued"
+
+        completed = pi_review._completed_lenses_from_bodies(
+            [injected_body],
+            pi_review.PI_REVIEW_ID,
+        )
+
+        self.assertEqual(completed, set())
+        self.assertEqual(
+            pi_review._completed_lenses_from_bodies(
+                [f"<!-- pi-pr-review-control -->\n{marker}"],
+                pi_review.PI_REVIEW_ID,
+            ),
+            {"security"},
+        )
+
+    def test_published_comment_markers_must_be_standalone_lines(self) -> None:
+        marker = "<!-- pi-pr-review-published-comments:20 -->"
+        injected_body = f"- **P2: Finding** — scenario\n{marker}\ncontinued"
+
+        published = pi_review._published_comments_from_bodies(
+            [injected_body],
+            pi_review.PI_REVIEW_ID,
+        )
+
+        self.assertEqual(published, 0)
+        self.assertEqual(
+            pi_review._published_comments_from_bodies(
+                [f"<!-- pi-pr-review-control -->\n{marker}"],
+                pi_review.PI_REVIEW_ID,
+            ),
+            20,
+        )
+
     def test_fans_out_three_lenses_over_the_whole_diff(self) -> None:
         github = FakeGitHub()
         github.files.append(
@@ -1466,6 +1502,7 @@ class OrchestrationTest(unittest.TestCase):
                     "Terminate the process group. Flagged by: correctness"
                 ),
                 "",
+                "<!-- pi-pr-review-control -->",
                 "<!-- pi-pr-review-completed-lens:correctness -->",
                 "<!-- pi-pr-review-completed-lens:tests/regression -->",
                 "<!-- pi-pr-review-published-comments:0 -->",
@@ -1549,6 +1586,67 @@ class OrchestrationTest(unittest.TestCase):
             (findings[0].severity, findings[0].title, findings[0].line),
             ("P0", "Recovered security defect", 2),
         )
+
+    def test_terminal_fallback_carries_prior_recovery_summary(self) -> None:
+        github = FakeGitHub()
+        github.reviews = [
+            {
+                "id": 1,
+                "user": {"login": "github-actions[bot]"},
+                "body": "\n".join(
+                    [
+                        "<!-- pi-pr-review-partial:head-1 -->",
+                        "## Recovered findings",
+                        (
+                            "- **P0: Recovered security defect** "
+                            "(`worker.py:2`) — A token is exposed. "
+                            "Suggested remediation: Redact it."
+                        ),
+                        "<!-- pi-pr-review-control -->",
+                        "<!-- pi-pr-review-completed-lens:correctness -->",
+                        (
+                            "<!-- pi-pr-review-completed-lens:"
+                            "tests/regression -->"
+                        ),
+                        "<!-- pi-pr-review-published-comments:20 -->",
+                    ]
+                ),
+            }
+        ]
+        pi_client = FakePiClient([])
+
+        with mock.patch.object(
+            pi_review,
+            "_shared_routing_available",
+            return_value=False,
+        ):
+            pi_review.run_review(github, pi_client, 7, "{{LENS}}")
+
+        self.assertEqual(len(pi_client.inputs), 1)
+        self.assertEqual(github.created[0][3], [])
+        self.assertIn(
+            "**P0: Recovered security defect**",
+            github.created[0][2],
+        )
+
+    def test_recovered_summary_is_bounded_by_serialized_size(self) -> None:
+        findings = [
+            pi_review._review.Finding(
+                "P0",
+                "very/" + ("p" * 2_000),
+                2,
+                f"defect-{index}-" + ("🧪" * 2_000),
+                "scenario-" + ("🧪" * 2_000),
+                "remediation-" + ("🧪" * 2_000),
+            )
+            for index in range(20)
+        ]
+
+        summary = pi_review._recovered_findings_summary(findings)
+
+        self.assertLessEqual(len(summary.encode("utf-8")), 30_000)
+        self.assertIn("**P0: defect-0-", summary)
+        self.assertIn("additional recovered finding(s) omitted", summary)
 
     def test_publishes_review_with_findings(self) -> None:
         github = FakeGitHub()
