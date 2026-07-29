@@ -481,6 +481,49 @@ class PiClientTest(unittest.TestCase):
         self.assertEqual(result, {"findings": [], "_pi_tool_calls": 3})
         self.assertEqual(run_mock.call_count, 2)
 
+    def test_retries_one_schema_invalid_model_response(self) -> None:
+        client = self._make_client()
+        invalid = subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout=_with_tool_calls(
+                _make_text_response('{"findings": {}}'),
+                "read",
+            ),
+            stderr="",
+        )
+        valid = subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout=_with_tool_calls(
+                _make_findings_response([]),
+                "grep",
+                "read",
+            ),
+            stderr="",
+        )
+
+        def validate(payload: dict) -> None:
+            if not isinstance(payload.get("findings"), list):
+                raise pi_review._review.ModelResponseError(
+                    "findings must be an array"
+                )
+
+        with mock.patch(
+            "subprocess.run",
+            side_effect=[invalid, valid],
+        ) as run_mock:
+            result = client.review(
+                "prompt",
+                "diff",
+                timeout=20,
+                retry_malformed=True,
+                response_validator=validate,
+            )
+
+        self.assertEqual(result, {"findings": [], "_pi_tool_calls": 3})
+        self.assertEqual(run_mock.call_count, 2)
+
     def test_does_not_retry_malformed_model_response_by_default(self) -> None:
         client = self._make_client()
         malformed = subprocess.CompletedProcess(
@@ -558,6 +601,7 @@ class FakePiClient:
         self.prompts: list[str] = []
         self.timeouts: list[float | None] = []
         self.retry_malformed: list[bool] = []
+        self.response_validators: list[object] = []
 
     def review(
         self,
@@ -566,12 +610,17 @@ class FakePiClient:
         *,
         timeout: float | None = None,
         retry_malformed: bool = False,
+        response_validator: object = None,
     ) -> dict:
         self.prompts.append(prompt)
         self.inputs.append(chunk)
         self.timeouts.append(timeout)
         self.retry_malformed.append(retry_malformed)
-        return {"findings": list(self.findings)}
+        self.response_validators.append(response_validator)
+        payload = {"findings": list(self.findings)}
+        if callable(response_validator):
+            response_validator(payload)
+        return payload
 
 
 class OrchestrationTest(unittest.TestCase):
@@ -594,6 +643,7 @@ class OrchestrationTest(unittest.TestCase):
         self.assertEqual(len(set(pi_client.prompts)), 3)
         self.assertTrue(all("base prompt" in prompt for prompt in pi_client.prompts))
         self.assertEqual(pi_client.retry_malformed, [True] * 3)
+        self.assertTrue(all(callable(item) for item in pi_client.response_validators))
 
     def test_whole_diff_input_includes_every_bounded_chunk(self) -> None:
         sentinel = "SECOND_CHUNK_SENTINEL"
@@ -740,6 +790,12 @@ class OrchestrationTest(unittest.TestCase):
         )
         self.assertTrue(
             all("contextual unchanged lines" in prompt for prompt in pi_client.prompts)
+        )
+        self.assertTrue(
+            all(
+                "overrides the prompt's default" in prompt
+                for prompt in pi_client.prompts
+            )
         )
 
     def test_two_lens_failures_publish_the_remaining_result(self) -> None:
@@ -975,6 +1031,61 @@ class OrchestrationTest(unittest.TestCase):
                 body,
             )
             self.assertIn("Rejected model findings: 10", body)
+
+    def test_applies_inline_cap_after_deduplicating_each_lens(self) -> None:
+        github = FakeGitHub()
+        pi_client = mock.Mock()
+        overlapping = [
+            {
+                "severity": "P2",
+                "path": "worker.py",
+                "line": 2,
+                "title": title,
+                "failure_scenario": "Worker survives wrapper.",
+                "remediation": "Terminate the process group.",
+            }
+            for title in (
+                "Cancellation cleanup missing",
+                "Cancellation cleanup regression",
+            )
+        ]
+        distinct = [
+            {
+                "severity": "P2",
+                "path": "worker.py",
+                "line": 2,
+                "title": f"defect{index}",
+                "failure_scenario": f"scenario{index}",
+                "remediation": f"fix{index}",
+            }
+            for index in range(2, 20)
+        ]
+        sentinel = {
+            "severity": "P2",
+            "path": "worker.py",
+            "line": 2,
+            "title": "overflow-sentinel",
+            "failure_scenario": "sentinel-scenario",
+            "remediation": "sentinel-fix",
+        }
+
+        def review_lens(prompt: str, _chunk: str, **_kwargs: object) -> dict:
+            if "runtime correctness" in prompt:
+                return {"findings": overlapping + distinct + [sentinel]}
+            return {"findings": []}
+
+        pi_client.review.side_effect = review_lens
+
+        with mock.patch.object(
+            pi_review,
+            "_shared_routing_available",
+            return_value=False,
+        ):
+            pi_review.run_review(github, pi_client, 7, "base prompt")
+
+        findings = github.created[0][3]
+        self.assertEqual(len(findings), pi_review._review.MAX_COMMENTS)
+        self.assertIn("overflow-sentinel", [item.title for item in findings])
 
     def test_uses_shared_routing_contract_when_available(self) -> None:
         github = FakeGitHub()

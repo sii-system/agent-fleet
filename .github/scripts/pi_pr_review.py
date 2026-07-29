@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path
@@ -63,11 +64,12 @@ INLINE_ROUTING_INSTRUCTION = (
     "finding over an unanchorable finding."
 )
 SUMMARY_ROUTING_INSTRUCTION = (
-    "Report concrete defects caused by the change even when the best evidence "
-    "is on contextual unchanged lines or a related path. Use the exact "
-    "relevant path and an integer line when available; set line to null only "
-    "when no precise line exists. These findings will be published in the "
-    "review summary."
+    "This explicit routing instruction overrides the prompt's default "
+    "added-RIGHT-line restriction. Report concrete defects caused by the "
+    "change even when the best evidence is on contextual unchanged lines or "
+    "a related path. Use the exact relevant path and an integer line when "
+    "available; set line to null only when no precise line exists. These "
+    "findings will be published in the review summary."
 )
 
 
@@ -282,6 +284,7 @@ class PiClient:
         *,
         timeout: float | None = None,
         retry_malformed: bool = False,
+        response_validator: Callable[[dict[str, Any]], None] | None = None,
     ) -> dict[str, Any]:
         effective_timeout = (
             self.timeout if timeout is None else min(self.timeout, timeout)
@@ -348,6 +351,14 @@ class PiClient:
 
                 try:
                     payload = _validate_pi_stream(completed.stdout or "")
+                    if response_validator is not None:
+                        try:
+                            response_validator(payload)
+                        except _review.ModelResponseError as exc:
+                            raise PiResponseFormatError(
+                                str(exc),
+                                tool_calls=payload["_pi_tool_calls"],
+                            ) from exc
                     payload["_pi_tool_calls"] += prior_tool_calls
                     return payload
                 except PiResponseFormatError as exc:
@@ -394,11 +405,22 @@ def run_review(
         )
         whole_diff = "".join(chunks)
         model_input = _review.build_model_input(pull, whole_diff)
+        shared_routing = _shared_routing_available()
         routing_instruction = (
             SUMMARY_ROUTING_INSTRUCTION
-            if _shared_routing_available()
+            if shared_routing
             else INLINE_ROUTING_INSTRUCTION
         )
+
+        def validate_lens_response(payload: dict[str, Any]) -> None:
+            if shared_routing:
+                _review.parse_findings(payload)
+            else:
+                _review.validate_findings(
+                    payload,
+                    by_path,
+                    limit=sys.maxsize,
+                )
 
         with ThreadPoolExecutor(max_workers=len(LENS_INSTRUCTIONS)) as executor:
             futures = {}
@@ -414,6 +436,7 @@ def run_review(
                     model_input,
                     timeout=min(float(PI_LENS_TIMEOUT_SECONDS), remaining),
                     retry_malformed=True,
+                    response_validator=validate_lens_response,
                 )
 
         findings: list[_review.Finding] = []
@@ -432,7 +455,7 @@ def run_review(
                 )
                 if payload.get("incomplete"):
                     incomplete_lenses += 1
-                if _shared_routing_available():
+                if shared_routing:
                     lens_findings, lens_rejected = _review.parse_findings(
                         payload
                     )
@@ -440,6 +463,7 @@ def run_review(
                     lens_findings, lens_rejected = _review.validate_findings(
                         payload,
                         by_path,
+                        limit=sys.maxsize,
                     )
             except (PiReviewError, _review.ModelResponseError):
                 failed_lenses.append(lens)
@@ -457,7 +481,7 @@ def run_review(
         findings = merge_lens_findings(findings)
         reported_findings = findings
         summary_findings: list[_review.Finding] = []
-        if _shared_routing_available():
+        if shared_routing:
             inline_findings, summary_findings = _review.route_findings(
                 findings,
                 by_path,
@@ -479,7 +503,7 @@ def run_review(
             ),
             "base_sha": expected_base_sha,
         }
-        if _shared_routing_available():
+        if shared_routing:
             summary_options.update(
                 summary_findings=summary_findings,
                 changed_paths=frozenset(by_path),
