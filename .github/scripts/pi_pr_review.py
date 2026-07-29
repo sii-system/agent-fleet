@@ -47,6 +47,18 @@ PI_LENS_TIMEOUT_SECONDS = 12 * 60
 # Reserve context for the fixed 32K output budget, prompt, and tool turns.
 MAX_MODEL_INPUT_BYTES = 120_000
 MIN_FINDING_SIMILARITY = 0.8
+SIMILARITY_FILLER_TOKENS = {
+    "a",
+    "an",
+    "are",
+    "be",
+    "been",
+    "being",
+    "is",
+    "the",
+    "was",
+    "were",
+}
 LENS_INSTRUCTIONS = {
     "correctness": (
         "Focus on runtime correctness, state transitions, error handling, and "
@@ -90,7 +102,9 @@ class PiResponseFormatError(PiReviewError):
 
 def _text_similarity(left: str, right: str) -> float:
     left_tokens = set(re.findall(r"[a-z0-9]+", left.casefold()))
+    left_tokens -= SIMILARITY_FILLER_TOKENS
     right_tokens = set(re.findall(r"[a-z0-9]+", right.casefold()))
+    right_tokens -= SIMILARITY_FILLER_TOKENS
     union = left_tokens | right_tokens
     return len(left_tokens & right_tokens) / len(union) if union else 0.0
 

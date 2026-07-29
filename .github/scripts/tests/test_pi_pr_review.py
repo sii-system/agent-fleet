@@ -1034,6 +1034,28 @@ class OrchestrationTest(unittest.TestCase):
 
         self.assertEqual(len(merged), 2)
 
+    def test_filler_words_do_not_prevent_equivalent_findings_from_merging(
+        self,
+    ) -> None:
+        findings = [
+            pi_review._review.Finding(
+                "P2",
+                "worker.py",
+                2,
+                title,
+                "Worker survives wrapper.",
+                "Terminate the process group.",
+            )
+            for title in (
+                "Missing cancellation cleanup",
+                "Cancellation cleanup is missing",
+            )
+        ]
+
+        merged = pi_review.merge_lens_findings(findings)
+
+        self.assertEqual(len(merged), 1)
+
     def test_caps_merged_inline_findings_across_lenses(self) -> None:
         github = FakeGitHub()
         pi_client = mock.Mock()
