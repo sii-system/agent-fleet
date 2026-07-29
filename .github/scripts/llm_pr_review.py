@@ -33,7 +33,18 @@ REQUEST_TIMEOUT_SECONDS = 600
 RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504})
 MAX_PR_METADATA_CHARS = 4_000
 MAX_SKIPPED_PATHS_IN_SUMMARY = 50
+MAX_REVIEW_BODY_BYTES = 60_000
 DEFAULT_REVIEW_ID = "llm-pr-review"
+SUMMARY_ROUTING_INSTRUCTION = (
+    "Additional routing instruction: report concrete defects caused by the "
+    "change even when the best evidence is on contextual unchanged lines or "
+    "a related path. Use the exact relevant path and an integer line when "
+    "available; set line to null only when no precise line exists. These "
+    "findings will be published in the review summary."
+)
+SUMMARY_OMISSION_NOTICE = (
+    "- Additional review summary content omitted to fit GitHub's body limit."
+)
 
 
 @dataclass(frozen=True)
@@ -538,7 +549,18 @@ def build_summary(
         if other:
             lines.extend(["", "### Other observations"])
             lines.extend(_summary_finding(item) for item in other)
-    return "\n".join(lines)
+    return _cap_review_body("\n".join(lines))
+
+
+def _cap_review_body(body: str) -> str:
+    encoded = body.encode("utf-8")
+    if len(encoded) <= MAX_REVIEW_BODY_BYTES:
+        return body
+    suffix = f"\n\n{SUMMARY_OMISSION_NOTICE}"
+    budget = MAX_REVIEW_BODY_BYTES - len(suffix.encode("utf-8"))
+    prefix = encoded[:budget].decode("utf-8", errors="ignore")
+    prefix = prefix.rsplit("\n", 1)[0].rstrip()
+    return f"{prefix}{suffix}"
 
 
 def _summary_finding(finding: Finding) -> str:
@@ -587,11 +609,12 @@ def run_review(
     files, skipped = collect_files(github.list_files(pull_number))
     by_path = {item.path: item for item in files}
     chunks, truncated = build_chunks(files)
+    review_prompt = f"{prompt}\n{SUMMARY_ROUTING_INSTRUCTION}"
     findings: list[Finding] = []
     rejected = 0
     incomplete_chunks = 0
     for chunk in chunks:
-        payload = llm.review(prompt, build_model_input(pull, chunk))
+        payload = llm.review(review_prompt, build_model_input(pull, chunk))
         if payload.get("incomplete"):
             incomplete_chunks += 1
         chunk_findings, chunk_rejected = parse_findings(payload)

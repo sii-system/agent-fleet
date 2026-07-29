@@ -543,8 +543,10 @@ class FakeGitHub:
 class FakeLlm:
     def __init__(self) -> None:
         self.inputs: list[str] = []
+        self.prompts: list[str] = []
 
-    def review(self, _prompt: str, chunk: str) -> dict[str, object]:
+    def review(self, prompt: str, chunk: str) -> dict[str, object]:
+        self.prompts.append(prompt)
         self.inputs.append(chunk)
         return {
             "findings": [
@@ -728,6 +730,20 @@ class OrchestrationTest(unittest.TestCase):
         self.assertIn("PR DESCRIPTION: Keep child processes", llm.inputs[0])
         self.assertIn("UNTRUSTED DIFF", llm.inputs[0])
 
+    def test_routed_reviewer_prompts_for_summary_only_findings(self) -> None:
+        github = FakeGitHub()
+        llm = FakeLlm()
+        prompt = SCRIPT_DIR.joinpath("pi_review_prompt.md").read_text()
+        self.assertIn("By default", prompt)
+        self.assertNotIn("set line to null", prompt)
+
+        review.run_review(github, llm, 7, prompt)
+
+        self.assertEqual(len(llm.prompts), 1)
+        self.assertIn(prompt, llm.prompts[0])
+        self.assertIn("contextual unchanged lines", llm.prompts[0])
+        self.assertIn("set line to null", llm.prompts[0])
+
     def test_summary_caps_the_skipped_path_list(self) -> None:
         skipped = [(f"generated/{index}.map", "generated") for index in range(55)]
 
@@ -736,6 +752,34 @@ class OrchestrationTest(unittest.TestCase):
         self.assertIn("`generated/49.map`", summary)
         self.assertNotIn("`generated/50.map`", summary)
         self.assertIn("5 additional skipped file(s)", summary)
+
+    def test_summary_stays_within_github_body_limit(self) -> None:
+        findings = [
+            review.Finding(
+                "P2",
+                f"related/{index}.py",
+                None,
+                "界" * review.MAX_FIELD_CHARS,
+                "界" * review.MAX_FIELD_CHARS,
+                "界" * review.MAX_FIELD_CHARS,
+            )
+            for index in range(20)
+        ]
+
+        summary = review.build_summary(
+            "head-1",
+            findings,
+            0,
+            [],
+            False,
+            summary_findings=findings,
+        )
+
+        self.assertLessEqual(
+            len(summary.encode("utf-8")),
+            review.MAX_REVIEW_BODY_BYTES,
+        )
+        self.assertIn("review summary content omitted", summary)
 
     def test_summary_reports_partial_when_a_chunk_is_incomplete(self) -> None:
         summary = review.build_summary(
