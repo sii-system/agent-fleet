@@ -16,6 +16,7 @@ SCRIPT_DIR = Path(__file__).resolve().parents[1] / "scripts"
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
+from Agents.utils.common.Harbor.scripts import analyzer_subagent
 from Agents.utils.common.Harbor.scripts.analyzer_subagent import (
     FOLLOW_MAX_FAILURE_ATTEMPTS,
     _default_model,
@@ -397,6 +398,53 @@ class HarborAnalyzerRuntimeTest(unittest.TestCase):
             state_path.write_text("[]", encoding="utf-8")
 
             self.assertEqual(_load_follow_state(state_path), (set(), {}))
+
+    def test_follow_continues_after_unexpected_handover_exception(self) -> None:
+        class StopFollow(Exception):
+            pass
+
+        with tempfile.TemporaryDirectory() as root:
+            root_path = Path(root)
+            state_path = root_path / "analyzer" / ".analyzer_state.json"
+            config = AnalyzerConfig(
+                run_dir=root_path / "run",
+                queue_dir=None,
+                output_dir=state_path.parent,
+            )
+            args = SimpleNamespace(
+                follow=True,
+                handover=root_path / "latest.json",
+                handoff_dir=root_path / "handoffs",
+                ready_file=None,
+                poll_interval=1.0,
+            )
+            pending = [
+                ({"handover_id": "first"}, root_path / "first.json", "first"),
+                ({"handover_id": "second"}, root_path / "second.json", "second"),
+            ]
+
+            with (
+                mock.patch.object(analyzer_subagent, "parse_args", return_value=args),
+                mock.patch.object(analyzer_subagent, "_config", return_value=config),
+                mock.patch.object(
+                    analyzer_subagent,
+                    "_pending_handovers",
+                    side_effect=[pending, StopFollow()],
+                ),
+                mock.patch.object(
+                    analyzer_subagent,
+                    "_run_one",
+                    side_effect=[OSError(28, "No space left on device"), 0],
+                ) as run_one,
+                self.assertRaises(StopFollow),
+            ):
+                analyzer_subagent.main()
+
+            self.assertEqual(run_one.call_count, 2)
+            processed, failed = _load_follow_state(state_path)
+            self.assertEqual(processed, {"second"})
+            self.assertEqual(failed["first"]["attempt_count"], 1)
+            self.assertEqual(failed["first"]["last_exit_code"], 2)
 
     def test_pending_handovers_skip_non_object_json(self) -> None:
         with tempfile.TemporaryDirectory() as root:

@@ -363,8 +363,12 @@ def main() -> int:
         for handover, source_path, follow_key in pending:
             try:
                 exit_code = _run_one(handover, source_path, config)
-            except ValueError as exc:
-                print(f"Analyzer rejected {source_path}: {exc}", file=sys.stderr)
+            except Exception as exc:  # noqa: BLE001 - isolate one handover from the follow daemon
+                print(
+                    f"Analyzer failed while processing {source_path}: "
+                    f"{type(exc).__name__}: {exc}",
+                    file=sys.stderr,
+                )
                 _record_follow_failure(
                     failed,
                     handover_id=follow_key,
