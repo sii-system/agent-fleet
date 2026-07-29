@@ -44,6 +44,9 @@ WORKFLOW_TIMEOUT_SECONDS = 20 * 60
 WORKFLOW_RESERVE_SECONDS = 5 * 60
 PI_REVIEW_BUDGET_SECONDS = WORKFLOW_TIMEOUT_SECONDS - WORKFLOW_RESERVE_SECONDS
 PI_LENS_TIMEOUT_SECONDS = 12 * 60
+# Reserve context for the fixed 32K output budget, prompt, and tool turns.
+MAX_MODEL_INPUT_BYTES = 120_000
+MIN_FINDING_SIMILARITY = 0.8
 LENS_INSTRUCTIONS = {
     "correctness": (
         "Focus on runtime correctness, state transitions, error handling, and "
@@ -92,6 +95,13 @@ def _text_similarity(left: str, right: str) -> float:
     return len(left_tokens & right_tokens) / len(union) if union else 0.0
 
 
+def _limit_model_input(value: str) -> tuple[str, bool]:
+    encoded = value.encode("utf-8")
+    if len(encoded) <= MAX_MODEL_INPUT_BYTES:
+        return value, False
+    return encoded[:MAX_MODEL_INPUT_BYTES].decode("utf-8", errors="ignore"), True
+
+
 def _attribute_lens(
     finding: _review.Finding,
     lens: str,
@@ -111,12 +121,13 @@ def merge_lens_findings(
             if (
                 existing.path == finding.path
                 and existing.line == finding.line
-                and _text_similarity(existing.title, finding.title) >= 0.5
+                and _text_similarity(existing.title, finding.title)
+                >= MIN_FINDING_SIMILARITY
                 and _text_similarity(
                     existing.failure_scenario,
                     finding.failure_scenario,
                 )
-                >= 0.5
+                >= MIN_FINDING_SIMILARITY
             ):
                 winner = min(
                     (existing, finding),
@@ -405,6 +416,8 @@ def run_review(
         )
         whole_diff = "".join(chunks)
         model_input = _review.build_model_input(pull, whole_diff)
+        model_input, input_truncated = _limit_model_input(model_input)
+        truncated = truncated or input_truncated
         shared_routing = _shared_routing_available()
         routing_instruction = (
             SUMMARY_ROUTING_INSTRUCTION

@@ -653,16 +653,15 @@ class OrchestrationTest(unittest.TestCase):
                 "filename": f"large_{index}.py",
                 "patch": (
                     "@@ -0,0 +1 @@\n+"
-                    + (sentinel if index == 4 else f"file_{index}_")
+                    + (sentinel if index == 1 else f"file_{index}_")
                     + ("x" * 49_000)
                 ),
             }
-            for index in range(5)
+            for index in range(2)
         ]
         parsed_files, skipped = pi_review._review.collect_files(github.files)
         chunks, _truncated = pi_review._review.build_chunks(
             parsed_files,
-            max_chunk_chars=pi_review._review.MAX_TOTAL_CHARS,
         )
         self.assertEqual(skipped, [])
         self.assertGreater(len(chunks), 1)
@@ -676,6 +675,26 @@ class OrchestrationTest(unittest.TestCase):
         self.assertTrue(
             all(sentinel in model_input for model_input in pi_client.inputs)
         )
+
+    def test_limits_token_dense_whole_diff_input(self) -> None:
+        github = FakeGitHub()
+        github.files = [
+            {
+                "filename": "dense.py",
+                "patch": "@@ -0,0 +1 @@\n+" + ("🧪" * 50_000),
+            }
+        ]
+        pi_client = FakePiClient([])
+
+        pi_review.run_review(github, pi_client, 7, "base prompt")
+
+        self.assertTrue(
+            all(
+                len(model_input.encode("utf-8")) <= 120_000
+                for model_input in pi_client.inputs
+            )
+        )
+        self.assertIn("Coverage: Partial", github.created[0][2])
 
     def test_one_lens_failure_publishes_partial_results(self) -> None:
         github = FakeGitHub()
@@ -897,7 +916,7 @@ class OrchestrationTest(unittest.TestCase):
                 title = "Cancellation cleanup missing"
             else:
                 severity = "P2"
-                title = "Cancellation cleanup regression"
+                title = "Missing cancellation cleanup"
             return {
                 "findings": [
                     {
@@ -991,6 +1010,30 @@ class OrchestrationTest(unittest.TestCase):
 
         self.assertEqual(len(merged), 2)
 
+    def test_generic_wording_does_not_merge_distinct_subjects(self) -> None:
+        findings = [
+            pi_review._review.Finding(
+                "P1",
+                "worker.py",
+                2,
+                "Reject missing owner check",
+                "A request missing owner deletes the job.",
+                "Require ownership before deletion.",
+            ),
+            pi_review._review.Finding(
+                "P1",
+                "worker.py",
+                2,
+                "Reject missing payload check",
+                "A request missing payload crashes the job.",
+                "Validate the payload before use.",
+            ),
+        ]
+
+        merged = pi_review.merge_lens_findings(findings)
+
+        self.assertEqual(len(merged), 2)
+
     def test_caps_merged_inline_findings_across_lenses(self) -> None:
         github = FakeGitHub()
         pi_client = mock.Mock()
@@ -1046,7 +1089,7 @@ class OrchestrationTest(unittest.TestCase):
             }
             for title in (
                 "Cancellation cleanup missing",
-                "Cancellation cleanup regression",
+                "Missing cancellation cleanup",
             )
         ]
         distinct = [
