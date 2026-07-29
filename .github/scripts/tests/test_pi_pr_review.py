@@ -869,7 +869,12 @@ class OrchestrationTest(unittest.TestCase):
             "Automated review found 21 actionable finding(s).",
             terminal_body,
         )
-        self.assertIn("## Recovered findings", terminal_body)
+        expected_section = (
+            "## Summary findings"
+            if pi_review._shared_routing_available()
+            else "## Recovered findings"
+        )
+        self.assertIn(expected_section, terminal_body)
         self.assertIn("**P0: Recovered security defect**", terminal_body)
 
     def test_recovered_finding_surfaces_a_severity_upgrade(self) -> None:
