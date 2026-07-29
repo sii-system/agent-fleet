@@ -13,7 +13,7 @@ from uuid import uuid4
 
 from . import PROMPT_VERSION, SCHEMA_VERSION, TAXONOMY_VERSION
 from .contract import validate_handover
-from .io import stable_hash, utc_now, write_json_atomic, write_text_atomic
+from .io import load_json, stable_hash, utc_now, write_json_atomic, write_text_atomic
 from .pi import dispatch_to_child
 from .prompt import (
     build_dispatch_retry_prompt,
@@ -529,21 +529,51 @@ def _write_outputs(
     write_text_atomic(fix_index_path, fix_index_jsonl)
     if raw_final_snapshot_path:
         write_json_atomic(raw_final_snapshot_path, final_json)
+    generated_at = utc_now()
+    artifacts = {
+        "benchmark_report_path": str(report_path),
+        "env_infra_tasks_path": str(env_infra_path),
+        "fix_line_index_path": str(fix_index_path),
+        "raw_final_json_path": str(raw_final_snapshot_path) if raw_final_snapshot_path else None,
+    }
     latest_artifacts = {
         "schema_version": SCHEMA_VERSION,
         "kind": "harbor_analyzer_latest_artifacts",
         "handover_id": handover_id,
         "publication_id": publication_id,
         "run_id": benchmark_report.get("run_id"),
-        "generated_at": utc_now(),
-        "artifacts": {
-            "benchmark_report_path": str(report_path),
-            "env_infra_tasks_path": str(env_infra_path),
-            "fix_line_index_path": str(fix_index_path),
-            "raw_final_json_path": str(raw_final_snapshot_path) if raw_final_snapshot_path else None,
-        },
+        "generated_at": generated_at,
+        "artifacts": artifacts,
     }
     with _publish_lock(config.output_dir):
+        publications: list[dict[str, Any]] = []
+        if latest_artifacts_path.is_file():
+            previous = load_json(latest_artifacts_path)
+            if previous.get("run_id") == latest_artifacts["run_id"]:
+                previous_publications = previous.get("publications")
+                if isinstance(previous_publications, list):
+                    publications = list(previous_publications)
+                elif previous.get("handover_id") and previous.get("publication_id"):
+                    publications = [
+                        {
+                            "handover_id": previous["handover_id"],
+                            "publication_id": previous["publication_id"],
+                            "generated_at": previous.get("generated_at"),
+                            "artifacts": previous.get("artifacts"),
+                        }
+                    ]
+        publications = [
+            item for item in publications if item.get("handover_id") != handover_id
+        ]
+        publications.append(
+            {
+                "handover_id": handover_id,
+                "publication_id": publication_id,
+                "generated_at": generated_at,
+                "artifacts": artifacts,
+            }
+        )
+        latest_artifacts["publications"] = publications
         write_json_atomic(latest_artifacts_path, latest_artifacts)
     return benchmark_report
 

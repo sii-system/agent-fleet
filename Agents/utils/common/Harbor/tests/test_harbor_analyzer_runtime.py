@@ -756,6 +756,66 @@ class HarborAnalyzerRuntimeTest(unittest.TestCase):
                 manifest["artifacts"]["raw_final_json_path"],
                 str(output_dir / "analyzer-final-json" / HANDOVER_ID / f"{publication_id}.json"),
             )
+            self.assertEqual(
+                manifest["publications"],
+                [
+                    {
+                        "handover_id": HANDOVER_ID,
+                        "publication_id": publication_id,
+                        "generated_at": manifest["generated_at"],
+                        "artifacts": manifest["artifacts"],
+                    }
+                ],
+            )
+
+    def test_latest_manifest_retains_each_handover_publication(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            output_dir = Path(root) / "analyzer"
+            config = AnalyzerConfig(
+                run_dir=Path(root) / "run",
+                queue_dir=Path(root) / "run" / "queue",
+                output_dir=output_dir,
+            )
+            second_handover_id = "sha256-" + ("c" * 64)
+            second_final = final_json()
+            second_final["handover_id"] = second_handover_id
+            second_final["benchmark_report"]["handover_id"] = second_handover_id
+            second_final["env_infra_tasks"]["handover_id"] = second_handover_id
+
+            first = _write_outputs(
+                config=config,
+                handover_id=HANDOVER_ID,
+                final_json=final_json(),
+                provenance=None,
+                prompt_path=None,
+                raw_final_json_path=output_dir / "analyzer-final-json" / f"{HANDOVER_ID}.json",
+            )
+            second = _write_outputs(
+                config=config,
+                handover_id=second_handover_id,
+                final_json=second_final,
+                provenance=None,
+                prompt_path=None,
+                raw_final_json_path=output_dir
+                / "analyzer-final-json"
+                / f"{second_handover_id}.json",
+            )
+
+            manifest = json.loads(
+                (output_dir / "analyzer-artifacts-latest.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(manifest["handover_id"], second_handover_id)
+            self.assertEqual(
+                [item["handover_id"] for item in manifest["publications"]],
+                [HANDOVER_ID, second_handover_id],
+            )
+            self.assertEqual(
+                [item["publication_id"] for item in manifest["publications"]],
+                [
+                    first["analyzer_metadata"]["publication_id"],
+                    second["analyzer_metadata"]["publication_id"],
+                ],
+            )
 
     def test_latest_manifest_uses_one_immutable_publication_for_same_handover_writers(self) -> None:
         with tempfile.TemporaryDirectory() as root:
@@ -776,6 +836,8 @@ class HarborAnalyzerRuntimeTest(unittest.TestCase):
             )
             publication_id = manifest["publication_id"]
             artifacts = manifest["artifacts"]
+            self.assertEqual(len(manifest["publications"]), 1)
+            self.assertEqual(manifest["publications"][0]["publication_id"], publication_id)
 
             for path in artifacts.values():
                 self.assertIsNotNone(path)
