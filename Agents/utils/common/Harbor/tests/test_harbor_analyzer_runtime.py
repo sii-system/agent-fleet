@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import multiprocessing
+import os
 import sys
 import tempfile
 import unittest
@@ -161,6 +162,22 @@ def write_outputs_process(root: str, marker: str) -> None:
 
 
 class HarborAnalyzerRuntimeTest(unittest.TestCase):
+    def _fake_pi(self, root: Path, body: str) -> Path:
+        path = root / "fake-pi"
+        path.write_text(
+            "#!/usr/bin/env python3\n"
+            "import json\n"
+            "import sys\n"
+            "import time\n"
+            "if '--version' in sys.argv:\n"
+            "    print('fake-pi 1.0')\n"
+            "    raise SystemExit(0)\n"
+            + body,
+            encoding="utf-8",
+        )
+        path.chmod(0o755)
+        return path
+
     def test_analyzer_model_has_no_glm_default(self) -> None:
         with mock.patch.dict("os.environ", {}, clear=True):
             self.assertEqual(_default_model(), "")
@@ -203,6 +220,85 @@ class HarborAnalyzerRuntimeTest(unittest.TestCase):
         self.assertEqual(provider["api"], "openai-completions")
         self.assertEqual(provider["apiKey"], "$HARBOR_ANALYZER_API_KEY")
         self.assertTrue(provider["authHeader"])
+
+    def test_dispatch_drops_cumulative_message_updates(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            root_path = Path(root)
+            report = {"kind": "test-report", "value": 1}
+            fake_pi = self._fake_pi(
+                root_path,
+                "events = [\n"
+                "    {'type': 'session', 'id': 'session-1'},\n"
+                "    {'type': 'agent_start'},\n"
+                "    {'type': 'turn_start'},\n"
+                "]\n"
+                "events.extend(\n"
+                "    {'type': 'message_update', 'message': {'role': 'assistant', 'content': 'x' * size}}\n"
+                "    for size in range(128, 4096, 128)\n"
+                ")\n"
+                f"message = {{'role': 'assistant', 'content': {json.dumps(json.dumps(report))}, 'stopReason': 'stop'}}\n"
+                "events.extend([\n"
+                "    {'type': 'message_end', 'message': message},\n"
+                "    {'type': 'turn_end', 'message': message},\n"
+                "    {'type': 'agent_end'},\n"
+                "])\n"
+                "for event in events:\n"
+                "    print(json.dumps(event), flush=True)\n",
+            )
+
+            with mock.patch.dict(os.environ, {"HARBOR_ANALYZER_API_KEY": "test-key"}):
+                result = dispatch_to_child(
+                    prompt="{}",
+                    analysis_id="sha256-" + ("2" * 64),
+                    output_dir=root_path / "out",
+                    pi_bin=str(fake_pi),
+                    provider="harbor-analyzer",
+                    model="test-model",
+                    base_url="https://example.test/v1",
+                    api_key_env="HARBOR_ANALYZER_API_KEY",
+                    agent_name="harbor_analyzer_pi_subagent",
+                    timeout_seconds=5,
+                )
+
+            events_path = Path(result.provenance["events_path"])
+            self.assertEqual(result.report, report)
+            self.assertIsNone(result.block_reason)
+            self.assertGreater(result.provenance["message_updates_dropped"], 0)
+            self.assertGreater(
+                result.provenance["events_observed_bytes"],
+                result.provenance["events_stored_bytes"] * 10,
+            )
+            self.assertNotIn('"type": "message_update"', events_path.read_text(encoding="utf-8"))
+            self.assertEqual(
+                events_path.stat().st_size,
+                result.provenance["events_stored_bytes"],
+            )
+
+    def test_dispatch_timeout_still_terminates_pi_process(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            root_path = Path(root)
+            fake_pi = self._fake_pi(
+                root_path,
+                "print(json.dumps({'type': 'session', 'id': 'session-1'}), flush=True)\n"
+                "time.sleep(10)\n",
+            )
+
+            with mock.patch.dict(os.environ, {"HARBOR_ANALYZER_API_KEY": "test-key"}):
+                result = dispatch_to_child(
+                    prompt="{}",
+                    analysis_id="sha256-" + ("3" * 64),
+                    output_dir=root_path / "out",
+                    pi_bin=str(fake_pi),
+                    provider="harbor-analyzer",
+                    model="test-model",
+                    base_url="https://example.test/v1",
+                    api_key_env="HARBOR_ANALYZER_API_KEY",
+                    agent_name="harbor_analyzer_pi_subagent",
+                    timeout_seconds=1,
+                )
+
+            self.assertEqual(result.block_reason, "pi_dispatch_timeout")
+            self.assertTrue(result.provenance["events_partial"])
 
     def test_task_slug_uses_safe_basename_for_untrusted_task_index(self) -> None:
         slug = _task_slug(task(task_index="/tmp/pr83-escape"))

@@ -9,14 +9,16 @@ import re
 import shutil
 import signal
 import subprocess
-from dataclasses import dataclass
+import threading
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO
 from urllib.parse import urlparse
 
 from .io import canonical_json, write_text_atomic
 
 ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+MESSAGE_UPDATE_RE = re.compile(br'^\s*\{\s*"type"\s*:\s*"message_update"\s*[,}]')
 PI_EXTENSION_PATH = Path(__file__).resolve().parent / "pi_extensions" / "analyzer_path_gate.ts"
 
 
@@ -129,24 +131,6 @@ def _models_config(
     }
 
 
-def _parse_jsonl(raw: str) -> tuple[list[dict[str, Any]], int]:
-    events: list[dict[str, Any]] = []
-    invalid_lines = 0
-    for line in raw.splitlines():
-        if not line.strip():
-            continue
-        try:
-            event = json.loads(line)
-        except json.JSONDecodeError:
-            invalid_lines += 1
-            continue
-        if isinstance(event, dict):
-            events.append(event)
-        else:
-            invalid_lines += 1
-    return events, invalid_lines
-
-
 def _message_text(message: Any) -> str:
     if not isinstance(message, dict) or message.get("role") != "assistant":
         return ""
@@ -167,57 +151,135 @@ def _message_text(message: Any) -> str:
     return "\n".join(parts).strip()
 
 
-def _final_assistant_text(events: list[dict[str, Any]]) -> str:
-    candidates: list[str] = []
-    for event in events:
-        if event.get("type") not in {"message_end", "turn_end"}:
-            continue
-        text = _message_text(event.get("message"))
-        if text:
-            candidates.append(text)
-    return candidates[-1] if candidates else ""
+@dataclass
+class _EventStreamState:
+    stored_sha256: Any = field(default_factory=hashlib.sha256)
+    session_ids: list[str] = field(default_factory=list)
+    jsonl_event_count: int = 0
+    jsonl_invalid_line_count: int = 0
+    agent_start_count: int = 0
+    agent_end_count: int = 0
+    turn_start_count: int = 0
+    turn_end_count: int = 0
+    tool_event_count: int = 0
+    retry_start_count: int = 0
+    retry_end_count: int = 0
+    message_updates_dropped: int = 0
+    observed_bytes: int = 0
+    stored_bytes: int = 0
+    final_retry_error: str = ""
+    last_provider_error: str = ""
+    final_message: dict[str, Any] | None = None
+    stream_error: OSError | None = None
 
+    def observe(self, event: dict[str, Any]) -> None:
+        self.jsonl_event_count += 1
+        event_type = str(event.get("type") or "")
+        if event_type == "session" and event.get("id"):
+            self.session_ids.append(str(event["id"]))
+        elif event_type == "agent_start":
+            self.agent_start_count += 1
+        elif event_type == "agent_end":
+            self.agent_end_count += 1
+        elif event_type == "turn_start":
+            self.turn_start_count += 1
+        elif event_type == "turn_end":
+            self.turn_end_count += 1
+        elif event_type == "auto_retry_start":
+            self.retry_start_count += 1
+        elif event_type == "auto_retry_end":
+            self.retry_end_count += 1
+            final_error = str(event.get("finalError") or "")
+            if final_error:
+                self.final_retry_error = final_error
+        if event_type.startswith("tool_execution_"):
+            self.tool_event_count += 1
 
-def _final_assistant_message(events: list[dict[str, Any]]) -> dict[str, Any] | None:
-    candidate: dict[str, Any] | None = None
-    for event in events:
-        if event.get("type") not in {"message_end", "turn_end"}:
-            continue
         message = event.get("message")
-        if isinstance(message, dict) and message.get("role") == "assistant":
-            candidate = message
-    return candidate
+        if isinstance(message, dict):
+            provider_error = str(message.get("errorMessage") or "")
+            if provider_error:
+                self.last_provider_error = provider_error
+            if event_type in {"message_end", "turn_end"} and message.get("role") == "assistant":
+                self.final_message = message
+
+    @property
+    def final_text(self) -> str:
+        return _message_text(self.final_message)
+
+    @property
+    def provider_error(self) -> str:
+        return self.final_retry_error or self.last_provider_error
+
+    @property
+    def final_stop_reason(self) -> str:
+        return str((self.final_message or {}).get("stopReason") or "")
 
 
-def _provider_error_message(
-    events: list[dict[str, Any]],
-    retry_end_events: list[dict[str, Any]],
-) -> str:
-    if retry_end_events:
-        final_retry_error = str(retry_end_events[-1].get("finalError") or "")
-        if final_retry_error:
-            return final_retry_error
-    error_messages = [
-        str((event.get("message") or {}).get("errorMessage") or "")
-        for event in events
-        if isinstance(event.get("message"), dict)
-    ]
-    error_messages = [message for message in error_messages if message]
-    return error_messages[-1] if error_messages else ""
+def _message_update_line(raw_line: bytes) -> bool:
+    return MESSAGE_UPDATE_RE.match(raw_line) is not None
 
 
-def _final_output_block_reason(
-    events: list[dict[str, Any]],
-    retry_end_events: list[dict[str, Any]],
-) -> tuple[str | None, str | None]:
-    provider_error = _provider_error_message(events, retry_end_events)
-    if provider_error:
-        return f"pi_provider_request_failed:{_reason_code(provider_error)}", provider_error
-    final_message = _final_assistant_message(events)
-    stop_reason = str((final_message or {}).get("stopReason") or "")
-    if stop_reason == "length":
-        return "pi_final_message_truncated", None
-    return None, None
+def _consume_event_stream(
+    stream: BinaryIO,
+    output: BinaryIO,
+    state: _EventStreamState,
+) -> None:
+    try:
+        for raw_line in iter(stream.readline, b""):
+            if not raw_line.strip():
+                continue
+            state.observed_bytes += len(raw_line)
+            if _message_update_line(raw_line):
+                state.jsonl_event_count += 1
+                state.message_updates_dropped += 1
+                continue
+
+            try:
+                event = json.loads(raw_line)
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                state.jsonl_invalid_line_count += 1
+            else:
+                if isinstance(event, dict):
+                    state.observe(event)
+                else:
+                    state.jsonl_invalid_line_count += 1
+
+            if state.stream_error is not None:
+                continue
+            try:
+                output.write(raw_line)
+                output.flush()
+            except OSError as exc:
+                state.stream_error = exc
+                continue
+            state.stored_sha256.update(raw_line)
+            state.stored_bytes += len(raw_line)
+    except OSError as exc:
+        state.stream_error = exc
+
+
+def _update_event_provenance(
+    provenance: dict[str, Any],
+    state: _EventStreamState,
+) -> None:
+    provenance.update(
+        {
+            "events_sha256": state.stored_sha256.hexdigest(),
+            "jsonl_event_count": state.jsonl_event_count,
+            "jsonl_invalid_line_count": state.jsonl_invalid_line_count,
+            "agent_start_count": state.agent_start_count,
+            "agent_end_count": state.agent_end_count,
+            "turn_start_count": state.turn_start_count,
+            "turn_end_count": state.turn_end_count,
+            "tool_event_count": state.tool_event_count,
+            "auto_retry_start_count": state.retry_start_count,
+            "auto_retry_end_count": state.retry_end_count,
+            "message_updates_dropped": state.message_updates_dropped,
+            "events_observed_bytes": state.observed_bytes,
+            "events_stored_bytes": state.stored_bytes,
+        }
+    )
 
 
 def _loads_final_json(text: str) -> tuple[dict[str, Any] | None, bool]:
@@ -242,14 +304,22 @@ def _loads_final_json(text: str) -> tuple[dict[str, Any] | None, bool]:
 
 
 def load_final_json_from_event_stream(path: Path) -> dict[str, Any] | None:
+    state = _EventStreamState()
     try:
-        raw = path.read_text(encoding="utf-8")
+        with path.open("rb") as stream:
+            for raw_line in stream:
+                if not raw_line.strip():
+                    continue
+                try:
+                    event = json.loads(raw_line)
+                except (UnicodeDecodeError, json.JSONDecodeError):
+                    return None
+                if not isinstance(event, dict):
+                    return None
+                state.observe(event)
     except OSError:
         return None
-    events, invalid_lines = _parse_jsonl(raw)
-    if invalid_lines:
-        return None
-    report, _ = _loads_final_json(_final_assistant_text(events))
+    report, _ = _loads_final_json(state.final_text)
     if report is None:
         return None
     return report
@@ -439,8 +509,10 @@ def dispatch_to_child(
     stderr_path.parent.mkdir(parents=True, exist_ok=True)
     provenance["stderr_path"] = str(stderr_path)
     provenance["timeout_seconds"] = timeout_seconds
+    state = _EventStreamState()
+    timed_out = False
     try:
-        with events_path.open("w", encoding="utf-8") as stdout_file, stderr_path.open(
+        with events_path.open("wb") as events_file, stderr_path.open(
             "w",
             encoding="utf-8",
         ) as stderr_file:
@@ -449,34 +521,45 @@ def dispatch_to_child(
                 cwd=runtime_workdir,
                 env=environment,
                 shell=False,
-                text=True,
-                stdout=stdout_file,
+                stdout=subprocess.PIPE,
                 stderr=stderr_file,
                 start_new_session=True,
             )
+            assert process.stdout is not None
+            reader = threading.Thread(
+                target=_consume_event_stream,
+                args=(process.stdout, events_file, state),
+            )
+            reader.start()
             try:
                 return_code = process.wait(timeout=timeout_seconds)
             except subprocess.TimeoutExpired:
+                timed_out = True
                 try:
                     os.killpg(process.pid, signal.SIGKILL)
                 except OSError:
                     process.kill()
                 return_code = process.wait()
-                stdout_file.flush()
-                stderr_file.flush()
-                stdout = events_path.read_text(encoding="utf-8", errors="replace")
-                stderr = stderr_path.read_text(encoding="utf-8", errors="replace")
-                provenance["pi_exit_code"] = return_code
-                provenance["events_sha256"] = hashlib.sha256(stdout.encode("utf-8")).hexdigest()
-                provenance["events_partial"] = True
-                return DispatchResult(None, provenance, "pi_dispatch_timeout", stderr[-4000:])
+            reader.join()
+            process.stdout.close()
+            stderr_file.flush()
     except OSError as exc:
         return DispatchResult(None, provenance, f"pi_dispatch_os_error:{exc}", "")
 
-    stdout = events_path.read_text(encoding="utf-8", errors="replace")
     stderr = stderr_path.read_text(encoding="utf-8", errors="replace")
     provenance["pi_exit_code"] = return_code
-    provenance["events_sha256"] = hashlib.sha256(stdout.encode("utf-8")).hexdigest()
+    provenance["pi_session_ids"] = state.session_ids
+    _update_event_provenance(provenance, state)
+    if timed_out:
+        provenance["events_partial"] = True
+        return DispatchResult(None, provenance, "pi_dispatch_timeout", stderr[-4000:])
+    if state.stream_error is not None:
+        return DispatchResult(
+            None,
+            provenance,
+            f"pi_event_stream_os_error:{state.stream_error}",
+            stderr[-4000:],
+        )
     if return_code != 0:
         return DispatchResult(
             None,
@@ -485,49 +568,26 @@ def dispatch_to_child(
             stderr[-4000:],
         )
 
-    events, invalid_lines = _parse_jsonl(stdout)
-    session_ids = [
-        str(event.get("id"))
-        for event in events
-        if event.get("type") == "session" and event.get("id")
-    ]
-    agent_start_count = sum(event.get("type") == "agent_start" for event in events)
-    agent_end_count = sum(event.get("type") == "agent_end" for event in events)
-    turn_start_count = sum(event.get("type") == "turn_start" for event in events)
-    turn_end_count = sum(event.get("type") == "turn_end" for event in events)
-    tool_event_count = sum(
-        str(event.get("type") or "").startswith("tool_execution_") for event in events
-    )
-    retry_start_count = sum(event.get("type") == "auto_retry_start" for event in events)
-    retry_end_events = [event for event in events if event.get("type") == "auto_retry_end"]
-    provenance.update(
-        {
-            "pi_session_ids": session_ids,
-            "jsonl_event_count": len(events),
-            "jsonl_invalid_line_count": invalid_lines,
-            "agent_start_count": agent_start_count,
-            "agent_end_count": agent_end_count,
-            "turn_start_count": turn_start_count,
-            "turn_end_count": turn_end_count,
-            "tool_event_count": tool_event_count,
-            "auto_retry_start_count": retry_start_count,
-            "auto_retry_end_count": len(retry_end_events),
-        }
-    )
-    if invalid_lines:
+    if state.jsonl_invalid_line_count:
         return DispatchResult(None, provenance, "pi_jsonl_invalid", stderr[-4000:])
-    if len(session_ids) != 1:
+    if len(state.session_ids) != 1:
         return DispatchResult(None, provenance, "pi_subagent_session_not_observed", stderr[-4000:])
-    if agent_start_count < 1 or agent_start_count != agent_end_count:
+    if state.agent_start_count < 1 or state.agent_start_count != state.agent_end_count:
         return DispatchResult(None, provenance, "pi_subagent_lifecycle_invalid", stderr[-4000:])
-    if turn_start_count < 1 or turn_start_count != turn_end_count:
+    if state.turn_start_count < 1 or state.turn_start_count != state.turn_end_count:
         return DispatchResult(None, provenance, "pi_subagent_turn_invalid", stderr[-4000:])
-    output_block_reason, provider_error = _final_output_block_reason(events, retry_end_events)
-    final_message = _final_assistant_message(events)
-    final_stop_reason = str((final_message or {}).get("stopReason") or "")
+    provider_error = state.provider_error
+    output_block_reason = (
+        f"pi_provider_request_failed:{_reason_code(provider_error)}"
+        if provider_error
+        else "pi_final_message_truncated"
+        if state.final_stop_reason == "length"
+        else None
+    )
+    final_stop_reason = state.final_stop_reason
     if final_stop_reason:
         provenance["pi_final_stop_reason"] = final_stop_reason
-    final_text = _final_assistant_text(events)
+    final_text = state.final_text
     if not final_text and output_block_reason:
         if provider_error:
             provenance["pi_provider_final_error"] = provider_error
