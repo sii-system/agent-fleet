@@ -562,7 +562,7 @@ def build_summary(
                     ]
                 )
                 if len(candidate_body.encode("utf-8")) > MAX_REVIEW_BODY_BYTES:
-                    break
+                    continue
                 selected.append(finding)
             lines.extend(_summary_lines(selected, changed_paths))
             lines.extend(["", SUMMARY_OMISSION_NOTICE])

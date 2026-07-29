@@ -920,6 +920,35 @@ class OrchestrationTest(unittest.TestCase):
         self.assertIn(r"critical\-related\-path\-defect", summary)
         self.assertIn("review summary content omitted", summary)
 
+    def test_summary_skips_oversized_candidate_and_keeps_later_finding(
+        self,
+    ) -> None:
+        large = "*" * review.MAX_FIELD_CHARS
+        oversized = [
+            review.Finding("P0", "large.py", None, large, large, large)
+            for _ in range(5)
+        ]
+        later = review.Finding(
+            "P1",
+            "small.py",
+            None,
+            "later short finding",
+            "A short finding still fits.",
+            "Keep scanning candidates.",
+        )
+
+        summary = review.build_summary(
+            "head-1",
+            [*oversized, later],
+            0,
+            [],
+            False,
+            summary_findings=[*oversized, later],
+        )
+
+        self.assertIn("later short finding", summary)
+        self.assertIn("review summary content omitted", summary)
+
     def test_summary_reports_partial_when_a_chunk_is_incomplete(self) -> None:
         summary = review.build_summary(
             "head-1",
