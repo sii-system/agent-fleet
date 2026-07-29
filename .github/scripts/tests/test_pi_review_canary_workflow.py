@@ -44,6 +44,14 @@ class PiReviewCanaryWorkflowTest(unittest.TestCase):
             self.workflow,
         )
 
+    def test_starts_review_budget_before_target_setup(self) -> None:
+        budget = self.workflow.index("- name: Start review budget")
+        target = self.workflow.index("- name: Resolve review target")
+
+        self.assertLess(budget, target)
+        self.assertIn("PI_REVIEW_DEADLINE_EPOCH", self.workflow)
+        self.assertIn("$(date +%s) + 900", self.workflow)
+
     def test_requires_a_containerized_code_review_runner(self) -> None:
         self.assertIn(
             "runs-on: [self-hosted, Linux, X64, container, code-review]",
