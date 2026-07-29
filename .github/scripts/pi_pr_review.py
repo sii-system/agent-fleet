@@ -63,10 +63,11 @@ INLINE_ROUTING_INSTRUCTION = (
     "finding over an unanchorable finding."
 )
 SUMMARY_ROUTING_INSTRUCTION = (
-    "When a defect is on an added RIGHT-side line, use that line. When a "
-    "concrete defect cannot be anchored to an added line, set line to null "
-    "and use the exact relevant repository path so it can be included in "
-    "the review summary."
+    "Report concrete defects caused by the change even when the best evidence "
+    "is on contextual unchanged lines or a related path. Use the exact "
+    "relevant path and an integer line when available; set line to null only "
+    "when no precise line exists. These findings will be published in the "
+    "review summary."
 )
 
 
@@ -409,10 +410,7 @@ def run_review(
                     )
                 futures[lens] = executor.submit(
                     pi_client.review,
-                    prompt.replace(
-                        "{{ROUTING}}",
-                        routing_instruction,
-                    ).replace("{{LENS}}", instruction),
+                    f"{prompt.rstrip()}\n\n{routing_instruction}\n\n{instruction}",
                     model_input,
                     timeout=min(float(PI_LENS_TIMEOUT_SECONDS), remaining),
                     retry_malformed=True,

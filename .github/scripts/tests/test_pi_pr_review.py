@@ -585,14 +585,14 @@ class OrchestrationTest(unittest.TestCase):
         )
         pi_client = FakePiClient([])
 
-        pi_review.run_review(github, pi_client, 7, "base {{LENS}} prompt")
+        pi_review.run_review(github, pi_client, 7, "base prompt")
 
         self.assertEqual(len(pi_client.inputs), 3)
         for model_input in pi_client.inputs:
             self.assertIn("FILE worker.py", model_input)
             self.assertIn("FILE tests/test_worker.py", model_input)
         self.assertEqual(len(set(pi_client.prompts)), 3)
-        self.assertTrue(all("{{LENS}}" not in prompt for prompt in pi_client.prompts))
+        self.assertTrue(all("base prompt" in prompt for prompt in pi_client.prompts))
         self.assertEqual(pi_client.retry_malformed, [True] * 3)
 
     def test_whole_diff_input_includes_every_bounded_chunk(self) -> None:
@@ -695,7 +695,7 @@ class OrchestrationTest(unittest.TestCase):
                 github,
                 pi_client,
                 7,
-                "{{ROUTING}}\n{{LENS}}",
+                "base prompt",
             )
 
         self.assertTrue(
@@ -732,11 +732,14 @@ class OrchestrationTest(unittest.TestCase):
                 github,
                 pi_client,
                 7,
-                "{{ROUTING}}\n{{LENS}}",
+                "base prompt",
             )
 
         self.assertTrue(
             all("set line to null" in prompt for prompt in pi_client.prompts)
+        )
+        self.assertTrue(
+            all("contextual unchanged lines" in prompt for prompt in pi_client.prompts)
         )
 
     def test_two_lens_failures_publish_the_remaining_result(self) -> None:
@@ -1233,13 +1236,14 @@ class PiWorkflowContractTest(unittest.TestCase):
             "agent review should allow more time than direct API calls",
         )
 
-    def test_prompt_defers_anchor_contract_to_available_router(self) -> None:
+    def test_prompt_defaults_to_inline_routing_without_placeholders(self) -> None:
         prompt = " ".join(
             SCRIPT_DIR.joinpath("pi_review_prompt.md").read_text().split()
         )
 
-        self.assertIn("{{ROUTING}}", prompt)
-        self.assertIn("{{LENS}}", prompt)
+        self.assertIn("added RIGHT-side line", prompt)
+        self.assertNotIn("{{ROUTING}}", prompt)
+        self.assertNotIn("{{LENS}}", prompt)
 
     def test_main_binds_review_to_event_revisions(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
