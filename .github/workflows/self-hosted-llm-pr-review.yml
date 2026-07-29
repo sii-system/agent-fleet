@@ -25,11 +25,6 @@ jobs:
     environment: self-hosted-env
     timeout-minutes: 20
     steps:
-      - name: Start review budget
-        run: |
-          set -euo pipefail
-          echo "PI_REVIEW_DEADLINE_EPOCH=$(($(date +%s) + 900))" >> "$GITHUB_ENV"
-
       - name: Resolve review target
         id: target
         env:
