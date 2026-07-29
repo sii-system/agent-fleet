@@ -814,6 +814,117 @@ class OrchestrationTest(unittest.TestCase):
             ["security-defect-0"],
         )
 
+    def test_recovered_finding_surfaces_after_inline_cap_is_full(self) -> None:
+        github = FakeGitHub()
+        pi_client = mock.Mock()
+        security_fails = True
+
+        def review_lens(
+            prompt: str,
+            _chunk: str,
+            **_kwargs: object,
+        ) -> dict:
+            if "trust boundaries" in prompt:
+                if security_fails:
+                    raise pi_review.PiReviewError("failed")
+                subjects = [("P0", "Recovered security defect", 0)]
+            elif "runtime correctness" in prompt:
+                subjects = [
+                    ("P2", f"correctness-defect-{index}", index)
+                    for index in range(20)
+                ]
+            else:
+                subjects = []
+            return {
+                "findings": [
+                    {
+                        "severity": severity,
+                        "path": "worker.py",
+                        "line": 2,
+                        "title": title,
+                        "failure_scenario": f"scenario-{index}",
+                        "remediation": f"fix-{index}",
+                    }
+                    for severity, title, index in subjects
+                ]
+            }
+
+        pi_client.review.side_effect = review_lens
+        pi_review.run_review(github, pi_client, 7, "{{LENS}}")
+        github.reviews = [
+            {
+                "id": 1,
+                "user": {"login": "github-actions[bot]"},
+                "body": github.created[0][2],
+            }
+        ]
+        security_fails = False
+
+        pi_review.run_review(github, pi_client, 7, "{{LENS}}")
+
+        self.assertEqual(len(github.created[0][3]), 20)
+        self.assertEqual(github.created[1][3], [])
+        terminal_body = github.created[1][2]
+        self.assertIn(
+            "Automated review found 21 actionable finding(s).",
+            terminal_body,
+        )
+        self.assertIn("## Recovered findings", terminal_body)
+        self.assertIn("**P0: Recovered security defect**", terminal_body)
+
+    def test_recovered_finding_surfaces_a_severity_upgrade(self) -> None:
+        github = FakeGitHub()
+        pi_client = mock.Mock()
+        security_fails = True
+
+        def review_lens(
+            prompt: str,
+            _chunk: str,
+            **_kwargs: object,
+        ) -> dict:
+            if "trust boundaries" in prompt:
+                if security_fails:
+                    raise pi_review.PiReviewError("failed")
+                severity = "P1"
+            elif "runtime correctness" in prompt:
+                severity = "P2"
+            else:
+                return {"findings": []}
+            return {
+                "findings": [
+                    {
+                        "severity": severity,
+                        "path": "worker.py",
+                        "line": 2,
+                        "title": "Shared recovery defect",
+                        "failure_scenario": "Worker survives wrapper.",
+                        "remediation": "Terminate the process group.",
+                    }
+                ]
+            }
+
+        pi_client.review.side_effect = review_lens
+        pi_review.run_review(github, pi_client, 7, "{{LENS}}")
+        github.reviews = [
+            {
+                "id": 1,
+                "user": {"login": "github-actions[bot]"},
+                "body": github.created[0][2],
+            }
+        ]
+        security_fails = False
+
+        pi_review.run_review(github, pi_client, 7, "{{LENS}}")
+
+        self.assertEqual(len(github.created[0][3]), 1)
+        self.assertEqual(github.created[1][3], [])
+        terminal_body = github.created[1][2]
+        self.assertIn(
+            "Automated review found 1 actionable finding(s).",
+            terminal_body,
+        )
+        self.assertIn("**P1: Shared recovery defect**", terminal_body)
+
     def test_fallback_prompt_requests_only_inline_findings(self) -> None:
         github = FakeGitHub()
         pi_client = FakePiClient([])
@@ -1069,6 +1180,25 @@ class OrchestrationTest(unittest.TestCase):
         self.assertEqual(len(merged), 1)
         self.assertEqual((merged[0].severity, merged[0].line), ("P1", 5))
 
+    def test_equivalent_findings_at_distant_anchors_remain_separate(
+        self,
+    ) -> None:
+        findings = [
+            pi_review._review.Finding(
+                "P1",
+                "worker.py",
+                line,
+                "Missing authorization check",
+                "An unauthenticated request can delete another user's job.",
+                "Require ownership before deletion.",
+            )
+            for line in (2, 102)
+        ]
+
+        merged = pi_review.merge_lens_findings(findings)
+
+        self.assertEqual(len(merged), 2)
+
     def test_distinct_findings_on_one_line_remain_separate(self) -> None:
         findings = [
             pi_review._review.Finding(
@@ -1303,6 +1433,116 @@ class OrchestrationTest(unittest.TestCase):
         self.assertEqual(
             [item.title for item in summary_findings],
             ["Other", "Minor"],
+        )
+
+    def test_recovers_summary_only_findings_from_partial_reviews(self) -> None:
+        @dataclass(frozen=True)
+        class AttributedFinding:
+            severity: str
+            path: str
+            line: int | None
+            title: str
+            failure_scenario: str
+            remediation: str
+            lenses: tuple[str, ...] = ()
+
+        github = FakeGitHub()
+        prior_body = "\n".join(
+            [
+                "<!-- pi-pr-review-partial:head-1 -->",
+                "Automated review found 1 actionable finding(s).",
+                "",
+                "## Summary findings",
+                "",
+                "### Minor",
+                (
+                    "- **P3: Partial cleanup risk** (`helper.py`) — "
+                    "Worker survives wrapper. Suggested remediation: "
+                    "Terminate the process group. Flagged by: correctness"
+                ),
+                "",
+                "<!-- pi-pr-review-completed-lens:correctness -->",
+                "<!-- pi-pr-review-completed-lens:tests/regression -->",
+                "<!-- pi-pr-review-published-comments:0 -->",
+            ]
+        )
+        github.reviews = [
+            {
+                "id": 1,
+                "user": {"login": "github-actions[bot]"},
+                "body": prior_body,
+            }
+        ]
+        pi_client = FakePiClient([])
+
+        def parse_findings(payload: dict) -> tuple[list, int]:
+            return (
+                [
+                    AttributedFinding(**finding)
+                    for finding in payload["findings"]
+                ],
+                0,
+            )
+
+        with (
+            mock.patch.object(
+                pi_review._review,
+                "Finding",
+                AttributedFinding,
+            ),
+            mock.patch.object(
+                pi_review._review,
+                "parse_findings",
+                side_effect=parse_findings,
+                create=True,
+            ),
+            mock.patch.object(
+                pi_review._review,
+                "route_findings",
+                side_effect=lambda findings, _files: ([], findings),
+                create=True,
+            ),
+            mock.patch.object(
+                pi_review._review,
+                "build_summary",
+                return_value="summary",
+            ) as build_summary,
+        ):
+            pi_review.run_review(github, pi_client, 7, "{{LENS}}")
+
+        self.assertEqual(len(pi_client.inputs), 1)
+        reported_findings = build_summary.call_args.args[1]
+        self.assertEqual(
+            [item.title for item in reported_findings],
+            ["Partial cleanup risk"],
+        )
+        summary_findings = build_summary.call_args.kwargs["summary_findings"]
+        self.assertEqual(
+            [item.title for item in summary_findings],
+            ["Partial cleanup risk"],
+        )
+        self.assertEqual(summary_findings[0].lenses, ("correctness",))
+
+    def test_recovers_findings_from_an_intermediate_recovery_summary(
+        self,
+    ) -> None:
+        body = "\n".join(
+            [
+                "<!-- pi-pr-review-partial:head-1 -->",
+                "## Recovered findings",
+                (
+                    "- **P0: Recovered security defect** (`worker.py:2`) — "
+                    "A token is exposed. Suggested remediation: Redact it."
+                ),
+            ]
+        )
+
+        findings = pi_review._published_summary_findings_from_bodies([body])
+
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(
+            (findings[0].severity, findings[0].title, findings[0].line),
+            ("P0", "Recovered security defect", 2),
         )
 
     def test_publishes_review_with_findings(self) -> None:

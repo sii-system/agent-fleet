@@ -47,6 +47,7 @@ PI_LENS_TIMEOUT_SECONDS = 12 * 60
 # Reserve context for the fixed 32K output budget, prompt, and tool turns.
 MAX_MODEL_INPUT_BYTES = 120_000
 MIN_FINDING_SIMILARITY = 0.8
+MAX_EQUIVALENT_LINE_DISTANCE = 5
 SIMILARITY_FILLER_TOKENS = {
     "a",
     "an",
@@ -86,6 +87,12 @@ SUMMARY_ROUTING_INSTRUCTION = (
     "available; set line to null only when no precise line exists. These "
     "findings will be published in the review summary."
 )
+SUMMARY_FINDING_PATTERN = re.compile(
+    r"^- \*\*(?P<severity>P[0-3]): (?P<title>.+)\*\* "
+    r"\(`(?P<location>.+)`\) — (?P<scenario>.+?) "
+    r"Suggested remediation: (?P<remediation>.+?)"
+    r"(?: Flagged by: (?P<lenses>.+))?$"
+)
 
 
 class PiReviewError(RuntimeError):
@@ -115,8 +122,13 @@ def _text_similarity(left: str, right: str) -> float:
 
 
 def _same_finding(left: _review.Finding, right: _review.Finding) -> bool:
+    if left.line is None or right.line is None:
+        anchors_match = left.line == right.line
+    else:
+        anchors_match = abs(left.line - right.line) <= MAX_EQUIVALENT_LINE_DISTANCE
     return (
         left.path == right.path
+        and anchors_match
         and _text_similarity(left.title, right.title)
         >= MIN_FINDING_SIMILARITY
         and _text_similarity(left.failure_scenario, right.failure_scenario)
@@ -171,6 +183,30 @@ def merge_lens_findings(
             item.title.casefold(),
         ),
     )
+
+
+def _reconcile_recovered_findings(
+    previous: list[_review.Finding],
+    current: list[_review.Finding],
+) -> tuple[list[_review.Finding], list[_review.Finding], list[_review.Finding]]:
+    recovered = merge_lens_findings(previous)
+    new_findings: list[_review.Finding] = []
+    severity_upgrades: list[_review.Finding] = []
+    for finding in current:
+        for index, published in enumerate(recovered):
+            if not _same_finding(published, finding):
+                continue
+            merged = merge_lens_findings([published, finding])[0]
+            if (
+                _review.SEVERITY_ORDER[merged.severity]
+                < _review.SEVERITY_ORDER[published.severity]
+            ):
+                severity_upgrades.append(merged)
+            recovered[index] = merged
+            break
+        else:
+            new_findings.append(finding)
+    return recovered, new_findings, merge_lens_findings(severity_upgrades)
 
 
 def _shared_routing_available() -> bool:
@@ -273,6 +309,86 @@ def _published_findings_from_comments(
             )
         )
     return findings
+
+
+def _published_summary_findings_from_bodies(
+    bodies: list[str],
+) -> list[_review.Finding]:
+    findings: list[_review.Finding] = []
+    supports_lenses = "lenses" in getattr(
+        _review.Finding,
+        "__dataclass_fields__",
+        {},
+    )
+    for body in bodies:
+        in_findings_section = False
+        for line in body.splitlines():
+            if line in {"## Summary findings", "## Recovered findings"}:
+                in_findings_section = True
+                continue
+            if line.startswith("## "):
+                in_findings_section = False
+                continue
+            if not in_findings_section:
+                continue
+            match = SUMMARY_FINDING_PATTERN.fullmatch(line)
+            if match is None:
+                continue
+            location = match.group("location").replace("@\u200b", "@")
+            path, line_separator, raw_line = location.rpartition(":")
+            if line_separator and raw_line.isdigit():
+                line_number: int | None = int(raw_line)
+            else:
+                path = location
+                line_number = None
+            raw_lenses = match.group("lenses")
+            lenses = (
+                tuple(item.strip() for item in raw_lenses.split(" + "))
+                if raw_lenses
+                else ()
+            )
+            if any(lens not in LENS_INSTRUCTIONS for lens in lenses):
+                continue
+            values: dict[str, Any] = {
+                "severity": match.group("severity"),
+                "path": path,
+                "line": line_number,
+                "title": match.group("title").replace("@\u200b", "@"),
+                "failure_scenario": match.group("scenario").replace(
+                    "@\u200b", "@"
+                ),
+                "remediation": match.group("remediation").replace(
+                    "@\u200b", "@"
+                ),
+            }
+            if supports_lenses:
+                values["lenses"] = lenses
+            findings.append(_review.Finding(**values))
+    return merge_lens_findings(findings)
+
+
+def _recovered_findings_summary(findings: list[_review.Finding]) -> str:
+    lines = ["", "## Recovered findings"]
+    for finding in findings[: _review.MAX_COMMENTS]:
+        location = f" (`{_review._neutralize_mentions(finding.path)}"
+        if finding.line is not None:
+            location += f":{finding.line}"
+        location += "`)"
+        rendered = (
+            f"- **{finding.severity}: "
+            f"{_review._neutralize_mentions(finding.title)}**{location} — "
+            f"{_review._neutralize_mentions(finding.failure_scenario)} "
+            "Suggested remediation: "
+            f"{_review._neutralize_mentions(finding.remediation)}"
+        )
+        lenses = getattr(finding, "lenses", ())
+        if lenses:
+            rendered += f" Flagged by: {' + '.join(lenses)}"
+        lines.append(rendered)
+    omitted = len(findings) - _review.MAX_COMMENTS
+    if omitted > 0:
+        lines.append(f"- {omitted} additional recovered finding(s) omitted.")
+    return "\n".join(lines)
 
 
 def _review_deadline() -> float:
@@ -559,11 +675,18 @@ def run_review(
             partial_review_bodies,
             review_id,
         )
-        previously_published_findings = _published_findings_from_comments(
+        previously_published_inline_findings = _published_findings_from_comments(
             github.list_review_comments(pull_number)
             if partial_review_ids
             else [],
             partial_review_ids,
+        )
+        previously_published_summary_findings = (
+            _published_summary_findings_from_bodies(partial_review_bodies)
+        )
+        previously_published_findings = merge_lens_findings(
+            previously_published_inline_findings
+            + previously_published_summary_findings
         )
         pending_lenses = {
             lens: instruction
@@ -660,16 +783,17 @@ def run_review(
             set(futures) - set(incomplete_lenses) - set(failed_lenses)
         )
         findings = merge_lens_findings(findings)
-        findings = [
-            finding
-            for finding in findings
-            if not any(
-                _same_finding(finding, published)
-                for published in previously_published_findings
-            )
-        ]
+        (
+            previously_published_findings,
+            findings,
+            recovered_updates,
+        ) = _reconcile_recovered_findings(
+            previously_published_findings,
+            findings,
+        )
         reported_findings = findings
         summary_findings: list[_review.Finding] = []
+        recovered_summary_findings: list[_review.Finding] = []
         remaining_inline_comments = max(
             0,
             _review.MAX_COMMENTS - previously_published_comments,
@@ -679,14 +803,23 @@ def run_review(
                 findings,
                 by_path,
             )
-            summary_findings = (
-                inline_findings[remaining_inline_comments:] + summary_findings
+            summary_findings = merge_lens_findings(
+                previously_published_summary_findings
+                + recovered_updates
+                + inline_findings[remaining_inline_comments:]
+                + summary_findings
             )
             inline_findings = inline_findings[:remaining_inline_comments]
         else:
-            rejected += max(0, len(findings) - remaining_inline_comments)
             inline_findings = findings[:remaining_inline_comments]
-            reported_findings = inline_findings
+            overflow_findings = findings[remaining_inline_comments:]
+            if partial_reviews:
+                recovered_summary_findings = merge_lens_findings(
+                    recovered_updates + overflow_findings
+                )
+            else:
+                rejected += len(overflow_findings)
+                reported_findings = inline_findings
         reported_findings = merge_lens_findings(
             previously_published_findings + reported_findings
         )
@@ -716,6 +849,8 @@ def run_review(
             truncated,
             **summary_options,
         )
+        if recovered_summary_findings:
+            summary += _recovered_findings_summary(recovered_summary_findings)
         reported_tool_calls = dict.fromkeys(
             previously_completed_lenses,
             "previously completed",
