@@ -737,16 +737,18 @@ class OrchestrationTest(unittest.TestCase):
                 subject = "regression"
             if subject == "security" and security_fails:
                 raise pi_review.PiReviewError("failed")
+            count = 1 if subject == "security" else 10
             return {
                 "findings": [
                     {
                         "severity": "P2",
                         "path": "worker.py",
                         "line": 2,
-                        "title": f"{subject}-defect",
-                        "failure_scenario": f"{subject}-scenario",
-                        "remediation": f"{subject}-fix",
+                        "title": f"{subject}-defect-{index}",
+                        "failure_scenario": f"{subject}-scenario-{index}",
+                        "remediation": f"{subject}-fix-{index}",
                     }
+                    for index in range(count)
                 ]
             }
 
@@ -772,10 +774,8 @@ class OrchestrationTest(unittest.TestCase):
             "trust boundaries",
             pi_client.review.call_args.args[0],
         )
-        self.assertEqual(
-            [item.title for item in github.created[1][3]],
-            ["security-defect"],
-        )
+        self.assertEqual(len(github.created[0][3]), 20)
+        self.assertEqual(github.created[1][3], [])
 
     def test_fallback_prompt_requests_only_inline_findings(self) -> None:
         github = FakeGitHub()

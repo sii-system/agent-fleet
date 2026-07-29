@@ -178,31 +178,56 @@ def _completed_lens_marker(review_id: str, lens: str) -> str:
     return f"<!-- {review_id}-completed-lens:{lens} -->"
 
 
-def _completed_lenses_from_reviews(
+def _published_comments_marker(review_id: str, count: int) -> str:
+    return f"<!-- {review_id}-published-comments:{count} -->"
+
+
+def _matching_partial_review_bodies(
     reviews: list[dict[str, Any]],
     head_sha: str,
     review_id: str,
     base_sha: str | None,
-) -> set[str]:
+) -> list[str]:
     partial_marker = _review.review_marker(
         head_sha,
         f"{review_id}-partial",
         base_sha,
     )
-    completed: set[str] = set()
+    bodies: list[str] = []
     for review in reviews:
         body = review.get("body") or ""
         if (
-            (review.get("user") or {}).get("login") != "github-actions[bot]"
-            or partial_marker not in body
+            (review.get("user") or {}).get("login") == "github-actions[bot]"
+            and partial_marker in body
         ):
-            continue
-        completed.update(
-            lens
-            for lens in LENS_INSTRUCTIONS
-            if _completed_lens_marker(review_id, lens) in body
-        )
-    return completed
+            bodies.append(body)
+    return bodies
+
+
+def _completed_lenses_from_bodies(
+    bodies: list[str],
+    review_id: str,
+) -> set[str]:
+    return {
+        lens
+        for lens in LENS_INSTRUCTIONS
+        if any(_completed_lens_marker(review_id, lens) in body for body in bodies)
+    }
+
+
+def _published_comments_from_bodies(
+    bodies: list[str],
+    review_id: str,
+) -> int:
+    pattern = re.compile(
+        rf"<!-- {re.escape(review_id)}-published-comments:(\d+) -->"
+    )
+    published = sum(
+        int(match.group(1))
+        for body in bodies
+        if (match := pattern.search(body)) is not None
+    )
+    return min(_review.MAX_COMMENTS, published)
 
 
 def _chat_url_to_base(url: str) -> str:
@@ -453,11 +478,19 @@ def run_review(
             expected_base_sha,
         ):
             return "duplicate"
-        previously_completed_lenses = _completed_lenses_from_reviews(
+        partial_review_bodies = _matching_partial_review_bodies(
             reviews,
             head_sha,
             review_id,
             expected_base_sha,
+        )
+        previously_completed_lenses = _completed_lenses_from_bodies(
+            partial_review_bodies,
+            review_id,
+        )
+        previously_published_comments = _published_comments_from_bodies(
+            partial_review_bodies,
+            review_id,
         )
         pending_lenses = {
             lens: instruction
@@ -556,14 +589,22 @@ def run_review(
         findings = merge_lens_findings(findings)
         reported_findings = findings
         summary_findings: list[_review.Finding] = []
+        remaining_inline_comments = max(
+            0,
+            _review.MAX_COMMENTS - previously_published_comments,
+        )
         if shared_routing:
             inline_findings, summary_findings = _review.route_findings(
                 findings,
                 by_path,
             )
+            summary_findings = (
+                inline_findings[remaining_inline_comments:] + summary_findings
+            )
+            inline_findings = inline_findings[:remaining_inline_comments]
         else:
-            rejected += max(0, len(findings) - _review.MAX_COMMENTS)
-            inline_findings = findings[: _review.MAX_COMMENTS]
+            rejected += max(0, len(findings) - remaining_inline_comments)
+            inline_findings = findings[:remaining_inline_comments]
             reported_findings = inline_findings
         current = github.get_pull(pull_number)
         if current["head"]["sha"] != head_sha or (
@@ -607,7 +648,10 @@ def run_review(
                 for lens in LENS_INSTRUCTIONS
                 if lens in completed_lenses
             )
-            summary += f"\n\n{markers}"
+            summary += (
+                f"\n\n{markers}\n"
+                f"{_published_comments_marker(review_id, len(inline_findings))}"
+            )
             summary = summary.replace(
                 "Coverage: Complete",
                 "Coverage: Partial",
