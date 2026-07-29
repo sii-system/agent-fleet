@@ -1,4 +1,9 @@
+import json
+import os
 import re
+import subprocess
+import tempfile
+import textwrap
 import unittest
 from pathlib import Path
 
@@ -10,6 +15,13 @@ class PiReviewCanaryWorkflowTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.workflow = WORKFLOW.read_text(encoding="utf-8")
+        step_start = cls.workflow.index("      - name: Resolve review target")
+        run_marker = "        run: |\n"
+        script_start = cls.workflow.index(run_marker, step_start) + len(run_marker)
+        script_end = cls.workflow.index("\n      - name:", script_start)
+        cls.resolver_script = textwrap.dedent(
+            cls.workflow[script_start:script_end]
+        )
 
     def test_accepts_a_required_pull_request_number(self) -> None:
         self.assertIn("workflow_dispatch:", self.workflow)
@@ -38,6 +50,49 @@ class PiReviewCanaryWorkflowTest(unittest.TestCase):
 
     def test_resolves_target_with_isolated_python(self) -> None:
         self.assertIn("python3 -I - <<'PY'", self.workflow)
+
+    def test_automatic_target_uses_the_runner_event_path(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            event_path = root / "event.json"
+            output_path = root / "output"
+            base_sha = "a" * 40
+            head_sha = "b" * 40
+            event_path.write_text(
+                json.dumps(
+                    {
+                        "pull_request": {
+                            "base": {"sha": base_sha},
+                            "head": {"sha": head_sha},
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            environment = dict(os.environ)
+            environment.update(
+                {
+                    "EVENT_NAME": "pull_request_target",
+                    "EVENT_PATH": "",
+                    "GITHUB_EVENT_PATH": str(event_path),
+                    "GITHUB_OUTPUT": str(output_path),
+                }
+            )
+
+            completed = subprocess.run(
+                ["bash", "-c", self.resolver_script],
+                cwd=ROOT,
+                env=environment,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            self.assertEqual(
+                output_path.read_text(encoding="utf-8"),
+                f"base_sha={base_sha}\nevent_path={event_path}\n",
+            )
 
     def test_checks_out_the_resolved_trusted_base(self) -> None:
         self.assertIn("ref: ${{ steps.target.outputs.base_sha", self.workflow)

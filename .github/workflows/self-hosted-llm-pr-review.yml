@@ -29,7 +29,6 @@ jobs:
         id: target
         env:
           EVENT_NAME: ${{ github.event_name }}
-          EVENT_PATH: ${{ github.event_path }}
           INPUT_PR_NUMBER: ${{ inputs.pr_number }}
           REPOSITORY: ${{ github.repository }}
           GH_TOKEN: ${{ github.token }}
@@ -44,7 +43,7 @@ jobs:
           from urllib.request import Request, urlopen
 
           if os.environ["EVENT_NAME"] == "pull_request_target":
-              event_path = Path(os.environ["EVENT_PATH"])
+              event_path = Path(os.environ["GITHUB_EVENT_PATH"])
               event = json.loads(event_path.read_text(encoding="utf-8"))
           else:
               number = int(os.environ["INPUT_PR_NUMBER"])
