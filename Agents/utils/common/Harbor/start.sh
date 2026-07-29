@@ -508,13 +508,15 @@ if [[ $# -gt 0 ]]; then
       harbor_rollback_analyzer_startup
       exit 1
     fi
+    trap 'harbor_finish_analyzer_lifecycle' EXIT
   fi
   command_pid=""
   command_signal=""
   trap 'command_signal=TERM; [[ -z "$command_pid" ]] || kill -TERM "$command_pid" 2>/dev/null || true' TERM
   trap 'command_signal=INT; [[ -z "$command_pid" ]] || kill -INT "$command_pid" 2>/dev/null || true' INT
+  trap 'command_signal=HUP; [[ -z "$command_pid" ]] || kill -HUP "$command_pid" 2>/dev/null || true' HUP
   (
-    trap - TERM INT
+    trap - TERM INT HUP
     exec "$@"
   ) <&0 &
   command_pid="$!"
@@ -529,12 +531,14 @@ if [[ $# -gt 0 ]]; then
     command_rc="$?"
   fi
   set -e
-  trap - TERM INT
+  trap - TERM INT HUP
   if [[ -n "$command_signal" ]]; then
+    trap - EXIT
     harbor_rollback_analyzer_startup
     kill "-$command_signal" "$$"
   fi
   harbor_finish_analyzer_lifecycle
+  trap - EXIT
   exit "$command_rc"
 fi
 
@@ -613,12 +617,17 @@ if ! harbor_start_analyzer_if_enabled; then
   harbor_rollback_analyzer_startup
   exit 1
 fi
+trap 'harbor_finish_analyzer_lifecycle' EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 harbor_print_run_receipt
 zellij_status=0
 env -u ZELLIJ_SESSION_NAME zellij \
   --session "$ZELLIJ_SESSION_NAME" \
   --new-session-with-layout "$LAYOUT_FILE" || zellij_status="$?"
 harbor_finish_analyzer_lifecycle
+trap - EXIT HUP INT TERM
 final_status=0
 harbor_report_foreground_result "$zellij_status" || final_status="$?"
 exit "$final_status"
