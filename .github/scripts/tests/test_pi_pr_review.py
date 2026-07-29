@@ -1304,6 +1304,35 @@ class OrchestrationTest(unittest.TestCase):
         self.assertEqual(len(merged), 2)
         self.assertEqual([item.line for item in merged], [6, 10])
 
+    def test_recovery_consumes_each_prior_match_once(self) -> None:
+        previous = [
+            pi_review._review.Finding(
+                "P2",
+                "worker.py",
+                10,
+                "Missing cancellation cleanup",
+                "A cancelled worker survives its wrapper.",
+                "Terminate the process group.",
+            )
+        ]
+        current = [
+            pi_review._review.Finding(
+                "P2",
+                "worker.py",
+                line,
+                "Missing cancellation cleanup",
+                "A cancelled worker survives its wrapper.",
+                "Terminate the process group.",
+            )
+            for line in (5, 15)
+        ]
+
+        _recovered, new_findings, _upgrades = (
+            pi_review._reconcile_recovered_findings(previous, current)
+        )
+
+        self.assertEqual([item.line for item in new_findings], [15])
+
     def test_distinct_findings_on_one_line_remain_separate(self) -> None:
         findings = [
             pi_review._review.Finding(
@@ -1734,6 +1763,72 @@ class OrchestrationTest(unittest.TestCase):
         self.assertEqual(
             recovered[0].remediation,
             "Terminate the process group.",
+        )
+
+    def test_recovery_checkpoint_preserves_summary_delimiters(self) -> None:
+        github = FakeGitHub()
+        pi_client = mock.Mock()
+        security_fails = True
+        recovered_finding = {
+            "severity": "P2",
+            "path": "worker.py",
+            "line": 2,
+            "title": "zz-preserve recovery delimiter",
+            "failure_scenario": (
+                "The log includes Suggested remediation: as user text."
+            ),
+            "remediation": "Escape the value.",
+        }
+
+        def review_lens(
+            prompt: str,
+            _chunk: str,
+            **_kwargs: object,
+        ) -> dict:
+            if "trust boundaries" in prompt:
+                if security_fails:
+                    raise pi_review.PiReviewError("failed")
+                return {"findings": [recovered_finding]}
+            if "runtime correctness" not in prompt:
+                return {"findings": []}
+            findings = [
+                {
+                    "severity": "P2",
+                    "path": "worker.py",
+                    "line": 2,
+                    "title": f"inline-defect-{index:02d}",
+                    "failure_scenario": f"scenario-{index}",
+                    "remediation": f"fix-{index}",
+                }
+                for index in range(20)
+            ]
+            return {"findings": findings + [recovered_finding]}
+
+        pi_client.review.side_effect = review_lens
+        with mock.patch.object(
+            pi_review,
+            "_shared_routing_available",
+            return_value=False,
+        ):
+            pi_review.run_review(github, pi_client, 7, "{{LENS}}")
+            github.reviews = [
+                {
+                    "id": 1,
+                    "user": {"login": "github-actions[bot]"},
+                    "body": github.created[0][2],
+                }
+            ]
+            security_fails = False
+            pi_review.run_review(github, pi_client, 7, "{{LENS}}")
+
+        terminal_body = github.created[1][2]
+        self.assertIn(
+            "Automated review found 21 actionable finding(s).",
+            terminal_body,
+        )
+        self.assertEqual(
+            terminal_body.count("**P2: zz-preserve recovery delimiter**"),
+            1,
         )
 
     def test_publishes_review_with_findings(self) -> None:

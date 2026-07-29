@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import os
 import re
@@ -11,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import zlib
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
@@ -46,8 +48,10 @@ PI_REVIEW_BUDGET_SECONDS = WORKFLOW_TIMEOUT_SECONDS - WORKFLOW_RESERVE_SECONDS
 PI_LENS_TIMEOUT_SECONDS = 12 * 60
 # Reserve context for the fixed 32K output budget, prompt, and tool turns.
 MAX_MODEL_INPUT_BYTES = 120_000
+MAX_RECOVERY_CHECKPOINT_BYTES = 20_000
 MAX_RECOVERED_SUMMARY_BYTES = 30_000
 MAX_RECOVERED_FIELD_BYTES = 500
+MAX_REVIEW_BODY_BYTES = 60_000
 MIN_FINDING_SIMILARITY = 0.8
 MAX_EQUIVALENT_LINE_DISTANCE = 5
 SIMILARITY_FILLER_TOKENS = {
@@ -212,9 +216,13 @@ def _reconcile_recovered_findings(
     recovered = merge_lens_findings(previous)
     new_findings: list[_review.Finding] = []
     severity_upgrades: list[_review.Finding] = []
+    matched_recovered_indices: set[int] = set()
     for finding in current:
         for index, published in enumerate(recovered):
-            if not _same_finding(published, finding):
+            if index in matched_recovered_indices or not _same_finding(
+                published,
+                finding,
+            ):
                 continue
             merged = merge_lens_findings([published, finding])[0]
             if (
@@ -223,6 +231,7 @@ def _reconcile_recovered_findings(
             ):
                 severity_upgrades.append(merged)
             recovered[index] = merged
+            matched_recovered_indices.add(index)
             break
         else:
             new_findings.append(finding)
@@ -352,6 +361,7 @@ def _published_findings_from_comments(
 
 def _published_summary_findings_from_bodies(
     bodies: list[str],
+    review_id: str = PI_REVIEW_ID,
 ) -> list[_review.Finding]:
     findings: list[_review.Finding] = []
     supports_lenses = "lenses" in getattr(
@@ -360,6 +370,10 @@ def _published_summary_findings_from_bodies(
         {},
     )
     for body in bodies:
+        checkpoint = _checkpoint_findings(body, review_id)
+        if checkpoint is not None:
+            findings.extend(checkpoint)
+            continue
         in_findings_section = False
         for line in body.splitlines():
             if line in {"## Summary findings", "## Recovered findings"}:
@@ -404,6 +418,110 @@ def _published_summary_findings_from_bodies(
                 values["lenses"] = lenses
             findings.append(_review.Finding(**values))
     return merge_lens_findings(findings)
+
+
+def _checkpoint_finding(finding: _review.Finding) -> dict[str, Any]:
+    def text(value: str) -> str:
+        return _bounded_summary_field(value).replace("@\u200b", "@")
+
+    return {
+        "severity": finding.severity,
+        "path": text(finding.path),
+        "line": finding.line,
+        "title": text(finding.title),
+        "failure_scenario": text(finding.failure_scenario),
+        "remediation": text(finding.remediation),
+        "lenses": list(getattr(finding, "lenses", ())),
+    }
+
+
+def _checkpoint_marker(
+    review_id: str,
+    findings: list[_review.Finding],
+) -> str | None:
+    included: list[dict[str, Any]] = []
+    marker: str | None = None
+    for finding in findings[: _review.MAX_COMMENTS]:
+        candidate = included + [_checkpoint_finding(finding)]
+        encoded = base64.b64encode(
+            zlib.compress(
+                json.dumps(
+                    candidate,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            )
+        ).decode("ascii")
+        candidate_marker = (
+            f"<!-- {review_id}-summary-checkpoint:{encoded} -->"
+        )
+        if len(candidate_marker.encode("utf-8")) > MAX_RECOVERY_CHECKPOINT_BYTES:
+            break
+        included = candidate
+        marker = candidate_marker
+    return marker
+
+
+def _checkpoint_findings(
+    body: str,
+    review_id: str,
+) -> list[_review.Finding] | None:
+    prefix = f"<!-- {review_id}-summary-checkpoint:"
+    checkpoint_lines = [
+        line
+        for line in _control_lines(body, review_id)
+        if line.startswith(prefix) and line.endswith(" -->")
+    ]
+    if not checkpoint_lines:
+        return None
+    try:
+        encoded = checkpoint_lines[-1][len(prefix) : -4]
+        raw_findings = json.loads(
+            zlib.decompress(base64.b64decode(encoded, validate=True))
+        )
+    except (ValueError, TypeError, json.JSONDecodeError, zlib.error):
+        return []
+    if not isinstance(raw_findings, list) or not all(
+        isinstance(raw, dict) for raw in raw_findings
+    ):
+        return []
+    supports_lenses = "lenses" in getattr(
+        _review.Finding,
+        "__dataclass_fields__",
+        {},
+    )
+    field_names = (
+        "severity",
+        "path",
+        "line",
+        "title",
+        "failure_scenario",
+        "remediation",
+    )
+    findings: list[_review.Finding] = []
+    try:
+        for raw in raw_findings:
+            values = {name: raw[name] for name in field_names}
+            if supports_lenses:
+                values["lenses"] = tuple(raw.get("lenses", ()))
+            findings.append(_review.Finding(**values))
+    except (KeyError, TypeError):
+        return []
+    return findings
+
+
+def _append_control_block(summary: str, lines: list[str]) -> str:
+    suffix = "\n\n" + "\n".join(lines)
+    if len(f"{summary}{suffix}".encode()) <= MAX_REVIEW_BODY_BYTES:
+        return f"{summary}{suffix}"
+    notice = "\n\n- Additional review details omitted to preserve recovery state."
+    budget = MAX_REVIEW_BODY_BYTES - len(f"{notice}{suffix}".encode())
+    prefix = summary.encode("utf-8")[:budget].decode(
+        "utf-8",
+        errors="ignore",
+    )
+    prefix = prefix.rsplit("\n", 1)[0].rstrip()
+    return f"{prefix}{notice}{suffix}"
 
 
 def _recovered_findings_summary(findings: list[_review.Finding]) -> str:
@@ -735,7 +853,10 @@ def run_review(
             partial_review_ids,
         )
         previously_published_summary_findings = (
-            _published_summary_findings_from_bodies(partial_review_bodies)
+            _published_summary_findings_from_bodies(
+                partial_review_bodies,
+                review_id,
+            )
         )
         previously_published_findings = merge_lens_findings(
             previously_published_inline_findings
@@ -930,15 +1051,24 @@ def run_review(
         if failed_lenses:
             summary += f"\n\nFailed lenses: {', '.join(failed_lenses)}"
         if partial:
-            markers = "\n".join(
+            control_lines = [_control_marker(review_id)]
+            checkpoint = _checkpoint_marker(
+                review_id,
+                merge_lens_findings(
+                    summary_findings + recovered_summary_findings
+                ),
+            )
+            if checkpoint is not None:
+                control_lines.append(checkpoint)
+            control_lines.extend(
                 _completed_lens_marker(review_id, lens)
                 for lens in LENS_INSTRUCTIONS
                 if lens in completed_lenses
             )
-            summary += (
-                f"\n\n{_control_marker(review_id)}\n{markers}\n"
-                f"{_published_comments_marker(review_id, len(inline_findings))}"
+            control_lines.append(
+                _published_comments_marker(review_id, len(inline_findings))
             )
+            summary = _append_control_block(summary, control_lines)
         github.create_review(pull_number, head_sha, summary, inline_findings)
         return "published"
     except _review.ModelResponseError as exc:
