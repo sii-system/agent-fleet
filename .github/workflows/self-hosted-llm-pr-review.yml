@@ -8,7 +8,7 @@ name: Self-Hosted LLM PR Review
       pr_number:
         description: Open pull request number to review
         required: true
-        type: string
+        type: number
 
 permissions:
   contents: read
@@ -110,7 +110,7 @@ jobs:
           LLM_REVIEW_API_KEY: ${{ secrets.LLM_REVIEW_API_KEY }}
           LLM_REVIEW_BASE_URL: ${{ vars.LLM_REVIEW_BASE_URL }}
           LLM_REVIEW_MODEL: ${{ vars.LLM_REVIEW_MODEL }}
-          LLM_REVIEW_ID: self-hosted-pi-pr-review${{ github.event_name == 'workflow_dispatch' && '-canary' || '' }}
+          LLM_REVIEW_ID: self-hosted-pi-pr-review${{ github.event_name == 'workflow_dispatch' && format('-canary-{0}-{1}', github.run_id, github.run_attempt) || '' }}
         run: >-
           python3 .github/scripts/pi_pr_review.py
           --event-path "${{ steps.target.outputs.event_path }}"

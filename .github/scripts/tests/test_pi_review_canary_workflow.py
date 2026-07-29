@@ -19,7 +19,7 @@ class PiReviewCanaryWorkflowTest(unittest.TestCase):
                 r"pr_number:\n"
                 r"\s+description: Open pull request number to review\n"
                 r"\s+required: true\n"
-                r"\s+type: string"
+                r"\s+type: number"
             ),
         )
 
@@ -56,9 +56,12 @@ class PiReviewCanaryWorkflowTest(unittest.TestCase):
             self.workflow,
         )
 
-    def test_canary_has_a_separate_review_id_and_concurrency_group(self) -> None:
+    def test_canary_has_a_unique_review_id_and_concurrency_group(self) -> None:
         self.assertIn("self-hosted-pi-pr-review${{", self.workflow)
-        self.assertIn("'-canary'", self.workflow)
+        self.assertIn(
+            "format('-canary-{0}-{1}', github.run_id, github.run_attempt)",
+            self.workflow,
+        )
         self.assertIn(
             "${{ github.event.pull_request.number }}-${{ github.event_name }}-",
             self.workflow,
