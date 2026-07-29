@@ -75,6 +75,16 @@ inherited = {name: os.environ[name] for name in connection_fields if name in os.
 Path(f"{capture}.opik-environment").write_text(json.dumps(inherited, sort_keys=True))
 
 if os.environ.get("HARBOR_CAPTURE_RESULT") == "1":
+    pid_file = Path(os.environ["HARBOR_BENCHMARK_PID_FILE"])
+    if pid_file.is_file():
+        recorded_pid, recorded_start_time = pid_file.read_text().split()
+        actual_start_time = Path(f"/proc/{recorded_pid}/stat").read_text().split()[21]
+        if recorded_start_time != actual_start_time:
+            raise SystemExit(
+                "benchmark PID identity mismatch: "
+                f"pid={recorded_pid} recorded={recorded_start_time} actual={actual_start_time}"
+            )
+        Path(f"{capture}.pid-identity").write_text("valid")
     output = Path(args[args.index("-o") + 1]) / "fake-run"
     output.mkdir(parents=True, exist_ok=True)
     result = {
@@ -357,6 +367,7 @@ main() {
   run_harboropik \
     "claude-code" "$capture_bin" "$registry_capture" "$tmp/claude-registry" \
     "codepde@1.0" "" "true" "0"
+  assert_file_content "${registry_capture}.pid-identity" "valid"
   assert_registry_summary "$tmp/claude-registry/run/summary.txt"
   assert_registry_summary_requires_result "$tmp/registry-missing-result"
 

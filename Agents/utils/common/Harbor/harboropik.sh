@@ -65,7 +65,11 @@ if harbor_is_native_registry_main; then
   : > "$HARBOR_JOB_DIR_FILE"
   rm -f "$HARBOR_BENCHMARK_EXIT_FILE"
   # BASHPID needs bash >= 4; at this top-level scope $$ is the same pid.
-  printf '%s\t%s\n' "${BASHPID:-$$}" "$(awk '{print $22}' "/proc/${BASHPID:-$$}/stat")" > "$HARBOR_BENCHMARK_PID_FILE"
+  harbor_benchmark_pid="${BASHPID:-$$}"
+  printf '%s\t%s\n' \
+    "$harbor_benchmark_pid" \
+    "$(awk '{print $22}' "/proc/$harbor_benchmark_pid/stat")" \
+    > "$HARBOR_BENCHMARK_PID_FILE"
   record_harbor_benchmark_exit() {
     local rc="$?"
     # The exit file is the completion contract with the registry monitor;
