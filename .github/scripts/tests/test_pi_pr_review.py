@@ -567,6 +567,7 @@ class FakeGitHub:
             }
         ]
         self.reviews: list[dict] = []
+        self.review_comments: list[dict] = []
         self.created: list[tuple] = []
 
     def get_pull(self, _number: int) -> dict:
@@ -578,9 +579,33 @@ class FakeGitHub:
     def list_reviews(self, _number: int) -> list[dict]:
         return self.reviews
 
-    def create_review(self, *args: object) -> dict[str, int]:
-        self.created.append(args)
-        return {"id": 1}
+    def list_review_comments(self, _number: int) -> list[dict]:
+        return self.review_comments
+
+    def create_review(
+        self,
+        number: int,
+        sha: str,
+        body: str,
+        findings: list,
+    ) -> dict[str, int]:
+        self.created.append((number, sha, body, findings))
+        review_id = len(self.created)
+        self.review_comments.extend(
+            {
+                "pull_request_review_id": review_id,
+                "user": {"login": "github-actions[bot]"},
+                "path": finding.path,
+                "line": finding.line,
+                "body": (
+                    f"**{finding.severity}: {finding.title}**\n\n"
+                    f"{finding.failure_scenario}\n\n"
+                    f"Suggested remediation: {finding.remediation}"
+                ),
+            }
+            for finding in findings
+        )
+        return {"id": review_id}
 
 
 class FakePiClient:
@@ -737,18 +762,22 @@ class OrchestrationTest(unittest.TestCase):
                 subject = "regression"
             if subject == "security" and security_fails:
                 raise pi_review.PiReviewError("failed")
-            count = 1 if subject == "security" else 10
+            if subject == "security":
+                subjects = [("correctness", 0), ("security", 0)]
+            else:
+                count = 10 if subject == "correctness" else 9
+                subjects = [(subject, index) for index in range(count)]
             return {
                 "findings": [
                     {
                         "severity": "P2",
                         "path": "worker.py",
                         "line": 2,
-                        "title": f"{subject}-defect-{index}",
-                        "failure_scenario": f"{subject}-scenario-{index}",
-                        "remediation": f"{subject}-fix-{index}",
+                        "title": f"{item_subject}-defect-{index}",
+                        "failure_scenario": f"{item_subject}-scenario-{index}",
+                        "remediation": f"{item_subject}-fix-{index}",
                     }
-                    for index in range(count)
+                    for item_subject, index in subjects
                 ]
             }
 
@@ -757,6 +786,7 @@ class OrchestrationTest(unittest.TestCase):
         partial_body = github.created[0][2]
         github.reviews = [
             {
+                "id": 1,
                 "user": {"login": "github-actions[bot]"},
                 "body": partial_body,
             }
@@ -774,8 +804,11 @@ class OrchestrationTest(unittest.TestCase):
             "trust boundaries",
             pi_client.review.call_args.args[0],
         )
-        self.assertEqual(len(github.created[0][3]), 20)
-        self.assertEqual(github.created[1][3], [])
+        self.assertEqual(len(github.created[0][3]), 19)
+        self.assertEqual(
+            [item.title for item in github.created[1][3]],
+            ["security-defect-0"],
+        )
 
     def test_fallback_prompt_requests_only_inline_findings(self) -> None:
         github = FakeGitHub()
@@ -924,6 +957,22 @@ class OrchestrationTest(unittest.TestCase):
         with mock.patch(
             "pi_pr_review.time.monotonic",
             side_effect=[100.0, 700.0, 700.0, 700.0],
+        ):
+            pi_review.run_review(github, pi_client, 7, "{{LENS}}")
+
+        self.assertEqual(pi_client.timeouts, [300.0] * 3)
+
+    def test_absolute_workflow_deadline_accounts_for_setup_time(self) -> None:
+        github = FakeGitHub()
+        pi_client = FakePiClient([])
+
+        with (
+            mock.patch.dict(
+                "os.environ",
+                {"PI_REVIEW_DEADLINE_EPOCH": "1600"},
+            ),
+            mock.patch("pi_pr_review.time.time", return_value=1300.0),
+            mock.patch("pi_pr_review.time.monotonic", return_value=100.0),
         ):
             pi_review.run_review(github, pi_client, 7, "{{LENS}}")
 

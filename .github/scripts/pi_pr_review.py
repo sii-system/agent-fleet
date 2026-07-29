@@ -100,6 +100,11 @@ class PiResponseFormatError(PiReviewError):
         self.tool_calls = tool_calls
 
 
+class GitHubClient(_review.GitHubClient):
+    def list_review_comments(self, number: int) -> list[dict[str, Any]]:
+        return self._list_pages(f"/pulls/{number}/comments")
+
+
 def _text_similarity(left: str, right: str) -> float:
     left_tokens = set(re.findall(r"[a-z0-9]+", left.casefold()))
     left_tokens -= SIMILARITY_FILLER_TOKENS
@@ -107,6 +112,17 @@ def _text_similarity(left: str, right: str) -> float:
     right_tokens -= SIMILARITY_FILLER_TOKENS
     union = left_tokens | right_tokens
     return len(left_tokens & right_tokens) / len(union) if union else 0.0
+
+
+def _same_finding(left: _review.Finding, right: _review.Finding) -> bool:
+    return (
+        left.path == right.path
+        and left.line == right.line
+        and _text_similarity(left.title, right.title)
+        >= MIN_FINDING_SIMILARITY
+        and _text_similarity(left.failure_scenario, right.failure_scenario)
+        >= MIN_FINDING_SIMILARITY
+    )
 
 
 def _limit_model_input(value: str) -> tuple[str, bool]:
@@ -132,17 +148,7 @@ def merge_lens_findings(
     merged: list[_review.Finding] = []
     for finding in findings:
         for index, existing in enumerate(merged):
-            if (
-                existing.path == finding.path
-                and existing.line == finding.line
-                and _text_similarity(existing.title, finding.title)
-                >= MIN_FINDING_SIMILARITY
-                and _text_similarity(
-                    existing.failure_scenario,
-                    finding.failure_scenario,
-                )
-                >= MIN_FINDING_SIMILARITY
-            ):
+            if _same_finding(existing, finding):
                 winner = min(
                     (existing, finding),
                     key=lambda item: _review.SEVERITY_ORDER[item.severity],
@@ -182,26 +188,26 @@ def _published_comments_marker(review_id: str, count: int) -> str:
     return f"<!-- {review_id}-published-comments:{count} -->"
 
 
-def _matching_partial_review_bodies(
+def _matching_partial_reviews(
     reviews: list[dict[str, Any]],
     head_sha: str,
     review_id: str,
     base_sha: str | None,
-) -> list[str]:
+) -> list[dict[str, Any]]:
     partial_marker = _review.review_marker(
         head_sha,
         f"{review_id}-partial",
         base_sha,
     )
-    bodies: list[str] = []
+    matching: list[dict[str, Any]] = []
     for review in reviews:
         body = review.get("body") or ""
         if (
             (review.get("user") or {}).get("login") == "github-actions[bot]"
             and partial_marker in body
         ):
-            bodies.append(body)
-    return bodies
+            matching.append(review)
+    return matching
 
 
 def _completed_lenses_from_bodies(
@@ -228,6 +234,60 @@ def _published_comments_from_bodies(
         if (match := pattern.search(body)) is not None
     )
     return min(_review.MAX_COMMENTS, published)
+
+
+def _published_findings_from_comments(
+    comments: list[dict[str, Any]],
+    review_ids: set[int],
+) -> list[_review.Finding]:
+    findings: list[_review.Finding] = []
+    for comment in comments:
+        if (
+            comment.get("pull_request_review_id") not in review_ids
+            or (comment.get("user") or {}).get("login")
+            != "github-actions[bot]"
+        ):
+            continue
+        header, separator, remainder = (comment.get("body") or "").partition(
+            "\n\n"
+        )
+        scenario, scenario_separator, _rest = remainder.partition("\n\n")
+        title = re.fullmatch(r"\*\*(P[0-3]): (.+)\*\*", header)
+        path = comment.get("path")
+        line = comment.get("line")
+        if (
+            not separator
+            or not scenario_separator
+            or title is None
+            or not isinstance(path, str)
+            or type(line) is not int
+        ):
+            continue
+        findings.append(
+            _review.Finding(
+                title.group(1),
+                path,
+                line,
+                title.group(2),
+                scenario,
+                "published previously",
+            )
+        )
+    return findings
+
+
+def _review_deadline() -> float:
+    deadline_epoch = os.environ.get("PI_REVIEW_DEADLINE_EPOCH")
+    if deadline_epoch is None:
+        return time.monotonic() + PI_REVIEW_BUDGET_SECONDS
+    try:
+        remaining = float(deadline_epoch) - time.time()
+    except ValueError as exc:
+        raise PiReviewError("PI_REVIEW_DEADLINE_EPOCH must be numeric") from exc
+    return time.monotonic() + max(
+        0.0,
+        min(float(PI_REVIEW_BUDGET_SECONDS), remaining),
+    )
 
 
 def _chat_url_to_base(url: str) -> str:
@@ -460,7 +520,7 @@ def run_review(
     expected_base_sha: str | None = None,
 ) -> str:
     try:
-        deadline = time.monotonic() + PI_REVIEW_BUDGET_SECONDS
+        deadline = _review_deadline()
         pull = github.get_pull(pull_number)
         head_sha = pull["head"]["sha"]
         if expected_head_sha is not None and head_sha != expected_head_sha:
@@ -478,12 +538,20 @@ def run_review(
             expected_base_sha,
         ):
             return "duplicate"
-        partial_review_bodies = _matching_partial_review_bodies(
+        partial_reviews = _matching_partial_reviews(
             reviews,
             head_sha,
             review_id,
             expected_base_sha,
         )
+        partial_review_bodies = [
+            str(review.get("body") or "") for review in partial_reviews
+        ]
+        partial_review_ids = {
+            review["id"]
+            for review in partial_reviews
+            if type(review.get("id")) is int
+        }
         previously_completed_lenses = _completed_lenses_from_bodies(
             partial_review_bodies,
             review_id,
@@ -491,6 +559,12 @@ def run_review(
         previously_published_comments = _published_comments_from_bodies(
             partial_review_bodies,
             review_id,
+        )
+        previously_published_findings = _published_findings_from_comments(
+            github.list_review_comments(pull_number)
+            if partial_review_ids
+            else [],
+            partial_review_ids,
         )
         pending_lenses = {
             lens: instruction
@@ -587,6 +661,14 @@ def run_review(
             set(futures) - set(incomplete_lenses) - set(failed_lenses)
         )
         findings = merge_lens_findings(findings)
+        findings = [
+            finding
+            for finding in findings
+            if not any(
+                _same_finding(finding, published)
+                for published in previously_published_findings
+            )
+        ]
         reported_findings = findings
         summary_findings: list[_review.Finding] = []
         remaining_inline_comments = max(
@@ -697,7 +779,7 @@ def main() -> int:
     repository = require_env("GITHUB_REPOSITORY")
     event_pull = event["pull_request"]
     pull_number = int(event_pull["number"])
-    github = _review.GitHubClient(repository, require_env("GITHUB_TOKEN"))
+    github = GitHubClient(repository, require_env("GITHUB_TOKEN"))
     pi_client = PiClient(
         pi_binary=args.pi_bin,
         base_url=require_env("LLM_REVIEW_BASE_URL"),
