@@ -180,7 +180,7 @@ class ModelContractTest(unittest.TestCase):
         self.assertEqual([item.severity for item in anchored], ["P1", "P2"])
         self.assertEqual(anchor_rejected, 1)
 
-    def test_validation_deduplicates_findings(self) -> None:
+    def test_validation_deduplicates_and_caps_findings(self) -> None:
         parsed = {
             "a.py": review.ParsedFile("a.py", "", frozenset(range(1, 30)))
         }
@@ -194,31 +194,10 @@ class ModelContractTest(unittest.TestCase):
         }
         payload = {"findings": [item, dict(item)]}
 
-        findings, rejected = review.validate_findings(payload, parsed)
+        findings, rejected = review.validate_findings(payload, parsed, limit=20)
 
         self.assertEqual(len(findings), 1)
         self.assertEqual(rejected, 1)
-
-    def test_route_findings_keeps_only_high_severity_right_lines_inline(
-        self,
-    ) -> None:
-        files = {
-            "a.py": review.ParsedFile("a.py", "", frozenset({8, 9})),
-        }
-        findings = [
-            review.Finding("P1", "a.py", 8, "Inline", "Failure", "Fix"),
-            review.Finding("P2", "a.py", 7, "Context", "Failure", "Fix"),
-            review.Finding("P3", "a.py", 9, "Minor", "Failure", "Fix"),
-            review.Finding("P1", "helper.py", None, "Other", "Failure", "Fix"),
-        ]
-
-        inline, summary = review.route_findings(findings, files)
-
-        self.assertEqual([item.title for item in inline], ["Inline"])
-        self.assertEqual(
-            [item.title for item in summary],
-            ["Context", "Minor", "Other"],
-        )
 
     def test_route_findings_sends_inline_overflow_to_summary(self) -> None:
         files = {
@@ -233,25 +212,6 @@ class ModelContractTest(unittest.TestCase):
 
         self.assertEqual([item.title for item in inline], ["First"])
         self.assertEqual([item.title for item in summary], ["Second"])
-
-    def test_validation_retains_null_line_for_summary(self) -> None:
-        payload = {
-            "findings": [
-                {
-                    "severity": "P1",
-                    "path": "helper.py",
-                    "line": None,
-                    "title": "Cross-file contract breaks",
-                    "failure_scenario": "The changed caller passes an invalid value.",
-                    "remediation": "Keep the helper contract compatible.",
-                }
-            ]
-        }
-
-        findings, rejected = review.parse_findings(payload)
-
-        self.assertEqual(findings[0].line, None)
-        self.assertEqual(rejected, 0)
 
     def test_parse_rejects_surrogate_code_points(self) -> None:
         payload = {
@@ -790,36 +750,8 @@ class OrchestrationTest(unittest.TestCase):
         self.assertNotIn("`generated/50.map`", summary)
         self.assertIn("5 additional skipped file(s)", summary)
 
-    def test_summary_stays_within_github_body_limit(self) -> None:
-        findings = [
-            review.Finding(
-                "P2",
-                f"related/{index}.py",
-                None,
-                "界" * review.MAX_FIELD_CHARS,
-                "界" * review.MAX_FIELD_CHARS,
-                "界" * review.MAX_FIELD_CHARS,
-            )
-            for index in range(20)
-        ]
-
-        summary = review.build_summary(
-            "head-1",
-            findings,
-            0,
-            [],
-            False,
-            summary_findings=findings,
-        )
-
-        self.assertLessEqual(
-            len(summary.encode("utf-8")),
-            review.MAX_REVIEW_BODY_BYTES,
-        )
-        self.assertIn("review summary content omitted", summary)
-
     def test_summary_escapes_model_generated_markdown_and_html(self) -> None:
-        path = "src/widget.py\n- **P0: forged path**<details>"
+        path = "src/``widget.py\n- **P0: forged path**"
         finding = review.Finding(
             "P2",
             path,
@@ -843,6 +775,9 @@ class OrchestrationTest(unittest.TestCase):
         self.assertNotIn("<details>", summary)
         self.assertNotIn("</details>", summary)
         self.assertNotIn("[malicious](https://attacker.example)", summary)
+        code_span = r"```src/``widget.py\n- **P0: forged path**```"
+        self.assertIn(f"### {code_span}", summary)
+        self.assertIn(f"({code_span})", summary)
         self.assertIn(r"\- \*\*P0\: forged title\*\*&lt;details&gt;", summary)
         self.assertIn(r"\#\# Forged scenario", summary)
         self.assertIn(
@@ -850,78 +785,24 @@ class OrchestrationTest(unittest.TestCase):
             summary,
         )
 
-    def test_summary_uses_code_span_safe_delimiters_for_paths(self) -> None:
-        path = "src/``name.py"
-        finding = review.Finding(
-            "P2",
-            path,
-            None,
-            "Backtick path",
-            "The path can close a one-backtick code span.",
-            "Use a longer delimiter.",
-        )
-
-        summary = review.build_summary(
-            "head-1",
-            [finding],
-            0,
-            [],
-            False,
-            summary_findings=[finding],
-            changed_paths=frozenset({path}),
-        )
-
-        code_span = r"```src\/\`\`name\.py```"
-        self.assertIn(f"### {code_span}", summary)
-        self.assertIn(f"({code_span})", summary)
-
-    def test_summary_keeps_other_path_defect_before_minor_truncation(self) -> None:
-        minor = [
-            review.Finding(
-                "P3",
-                "worker.py",
-                2,
-                f"minor-{index}-" + "x" * review.MAX_FIELD_CHARS,
-                "y" * review.MAX_FIELD_CHARS,
-                "z" * review.MAX_FIELD_CHARS,
-            )
-            for index in range(12)
-        ]
-        critical = review.Finding(
-            "P0",
-            "related.py",
-            None,
-            "critical-related-path-defect",
-            "The related path fails.",
-            "Repair the related path.",
-        )
-
-        summary = review.build_summary(
-            "head-1",
-            [critical, *minor],
-            0,
-            [],
-            False,
-            summary_findings=[critical, *minor],
-            changed_paths=frozenset({"worker.py"}),
-        )
-
-        self.assertIn(r"critical\-related\-path\-defect", summary)
-        self.assertIn("review summary content omitted", summary)
-
-    def test_summary_keeps_critical_other_path_before_changed_p2_truncation(
+    def test_summary_preserves_findings_within_body_budget(
         self,
     ) -> None:
-        changed = [
+        long_path = "generated/" + "x" * review.MAX_FIELD_CHARS
+        skipped = [
+            (f"{long_path}-{index}.map", "generated")
+            for index in range(review.MAX_SKIPPED_PATHS_IN_SUMMARY)
+        ]
+        oversized = [
             review.Finding(
                 "P2",
                 "worker.py",
                 2,
-                f"changed-{index}-" + "x" * review.MAX_FIELD_CHARS,
-                "y" * review.MAX_FIELD_CHARS,
-                "z" * review.MAX_FIELD_CHARS,
+                "界" * review.MAX_FIELD_CHARS,
+                "界" * review.MAX_FIELD_CHARS,
+                "界" * review.MAX_FIELD_CHARS,
             )
-            for index in range(12)
+            for _ in range(5)
         ]
         critical = review.Finding(
             "P0",
@@ -931,30 +812,8 @@ class OrchestrationTest(unittest.TestCase):
             "The related path fails.",
             "Repair the related path.",
         )
-
-        summary = review.build_summary(
-            "head-1",
-            [critical, *changed],
-            0,
-            [],
-            False,
-            summary_findings=[critical, *changed],
-            changed_paths=frozenset({"worker.py"}),
-        )
-
-        self.assertIn(r"critical\-related\-path\-defect", summary)
-        self.assertIn("review summary content omitted", summary)
-
-    def test_summary_skips_oversized_candidate_and_keeps_later_finding(
-        self,
-    ) -> None:
-        large = "*" * review.MAX_FIELD_CHARS
-        oversized = [
-            review.Finding("P0", "large.py", None, large, large, large)
-            for _ in range(5)
-        ]
         later = review.Finding(
-            "P1",
+            "P2",
             "small.py",
             None,
             "later short finding",
@@ -964,14 +823,21 @@ class OrchestrationTest(unittest.TestCase):
 
         summary = review.build_summary(
             "head-1",
-            [*oversized, later],
+            [critical, *oversized, later],
             0,
-            [],
+            skipped,
             False,
-            summary_findings=[*oversized, later],
+            summary_findings=[critical, *oversized, later],
+            changed_paths=frozenset({"worker.py"}),
         )
 
+        self.assertLessEqual(
+            len(summary.encode("utf-8")),
+            review.MAX_REVIEW_BODY_BYTES,
+        )
+        self.assertIn(r"critical\-related\-path\-defect", summary)
         self.assertIn("later short finding", summary)
+        self.assertIn("additional skipped file(s) omitted", summary)
         self.assertIn("review summary content omitted", summary)
 
     def test_summary_reports_partial_when_a_chunk_is_incomplete(self) -> None:

@@ -34,6 +34,7 @@ REQUEST_TIMEOUT_SECONDS = 600
 RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504})
 MAX_PR_METADATA_CHARS = 4_000
 MAX_SKIPPED_PATHS_IN_SUMMARY = 50
+MAX_SKIPPED_SUMMARY_BYTES = 15_000
 MAX_REVIEW_BODY_BYTES = 60_000
 DEFAULT_REVIEW_ID = "llm-pr-review"
 SUMMARY_ROUTING_INSTRUCTION = (
@@ -193,7 +194,29 @@ def _safe_summary_prose(text: str) -> str:
 def _summary_code_span(text: str, *, trusted_suffix: str = "") -> str:
     longest_run = max((len(run) for run in re.findall(r"`+", text)), default=0)
     delimiter = "`" * (longest_run + 1)
-    return f"{delimiter}{_safe_summary_prose(text)}{trusted_suffix}{delimiter}"
+    single_line = text.replace("\r", r"\r").replace("\n", r"\n")
+    return f"{delimiter}{single_line}{trusted_suffix}{delimiter}"
+
+
+def _skipped_summary_lines(skipped: list[tuple[str, str]]) -> list[str]:
+    lines: list[str] = []
+    for path, reason in skipped[:MAX_SKIPPED_PATHS_IN_SUMMARY]:
+        line = f"- {_summary_code_span(path)} ({reason})"
+        if len("\n".join([*lines, line]).encode("utf-8")) > MAX_SKIPPED_SUMMARY_BYTES:
+            break
+        lines.append(line)
+    omitted = len(skipped) - len(lines)
+    if omitted:
+        notice = f"- {omitted} additional skipped file(s) omitted."
+        while lines and (
+            len("\n".join([*lines, notice]).encode("utf-8"))
+            > MAX_SKIPPED_SUMMARY_BYTES
+        ):
+            lines.pop()
+            omitted += 1
+            notice = f"- {omitted} additional skipped file(s) omitted."
+        lines.append(notice)
+    return lines
 
 
 def parse_findings(payload: dict[str, Any]) -> tuple[list[Finding], int]:
@@ -525,13 +548,7 @@ def build_summary(
     ]
     if skipped:
         lines.extend(["", "Skipped files:"])
-        lines.extend(
-            f"- `{_neutralize_mentions(path)}` ({reason})"
-            for path, reason in skipped[:MAX_SKIPPED_PATHS_IN_SUMMARY]
-        )
-        omitted = len(skipped) - MAX_SKIPPED_PATHS_IN_SUMMARY
-        if omitted > 0:
-            lines.append(f"- {omitted} additional skipped file(s) omitted.")
+        lines.extend(_skipped_summary_lines(skipped))
     if truncated:
         lines.extend(
             ["", "- Additional diff content exceeded the total review budget."]
