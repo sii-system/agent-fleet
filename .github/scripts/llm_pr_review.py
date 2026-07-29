@@ -168,7 +168,11 @@ def _bounded_text(value: Any) -> str | None:
     if not isinstance(value, str):
         return None
     text = value.strip()
-    if not text or len(text) > MAX_FIELD_CHARS:
+    if (
+        not text
+        or len(text) > MAX_FIELD_CHARS
+        or any(0xD800 <= ord(char) <= 0xDFFF for char in text)
+    ):
         return None
     return text
 
@@ -528,28 +532,62 @@ def build_summary(
             ]
         )
     if summary_findings:
-        changed = [
-            item
-            for item in summary_findings
-            if item.severity != "P3" and item.path in changed_paths
-        ]
-        minor = [item for item in summary_findings if item.severity == "P3"]
-        other = [
-            item
-            for item in summary_findings
-            if item.severity != "P3" and item.path not in changed_paths
-        ]
-        lines.extend(["", "## Summary findings"])
-        for path in dict.fromkeys(item.path for item in changed):
-            lines.extend(["", f"### `{_neutralize_mentions(path)}`"])
-            lines.extend(_summary_finding(item) for item in changed if item.path == path)
-        if other:
-            lines.extend(["", "### Other observations"])
-            lines.extend(_summary_finding(item) for item in other)
-        if minor:
-            lines.extend(["", "### Minor"])
-            lines.extend(_summary_finding(item) for item in minor)
+        summary_lines = _summary_lines(summary_findings, changed_paths)
+        complete = "\n".join([*lines, *summary_lines])
+        if len(complete.encode("utf-8")) <= MAX_REVIEW_BODY_BYTES:
+            lines.extend(summary_lines)
+        else:
+            prioritized = sorted(
+                summary_findings,
+                key=lambda item: SEVERITY_ORDER[item.severity],
+            )
+            selected: list[Finding] = []
+            for finding in prioritized:
+                candidate = [*selected, finding]
+                candidate_body = "\n".join(
+                    [
+                        *lines,
+                        *_summary_lines(candidate, changed_paths),
+                        "",
+                        SUMMARY_OMISSION_NOTICE,
+                    ]
+                )
+                if len(candidate_body.encode("utf-8")) > MAX_REVIEW_BODY_BYTES:
+                    break
+                selected.append(finding)
+            lines.extend(_summary_lines(selected, changed_paths))
+            lines.extend(["", SUMMARY_OMISSION_NOTICE])
     return _cap_review_body("\n".join(lines))
+
+
+def _summary_lines(
+    findings: list[Finding],
+    changed_paths: frozenset[str],
+) -> list[str]:
+    if not findings:
+        return []
+    changed = [
+        item
+        for item in findings
+        if item.severity != "P3" and item.path in changed_paths
+    ]
+    minor = [item for item in findings if item.severity == "P3"]
+    other = [
+        item
+        for item in findings
+        if item.severity != "P3" and item.path not in changed_paths
+    ]
+    lines = ["", "## Summary findings"]
+    for path in dict.fromkeys(item.path for item in changed):
+        lines.extend(["", f"### `{_neutralize_mentions(path)}`"])
+        lines.extend(_summary_finding(item) for item in changed if item.path == path)
+    if other:
+        lines.extend(["", "### Other observations"])
+        lines.extend(_summary_finding(item) for item in other)
+    if minor:
+        lines.extend(["", "### Minor"])
+        lines.extend(_summary_finding(item) for item in minor)
+    return lines
 
 
 def _cap_review_body(body: str) -> str:

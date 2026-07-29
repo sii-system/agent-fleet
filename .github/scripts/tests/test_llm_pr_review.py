@@ -253,6 +253,25 @@ class ModelContractTest(unittest.TestCase):
         self.assertEqual(findings[0].line, None)
         self.assertEqual(rejected, 0)
 
+    def test_parse_rejects_surrogate_code_points(self) -> None:
+        payload = {
+            "findings": [
+                {
+                    "severity": "P2",
+                    "path": "helper.py",
+                    "line": None,
+                    "title": "invalid-\ud800",
+                    "failure_scenario": "The summary cannot be encoded.",
+                    "remediation": "Reject the invalid model finding.",
+                }
+            ]
+        }
+
+        findings, rejected = review.parse_findings(payload)
+
+        self.assertEqual(findings, [])
+        self.assertEqual(rejected, 1)
+
 
 class FakeResponse:
     def __init__(self, payload: object) -> None:
@@ -827,6 +846,42 @@ class OrchestrationTest(unittest.TestCase):
             [],
             False,
             summary_findings=[critical, *minor],
+            changed_paths=frozenset({"worker.py"}),
+        )
+
+        self.assertIn("critical-related-path-defect", summary)
+        self.assertIn("review summary content omitted", summary)
+
+    def test_summary_keeps_critical_other_path_before_changed_p2_truncation(
+        self,
+    ) -> None:
+        changed = [
+            review.Finding(
+                "P2",
+                "worker.py",
+                2,
+                f"changed-{index}-" + "x" * review.MAX_FIELD_CHARS,
+                "y" * review.MAX_FIELD_CHARS,
+                "z" * review.MAX_FIELD_CHARS,
+            )
+            for index in range(12)
+        ]
+        critical = review.Finding(
+            "P0",
+            "related.py",
+            None,
+            "critical-related-path-defect",
+            "The related path fails.",
+            "Repair the related path.",
+        )
+
+        summary = review.build_summary(
+            "head-1",
+            [critical, *changed],
+            0,
+            [],
+            False,
+            summary_findings=[critical, *changed],
             changed_paths=frozenset({"worker.py"}),
         )
 
