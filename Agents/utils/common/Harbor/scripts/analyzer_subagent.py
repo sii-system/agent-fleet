@@ -377,7 +377,7 @@ def main() -> int:
                 )
                 _save_follow_state(state_path, processed=processed, failed=failed)
                 continue
-            if exit_code == 0:
+            if exit_code in {0, 3}:
                 processed.add(follow_key)
                 failed.pop(follow_key, None)
                 _save_follow_state(state_path, processed=processed, failed=failed)

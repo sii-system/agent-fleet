@@ -399,7 +399,7 @@ class HarborAnalyzerRuntimeTest(unittest.TestCase):
 
             self.assertEqual(_load_follow_state(state_path), (set(), {}))
 
-    def test_follow_continues_after_unexpected_handover_exception(self) -> None:
+    def test_follow_continues_after_exception_and_completes_degraded_handover(self) -> None:
         class StopFollow(Exception):
             pass
 
@@ -434,7 +434,7 @@ class HarborAnalyzerRuntimeTest(unittest.TestCase):
                 mock.patch.object(
                     analyzer_subagent,
                     "_run_one",
-                    side_effect=[OSError(28, "No space left on device"), 0],
+                    side_effect=[OSError(28, "No space left on device"), 3],
                 ) as run_one,
                 self.assertRaises(StopFollow),
             ):
