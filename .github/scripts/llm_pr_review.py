@@ -471,7 +471,7 @@ def has_existing_review(
     marker = review_marker(head_sha, review_id, base_sha)
     return any(
         (item.get("user") or {}).get("login") == "github-actions[bot]"
-        and marker in (item.get("body") or "")
+        and (item.get("body") or "").splitlines()[:1] == [marker]
         for item in reviews
     )
 
@@ -543,12 +543,12 @@ def build_summary(
         for path in dict.fromkeys(item.path for item in changed):
             lines.extend(["", f"### `{_neutralize_mentions(path)}`"])
             lines.extend(_summary_finding(item) for item in changed if item.path == path)
-        if minor:
-            lines.extend(["", "### Minor"])
-            lines.extend(_summary_finding(item) for item in minor)
         if other:
             lines.extend(["", "### Other observations"])
             lines.extend(_summary_finding(item) for item in other)
+        if minor:
+            lines.extend(["", "### Minor"])
+            lines.extend(_summary_finding(item) for item in minor)
     return _cap_review_body("\n".join(lines))
 
 

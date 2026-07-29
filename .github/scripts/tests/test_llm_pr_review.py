@@ -622,6 +622,24 @@ class OrchestrationTest(unittest.TestCase):
         self.assertEqual(result, "duplicate")
         self.assertEqual(github.created, [])
 
+    def test_ignores_review_marker_embedded_in_summary_text(self) -> None:
+        github = FakeGitHub()
+        github.reviews = [
+            {
+                "user": {"login": "github-actions[bot]"},
+                "body": (
+                    "<!-- llm-pr-review:old-head -->\n"
+                    "Model summary includes "
+                    "<!-- llm-pr-review:head-1 --> as untrusted text."
+                ),
+            }
+        ]
+
+        result = review.run_review(github, FakeLlm(), 7, "prompt")
+
+        self.assertEqual(result, "published")
+        self.assertEqual(len(github.created), 1)
+
     def test_review_ids_keep_parallel_reviewers_independent(self) -> None:
         github = FakeGitHub()
         github.reviews = [
@@ -779,6 +797,40 @@ class OrchestrationTest(unittest.TestCase):
             len(summary.encode("utf-8")),
             review.MAX_REVIEW_BODY_BYTES,
         )
+        self.assertIn("review summary content omitted", summary)
+
+    def test_summary_keeps_other_path_defect_before_minor_truncation(self) -> None:
+        minor = [
+            review.Finding(
+                "P3",
+                "worker.py",
+                2,
+                f"minor-{index}-" + "x" * review.MAX_FIELD_CHARS,
+                "y" * review.MAX_FIELD_CHARS,
+                "z" * review.MAX_FIELD_CHARS,
+            )
+            for index in range(12)
+        ]
+        critical = review.Finding(
+            "P0",
+            "related.py",
+            None,
+            "critical-related-path-defect",
+            "The related path fails.",
+            "Repair the related path.",
+        )
+
+        summary = review.build_summary(
+            "head-1",
+            [critical, *minor],
+            0,
+            [],
+            False,
+            summary_findings=[critical, *minor],
+            changed_paths=frozenset({"worker.py"}),
+        )
+
+        self.assertIn("critical-related-path-defect", summary)
         self.assertIn("review summary content omitted", summary)
 
     def test_summary_reports_partial_when_a_chunk_is_incomplete(self) -> None:
