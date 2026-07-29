@@ -391,7 +391,7 @@ def run_review(
             files,
             max_chunk_chars=_review.MAX_TOTAL_CHARS,
         )
-        whole_diff = chunks[0] if chunks else ""
+        whole_diff = "".join(chunks)
         model_input = _review.build_model_input(pull, whole_diff)
         routing_instruction = (
             SUMMARY_ROUTING_INSTRUCTION
@@ -457,6 +457,7 @@ def run_review(
 
         partial = bool(incomplete_lenses or failed_lenses)
         findings = merge_lens_findings(findings)
+        reported_findings = findings
         summary_findings: list[_review.Finding] = []
         if _shared_routing_available():
             inline_findings, summary_findings = _review.route_findings(
@@ -466,6 +467,7 @@ def run_review(
         else:
             rejected += max(0, len(findings) - _review.MAX_COMMENTS)
             inline_findings = findings[: _review.MAX_COMMENTS]
+            reported_findings = inline_findings
         current = github.get_pull(pull_number)
         if current["head"]["sha"] != head_sha or (
             expected_base_sha is not None
@@ -486,7 +488,7 @@ def run_review(
             )
         summary = _review.build_summary(
             head_sha,
-            findings,
+            reported_findings,
             rejected,
             skipped,
             truncated,

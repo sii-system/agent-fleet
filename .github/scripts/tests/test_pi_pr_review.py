@@ -595,6 +595,38 @@ class OrchestrationTest(unittest.TestCase):
         self.assertTrue(all("{{LENS}}" not in prompt for prompt in pi_client.prompts))
         self.assertEqual(pi_client.retry_malformed, [True] * 3)
 
+    def test_whole_diff_input_includes_every_bounded_chunk(self) -> None:
+        sentinel = "SECOND_CHUNK_SENTINEL"
+        github = FakeGitHub()
+        github.files = [
+            {
+                "filename": f"large_{index}.py",
+                "patch": (
+                    "@@ -0,0 +1 @@\n+"
+                    + (sentinel if index == 4 else f"file_{index}_")
+                    + ("x" * 49_000)
+                ),
+            }
+            for index in range(5)
+        ]
+        parsed_files, skipped = pi_review._review.collect_files(github.files)
+        chunks, _truncated = pi_review._review.build_chunks(
+            parsed_files,
+            max_chunk_chars=pi_review._review.MAX_TOTAL_CHARS,
+        )
+        self.assertEqual(skipped, [])
+        self.assertGreater(len(chunks), 1)
+        self.assertNotIn(sentinel, chunks[0])
+        self.assertTrue(any(sentinel in chunk for chunk in chunks[1:]))
+        pi_client = FakePiClient([])
+
+        pi_review.run_review(github, pi_client, 7, "{{LENS}}")
+
+        self.assertEqual(len(pi_client.inputs), 3)
+        self.assertTrue(
+            all(sentinel in model_input for model_input in pi_client.inputs)
+        )
+
     def test_one_lens_failure_publishes_partial_results(self) -> None:
         github = FakeGitHub()
         pi_client = mock.Mock()
@@ -935,6 +967,10 @@ class OrchestrationTest(unittest.TestCase):
             self.assertIn("Rejected model findings: 0", body)
             self.assertIn("security0", body)
         else:
+            self.assertIn(
+                "Automated review found 20 actionable finding(s).",
+                body,
+            )
             self.assertIn("Rejected model findings: 10", body)
 
     def test_uses_shared_routing_contract_when_available(self) -> None:
