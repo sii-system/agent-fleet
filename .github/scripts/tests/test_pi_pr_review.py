@@ -335,7 +335,7 @@ class PiClientTest(unittest.TestCase):
         kwargs.update(overrides)
         return pi_review.PiClient(**kwargs)
 
-    def test_passes_system_prompt_and_diff_chunk_to_pi(self) -> None:
+    def test_passes_system_prompt_and_model_input_to_pi(self) -> None:
         _stub_pi_script(self.bin_dir, stdout=_make_findings_response())
         client = self._make_client()
 
@@ -603,13 +603,13 @@ class FakePiClient:
     def review(
         self,
         prompt: str,
-        chunk: str,
+        model_input: str,
         *,
         retry_malformed: bool = False,
         response_validator: object = None,
     ) -> dict:
         self.prompts.append(prompt)
-        self.inputs.append(chunk)
+        self.inputs.append(model_input)
         self.retry_malformed.append(retry_malformed)
         self.response_validators.append(response_validator)
         payload = {"findings": list(self.findings)}
@@ -640,8 +640,8 @@ class OrchestrationTest(unittest.TestCase):
         self.assertEqual(pi_client.retry_malformed, [True] * 3)
         self.assertTrue(all(callable(item) for item in pi_client.response_validators))
 
-    def test_whole_diff_input_includes_every_bounded_chunk(self) -> None:
-        sentinel = "SECOND_CHUNK_SENTINEL"
+    def test_whole_diff_input_includes_all_files(self) -> None:
+        sentinel = "SECOND_FILE_SENTINEL"
         github = FakeGitHub()
         github.files = [
             {
@@ -654,14 +654,6 @@ class OrchestrationTest(unittest.TestCase):
             }
             for index in range(2)
         ]
-        parsed_files, skipped = pi_review._review.collect_files(github.files)
-        chunks, _truncated = pi_review._review.build_chunks(
-            parsed_files,
-        )
-        self.assertEqual(skipped, [])
-        self.assertGreater(len(chunks), 1)
-        self.assertNotIn(sentinel, chunks[0])
-        self.assertTrue(any(sentinel in chunk for chunk in chunks[1:]))
         pi_client = FakePiClient([])
 
         pi_review.run_review(github, pi_client, 7, "{{LENS}}")
@@ -696,9 +688,7 @@ class OrchestrationTest(unittest.TestCase):
         pi_client = mock.Mock()
 
         def review_lens(
-            prompt: str,
-            _chunk: str,
-            **_kwargs: object,
+            prompt: str, _model_input: str, **_kwargs: object
         ) -> dict:
             if "trust boundaries" in prompt:
                 raise pi_review.PiReviewError("provider detail must stay private")
@@ -720,7 +710,7 @@ class OrchestrationTest(unittest.TestCase):
 
         def fail_security(
             prompt: str,
-            _chunk: str,
+            _model_input: str,
             **_kwargs: object,
         ) -> dict:
             if "trust boundaries" in prompt:
@@ -816,9 +806,7 @@ class OrchestrationTest(unittest.TestCase):
         pi_client = mock.Mock()
 
         def review_lens(
-            prompt: str,
-            _chunk: str,
-            **_kwargs: object,
+            prompt: str, _model_input: str, **_kwargs: object
         ) -> dict:
             if "runtime correctness" in prompt:
                 return {"findings": []}
@@ -837,9 +825,7 @@ class OrchestrationTest(unittest.TestCase):
         pi_client = mock.Mock()
 
         def review_lens(
-            prompt: str,
-            _chunk: str,
-            **_kwargs: object,
+            prompt: str, _model_input: str, **_kwargs: object
         ) -> dict:
             if "runtime correctness" in prompt:
                 count = 1
@@ -877,7 +863,9 @@ class OrchestrationTest(unittest.TestCase):
         github = FakeGitHub()
         pi_client = mock.Mock()
 
-        def review_lens(prompt: str, _chunk: str, **_kwargs: object) -> dict:
+        def review_lens(
+            prompt: str, _model_input: str, **_kwargs: object
+        ) -> dict:
             if "runtime correctness" in prompt:
                 severity = "P2"
                 title = "Cancellation cleanup missing"
@@ -1030,7 +1018,9 @@ class OrchestrationTest(unittest.TestCase):
         github = FakeGitHub()
         pi_client = mock.Mock()
 
-        def review_lens(prompt: str, _chunk: str, **_kwargs: object) -> dict:
+        def review_lens(
+            prompt: str, _model_input: str, **_kwargs: object
+        ) -> dict:
             if "runtime correctness" in prompt:
                 prefix = "correctness"
             elif "trust boundaries" in prompt:
@@ -1104,7 +1094,9 @@ class OrchestrationTest(unittest.TestCase):
             "remediation": "sentinel-fix",
         }
 
-        def review_lens(prompt: str, _chunk: str, **_kwargs: object) -> dict:
+        def review_lens(
+            prompt: str, _model_input: str, **_kwargs: object
+        ) -> dict:
             if "runtime correctness" in prompt:
                 return {"findings": overlapping + distinct + [sentinel]}
             return {"findings": []}
@@ -1320,7 +1312,7 @@ class OrchestrationTest(unittest.TestCase):
         self.assertIn("Change worker cancellation", pi_client.inputs[0])
         self.assertIn("UNTRUSTED DIFF", pi_client.inputs[0])
 
-    def test_incomplete_chunk_is_reported(self) -> None:
+    def test_incomplete_lens_is_reported(self) -> None:
         github = FakeGitHub()
         pi_client = mock.Mock()
         pi_client.review.return_value = {
@@ -1374,7 +1366,6 @@ class PiWorkflowContractTest(unittest.TestCase):
     def test_script_imports_shared_components(self) -> None:
         self.assertIsNotNone(pi_review._review.GitHubClient)
         self.assertIsNotNone(pi_review._review.validate_findings)
-        self.assertIsNotNone(pi_review._review.build_chunks)
 
     def test_pi_timeout_is_longer_than_raw_api(self) -> None:
         self.assertGreater(

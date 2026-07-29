@@ -300,7 +300,7 @@ class PiClient:
     def review(
         self,
         system_prompt: str,
-        diff_chunk: str,
+        model_input: str,
         *,
         retry_malformed: bool = False,
         response_validator: Callable[[dict[str, Any]], None] | None = None,
@@ -338,7 +338,7 @@ class PiClient:
                         command,
                         cwd=self.repository_root,
                         env=minimal_environment(runtime_dir, self.api_key),
-                        input=diff_chunk,
+                        input=model_input,
                         text=True,
                         capture_output=True,
                         timeout=self.timeout,
@@ -409,14 +409,9 @@ def run_review(
 
         files, skipped = _review.collect_files(github.list_files(pull_number))
         by_path = {item.path: item for item in files}
-        chunks, truncated = _review.build_chunks(
-            files,
-            max_chunk_chars=_review.MAX_TOTAL_CHARS,
-        )
-        whole_diff = "".join(chunks)
+        whole_diff = "\n\n".join(item.review_text for item in files)
         model_input = _review.build_model_input(pull, whole_diff)
-        model_input, input_truncated = _limit_model_input(model_input)
-        truncated = truncated or input_truncated
+        model_input, truncated = _limit_model_input(model_input)
         shared_routing = _shared_routing_available()
         routing_instruction = (
             SUMMARY_ROUTING_INSTRUCTION
