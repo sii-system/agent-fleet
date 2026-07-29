@@ -190,6 +190,12 @@ def _safe_summary_prose(text: str) -> str:
     return html.escape(escaped)
 
 
+def _summary_code_span(text: str, *, trusted_suffix: str = "") -> str:
+    longest_run = max((len(run) for run in re.findall(r"`+", text)), default=0)
+    delimiter = "`" * (longest_run + 1)
+    return f"{delimiter}{_safe_summary_prose(text)}{trusted_suffix}{delimiter}"
+
+
 def parse_findings(payload: dict[str, Any]) -> tuple[list[Finding], int]:
     raw_findings = payload.get("findings")
     if not isinstance(raw_findings, list):
@@ -588,7 +594,7 @@ def _summary_lines(
     ]
     lines = ["", "## Summary findings"]
     for path in dict.fromkeys(item.path for item in changed):
-        lines.extend(["", f"### `{_safe_summary_prose(path)}`"])
+        lines.extend(["", f"### {_summary_code_span(path)}"])
         lines.extend(_summary_finding(item) for item in changed if item.path == path)
     if other:
         lines.extend(["", "### Other observations"])
@@ -611,10 +617,8 @@ def _cap_review_body(body: str) -> str:
 
 
 def _summary_finding(finding: Finding) -> str:
-    location = f" (`{_safe_summary_prose(finding.path)}"
-    if finding.line is not None:
-        location += f":{finding.line}"
-    location += "`)"
+    suffix = f":{finding.line}" if finding.line is not None else ""
+    location = f" ({_summary_code_span(finding.path, trusted_suffix=suffix)})"
     rendered = (
         f"- **{finding.severity}: {_safe_summary_prose(finding.title)}**"
         f"{location} — {_safe_summary_prose(finding.failure_scenario)} "

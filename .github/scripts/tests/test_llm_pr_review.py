@@ -850,6 +850,31 @@ class OrchestrationTest(unittest.TestCase):
             summary,
         )
 
+    def test_summary_uses_code_span_safe_delimiters_for_paths(self) -> None:
+        path = "src/``name.py"
+        finding = review.Finding(
+            "P2",
+            path,
+            None,
+            "Backtick path",
+            "The path can close a one-backtick code span.",
+            "Use a longer delimiter.",
+        )
+
+        summary = review.build_summary(
+            "head-1",
+            [finding],
+            0,
+            [],
+            False,
+            summary_findings=[finding],
+            changed_paths=frozenset({path}),
+        )
+
+        code_span = r"```src\/\`\`name\.py```"
+        self.assertIn(f"### {code_span}", summary)
+        self.assertIn(f"({code_span})", summary)
+
     def test_summary_keeps_other_path_defect_before_minor_truncation(self) -> None:
         minor = [
             review.Finding(
