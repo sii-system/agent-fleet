@@ -41,7 +41,7 @@ jobs:
           TEMPORARY_DIRECTORY: ${{ runner.temp }}
         run: |
           set -euo pipefail
-          python3 - <<'PY'
+          python3 -I - <<'PY'
           import json
           import os
           import re

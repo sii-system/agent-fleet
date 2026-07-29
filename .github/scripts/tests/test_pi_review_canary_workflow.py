@@ -36,6 +36,9 @@ class PiReviewCanaryWorkflowTest(unittest.TestCase):
             with self.subTest(value=value):
                 self.assertIn(value, self.workflow)
 
+    def test_resolves_target_with_isolated_python(self) -> None:
+        self.assertIn("python3 -I - <<'PY'", self.workflow)
+
     def test_checks_out_the_resolved_trusted_base(self) -> None:
         self.assertIn("ref: ${{ steps.target.outputs.base_sha", self.workflow)
         self.assertIn("persist-credentials: false", self.workflow)
