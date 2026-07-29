@@ -799,6 +799,10 @@ class OrchestrationTest(unittest.TestCase):
         self.assertEqual((first, second), ("published", "published"))
         self.assertIn("<!-- pi-pr-review-partial:head-1 -->", partial_body)
         self.assertIn("<!-- pi-pr-review:head-1 -->", github.created[1][2])
+        self.assertIn(
+            "Automated review found 20 actionable finding(s).",
+            github.created[1][2],
+        )
         self.assertEqual(pi_client.review.call_count, 1)
         self.assertIn(
             "trust boundaries",
@@ -1039,6 +1043,31 @@ class OrchestrationTest(unittest.TestCase):
             findings[0].lenses,
             ("correctness", "security", "tests/regression"),
         )
+
+    def test_equivalent_findings_with_different_anchors_merge(self) -> None:
+        findings = [
+            pi_review._review.Finding(
+                "P2",
+                "worker.py",
+                2,
+                "Cancellation cleanup missing",
+                "Worker survives wrapper.",
+                "Terminate the process group.",
+            ),
+            pi_review._review.Finding(
+                "P1",
+                "worker.py",
+                5,
+                "Missing cancellation cleanup",
+                "Worker survives wrapper.",
+                "Terminate the process group.",
+            ),
+        ]
+
+        merged = pi_review.merge_lens_findings(findings)
+
+        self.assertEqual(len(merged), 1)
+        self.assertEqual((merged[0].severity, merged[0].line), ("P1", 5))
 
     def test_distinct_findings_on_one_line_remain_separate(self) -> None:
         findings = [

@@ -117,7 +117,6 @@ def _text_similarity(left: str, right: str) -> float:
 def _same_finding(left: _review.Finding, right: _review.Finding) -> bool:
     return (
         left.path == right.path
-        and left.line == right.line
         and _text_similarity(left.title, right.title)
         >= MIN_FINDING_SIMILARITY
         and _text_similarity(left.failure_scenario, right.failure_scenario)
@@ -688,6 +687,9 @@ def run_review(
             rejected += max(0, len(findings) - remaining_inline_comments)
             inline_findings = findings[:remaining_inline_comments]
             reported_findings = inline_findings
+        reported_findings = merge_lens_findings(
+            previously_published_findings + reported_findings
+        )
         current = github.get_pull(pull_number)
         if current["head"]["sha"] != head_sha or (
             expected_base_sha is not None
