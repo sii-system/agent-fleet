@@ -780,6 +780,52 @@ class OrchestrationTest(unittest.TestCase):
         self.assertIn("Failed lenses: security", body)
         self.assertNotIn("provider detail", body)
 
+    def test_first_partial_attempt_preserves_inline_overflow(self) -> None:
+        github = FakeGitHub()
+        pi_client = mock.Mock()
+
+        def review_lens(
+            prompt: str,
+            _chunk: str,
+            **_kwargs: object,
+        ) -> dict:
+            if "trust boundaries" in prompt:
+                raise pi_review.PiReviewError("failed")
+            if "runtime correctness" not in prompt:
+                return {"findings": []}
+            return {
+                "findings": [
+                    {
+                        "severity": "P2",
+                        "path": "worker.py",
+                        "line": 2,
+                        "title": (
+                            f"partial-defect-{index:02d}"
+                            if index < 20
+                            else "zz-overflow-defect"
+                        ),
+                        "failure_scenario": f"scenario-{index}",
+                        "remediation": f"fix-{index}",
+                    }
+                    for index in range(21)
+                ]
+            }
+
+        pi_client.review.side_effect = review_lens
+
+        with mock.patch.object(
+            pi_review,
+            "_shared_routing_available",
+            return_value=False,
+        ):
+            pi_review.run_review(github, pi_client, 7, "{{LENS}}")
+
+        self.assertEqual(len(github.created[0][3]), 20)
+        body = github.created[0][2]
+        self.assertIn("\n\n## Recovered findings", body)
+        self.assertIn("**P2: zz-overflow-defect**", body)
+        self.assertIn("Rejected model findings: 0", body)
+
     def test_partial_review_does_not_block_a_complete_rerun(self) -> None:
         github = FakeGitHub()
         pi_client = mock.Mock()
@@ -1240,6 +1286,24 @@ class OrchestrationTest(unittest.TestCase):
 
         self.assertEqual(len(merged), 2)
 
+    def test_anchor_merging_does_not_chain_across_distant_lines(self) -> None:
+        findings = [
+            pi_review._review.Finding(
+                severity,
+                "worker.py",
+                line,
+                "Missing authorization check",
+                "An unauthenticated request can delete another user's job.",
+                "Require ownership before deletion.",
+            )
+            for severity, line in (("P2", 2), ("P1", 6), ("P2", 10))
+        ]
+
+        merged = pi_review.merge_lens_findings(findings)
+
+        self.assertEqual(len(merged), 2)
+        self.assertEqual([item.line for item in merged], [6, 10])
+
     def test_distinct_findings_on_one_line_remain_separate(self) -> None:
         findings = [
             pi_review._review.Finding(
@@ -1647,6 +1711,30 @@ class OrchestrationTest(unittest.TestCase):
         self.assertLessEqual(len(summary.encode("utf-8")), 30_000)
         self.assertIn("**P0: defect-0-", summary)
         self.assertIn("additional recovered finding(s) omitted", summary)
+
+    def test_recovered_summary_normalizes_embedded_line_breaks(self) -> None:
+        finding = pi_review._review.Finding(
+            "P1",
+            "worker.py",
+            2,
+            "Cleanup\nmissing",
+            "Worker\nsurvives wrapper.",
+            "Terminate\nthe process group.",
+        )
+
+        summary = pi_review._recovered_findings_summary([finding])
+        recovered = pi_review._published_summary_findings_from_bodies([summary])
+
+        self.assertEqual(len(recovered), 1)
+        self.assertEqual(recovered[0].title, "Cleanup missing")
+        self.assertEqual(
+            recovered[0].failure_scenario,
+            "Worker survives wrapper.",
+        )
+        self.assertEqual(
+            recovered[0].remediation,
+            "Terminate the process group.",
+        )
 
     def test_publishes_review_with_findings(self) -> None:
         github = FakeGitHub()

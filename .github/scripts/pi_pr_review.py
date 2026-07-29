@@ -124,18 +124,21 @@ def _text_similarity(left: str, right: str) -> float:
 
 
 def _same_finding(left: _review.Finding, right: _review.Finding) -> bool:
-    if left.line is None or right.line is None:
-        anchors_match = left.line == right.line
-    else:
-        anchors_match = abs(left.line - right.line) <= MAX_EQUIVALENT_LINE_DISTANCE
     return (
         left.path == right.path
-        and anchors_match
+        and _anchors_match(left.line, right.line)
         and _text_similarity(left.title, right.title)
         >= MIN_FINDING_SIMILARITY
         and _text_similarity(left.failure_scenario, right.failure_scenario)
         >= MIN_FINDING_SIMILARITY
     )
+
+
+def _anchors_match(left: int | None, right: int | None) -> bool:
+    if left is None or right is None:
+        return left == right
+    else:
+        return abs(left - right) <= MAX_EQUIVALENT_LINE_DISTANCE
 
 
 def _limit_model_input(value: str) -> tuple[str, bool]:
@@ -146,6 +149,7 @@ def _limit_model_input(value: str) -> tuple[str, bool]:
 
 
 def _bounded_summary_field(value: str) -> str:
+    value = " ".join(value.splitlines())
     encoded = value.encode("utf-8")
     if len(encoded) <= MAX_RECOVERED_FIELD_BYTES:
         bounded = value
@@ -169,25 +173,28 @@ def _attribute_lens(
 def merge_lens_findings(
     findings: list[_review.Finding],
 ) -> list[_review.Finding]:
-    merged: list[_review.Finding] = []
+    clusters: list[tuple[_review.Finding, list[int | None]]] = []
     for finding in findings:
-        for index, existing in enumerate(merged):
-            if _same_finding(existing, finding):
-                winner = min(
-                    (existing, finding),
-                    key=lambda item: _review.SEVERITY_ORDER[item.severity],
+        for index, (existing, anchors) in enumerate(clusters):
+            if not _same_finding(existing, finding) or not all(
+                _anchors_match(anchor, finding.line) for anchor in anchors
+            ):
+                continue
+            winner = min(
+                (existing, finding),
+                key=lambda item: _review.SEVERITY_ORDER[item.severity],
+            )
+            if hasattr(winner, "lenses"):
+                lenses = tuple(
+                    dict.fromkeys(existing.lenses + finding.lenses)
                 )
-                if hasattr(winner, "lenses"):
-                    lenses = tuple(
-                        dict.fromkeys(existing.lenses + finding.lenses)
-                    )
-                    winner = replace(winner, lenses=lenses)
-                merged[index] = winner
-                break
+                winner = replace(winner, lenses=lenses)
+            clusters[index] = (winner, anchors + [finding.line])
+            break
         else:
-            merged.append(finding)
+            clusters.append((finding, [finding.line]))
     return sorted(
-        merged,
+        (finding for finding, _anchors in clusters),
         key=lambda item: (
             _review.SEVERITY_ORDER[item.severity],
             item.path,
@@ -400,7 +407,7 @@ def _published_summary_findings_from_bodies(
 
 
 def _recovered_findings_summary(findings: list[_review.Finding]) -> str:
-    lines = ["", "## Recovered findings"]
+    lines = ["", "", "## Recovered findings"]
     included = 0
     for finding in findings[: _review.MAX_COMMENTS]:
         location = f" (`{_bounded_summary_field(finding.path)}"
@@ -859,7 +866,7 @@ def run_review(
         else:
             inline_findings = findings[:remaining_inline_comments]
             overflow_findings = findings[remaining_inline_comments:]
-            if partial_reviews:
+            if partial or partial_reviews:
                 recovered_summary_findings = merge_lens_findings(
                     previously_published_summary_findings
                     + recovered_updates
