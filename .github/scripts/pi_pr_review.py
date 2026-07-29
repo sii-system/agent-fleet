@@ -4,15 +4,12 @@
 from __future__ import annotations
 
 import argparse
-import base64
 import json
 import os
 import re
 import subprocess
 import sys
 import tempfile
-import time
-import zlib
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
@@ -42,18 +39,9 @@ from scripts.pi_prompt import (  # noqa: E402
 
 PI_REVIEW_ID = "pi-pr-review"
 PI_TIMEOUT_SECONDS = 900  # 15 min — agent tool calls take longer than raw API
-WORKFLOW_TIMEOUT_SECONDS = 20 * 60
-WORKFLOW_RESERVE_SECONDS = 5 * 60
-PI_REVIEW_BUDGET_SECONDS = WORKFLOW_TIMEOUT_SECONDS - WORKFLOW_RESERVE_SECONDS
-PI_LENS_TIMEOUT_SECONDS = 12 * 60
-# Reserve context for the fixed 32K output budget, prompt, and tool turns.
+# Leave room for the prompt, tool turns, and model output.
 MAX_MODEL_INPUT_BYTES = 120_000
-MAX_RECOVERY_CHECKPOINT_BYTES = 20_000
-MAX_RECOVERED_SUMMARY_BYTES = 30_000
-MAX_RECOVERED_FIELD_BYTES = 500
-MAX_REVIEW_BODY_BYTES = 60_000
 MIN_FINDING_SIMILARITY = 0.8
-MAX_EQUIVALENT_LINE_DISTANCE = 5
 SIMILARITY_FILLER_TOKENS = {
     "a",
     "an",
@@ -93,12 +81,6 @@ SUMMARY_ROUTING_INSTRUCTION = (
     "available; set line to null only when no precise line exists. These "
     "findings will be published in the review summary."
 )
-SUMMARY_FINDING_PATTERN = re.compile(
-    r"^- \*\*(?P<severity>P[0-3]): (?P<title>.+)\*\* "
-    r"\(`(?P<location>.+)`\) — (?P<scenario>.+?) "
-    r"Suggested remediation: (?P<remediation>.+?)"
-    r"(?: Flagged by: (?P<lenses>.+))?$"
-)
 
 
 class PiReviewError(RuntimeError):
@@ -113,11 +95,6 @@ class PiResponseFormatError(PiReviewError):
         self.tool_calls = tool_calls
 
 
-class GitHubClient(_review.GitHubClient):
-    def list_review_comments(self, number: int) -> list[dict[str, Any]]:
-        return self._list_pages(f"/pulls/{number}/comments")
-
-
 def _text_similarity(left: str, right: str) -> float:
     left_tokens = set(re.findall(r"[a-z0-9]+", left.casefold()))
     left_tokens -= SIMILARITY_FILLER_TOKENS
@@ -127,41 +104,11 @@ def _text_similarity(left: str, right: str) -> float:
     return len(left_tokens & right_tokens) / len(union) if union else 0.0
 
 
-def _same_finding(left: _review.Finding, right: _review.Finding) -> bool:
-    return (
-        left.path == right.path
-        and _anchors_match(left.line, right.line)
-        and _text_similarity(left.title, right.title)
-        >= MIN_FINDING_SIMILARITY
-        and _text_similarity(left.failure_scenario, right.failure_scenario)
-        >= MIN_FINDING_SIMILARITY
-    )
-
-
-def _anchors_match(left: int | None, right: int | None) -> bool:
-    if left is None or right is None:
-        return left == right
-    else:
-        return abs(left - right) <= MAX_EQUIVALENT_LINE_DISTANCE
-
-
 def _limit_model_input(value: str) -> tuple[str, bool]:
     encoded = value.encode("utf-8")
     if len(encoded) <= MAX_MODEL_INPUT_BYTES:
         return value, False
     return encoded[:MAX_MODEL_INPUT_BYTES].decode("utf-8", errors="ignore"), True
-
-
-def _bounded_summary_field(value: str) -> str:
-    value = " ".join(value.splitlines())
-    encoded = value.encode("utf-8")
-    if len(encoded) <= MAX_RECOVERED_FIELD_BYTES:
-        bounded = value
-    else:
-        suffix = "…"
-        budget = MAX_RECOVERED_FIELD_BYTES - len(suffix.encode("utf-8"))
-        bounded = encoded[:budget].decode("utf-8", errors="ignore") + suffix
-    return _review._neutralize_mentions(bounded)
 
 
 def _attribute_lens(
@@ -177,28 +124,35 @@ def _attribute_lens(
 def merge_lens_findings(
     findings: list[_review.Finding],
 ) -> list[_review.Finding]:
-    clusters: list[tuple[_review.Finding, list[int | None]]] = []
+    merged: list[_review.Finding] = []
     for finding in findings:
-        for index, (existing, anchors) in enumerate(clusters):
-            if not _same_finding(existing, finding) or not all(
-                _anchors_match(anchor, finding.line) for anchor in anchors
-            ):
-                continue
-            winner = min(
-                (existing, finding),
-                key=lambda item: _review.SEVERITY_ORDER[item.severity],
-            )
-            if hasattr(winner, "lenses"):
-                lenses = tuple(
-                    dict.fromkeys(existing.lenses + finding.lenses)
+        for index, existing in enumerate(merged):
+            if (
+                existing.path == finding.path
+                and existing.line == finding.line
+                and _text_similarity(existing.title, finding.title)
+                >= MIN_FINDING_SIMILARITY
+                and _text_similarity(
+                    existing.failure_scenario,
+                    finding.failure_scenario,
                 )
-                winner = replace(winner, lenses=lenses)
-            clusters[index] = (winner, anchors + [finding.line])
-            break
+                >= MIN_FINDING_SIMILARITY
+            ):
+                winner = min(
+                    (existing, finding),
+                    key=lambda item: _review.SEVERITY_ORDER[item.severity],
+                )
+                if hasattr(winner, "lenses"):
+                    lenses = tuple(
+                        dict.fromkeys(existing.lenses + finding.lenses)
+                    )
+                    winner = replace(winner, lenses=lenses)
+                merged[index] = winner
+                break
         else:
-            clusters.append((finding, [finding.line]))
+            merged.append(finding)
     return sorted(
-        (finding for finding, _anchors in clusters),
+        merged,
         key=lambda item: (
             _review.SEVERITY_ORDER[item.severity],
             item.path,
@@ -209,370 +163,9 @@ def merge_lens_findings(
     )
 
 
-def _reconcile_recovered_findings(
-    previous: list[_review.Finding],
-    current: list[_review.Finding],
-) -> tuple[list[_review.Finding], list[_review.Finding], list[_review.Finding]]:
-    recovered = merge_lens_findings(previous)
-    new_findings: list[_review.Finding] = []
-    severity_upgrades: list[_review.Finding] = []
-    matched_recovered_indices: set[int] = set()
-    for finding in current:
-        for index, published in enumerate(recovered):
-            if index in matched_recovered_indices or not _same_finding(
-                published,
-                finding,
-            ):
-                continue
-            merged = merge_lens_findings([published, finding])[0]
-            if (
-                _review.SEVERITY_ORDER[merged.severity]
-                < _review.SEVERITY_ORDER[published.severity]
-            ):
-                severity_upgrades.append(merged)
-            recovered[index] = merged
-            matched_recovered_indices.add(index)
-            break
-        else:
-            new_findings.append(finding)
-    return recovered, new_findings, merge_lens_findings(severity_upgrades)
-
-
 def _shared_routing_available() -> bool:
     return callable(getattr(_review, "parse_findings", None)) and callable(
         getattr(_review, "route_findings", None)
-    )
-
-
-def _completed_lens_marker(review_id: str, lens: str) -> str:
-    return f"<!-- {review_id}-completed-lens:{lens} -->"
-
-
-def _control_marker(review_id: str) -> str:
-    return f"<!-- {review_id}-control -->"
-
-
-def _control_lines(body: str, review_id: str) -> set[str]:
-    lines = body.splitlines()
-    positions = [
-        index
-        for index, line in enumerate(lines)
-        if line == _control_marker(review_id)
-    ]
-    return set(lines[positions[-1] + 1 :]) if positions else set()
-
-
-def _published_comments_marker(review_id: str, count: int) -> str:
-    return f"<!-- {review_id}-published-comments:{count} -->"
-
-
-def _matching_partial_reviews(
-    reviews: list[dict[str, Any]],
-    head_sha: str,
-    review_id: str,
-    base_sha: str | None,
-) -> list[dict[str, Any]]:
-    partial_marker = _review.review_marker(
-        head_sha,
-        f"{review_id}-partial",
-        base_sha,
-    )
-    matching: list[dict[str, Any]] = []
-    for review in reviews:
-        body = review.get("body") or ""
-        if (
-            (review.get("user") or {}).get("login") == "github-actions[bot]"
-            and partial_marker in body
-        ):
-            matching.append(review)
-    return matching
-
-
-def _completed_lenses_from_bodies(
-    bodies: list[str],
-    review_id: str,
-) -> set[str]:
-    control_lines = [_control_lines(body, review_id) for body in bodies]
-    return {
-        lens
-        for lens in LENS_INSTRUCTIONS
-        if any(
-            _completed_lens_marker(review_id, lens) in lines
-            for lines in control_lines
-        )
-    }
-
-
-def _published_comments_from_bodies(
-    bodies: list[str],
-    review_id: str,
-) -> int:
-    pattern = re.compile(
-        rf"<!-- {re.escape(review_id)}-published-comments:(\d+) -->"
-    )
-    published = sum(
-        int(match.group(1))
-        for body in bodies
-        for line in _control_lines(body, review_id)
-        if (match := pattern.fullmatch(line)) is not None
-    )
-    return min(_review.MAX_COMMENTS, published)
-
-
-def _published_findings_from_comments(
-    comments: list[dict[str, Any]],
-    review_ids: set[int],
-) -> list[_review.Finding]:
-    findings: list[_review.Finding] = []
-    for comment in comments:
-        if (
-            comment.get("pull_request_review_id") not in review_ids
-            or (comment.get("user") or {}).get("login")
-            != "github-actions[bot]"
-        ):
-            continue
-        header, separator, remainder = (comment.get("body") or "").partition(
-            "\n\n"
-        )
-        scenario, scenario_separator, _rest = remainder.partition("\n\n")
-        title = re.fullmatch(r"\*\*(P[0-3]): (.+)\*\*", header)
-        path = comment.get("path")
-        line = comment.get("line")
-        if (
-            not separator
-            or not scenario_separator
-            or title is None
-            or not isinstance(path, str)
-            or type(line) is not int
-        ):
-            continue
-        findings.append(
-            _review.Finding(
-                title.group(1),
-                path,
-                line,
-                title.group(2),
-                scenario,
-                "published previously",
-            )
-        )
-    return findings
-
-
-def _published_summary_findings_from_bodies(
-    bodies: list[str],
-    review_id: str = PI_REVIEW_ID,
-) -> list[_review.Finding]:
-    findings: list[_review.Finding] = []
-    supports_lenses = "lenses" in getattr(
-        _review.Finding,
-        "__dataclass_fields__",
-        {},
-    )
-    for body in bodies:
-        checkpoint = _checkpoint_findings(body, review_id)
-        if checkpoint is not None:
-            findings.extend(checkpoint)
-            continue
-        in_findings_section = False
-        for line in body.splitlines():
-            if line in {"## Summary findings", "## Recovered findings"}:
-                in_findings_section = True
-                continue
-            if line.startswith("## "):
-                in_findings_section = False
-                continue
-            if not in_findings_section:
-                continue
-            match = SUMMARY_FINDING_PATTERN.fullmatch(line)
-            if match is None:
-                continue
-            location = match.group("location").replace("@\u200b", "@")
-            path, line_separator, raw_line = location.rpartition(":")
-            if line_separator and raw_line.isdigit():
-                line_number: int | None = int(raw_line)
-            else:
-                path = location
-                line_number = None
-            raw_lenses = match.group("lenses")
-            lenses = (
-                tuple(item.strip() for item in raw_lenses.split(" + "))
-                if raw_lenses
-                else ()
-            )
-            if any(lens not in LENS_INSTRUCTIONS for lens in lenses):
-                continue
-            values: dict[str, Any] = {
-                "severity": match.group("severity"),
-                "path": path,
-                "line": line_number,
-                "title": match.group("title").replace("@\u200b", "@"),
-                "failure_scenario": match.group("scenario").replace(
-                    "@\u200b", "@"
-                ),
-                "remediation": match.group("remediation").replace(
-                    "@\u200b", "@"
-                ),
-            }
-            if supports_lenses:
-                values["lenses"] = lenses
-            findings.append(_review.Finding(**values))
-    return merge_lens_findings(findings)
-
-
-def _checkpoint_finding(finding: _review.Finding) -> dict[str, Any]:
-    def text(value: str) -> str:
-        return _bounded_summary_field(value).replace("@\u200b", "@")
-
-    return {
-        "severity": finding.severity,
-        "path": text(finding.path),
-        "line": finding.line,
-        "title": text(finding.title),
-        "failure_scenario": text(finding.failure_scenario),
-        "remediation": text(finding.remediation),
-        "lenses": list(getattr(finding, "lenses", ())),
-    }
-
-
-def _checkpoint_marker(
-    review_id: str,
-    findings: list[_review.Finding],
-) -> str | None:
-    included: list[dict[str, Any]] = []
-    marker: str | None = None
-    for finding in findings[: _review.MAX_COMMENTS]:
-        candidate = included + [_checkpoint_finding(finding)]
-        encoded = base64.b64encode(
-            zlib.compress(
-                json.dumps(
-                    candidate,
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                ).encode("utf-8")
-            )
-        ).decode("ascii")
-        candidate_marker = (
-            f"<!-- {review_id}-summary-checkpoint:{encoded} -->"
-        )
-        if len(candidate_marker.encode("utf-8")) > MAX_RECOVERY_CHECKPOINT_BYTES:
-            break
-        included = candidate
-        marker = candidate_marker
-    return marker
-
-
-def _checkpoint_findings(
-    body: str,
-    review_id: str,
-) -> list[_review.Finding] | None:
-    prefix = f"<!-- {review_id}-summary-checkpoint:"
-    checkpoint_lines = [
-        line
-        for line in _control_lines(body, review_id)
-        if line.startswith(prefix) and line.endswith(" -->")
-    ]
-    if not checkpoint_lines:
-        return None
-    try:
-        encoded = checkpoint_lines[-1][len(prefix) : -4]
-        raw_findings = json.loads(
-            zlib.decompress(base64.b64decode(encoded, validate=True))
-        )
-    except (ValueError, TypeError, json.JSONDecodeError, zlib.error):
-        return []
-    if not isinstance(raw_findings, list) or not all(
-        isinstance(raw, dict) for raw in raw_findings
-    ):
-        return []
-    supports_lenses = "lenses" in getattr(
-        _review.Finding,
-        "__dataclass_fields__",
-        {},
-    )
-    field_names = (
-        "severity",
-        "path",
-        "line",
-        "title",
-        "failure_scenario",
-        "remediation",
-    )
-    findings: list[_review.Finding] = []
-    try:
-        for raw in raw_findings:
-            values = {name: raw[name] for name in field_names}
-            if supports_lenses:
-                values["lenses"] = tuple(raw.get("lenses", ()))
-            findings.append(_review.Finding(**values))
-    except (KeyError, TypeError):
-        return []
-    return findings
-
-
-def _append_control_block(summary: str, lines: list[str]) -> str:
-    suffix = "\n\n" + "\n".join(lines)
-    if len(f"{summary}{suffix}".encode()) <= MAX_REVIEW_BODY_BYTES:
-        return f"{summary}{suffix}"
-    notice = "\n\n- Additional review details omitted to preserve recovery state."
-    budget = MAX_REVIEW_BODY_BYTES - len(f"{notice}{suffix}".encode())
-    prefix = summary.encode("utf-8")[:budget].decode(
-        "utf-8",
-        errors="ignore",
-    )
-    prefix = prefix.rsplit("\n", 1)[0].rstrip()
-    return f"{prefix}{notice}{suffix}"
-
-
-def _recovered_findings_summary(findings: list[_review.Finding]) -> str:
-    lines = ["", "", "## Recovered findings"]
-    included = 0
-    for finding in findings[: _review.MAX_COMMENTS]:
-        location = f" (`{_bounded_summary_field(finding.path)}"
-        if finding.line is not None:
-            location += f":{finding.line}"
-        location += "`)"
-        rendered = (
-            f"- **{finding.severity}: "
-            f"{_bounded_summary_field(finding.title)}**{location} — "
-            f"{_bounded_summary_field(finding.failure_scenario)} "
-            "Suggested remediation: "
-            f"{_bounded_summary_field(finding.remediation)}"
-        )
-        lenses = getattr(finding, "lenses", ())
-        if lenses:
-            rendered += f" Flagged by: {' + '.join(lenses)}"
-        candidate_included = included + 1
-        candidate_omitted = len(findings) - candidate_included
-        candidate_lines = lines + [rendered]
-        if candidate_omitted > 0:
-            candidate_lines.append(
-                f"- {candidate_omitted} additional recovered finding(s) omitted."
-            )
-        if (
-            len("\n".join(candidate_lines).encode("utf-8"))
-            > MAX_RECOVERED_SUMMARY_BYTES
-        ):
-            break
-        lines.append(rendered)
-        included = candidate_included
-    omitted = len(findings) - included
-    if omitted > 0:
-        lines.append(f"- {omitted} additional recovered finding(s) omitted.")
-    return "\n".join(lines)
-
-
-def _review_deadline() -> float:
-    deadline_epoch = os.environ.get("PI_REVIEW_DEADLINE_EPOCH")
-    if deadline_epoch is None:
-        return time.monotonic() + PI_REVIEW_BUDGET_SECONDS
-    try:
-        remaining = float(deadline_epoch) - time.time()
-    except ValueError as exc:
-        raise PiReviewError("PI_REVIEW_DEADLINE_EPOCH must be numeric") from exc
-    return time.monotonic() + max(
-        0.0,
-        min(float(PI_REVIEW_BUDGET_SECONDS), remaining),
     )
 
 
@@ -709,14 +302,9 @@ class PiClient:
         system_prompt: str,
         diff_chunk: str,
         *,
-        timeout: float | None = None,
         retry_malformed: bool = False,
         response_validator: Callable[[dict[str, Any]], None] | None = None,
     ) -> dict[str, Any]:
-        effective_timeout = (
-            self.timeout if timeout is None else min(self.timeout, timeout)
-        )
-        deadline = time.monotonic() + effective_timeout
         with tempfile.TemporaryDirectory(prefix="pi-pr-review-") as tmp:
             root = Path(tmp)
             runtime_dir = root / "pi-agent"
@@ -744,11 +332,7 @@ class PiClient:
             format_error: PiResponseFormatError | None = None
             prior_tool_calls = 0
             attempts = 2 if retry_malformed else 1
-            for attempt in range(attempts):
-                remaining = max(0.0, deadline - time.monotonic())
-                if attempt and remaining == 0:
-                    assert format_error is not None
-                    raise format_error
+            for _ in range(attempts):
                 try:
                     completed = subprocess.run(
                         command,
@@ -757,12 +341,12 @@ class PiClient:
                         input=diff_chunk,
                         text=True,
                         capture_output=True,
-                        timeout=remaining,
+                        timeout=self.timeout,
                         check=False,
                     )
                 except subprocess.TimeoutExpired as exc:
                     raise PiReviewError(
-                        f"pi timed out after {remaining:g}s"
+                        f"pi timed out after {self.timeout:g}s"
                     ) from exc
                 except OSError as exc:
                     raise PiReviewError(
@@ -806,7 +390,6 @@ def run_review(
     expected_base_sha: str | None = None,
 ) -> str:
     try:
-        deadline = _review_deadline()
         pull = github.get_pull(pull_number)
         head_sha = pull["head"]["sha"]
         if expected_head_sha is not None and head_sha != expected_head_sha:
@@ -816,58 +399,12 @@ def run_review(
             and pull["base"]["sha"] != expected_base_sha
         ):
             return "stale"
-        reviews = github.list_reviews(pull_number)
         if _review.has_existing_review(
-            reviews,
+            github.list_reviews(pull_number),
             head_sha,
             review_id,
             expected_base_sha,
         ):
-            return "duplicate"
-        partial_reviews = _matching_partial_reviews(
-            reviews,
-            head_sha,
-            review_id,
-            expected_base_sha,
-        )
-        partial_review_bodies = [
-            str(review.get("body") or "") for review in partial_reviews
-        ]
-        partial_review_ids = {
-            review["id"]
-            for review in partial_reviews
-            if type(review.get("id")) is int
-        }
-        previously_completed_lenses = _completed_lenses_from_bodies(
-            partial_review_bodies,
-            review_id,
-        )
-        previously_published_comments = _published_comments_from_bodies(
-            partial_review_bodies,
-            review_id,
-        )
-        previously_published_inline_findings = _published_findings_from_comments(
-            github.list_review_comments(pull_number)
-            if partial_review_ids
-            else [],
-            partial_review_ids,
-        )
-        previously_published_summary_findings = (
-            _published_summary_findings_from_bodies(
-                partial_review_bodies,
-                review_id,
-            )
-        )
-        previously_published_findings = merge_lens_findings(
-            previously_published_inline_findings
-            + previously_published_summary_findings
-        )
-        pending_lenses = {
-            lens: instruction
-            for lens, instruction in LENS_INSTRUCTIONS.items()
-            if lens not in previously_completed_lenses
-        }
-        if not pending_lenses:
             return "duplicate"
 
         files, skipped = _review.collect_files(github.list_files(pull_number))
@@ -897,26 +434,20 @@ def run_review(
                     limit=sys.maxsize,
                 )
 
-        with ThreadPoolExecutor(max_workers=len(pending_lenses)) as executor:
+        with ThreadPoolExecutor(max_workers=len(LENS_INSTRUCTIONS)) as executor:
             futures = {}
-            for lens, instruction in pending_lenses.items():
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    raise PiReviewError(
-                        f"pi review deadline exhausted before {lens} lens"
-                    )
+            for lens, instruction in LENS_INSTRUCTIONS.items():
                 futures[lens] = executor.submit(
                     pi_client.review,
                     f"{prompt.rstrip()}\n\n{routing_instruction}\n\n{instruction}",
                     model_input,
-                    timeout=min(float(PI_LENS_TIMEOUT_SECONDS), remaining),
                     retry_malformed=True,
                     response_validator=validate_lens_response,
                 )
 
         findings: list[_review.Finding] = []
         rejected = 0
-        incomplete_lenses: list[str] = []
+        incomplete_lenses = 0
         failed_lenses: list[str] = []
         tool_calls_by_lens: dict[str, int] = {}
         for lens, future in futures.items():
@@ -929,7 +460,7 @@ def run_review(
                     else 0
                 )
                 if payload.get("incomplete"):
-                    incomplete_lenses.append(lens)
+                    incomplete_lenses += 1
                 if shared_routing:
                     lens_findings, lens_rejected = _review.parse_findings(
                         payload
@@ -949,56 +480,22 @@ def run_review(
             )
             rejected += lens_rejected
 
-        if len(failed_lenses) == len(futures):
+        if len(failed_lenses) == len(LENS_INSTRUCTIONS):
             raise PiReviewError("all review lenses failed")
 
         partial = bool(incomplete_lenses or failed_lenses)
-        completed_lenses = previously_completed_lenses | (
-            set(futures) - set(incomplete_lenses) - set(failed_lenses)
-        )
         findings = merge_lens_findings(findings)
-        (
-            previously_published_findings,
-            findings,
-            recovered_updates,
-        ) = _reconcile_recovered_findings(
-            previously_published_findings,
-            findings,
-        )
         reported_findings = findings
         summary_findings: list[_review.Finding] = []
-        recovered_summary_findings: list[_review.Finding] = []
-        remaining_inline_comments = max(
-            0,
-            _review.MAX_COMMENTS - previously_published_comments,
-        )
         if shared_routing:
             inline_findings, summary_findings = _review.route_findings(
                 findings,
                 by_path,
             )
-            summary_findings = merge_lens_findings(
-                previously_published_summary_findings
-                + recovered_updates
-                + inline_findings[remaining_inline_comments:]
-                + summary_findings
-            )
-            inline_findings = inline_findings[:remaining_inline_comments]
         else:
-            inline_findings = findings[:remaining_inline_comments]
-            overflow_findings = findings[remaining_inline_comments:]
-            if partial or partial_reviews:
-                recovered_summary_findings = merge_lens_findings(
-                    previously_published_summary_findings
-                    + recovered_updates
-                    + overflow_findings
-                )
-            else:
-                rejected += len(overflow_findings)
-                reported_findings = inline_findings
-        reported_findings = merge_lens_findings(
-            previously_published_findings + reported_findings
-        )
+            rejected += max(0, len(findings) - _review.MAX_COMMENTS)
+            inline_findings = findings[: _review.MAX_COMMENTS]
+            reported_findings = inline_findings
         current = github.get_pull(pull_number)
         if current["head"]["sha"] != head_sha or (
             expected_base_sha is not None
@@ -1007,9 +504,7 @@ def run_review(
             return "stale"
 
         summary_options: dict[str, Any] = {
-            "review_id": (
-                f"{review_id}-partial" if partial else review_id
-            ),
+            "review_id": review_id,
             "base_sha": expected_base_sha,
         }
         if shared_routing:
@@ -1025,15 +520,8 @@ def run_review(
             truncated,
             **summary_options,
         )
-        if recovered_summary_findings:
-            summary += _recovered_findings_summary(recovered_summary_findings)
-        reported_tool_calls = dict.fromkeys(
-            previously_completed_lenses,
-            "previously completed",
-        )
-        reported_tool_calls.update(tool_calls_by_lens)
         tool_call_counts = ", ".join(
-            f"{lens}={reported_tool_calls.get(lens, 'unavailable')}"
+            f"{lens}={tool_calls_by_lens.get(lens, 'unavailable')}"
             for lens in LENS_INSTRUCTIONS
         )
         summary += f"\n\nTool calls by lens: {tool_call_counts}"
@@ -1045,30 +533,11 @@ def run_review(
             )
         if incomplete_lenses:
             summary += (
-                f"\n\n- {len(incomplete_lenses)} review lens(es) returned an empty "
+                f"\n\n- {incomplete_lenses} review lens(es) returned an empty "
                 "model response and were not reviewed."
             )
         if failed_lenses:
             summary += f"\n\nFailed lenses: {', '.join(failed_lenses)}"
-        if partial:
-            control_lines = [_control_marker(review_id)]
-            checkpoint = _checkpoint_marker(
-                review_id,
-                merge_lens_findings(
-                    summary_findings + recovered_summary_findings
-                ),
-            )
-            if checkpoint is not None:
-                control_lines.append(checkpoint)
-            control_lines.extend(
-                _completed_lens_marker(review_id, lens)
-                for lens in LENS_INSTRUCTIONS
-                if lens in completed_lenses
-            )
-            control_lines.append(
-                _published_comments_marker(review_id, len(inline_findings))
-            )
-            summary = _append_control_block(summary, control_lines)
         github.create_review(pull_number, head_sha, summary, inline_findings)
         return "published"
     except _review.ModelResponseError as exc:
@@ -1102,7 +571,7 @@ def main() -> int:
     repository = require_env("GITHUB_REPOSITORY")
     event_pull = event["pull_request"]
     pull_number = int(event_pull["number"])
-    github = GitHubClient(repository, require_env("GITHUB_TOKEN"))
+    github = _review.GitHubClient(repository, require_env("GITHUB_TOKEN"))
     pi_client = PiClient(
         pi_binary=args.pi_bin,
         base_url=require_env("LLM_REVIEW_BASE_URL"),
