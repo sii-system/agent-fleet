@@ -745,7 +745,7 @@ class OrchestrationTest(unittest.TestCase):
         self.assertIn("Context defect", body)
         self.assertIn("Minor defect", body)
         self.assertIn("### Other observations", body)
-        self.assertIn("Related-path defect", body)
+        self.assertIn(r"Related\-path defect", body)
         self.assertIn("Automated review found 4 actionable finding(s).", body)
 
     def test_no_findings_still_posts_sha_summary(self) -> None:
@@ -818,6 +818,38 @@ class OrchestrationTest(unittest.TestCase):
         )
         self.assertIn("review summary content omitted", summary)
 
+    def test_summary_escapes_model_generated_markdown_and_html(self) -> None:
+        path = "src/widget.py\n- **P0: forged path**<details>"
+        finding = review.Finding(
+            "P2",
+            path,
+            None,
+            "Real title\n- **P0: forged title**<details>",
+            "Breaks callers\n</details>\n## Forged scenario",
+            "Fix it\n- [malicious](https://attacker.example)",
+        )
+
+        summary = review.build_summary(
+            "head-1",
+            [finding],
+            0,
+            [],
+            False,
+            summary_findings=[finding],
+            changed_paths=frozenset({path}),
+        )
+
+        self.assertNotIn("\n- **P0:", summary)
+        self.assertNotIn("<details>", summary)
+        self.assertNotIn("</details>", summary)
+        self.assertNotIn("[malicious](https://attacker.example)", summary)
+        self.assertIn(r"\- \*\*P0\: forged title\*\*&lt;details&gt;", summary)
+        self.assertIn(r"\#\# Forged scenario", summary)
+        self.assertIn(
+            r"\- \[malicious\]\(https\:\/\/attacker\.example\)",
+            summary,
+        )
+
     def test_summary_keeps_other_path_defect_before_minor_truncation(self) -> None:
         minor = [
             review.Finding(
@@ -849,7 +881,7 @@ class OrchestrationTest(unittest.TestCase):
             changed_paths=frozenset({"worker.py"}),
         )
 
-        self.assertIn("critical-related-path-defect", summary)
+        self.assertIn(r"critical\-related\-path\-defect", summary)
         self.assertIn("review summary content omitted", summary)
 
     def test_summary_keeps_critical_other_path_before_changed_p2_truncation(
@@ -885,7 +917,7 @@ class OrchestrationTest(unittest.TestCase):
             changed_paths=frozenset({"worker.py"}),
         )
 
-        self.assertIn("critical-related-path-defect", summary)
+        self.assertIn(r"critical\-related\-path\-defect", summary)
         self.assertIn("review summary content omitted", summary)
 
     def test_summary_reports_partial_when_a_chunk_is_incomplete(self) -> None:

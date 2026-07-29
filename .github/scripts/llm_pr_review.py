@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import html
 import json
 import os
 import re
@@ -44,6 +45,9 @@ SUMMARY_ROUTING_INSTRUCTION = (
 )
 SUMMARY_OMISSION_NOTICE = (
     "- Additional review summary content omitted to fit GitHub's body limit."
+)
+SUMMARY_MARKDOWN_ESCAPE_TABLE = str.maketrans(
+    {character: f"\\{character}" for character in r"\`*_{}[]()#+-.!|~:/?="}
 )
 
 
@@ -179,6 +183,11 @@ def _bounded_text(value: Any) -> str | None:
 
 def _neutralize_mentions(text: str) -> str:
     return text.replace("@", "@\u200b")
+
+
+def _safe_summary_prose(text: str) -> str:
+    escaped = _neutralize_mentions(text).translate(SUMMARY_MARKDOWN_ESCAPE_TABLE)
+    return html.escape(escaped)
 
 
 def parse_findings(payload: dict[str, Any]) -> tuple[list[Finding], int]:
@@ -579,7 +588,7 @@ def _summary_lines(
     ]
     lines = ["", "## Summary findings"]
     for path in dict.fromkeys(item.path for item in changed):
-        lines.extend(["", f"### `{_neutralize_mentions(path)}`"])
+        lines.extend(["", f"### `{_safe_summary_prose(path)}`"])
         lines.extend(_summary_finding(item) for item in changed if item.path == path)
     if other:
         lines.extend(["", "### Other observations"])
@@ -602,14 +611,14 @@ def _cap_review_body(body: str) -> str:
 
 
 def _summary_finding(finding: Finding) -> str:
-    location = f" (`{_neutralize_mentions(finding.path)}"
+    location = f" (`{_safe_summary_prose(finding.path)}"
     if finding.line is not None:
         location += f":{finding.line}"
     location += "`)"
     rendered = (
-        f"- **{finding.severity}: {_neutralize_mentions(finding.title)}**"
-        f"{location} — {_neutralize_mentions(finding.failure_scenario)} "
-        f"Suggested remediation: {_neutralize_mentions(finding.remediation)}"
+        f"- **{finding.severity}: {_safe_summary_prose(finding.title)}**"
+        f"{location} — {_safe_summary_prose(finding.failure_scenario)} "
+        f"Suggested remediation: {_safe_summary_prose(finding.remediation)}"
     )
     if finding.lenses:
         rendered += f" Flagged by: {' + '.join(finding.lenses)}"
