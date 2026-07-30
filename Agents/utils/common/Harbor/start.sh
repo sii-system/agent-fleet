@@ -355,11 +355,20 @@ harbor_wait_for_analyzer_drain() {
   echo "[WARN] Harbor analyzer still has pending handovers after ${timeout}s drain wait; stopping it" >&2
 }
 
+harbor_write_benchmark_summary() {
+  python3 "$SCRIPT_DIR/scripts/write_benchmark_summary.py" \
+    "$HARBOR_MONITOR_DIR/monitor-latest.json" \
+    "$HARBOR_ANALYZER_OUTPUT_DIR/analyzer-artifacts-latest.json" \
+    "$HARBOR_ANALYZER_OUTPUT_DIR/benchmark-summary.md" \
+    || echo "[WARN] failed to write Harbor benchmark summary" >&2
+}
+
 harbor_finish_analyzer_lifecycle() {
   [[ "$HARBOR_ANALYZER_ENABLED" == "1" && "$ROLLOUT" != "1" ]] || return 0
   harbor_wait_for_monitor_completion
   harbor_wait_for_analyzer_drain
   harbor_stop_analyzer || true
+  harbor_write_benchmark_summary
 }
 
 harbor_analyzer_shutdown_timeout() {
@@ -448,6 +457,7 @@ harbor_start_detached_analyzer_supervisor_if_enabled() {
     done
     harbor_wait_for_analyzer_drain "$analyzer_pid"
     harbor_stop_analyzer "$analyzer_pid" || true
+    harbor_write_benchmark_summary
   ) >>"$HARBOR_ANALYZER_LOG_FILE" 2>&1 &
   local supervisor_pid="$!"
   if ! harbor_write_analyzer_supervisor_identity "$supervisor_pid" "$analyzer_pid"; then
