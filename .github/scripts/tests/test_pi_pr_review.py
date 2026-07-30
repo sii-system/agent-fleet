@@ -650,6 +650,9 @@ class FakePiClient:
         self.prompts: list[str] = []
         self.retry_malformed: list[bool] = []
         self.response_validators: list[object] = []
+        self.attached_diff_paths: list[Path] = []
+        self.attached_diffs: list[str] = []
+        self.attached_diff_modes: list[int] = []
 
     def review(
         self,
@@ -663,6 +666,18 @@ class FakePiClient:
         self.inputs.append(model_input)
         self.retry_malformed.append(retry_malformed)
         self.response_validators.append(response_validator)
+        for line in model_input.splitlines():
+            if line.startswith("UNTRUSTED DIFF FILE: "):
+                diff_path = Path(
+                    line.removeprefix("UNTRUSTED DIFF FILE: ")
+                )
+                self.attached_diff_paths.append(diff_path)
+                self.attached_diffs.append(
+                    diff_path.read_text(encoding="utf-8")
+                )
+                self.attached_diff_modes.append(
+                    diff_path.stat().st_mode & 0o777
+                )
         payload = {"findings": list(self.findings)}
         if callable(response_validator):
             response_validator(payload)
@@ -714,7 +729,7 @@ class OrchestrationTest(unittest.TestCase):
             all(sentinel in model_input for model_input in pi_client.inputs)
         )
 
-    def test_limits_token_dense_whole_diff_input(self) -> None:
+    def test_attaches_complete_token_dense_diff_with_bounded_input(self) -> None:
         github = FakeGitHub()
         github.files = [
             {
@@ -732,7 +747,18 @@ class OrchestrationTest(unittest.TestCase):
                 for model_input in pi_client.inputs
             )
         )
-        self.assertIn("Coverage: Partial", github.created[0][2])
+        self.assertEqual(len(pi_client.attached_diffs), 3)
+        self.assertTrue(
+            all(value.count("🧪") == 50_000 for value in pi_client.attached_diffs)
+        )
+        self.assertEqual(pi_client.attached_diff_modes, [0o400] * 3)
+        self.assertNotIn(
+            "Additional diff content exceeded",
+            github.created[0][2],
+        )
+        self.assertTrue(
+            all(not path.exists() for path in pi_client.attached_diff_paths)
+        )
 
     def test_one_lens_failure_publishes_partial_results(self) -> None:
         github = FakeGitHub()
