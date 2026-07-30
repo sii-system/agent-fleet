@@ -10,6 +10,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
@@ -305,6 +306,7 @@ class PiClient:
         retry_malformed: bool = False,
         response_validator: Callable[[dict[str, Any]], None] | None = None,
     ) -> dict[str, Any]:
+        deadline = time.monotonic() + self.timeout
         with tempfile.TemporaryDirectory(prefix="pi-pr-review-") as tmp:
             root = Path(tmp)
             runtime_dir = root / "pi-agent"
@@ -333,6 +335,11 @@ class PiClient:
             prior_tool_calls = 0
             attempts = 2 if retry_malformed else 1
             for _ in range(attempts):
+                remaining_timeout = deadline - time.monotonic()
+                if remaining_timeout <= 0:
+                    raise PiReviewError(
+                        f"pi timed out after {self.timeout:g}s"
+                    )
                 try:
                     completed = subprocess.run(
                         command,
@@ -341,7 +348,7 @@ class PiClient:
                         input=model_input,
                         text=True,
                         capture_output=True,
-                        timeout=self.timeout,
+                        timeout=remaining_timeout,
                         check=False,
                     )
                 except subprocess.TimeoutExpired as exc:

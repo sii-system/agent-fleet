@@ -480,6 +480,33 @@ class PiClientTest(unittest.TestCase):
         self.assertEqual(result, {"findings": [], "_pi_tool_calls": 3})
         self.assertEqual(run_mock.call_count, 2)
 
+    def test_malformed_retry_uses_remaining_timeout_budget(self) -> None:
+        client = self._make_client(timeout=30)
+        malformed = subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout=_make_text_response("not JSON"),
+            stderr="",
+        )
+        valid = subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout=_make_findings_response([]),
+            stderr="",
+        )
+
+        with mock.patch(
+            "time.monotonic",
+            side_effect=[100.0, 100.0, 112.5],
+        ), mock.patch(
+            "subprocess.run",
+            side_effect=[malformed, valid],
+        ) as run_mock:
+            client.review("prompt", "diff", retry_malformed=True)
+
+        timeouts = [call.kwargs["timeout"] for call in run_mock.call_args_list]
+        self.assertEqual(timeouts, [30, 17.5])
+
     def test_retries_one_schema_invalid_model_response(self) -> None:
         client = self._make_client()
         invalid = subprocess.CompletedProcess(
