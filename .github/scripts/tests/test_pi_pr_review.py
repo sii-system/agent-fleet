@@ -423,15 +423,18 @@ class PiClientTest(unittest.TestCase):
         self.assertIn("fatal error", str(ctx.exception))
 
     def test_timeout_raises(self) -> None:
-        client = self._make_client(timeout=0, pi_binary="/usr/bin/sleep")
-        # sleep 999 should exceed timeout=0
-        with mock.patch("subprocess.run") as run_mock:
+        client = self._make_client(timeout=30)
+        with mock.patch(
+            "time.monotonic",
+            side_effect=[100.0, 100.0],
+        ), mock.patch("subprocess.run") as run_mock:
             run_mock.side_effect = subprocess.TimeoutExpired(
-                ["sleep", "999"], 0.001
+                ["pi"], 30
             )
             with self.assertRaises(pi_review.PiReviewError) as ctx:
                 client.review("prompt", "diff")
             self.assertIn("timed out", str(ctx.exception))
+        run_mock.assert_called_once()
 
     def test_pi_not_found_raises(self) -> None:
         client = self._make_client(pi_binary="/nonexistent/pi-binary")
@@ -506,6 +509,27 @@ class PiClientTest(unittest.TestCase):
 
         timeouts = [call.kwargs["timeout"] for call in run_mock.call_args_list]
         self.assertEqual(timeouts, [30, 17.5])
+
+    def test_malformed_retry_stops_when_timeout_budget_is_exhausted(self) -> None:
+        client = self._make_client(timeout=30)
+        malformed = subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout=_make_text_response("not JSON"),
+            stderr="",
+        )
+
+        with mock.patch(
+            "time.monotonic",
+            side_effect=[100.0, 100.0, 130.0],
+        ), mock.patch(
+            "subprocess.run",
+            return_value=malformed,
+        ) as run_mock, self.assertRaises(pi_review.PiReviewError) as ctx:
+            client.review("prompt", "diff", retry_malformed=True)
+
+        self.assertIn("timed out after 30s", str(ctx.exception))
+        run_mock.assert_called_once()
 
     def test_retries_one_schema_invalid_model_response(self) -> None:
         client = self._make_client()
