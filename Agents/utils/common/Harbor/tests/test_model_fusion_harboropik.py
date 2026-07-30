@@ -66,6 +66,7 @@ class ModelFusionHarborOpikTest(unittest.TestCase):
                 "SPAN_PANEL_COUNT": "2",
                 "TB_FUSION_MAX_FUSIONS_PER_TASK": "3",
                 "TB_FUSION_PANEL_CALL_BUDGET": "4",
+                "TB_ANTHROPIC_BASE_URL": "https://gateway.internal",
             }
         )
 
@@ -154,6 +155,8 @@ class ModelFusionHarborOpikTest(unittest.TestCase):
             "SPAN_PANEL_COUNT=2",
             "SPAN_MID_TURN_MAX_FUSIONS_PER_TASK=3",
             "SPAN_MID_TURN_PANEL_CALL_BUDGET=4",
+            "NO_PROXY=gateway.internal",
+            "no_proxy=gateway.internal",
         }
         self.assertEqual(actual_ae, expected_ae)
 
