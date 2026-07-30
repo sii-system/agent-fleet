@@ -74,7 +74,7 @@ def _wrap_claude_command(
 def _patch_run() -> None:
     try:
         from harbor.agents.installed.claude_code import ClaudeCode
-    except Exception:
+    except Exception:  # noqa: BLE001 - Harbor is optional at interpreter startup
         return
     if getattr(ClaudeCode, "_openrouter_patch_applied", False):
         return

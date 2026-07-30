@@ -47,6 +47,24 @@ class MimoCodeProxyTest(unittest.TestCase):
     def tearDown(self) -> None:
         self.temp_dir.cleanup()
 
+    def test_env_can_be_sourced_without_repo_root(self) -> None:
+        env = {**os.environ}
+        env.pop("REPO_ROOT", None)
+        env.pop("FUSION_ROUTER_DIR", None)
+        result = subprocess.run(
+            [
+                "bash",
+                "-c",
+                f"source {MIMO_DIR / 'env.sh'}; printf '%s' \"$REPO_ROOT\"",
+            ],
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, str(HARBOR_DIR.parents[3]))
+
     def test_harbor_run_injects_mounts_and_runtime_contract(self) -> None:
         result = subprocess.run(
             [
