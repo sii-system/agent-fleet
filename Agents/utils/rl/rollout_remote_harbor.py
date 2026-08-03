@@ -16,8 +16,8 @@ import signal
 import subprocess
 import threading
 import time
-from hashlib import sha256
 from datetime import datetime, timezone
+from hashlib import sha256
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
