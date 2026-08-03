@@ -211,6 +211,23 @@ PY
             4096,
         )
 
+    def test_opencode_named_provider_controls_preserve_gateway_config(self) -> None:
+        config = self._load_config(
+            "opencode",
+            MODEL="anthropic/test-model",
+            HARBOR_TEMPERATURE="0.3",
+        )
+
+        self.assertEqual(
+            config["opencode_config"].get("provider", {}).get("anthropic", {}).get(
+                "options"
+            ),
+            {
+                "baseURL": "https://llm.example/v1",
+                "apiKey": "fake-key",
+            },
+        )
+
     def test_opencode_merges_settings_into_explicit_config(self) -> None:
         config = self._load_config(
             "opencode",
@@ -235,6 +252,26 @@ PY
                 "limit"
             ]["output"],
             8192,
+        )
+
+    def test_opencode_applies_sampling_to_configured_default_agent(self) -> None:
+        config = self._load_config(
+            "opencode",
+            HARBOR_TEMPERATURE="0.2",
+            HARBOR_TOP_P="0.9",
+            OPENCODE_CONFIG_CONTENT=(
+                '{"default_agent":"plan","agent":{'
+                '"plan":{"temperature":0.7},"build":{"top_p":0.1}}}'
+            ),
+        )
+
+        self.assertEqual(
+            config["opencode_config"]["agent"]["plan"],
+            {"temperature": 0.2, "top_p": 0.9},
+        )
+        self.assertEqual(
+            config["opencode_config"]["agent"]["build"],
+            {"top_p": 0.1},
         )
 
     def test_high_level_output_limit_preserves_low_level_overrides(self) -> None:

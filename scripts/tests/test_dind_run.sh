@@ -50,6 +50,7 @@ chmod +x "$PROJECT_DIR/scripts/setup.sh" "$PROJECT_DIR/scripts/run_fleet.sh"
 export DIND_TEST_ASSUME_HOST=1
 unset BASE_URL API_KEY MODEL
 unset ANTHROPIC_BASE_URL AUTH_TOKEN ANTHROPIC_AUTH_TOKEN TB_MODEL
+unset HARBOR_TEMPERATURE HARBOR_TOP_P HARBOR_MAX_TOKENS
 unset TRACE_TO_OPIK OPIK_URL OPIK_API_KEY OPIK_WORKSPACE OPIK_PROJECT_NAME
 unset HTTP_PROXY HTTPS_PROXY NO_PROXY http_proxy https_proxy no_proxy
 unset PIP_INDEX_URL PIP_EXTRA_INDEX_URL PIP_TRUSTED_HOST NPM_CONFIG_REGISTRY
@@ -230,6 +231,9 @@ NO_PROXY=existing.example \
 TRACE_TO_OPIK=false \
 MIN_TEST=1 \
 MIN_TEST_INCLUDE_TASK=custom-canary \
+HARBOR_TEMPERATURE=0.2 \
+HARBOR_TOP_P=0.9 \
+HARBOR_MAX_TOKENS=8192 \
 "$PROJECT_DIR/scripts/dind-run.sh" --taskset terminalbench21 --agent claude-code --workers 1 > "$LOG"
 
 grep -q -- '--registry-mirror=https://docker.m.daocloud.io' "$LOG"
@@ -283,6 +287,9 @@ for expected_env in \
   "TRACE_TO_OPIK=false" \
   "MIN_TEST=1" \
   "MIN_TEST_INCLUDE_TASK=custom-canary" \
+  "HARBOR_TEMPERATURE=0.2" \
+  "HARBOR_TOP_P=0.9" \
+  "HARBOR_MAX_TOKENS=8192" \
   "OPIK_API_KEY=opik-local" \
   "PIP_INDEX_URL=https://packages.example.com/simple" \
   "NPM_CONFIG_REGISTRY=https://npm.example.com"; do

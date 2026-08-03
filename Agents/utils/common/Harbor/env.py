@@ -50,12 +50,13 @@ def build_opencode_config() -> dict[str, object]:
     if not isinstance(payload, dict):
         raise ValueError("OPENCODE_CONFIG_CONTENT must be a JSON object")  # noqa: TRY004
 
+    provider_config = payload.setdefault("provider", {}).setdefault(provider, {})
+    options = provider_config.setdefault("options", {})
+    options.setdefault("baseURL", base_url)
+    options.setdefault("apiKey", api_key)
+
     if provider == "custom":
-        provider_config = payload.setdefault("provider", {}).setdefault("custom", {})
         provider_config.setdefault("npm", "@ai-sdk/openai-compatible")
-        options = provider_config.setdefault("options", {})
-        options.setdefault("baseURL", base_url)
-        options.setdefault("apiKey", api_key)
         model_config = provider_config.setdefault("models", {}).setdefault(model, {})
         model_config.setdefault("name", model)
     elif max_tokens:
@@ -71,7 +72,8 @@ def build_opencode_config() -> dict[str, object]:
     if max_tokens and model_config is not None:
         model_config.setdefault("limit", {})["output"] = int(max_tokens)
 
-    agent_config = payload.setdefault("agent", {}).setdefault("build", {})
+    agent_name = payload.get("default_agent") or "build"
+    agent_config = payload.setdefault("agent", {}).setdefault(agent_name, {})
     if temperature:
         agent_config["temperature"] = parse_finite_float(
             "HARBOR_TEMPERATURE", temperature
@@ -79,7 +81,7 @@ def build_opencode_config() -> dict[str, object]:
     if top_p:
         agent_config["top_p"] = parse_finite_float("HARBOR_TOP_P", top_p)
     if not agent_config:
-        payload["agent"].pop("build")
+        payload["agent"].pop(agent_name)
         if not payload["agent"]:
             payload.pop("agent")
 
