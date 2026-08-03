@@ -23,7 +23,8 @@ ensure_zellij_web_sharing_config() {
   fi
 }
 
-submission_slug="$(safe_name "$ray_submission_id")"
+submission_storage_id="${RL_ZELLIJ_SUBMISSION_STORAGE_ID:-$ray_submission_id}"
+submission_slug="$(safe_name "$submission_storage_id")"
 agent_slug="$(safe_name "${RL_AGENT:-claude-code}")"
 dataset_slug="$(safe_name "$dataset_name")"
 session_name="harbor-rollout-${agent_slug}-${dataset_slug}-${submission_slug}"

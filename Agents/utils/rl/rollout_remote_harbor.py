@@ -37,7 +37,6 @@ DEFAULT_DISABLED_TASK_IDS = os.environ.get("RL_DISABLED_TASK_IDS", "")
 DEFAULT_TIMEOUT = float(os.environ.get("RL_REQUEST_TIMEOUT", "3600"))
 REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
 COMMAND_ARG_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,255}\Z")
-SENSITIVE_KEY_RE = re.compile(r"(^|[_-])(api[-_]?key|token|secret|password)([_-]|\Z)", re.IGNORECASE)
 TRACE_LOG = Path(os.environ.get("RL_TRACE_LOG", "/workspace/runs/rl-rollout-requests.jsonl"))
 QUEUE_DIR = Path(os.environ.get("RL_QUEUE_DIR", "/workspace/runs/rl-rollout-queue"))
 PENDING_DIR = QUEUE_DIR / "pending"
@@ -124,22 +123,6 @@ def _validated_command_arg_id(value: Any, *, label: str) -> str:
     return text
 
 
-def _contains_sensitive_key(value: Any) -> bool:
-    if isinstance(value, dict):
-        for key, nested in value.items():
-            if isinstance(key, str) and SENSITIVE_KEY_RE.search(key):
-                return True
-            if _contains_sensitive_key(nested):
-                return True
-    elif isinstance(value, list):
-        return any(_contains_sensitive_key(item) for item in value)
-    return False
-
-
-def _reject_request_secrets(request: dict[str, Any]) -> None:
-    if _contains_sensitive_key(request):
-        raise ValueError("per-request secrets are not accepted; configure RL_API_KEY on the rollout server instead")
-
 
 def _short_suffix(value: str, width: int = 6) -> str:
     value = str(value or "").strip()
@@ -177,6 +160,21 @@ def _extract_polar_task_id(request: dict[str, Any], session_id: str) -> str:
         request.get("session_id"),
         session_id,
     )
+
+
+def _extract_api_base(request: dict[str, Any]) -> str:
+    api_base = _allowed_request_value(request, "api_base", "trial_config.agent.kwargs.api_base")
+    if api_base == "":
+        api_base = os.environ.get("RL_API_BASE", "")
+    if api_base == "":
+        return ""
+    api_base = str(api_base).strip()
+    parsed = urlparse(api_base)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("api_base must be an http or https URL with a host")
+    if any(ord(char) < 32 for char in api_base):
+        raise ValueError("api_base cannot contain control characters")
+    return api_base
 
 
 def _display_name(task_name: str, polar_task_id: str, session_id: str) -> str:
@@ -294,6 +292,7 @@ def _ensure_submission_zellij(
         env = os.environ.copy()
         env.update({
             "RL_ZELLIJ_SUBMISSION_ID": ray_submission_id,
+            "RL_ZELLIJ_SUBMISSION_STORAGE_ID": submission_slug,
             "RL_ZELLIJ_JOB_QUEUE_DIR": str(queue_dir),
             "RL_JOB_RUNTIME_ROOT": str(JOB_RUNTIME_ROOT),
             "RL_MODEL_NAME": model_name,
@@ -344,14 +343,19 @@ def _task_sort_key(path: Path) -> tuple[int, int | str]:
 
 
 def _dataset_root(dataset_name: str | None = None, dataset_root: str | None = None) -> Path:
-    if dataset_root:
-        raise ValueError("dataset_root cannot be supplied by request; configure RL_DATASET_ROOTS on the rollout server")
     roots = _dataset_roots()
     selected_dataset = dataset_name or DEFAULT_DATASET_NAME
     _validated_command_arg_id(selected_dataset, label="dataset_name")
     root = roots.get(selected_dataset)
     if root is None:
         raise ValueError(f"unknown dataset_name={dataset_name!r}; known={sorted(roots)}")
+    if dataset_root:
+        requested_root = os.path.normpath(str(dataset_root).strip())
+        matched_root = next((configured_root for configured_root in roots.values() if requested_root == str(configured_root)), None)
+        if matched_root is None:
+            raise ValueError("dataset_root must match a configured dataset root")
+        if matched_root != root:
+            raise ValueError("dataset_root does not match dataset_name")
     if not root.is_dir():
         raise FileNotFoundError(f"dataset root does not exist: {root}")
     return root
@@ -431,7 +435,6 @@ def resolve_task_path(request: dict[str, Any]) -> Path:
 
 
 def _enqueue_request(request: dict[str, Any]) -> tuple[str, Path]:
-    _reject_request_secrets(request)
     request_id = _validated_request_id(request.get("request_id"))
     request_file_id = _storage_id(request_id, prefix="request")
     session_id = request.get("session_id") or uuid4().hex
@@ -467,7 +470,7 @@ def _enqueue_request(request: dict[str, Any]) -> tuple[str, Path]:
         "dataset_root": str(dataset_root),
         "model_name": model_name,
         "opik_project_name": opik_project_name,
-        "api_base": request.get("api_base") or os.environ.get("RL_API_BASE", ""),
+        "api_base": _extract_api_base(request),
         "queue_dir": str(queue_dir),
         "zellij_session": zellij_session,
         "created_at": _now(),
@@ -582,10 +585,9 @@ class Handler(BaseHTTPRequestHandler):
             suffix = "/tasks"
             if parsed.path.startswith(prefix) and parsed.path.endswith(suffix):
                 dataset_name = parsed.path[len(prefix):-len(suffix)].strip("/")
-                if query.get("dataset_root"):
-                    raise ValueError("dataset_root query parameter is not accepted")
+                dataset_root = (query.get("dataset_root") or [None])[0]
                 include_disabled = (query.get("include_disabled") or ["false"])[0].lower() in {"1", "true", "yes"}
-                tasks = list_dataset_tasks(dataset_name, include_disabled=include_disabled)
+                tasks = list_dataset_tasks(dataset_name, dataset_root, include_disabled=include_disabled)
                 self._send_json(HTTPStatus.OK, {"dataset_name": dataset_name, "task_count": len(tasks), "task_ids": tasks, "disabled_task_ids": sorted(_disabled_task_ids())})
                 return
             self._send_json(HTTPStatus.NOT_FOUND, {"detail": "not found"})

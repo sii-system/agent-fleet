@@ -232,6 +232,99 @@ class RolloutRequestContextTest(unittest.TestCase):
             "ray_1.2-3",
         )
 
+    def test_submission_zellij_helper_receives_hashed_storage_identifier(self) -> None:
+        root_path = Path(self.stack.enter_context(tempfile.TemporaryDirectory()))
+        queue_dir = root_path / "queue" / MODULE._storage_id("ray-submission-test", prefix="submission")
+        runtime_root = root_path / "runtime"
+        storage_id = MODULE._storage_id("ray-submission-test", prefix="submission")
+        expected_session = MODULE._submission_session_name("ray-submission-test", "seta")
+        helper = mock.Mock(return_value=(0, f"{expected_session}\n", ""))
+
+        self.stack.enter_context(mock.patch.object(MODULE, "JOB_RUNTIME_ROOT", runtime_root))
+        self.stack.enter_context(mock.patch.object(MODULE, "JOB_ZELLIJ_LOCKS", {}))
+        self.stack.enter_context(mock.patch.object(MODULE, "JOB_ZELLIJ_READY", {}))
+        self.stack.enter_context(mock.patch.object(MODULE, "_zellij_session_exists", mock.Mock(return_value=False)))
+        self.stack.enter_context(mock.patch.object(MODULE, "_run_helper", helper))
+
+        session = MODULE._ensure_submission_zellij(
+            "ray-submission-test",
+            "seta",
+            queue_dir,
+            "model-from-request",
+            "ray-submission-test",
+        )
+
+        self.assertEqual(session, expected_session)
+        env = helper.call_args.kwargs["env"]
+        self.assertEqual(env["RL_ZELLIJ_SUBMISSION_ID"], "ray-submission-test")
+        self.assertEqual(env["RL_ZELLIJ_SUBMISSION_STORAGE_ID"], storage_id)
+        self.assertEqual(env["RL_ZELLIJ_JOB_QUEUE_DIR"], str(queue_dir))
+
+    def test_existing_hashed_zellij_session_is_reused_without_helper(self) -> None:
+        storage_id = MODULE._storage_id("ray-submission-test", prefix="submission")
+        expected_session = MODULE._submission_session_name("ray-submission-test", "seta")
+
+        self.stack.enter_context(mock.patch.object(MODULE, "JOB_ZELLIJ_LOCKS", {}))
+        self.stack.enter_context(mock.patch.object(MODULE, "JOB_ZELLIJ_READY", {storage_id: expected_session}))
+        self.stack.enter_context(mock.patch.object(MODULE, "_zellij_session_exists", mock.Mock(return_value=True)))
+        helper = self.stack.enter_context(mock.patch.object(MODULE, "_run_helper"))
+
+        session = MODULE._ensure_submission_zellij(
+            "ray-submission-test",
+            "seta",
+            Path("/tmp/queue"),
+            "model-from-request",
+            "ray-submission-test",
+        )
+
+        self.assertEqual(session, expected_session)
+        helper.assert_not_called()
+
+    def test_legacy_raw_zellij_session_is_not_reused_for_hashed_queue(self) -> None:
+        legacy_session = "harbor-rollout-claude-code-seta-ray-submission-test"
+        hashed_session = MODULE._submission_session_name("ray-submission-test", "seta")
+        helper = mock.Mock(return_value=(0, f"{hashed_session}\n", ""))
+
+        self.stack.enter_context(mock.patch.object(MODULE, "JOB_ZELLIJ_LOCKS", {}))
+        self.stack.enter_context(mock.patch.object(MODULE, "JOB_ZELLIJ_READY", {"ray-submission-test": legacy_session}))
+        exists = self.stack.enter_context(mock.patch.object(MODULE, "_zellij_session_exists", mock.Mock(return_value=True)))
+        self.stack.enter_context(mock.patch.object(MODULE, "_run_helper", helper))
+
+        session = MODULE._ensure_submission_zellij(
+            "ray-submission-test",
+            "seta",
+            Path("/tmp/queue"),
+            "model-from-request",
+            "ray-submission-test",
+        )
+
+        self.assertEqual(session, hashed_session)
+        self.assertNotIn(mock.call(legacy_session), exists.call_args_list)
+        helper.assert_called_once()
+
+    def test_different_submission_cached_session_is_not_reused(self) -> None:
+        other_storage_id = MODULE._storage_id("other-submission", prefix="submission")
+        other_session = MODULE._submission_session_name("other-submission", "seta")
+        current_session = MODULE._submission_session_name("ray-submission-test", "seta")
+        helper = mock.Mock(return_value=(0, f"{current_session}\n", ""))
+
+        self.stack.enter_context(mock.patch.object(MODULE, "JOB_ZELLIJ_LOCKS", {}))
+        self.stack.enter_context(mock.patch.object(MODULE, "JOB_ZELLIJ_READY", {other_storage_id: other_session}))
+        exists = self.stack.enter_context(mock.patch.object(MODULE, "_zellij_session_exists", mock.Mock(return_value=True)))
+        self.stack.enter_context(mock.patch.object(MODULE, "_run_helper", helper))
+
+        session = MODULE._ensure_submission_zellij(
+            "ray-submission-test",
+            "seta",
+            Path("/tmp/queue"),
+            "model-from-request",
+            "ray-submission-test",
+        )
+
+        self.assertEqual(session, current_session)
+        self.assertNotIn(mock.call(other_session), exists.call_args_list)
+        helper.assert_called_once()
+
     def test_rejects_command_arg_injection_in_ray_submission_id(self) -> None:
         with self.assertRaisesRegex(ValueError, "ray_submission_id may contain only"):
             self._enqueue_with_temp_context({"ray_submission_id": "ray; touch /tmp/pwned"})
@@ -270,28 +363,44 @@ class RolloutRequestContextTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "outside trusted root"):
             MODULE.resolve_task_path({"dataset_name": "seta", "task_id": "linked-task"})
 
-    def test_rejects_request_supplied_dataset_root(self) -> None:
-        with self.assertRaisesRegex(ValueError, "dataset_root cannot be supplied"):
-            self._enqueue_with_temp_context({"dataset_root": "/tmp"})
+    def test_accepts_request_dataset_root_only_when_configured(self) -> None:
+        root_path = Path(self.stack.enter_context(tempfile.TemporaryDirectory()))
+        dataset_root = root_path / "dataset"
+        (dataset_root / "task-1").mkdir(parents=True)
 
-    def test_rejects_per_request_secrets_in_nested_payload(self) -> None:
-        with self.assertRaisesRegex(ValueError, "per-request secrets are not accepted"):
-            self._enqueue_with_temp_context({
-                "trial_config": {
-                    "agent": {
-                        "kwargs": {
-                            "llm_kwargs": {
-                                "api_key": "request-secret",
-                            },
+        self.stack.enter_context(mock.patch.object(MODULE, "DEFAULT_DATASET_NAME", "seta"))
+        self.stack.enter_context(mock.patch.object(MODULE, "DEFAULT_DATASET_ROOT", dataset_root))
+        self.stack.enter_context(mock.patch.dict(os.environ, {"RL_DATASET_ROOTS": ""}))
+
+        self.assertEqual(MODULE._dataset_root("seta", str(dataset_root)), dataset_root.resolve())
+        with self.assertRaisesRegex(ValueError, "dataset_root must match a configured dataset root"):
+            MODULE._dataset_root("seta", str(root_path / "other"))
+
+    def test_secret_like_request_fields_are_not_persisted_to_queue(self) -> None:
+        _, _, job_queue_root, _ = self._enqueue_with_temp_context({
+            "trial_config": {
+                "agent": {
+                    "kwargs": {
+                        "api_base": "https://example.test/v1",
+                        "llm_kwargs": {
+                            "api_key": "request-secret",
                         },
                     },
                 },
-            })
+            },
+            "metadata": {"access_token": "request-token"},
+        })
 
-    def test_enqueued_payload_does_not_store_per_request_api_key(self) -> None:
-        _, _, job_queue_root, _ = self._enqueue_with_temp_context({"api_base": "https://example.test/v1"})
+        payload = self._read_default_payload(job_queue_root)
+        serialized = json.dumps(payload, sort_keys=True)
+        self.assertNotIn("api_key", payload)
+        self.assertNotIn("trial_config", payload)
+        self.assertNotIn("metadata", payload)
+        self.assertNotIn("request-secret", serialized)
+        self.assertNotIn("request-token", serialized)
 
-        payload = json.loads(
+    def _read_default_payload(self, job_queue_root: Path) -> dict[str, object]:
+        return json.loads(
             (
                 job_queue_root
                 / MODULE._storage_id("ray-submission-test", prefix="submission")
@@ -299,6 +408,49 @@ class RolloutRequestContextTest(unittest.TestCase):
                 / f"{MODULE._storage_id('request-1', prefix='request')}.json"
             ).read_text(encoding="utf-8")
         )
+
+    def test_enqueued_payload_preserves_nested_api_base(self) -> None:
+        _, _, job_queue_root, _ = self._enqueue_with_temp_context({
+            "trial_config": {
+                "agent": {
+                    "kwargs": {
+                        "api_base": "https://polar.example.test/v1/chat/completions",
+                    },
+                },
+            },
+        })
+
+        payload = self._read_default_payload(job_queue_root)
+        self.assertEqual(payload["api_base"], "https://polar.example.test/v1/chat/completions")
+        self.assertNotIn("trial_config", payload)
+
+    def test_top_level_api_base_takes_precedence_over_nested_value(self) -> None:
+        _, _, job_queue_root, _ = self._enqueue_with_temp_context({
+            "api_base": "https://top.example.test/v1",
+            "trial_config": {
+                "agent": {
+                    "kwargs": {
+                        "api_base": "https://nested.example.test/v1",
+                    },
+                },
+            },
+        })
+
+        payload = self._read_default_payload(job_queue_root)
+        self.assertEqual(payload["api_base"], "https://top.example.test/v1")
+
+    def test_rejects_invalid_api_base_format(self) -> None:
+        for api_base in ("/relative", "ftp://example.test/v1", "https://example.test/evil\nheader"):
+            with (
+                self.subTest(api_base=api_base),
+                self.assertRaisesRegex(ValueError, "api_base"),
+            ):
+                self._enqueue_with_temp_context({"api_base": api_base})
+
+    def test_enqueued_payload_does_not_store_per_request_api_key(self) -> None:
+        _, _, job_queue_root, _ = self._enqueue_with_temp_context({"api_base": "https://example.test/v1"})
+
+        payload = self._read_default_payload(job_queue_root)
         self.assertNotIn("api_key", payload)
         self.assertEqual(payload["api_base"], "https://example.test/v1")
 
