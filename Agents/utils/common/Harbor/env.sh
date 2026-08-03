@@ -232,9 +232,15 @@ TB_AK_ENABLE_SUMMARIZE="${TB_AK_ENABLE_SUMMARIZE:-}"
 TB_DISALLOWED_TOOLS="${TB_DISALLOWED_TOOLS:-WebSearch WebFetch RemoteTrigger AskUserQuestion}"
 TB_APPEND_SYSTEM_PROMPT="${TB_APPEND_SYSTEM_PROMPT:-Use English only for all reasoning, messages, filenames, and tool arguments. Use ASCII characters only unless reading existing non-ASCII file contents is strictly necessary.}"
 TB_API_BASE="${TB_API_BASE:-${TB_ANTHROPIC_BASE_URL%/}/v1/chat/completions}"
+ROLLOUT="${ROLLOUT:-0}"
 HARBOR_TEMPERATURE="${HARBOR_TEMPERATURE:-}"
 HARBOR_TOP_P="${HARBOR_TOP_P:-}"
 HARBOR_MAX_TOKENS="${HARBOR_MAX_TOKENS:-}"
+if [[ "$ROLLOUT" == "1" ]]; then
+  HARBOR_TEMPERATURE=""
+  HARBOR_TOP_P=""
+  HARBOR_MAX_TOKENS=""
+fi
 if [[ -z "${TB_LLM_KWARGS:-}" ]]; then
   TB_LLM_KWARGS="$(
     TB_ANTHROPIC_AUTH_TOKEN="$TB_ANTHROPIC_AUTH_TOKEN" \
@@ -355,7 +361,6 @@ WORKERS_FAILED_FILE="${RUNTIME_DIR}/workers.failed"
 # ── RL rollout mode ──────────────────────────────────────────────────────────
 # Keep RL-specific implementation outside common/Harbor; Harbor only exposes the
 # start.sh entry point and shared benchmark/runtime configuration.
-ROLLOUT="${ROLLOUT:-0}"
 RL_UTILS_DIR="${RL_UTILS_DIR:-$REPO_ROOT/Agents/utils/rl}"
 RL_ENV_FILE="${RL_ENV_FILE:-$RL_UTILS_DIR/RL-env.sh}"
 if [[ "$ROLLOUT" == "1" && -f "$RL_ENV_FILE" ]]; then

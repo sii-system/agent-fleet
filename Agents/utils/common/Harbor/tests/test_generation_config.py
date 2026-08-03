@@ -169,6 +169,28 @@ PY
             8192,
         )
 
+    def test_env_helper_rejects_non_finite_sampling_values(self) -> None:
+        cases = (
+            ("llm-kwargs", "HARBOR_TEMPERATURE", "NaN"),
+            ("opencode-config", "HARBOR_TOP_P", "Infinity"),
+        )
+        for command, variable, value in cases:
+            with self.subTest(command=command, variable=variable):
+                result = subprocess.run(
+                    [sys.executable, str(ENV_PY), command],
+                    check=False,
+                    capture_output=True,
+                    env={
+                        "PATH": os.environ["PATH"],
+                        "TB_MODEL": "custom/test-model",
+                        variable: value,
+                    },
+                    text=True,
+                )
+
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(f"{variable} must be finite", result.stderr)
+
     def test_opencode_applies_settings_to_named_provider_model(self) -> None:
         config = self._load_config(
             "opencode",
@@ -227,6 +249,26 @@ PY
         self.assertEqual(config["max_new_tokens"], "4096")
         self.assertEqual(config["model_info"]["max_output_tokens"], 512)
         self.assertEqual(config["claude_max_output_tokens"], "2048")
+
+    def test_rollout_ignores_fixed_run_generation_controls(self) -> None:
+        config = self._load_config(
+            "opencode",
+            ROLLOUT="1",
+            HARBOR_TEMPERATURE="0.2",
+            HARBOR_TOP_P="0.9",
+            HARBOR_MAX_TOKENS="8192",
+        )
+
+        self.assertEqual(config["llm_kwargs"]["temperature"], 1.0)
+        self.assertNotIn("top_p", config["llm_kwargs"])
+        self.assertEqual(config["max_new_tokens"], "65536")
+        self.assertEqual(config["model_info"]["max_output_tokens"], 65536)
+        self.assertEqual(config["claude_max_output_tokens"], "65536")
+        self.assertNotIn("agent", config["opencode_config"])
+        self.assertNotIn(
+            "limit",
+            config["opencode_config"]["provider"]["custom"]["models"]["test-model"],
+        )
 
     def test_claude_code_rejects_unsupported_sampling_settings(self) -> None:
         result = self._run_validation(

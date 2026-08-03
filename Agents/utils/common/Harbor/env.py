@@ -1,16 +1,27 @@
 import argparse
 import json
+import math
 import os
 from collections.abc import Callable
+
+
+def parse_finite_float(name: str, value: str) -> float:
+    number = float(value)
+    if not math.isfinite(number):
+        raise ValueError(f"{name} must be finite")
+    return number
 
 
 def build_llm_kwargs() -> dict[str, object]:
     payload: dict[str, object] = {
         "api_key": os.environ.get("TB_ANTHROPIC_AUTH_TOKEN", ""),
-        "temperature": float(os.environ.get("HARBOR_TEMPERATURE") or "1.0"),
+        "temperature": parse_finite_float(
+            "HARBOR_TEMPERATURE",
+            os.environ.get("HARBOR_TEMPERATURE") or "1.0",
+        ),
     }
     if top_p := os.environ.get("HARBOR_TOP_P"):
-        payload["top_p"] = float(top_p)
+        payload["top_p"] = parse_finite_float("HARBOR_TOP_P", top_p)
     return payload
 
 
@@ -62,9 +73,11 @@ def build_opencode_config() -> dict[str, object]:
 
     agent_config = payload.setdefault("agent", {}).setdefault("build", {})
     if temperature:
-        agent_config["temperature"] = float(temperature)
+        agent_config["temperature"] = parse_finite_float(
+            "HARBOR_TEMPERATURE", temperature
+        )
     if top_p:
-        agent_config["top_p"] = float(top_p)
+        agent_config["top_p"] = parse_finite_float("HARBOR_TOP_P", top_p)
     if not agent_config:
         payload["agent"].pop("build")
         if not payload["agent"]:
