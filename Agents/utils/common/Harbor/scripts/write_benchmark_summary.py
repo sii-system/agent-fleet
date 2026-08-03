@@ -81,6 +81,24 @@ def _final_failed_task_ids(monitor: dict[str, Any]) -> set[tuple[Any, Any]] | No
     }
 
 
+def _analysis_coverage(
+    eligible_task_ids: set[tuple[Any, Any]] | None,
+    analyses: list[dict[str, Any]],
+) -> dict[str, int] | None:
+    if eligible_task_ids is None:
+        return None
+    analyzed_task_ids = {
+        _task_identity(task)
+        for analysis in analyses
+        if analysis.get("analysis_status") in {"analysis_complete", "analysis_failed"}
+        and isinstance((task := analysis.get("task")), dict)
+    }
+    return {
+        "expected": len(eligible_task_ids),
+        "analyzed": len(analyzed_task_ids & eligible_task_ids),
+    }
+
+
 def _analyzer_tasks(
     manifest_path: Path,
     *,
@@ -166,10 +184,11 @@ def _summary_input(
         int(task_summary.get(status, 0))
         for status in ("complete_failed", "complete_unknown", "not_complete")
     )
+    final_failed_task_ids = _final_failed_task_ids(monitor)
     run_id, analyses = _analyzer_tasks(
         manifest_path,
         expected_run_id=expected_run_id,
-        eligible_task_ids=_final_failed_task_ids(monitor),
+        eligible_task_ids=final_failed_task_ids,
     )
     findings = {
         "analysis_complete": 0,
@@ -202,6 +221,7 @@ def _summary_input(
         },
         "analyzer_findings": findings,
         "analysis_groups": analysis_groups,
+        "analyzer_coverage": _analysis_coverage(final_failed_task_ids, analyses),
         "analyzer_result_status": (
             "not_required"
             if failure == 0
@@ -360,6 +380,16 @@ def _render_markdown(
         "## Analysis Summary",
         "",
     ]
+    coverage = payload["analyzer_coverage"]
+    if coverage and 0 < coverage["analyzed"] < coverage["expected"]:
+        lines.extend(
+            [
+                "Analyzer results are incomplete: analysis is available for "
+                f"{coverage['analyzed']} of {coverage['expected']} final "
+                "failed/unknown/not-complete task(s).",
+                "",
+            ]
+        )
     if groups:
         for group_id, group in groups.items():
             label = (

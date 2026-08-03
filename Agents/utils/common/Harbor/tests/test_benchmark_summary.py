@@ -524,6 +524,88 @@ class BenchmarkSummaryTests(unittest.TestCase):
                 clean_output.read_text(encoding="utf-8"),
             )
 
+    def test_reports_partial_analyzer_coverage(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            root_path = Path(root)
+            monitor_path = root_path / "monitor-latest.json"
+            manifest_path = root_path / "analyzer-artifacts-latest.json"
+            report_path = root_path / "report.json"
+            output_path = root_path / "benchmark-summary.md"
+            _write_json(
+                monitor_path,
+                {
+                    "benchmark_status": "completed",
+                    "task_summary": {
+                        "complete_success": 0,
+                        "complete_failed": 2,
+                        "complete_unknown": 0,
+                        "not_complete": 0,
+                        "total_evaluated": 2,
+                    },
+                    "task_handover": [
+                        {
+                            "task_index": "1",
+                            "task_name": "task-1",
+                            "task_complete_status": "complete_failed",
+                        },
+                        {
+                            "task_index": "2",
+                            "task_name": "task-2",
+                            "task_complete_status": "complete_failed",
+                        },
+                    ],
+                },
+            )
+            _write_json(
+                report_path,
+                {
+                    "tasks": [
+                        _analysis(
+                            "1",
+                            attempt_id="attempt-1",
+                            status="analysis_complete",
+                            final_class="infra_fail",
+                            root_cause_code="container_runtime_failed",
+                            root_cause_summary="The task container did not start.",
+                        )
+                    ]
+                },
+            )
+            _write_json(
+                manifest_path,
+                {
+                    "run_id": "current-run",
+                    "publications": [
+                        {"artifacts": {"benchmark_report_path": str(report_path)}}
+                    ],
+                },
+            )
+            model_output = {
+                "summary": "One of two failures was analyzed.",
+                "analysis_summary": [
+                    {"group_id": "G1", "summary": "The task container did not start."}
+                ],
+                "recommended_actions": [],
+            }
+            with mock.patch.object(
+                summary_writer,
+                "run_pi_json_process",
+                return_value=_pi_result(model_output),
+            ):
+                summary_writer.write_benchmark_summary(
+                    monitor_path,
+                    manifest_path,
+                    output_path,
+                    expected_run_id="current-run",
+                )
+
+            summary = output_path.read_text(encoding="utf-8")
+            self.assertIn(
+                "Analyzer results are incomplete: analysis is available for 1 of 2 "
+                "final failed/unknown/not-complete task(s).",
+                summary,
+            )
+
     def test_does_not_write_summary_while_monitor_is_running(self) -> None:
         with tempfile.TemporaryDirectory() as root:
             root_path = Path(root)

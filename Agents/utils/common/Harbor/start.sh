@@ -241,6 +241,7 @@ harbor_start_analyzer_if_enabled() {
         --handover "$HARBOR_MONITOR_DIR/analyzer-handover-latest.json" \
         --handoff-dir "$HARBOR_MONITOR_DIR/analyzer-handoffs" \
         --run-dir "$OUTPUT_PATH" \
+        --run-id "$RUN_ID" \
         --queue-dir "$QUEUE_DIR" \
         --agent "$AGENT" \
         --output-dir "$HARBOR_ANALYZER_OUTPUT_DIR" \

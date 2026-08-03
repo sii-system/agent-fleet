@@ -134,6 +134,27 @@ class HarborTaskSelectionTest(unittest.TestCase):
             self.assertIn("unknown task(s): missing-a, missing-b", result.stderr)
             self.assertFalse((output / "tasks.txt").exists())
 
+    def test_reset_removes_generated_benchmark_summary(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output, common = self.local_fixture(Path(tmp), "task-a")
+            analyzer_dir = output / "analyzer"
+            summary_dir = analyzer_dir / "benchmark-summary"
+            summary_dir.mkdir(parents=True)
+            (analyzer_dir / "benchmark-summary.md").write_text("old summary\n", encoding="utf-8")
+            (summary_dir / "summary-input.json").write_text("{}\n", encoding="utf-8")
+            unrelated = analyzer_dir / "keep.txt"
+            unrelated.write_text("keep\n", encoding="utf-8")
+
+            result = self.run_env('mkdir -p "$QUEUE_DIR"; harbor_reset_run_state', **common)
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertFalse((analyzer_dir / "benchmark-summary.md").exists())
+            self.assertFalse(summary_dir.exists())
+            self.assertTrue(unrelated.exists())
+
+    def test_start_passes_run_id_to_analyzer(self) -> None:
+        self.assertIn('--run-id "$RUN_ID"', START_SH.read_text(encoding="utf-8"))
+
     def test_unknown_smith_task_fails_before_dataset_generation(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
