@@ -37,9 +37,11 @@ Agents/utils/common/Harbor/
     │   ├── agent_invocation.py # Fixer prompt assembly and Pi adapter
     │   ├── analyzer_inputs.py  # Analyzer artifact to task-input translation
     │   ├── artifact_io.py      # JSON, JSONL, and text artifact I/O
+    │   ├── builtin_policy.py   # Fixed T1 allow and deny rules
     │   ├── plan_generation.py  # Task summary and plan generation flow
     │   ├── planning_context/   # Runtime inventory and workspace evidence
-    │   ├── prompts.py          # Task and plan agent contracts
+    │   ├── policy.py           # Policy routing, validation, and preflight
+    │   ├── prompts.py          # Task, plan, and policy-agent contracts
     │   └── validation.py       # Analyzer, task-summary, and Fix Plan validation
     ├── online_rule_analyzer.py # Optional console-only online analysis
     └── write_harbor_registry_summary.py # Native registry summary writer
@@ -69,6 +71,17 @@ Plan generation is independently usable and produces
 dispatching isolated no-tool Pi agents. Tests are split between
 `test_harbor_fixer_plan.py` and `test_harbor_fixer_runtime_context.py`, with
 shared fixtures in the non-discovered `fixer_test_support.py`.
+
+## Harbor Fixer Execution Policy
+
+`policy.py` consumes a validated Fix Plan without executing it. It coordinates
+user rules, write-target resolution against configured roots, T2/T3 routing,
+strict policy-agent output validation, retry, and fail-closed behavior.
+`builtin_policy.py` owns the fixed T1 allow and deny rules, while `prompts.py`
+owns the T2 and T3 agent contracts. T2 covers bounded writes inside configured
+roots; T3 covers Docker, dependency, service, outside-root, dynamic, and
+otherwise unknown-effect commands. Isolated tests live in
+`test_harbor_fixer_policy.py`.
 
 ## Path Resolution
 

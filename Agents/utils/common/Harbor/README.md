@@ -325,6 +325,20 @@ with no env/infra tasks produces an empty fix plan without invoking Pi.
 Starting generation removes any stale `fix-plan-latest.json`; if no task
 summary succeeds, Fixer writes a diagnostic empty plan and exits nonzero.
 
+## Harbor Fixer: Execution Policy
+
+`harbor_fixer/policy.py` independently evaluates a complete Fix Plan before an
+executor consumes it. T1 applies deny-first built-in and optional user rules;
+T2 routes bounded writes inside the workspace or configured writable roots to
+an isolated policy agent; T3 routes Docker, dependency, service, outside-root,
+dynamic, and otherwise unknown-effect commands to the policy agent.
+
+The policy agent reuses the Fixer Pi invocation contract without tools. Invalid
+output, invocation failure, configuration errors, or any denied command fail
+closed. The complete decision is atomically written to
+`execution-policy-decision.json`. The policy layer is admission and audit, not
+an OS sandbox, and does not itself execute commands.
+
 ## More Details
 
 Architecture, script roles, task resolution, and full variable descriptions are in [STRUCT.md](./STRUCT.md).
