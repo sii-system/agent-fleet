@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import json
 import os
-import shlex
-import subprocess
 import time
 from pathlib import Path
 from typing import Any
+
+from harbor_controller.analyzer_dispatch import dispatch_analyzer_handover
+from harbor_controller.executor import execute_action
+from harbor_controller.policy import decide_action
 
 from .artifacts import (
     load_harbor_job_snapshot,
@@ -22,40 +24,11 @@ from .artifacts import (
 )
 from .contracts import (
     build_analyzer_handover,
-    build_analyzer_handover_for_tasks,
     build_notify_incident_key,
     build_runner_action,
     build_user_notify,
 )
-from .evaluator import evaluate_once, now_ts
-
-
-def build_control_argv(control_cmd: str, run_dir: Path, label: str) -> tuple[list[str] | None, str | None]:
-    try:
-        parts = shlex.split(control_cmd)
-    except ValueError as exc:
-        return None, f"{label}_cmd_parse_error={exc}"
-    if not parts:
-        return None, f"{label}_cmd_empty"
-    if parts[0] in {"bash", "sh", "python", "python3"}:
-        return None, f"{label}_cmd_interpreter_prefixed"
-
-    run_root = run_dir.resolve()
-    executable = Path(parts[0])
-    if not executable.is_absolute():
-        executable = run_root / executable
-    try:
-        resolved = executable.resolve()
-        resolved.relative_to(run_root)
-    except (OSError, ValueError):
-        return None, f"{label}_cmd_not_run_specific"
-    if not resolved.exists():
-        return None, f"{label}_cmd_missing"
-    if not resolved.is_file():
-        return None, f"{label}_cmd_not_file"
-    if not os.access(resolved, os.X_OK):
-        return None, f"{label}_cmd_not_executable"
-    return [str(resolved), *parts[1:]], None
+from .evaluator import evaluate_once
 
 
 def count_running_workers(queue_dir: Path) -> int:
@@ -218,7 +191,7 @@ def run_loop(
                 run_dir / "online-analysis" / "environment-summary.json",
             ]
         )
-        output, action, history, extras = evaluate_once(
+        output, history, extras = evaluate_once(
             run_dir=run_dir,
             done_path=done_path,
             failed_path=failed_path,
@@ -231,7 +204,6 @@ def run_loop(
             S=adaptive_S,
             startup_grace=startup_grace,
             configured_timeout=configured_timeout,
-            max_retries=max_retries,
             state=state,
             include_unknown_not_complete=include_unknown_not_complete,
             task_records=task_records,
@@ -252,151 +224,24 @@ def run_loop(
         state["adaptive_S"] = adaptive_S
         state["consecutive_stall"] = consecutive_stall
 
-        if action["type"] == "restart":
-            if not restart_cmd:
-                    output["action"] = {
-                        "type": "notify",
-                        "retry_count": state.get("retry_count", 0),
-                        "reason": "restart_needed_but_restart_cmd_missing",
-                        "control_type": "restart",
-                        "control_attempted": False,
-                        "external_control_performed": False,
-                    }
-            else:
-                control_argv, control_error = build_control_argv(restart_cmd, run_dir, "restart")
-                if control_error or control_argv is None:
-                    output["action"] = {
-                        "type": "notify",
-                        "retry_count": state.get("retry_count", 0),
-                        "reason": control_error or "restart_cmd_invalid",
-                        "control_type": "restart",
-                        "control_attempted": False,
-                        "external_control_performed": False,
-                    }
-                else:
-                    state["retry_count"] = state.get("retry_count", 0) + 1
-                    try:
-                        result = subprocess.run(
-                            control_argv,
-                            cwd=run_dir,
-                            shell=False,
-                            text=True,
-                            stdout=subprocess.PIPE,
-                            stderr=subprocess.STDOUT,
-                            timeout=120,
-                            check=False,
-                        )
-                        if result.returncode == 0:
-                            control_ts = now_ts()
-                            state["last_progress_ts"] = control_ts
-                            history = [
-                                {
-                                    "ts": control_ts,
-                                    "finished": output["finished"],
-                                    "running": output["running"],
-                                    "remaining": output.get("unclaimed_remaining"),
-                                    "unfinished": output.get("unfinished"),
-                                    "status": "restart_executed",
-                                }
-                            ]
-                            state["run_start_ts"] = control_ts
-                            output["action"] = {
-                                "type": "restart",
-                                "retry_count": state["retry_count"],
-                                "reason": action["reason"],
-                                "control_type": "restart",
-                                "control_exit_code": result.returncode,
-                                "control_attempted": True,
-                                "external_control_performed": True,
-                            }
-                        else:
-                            output["action"] = {
-                                "type": "notify",
-                                "retry_count": state["retry_count"],
-                                "reason": f"restart_failed_exit_code={result.returncode}",
-                                "control_type": "restart",
-                                "control_exit_code": result.returncode,
-                                "control_attempted": True,
-                                "external_control_performed": True,
-                            }
-                        output["control_stdout"] = result.stdout[-2000:]
-                    except subprocess.TimeoutExpired as exc:
-                        output["action"] = {
-                            "type": "notify",
-                            "retry_count": state["retry_count"],
-                            "reason": "restart_failed_timeout",
-                            "control_type": "restart",
-                            "control_error": str(exc),
-                            "control_attempted": True,
-                            "external_control_performed": True,
-                        }
-                    except Exception as exc:  # noqa: BLE001 - control boundary reports failures
-                        output["action"] = {
-                            "type": "notify",
-                            "retry_count": state["retry_count"],
-                            "reason": "restart_failed_exception",
-                            "control_type": "restart",
-                            "control_error": str(exc),
-                            "control_attempted": True,
-                            "external_control_performed": False,
-                        }
-        elif action["type"] == "stop":
-            output["action"] = action
-            if stop_cmd:
-                control_argv, control_error = build_control_argv(stop_cmd, run_dir, "stop")
-                if control_error or control_argv is None:
-                    output["action"] = {
-                        "type": "notify",
-                        "retry_count": state.get("retry_count", 0),
-                        "reason": control_error or "stop_cmd_invalid",
-                        "control_type": "stop",
-                        "control_attempted": False,
-                        "external_control_performed": False,
-                    }
-                else:
-                    try:
-                        result = subprocess.run(
-                            control_argv,
-                            cwd=run_dir,
-                            shell=False,
-                            text=True,
-                            stdout=subprocess.PIPE,
-                            stderr=subprocess.STDOUT,
-                            timeout=120,
-                            check=False,
-                        )
-                        output["action"] = {
-                            "type": "stop" if result.returncode == 0 else "notify",
-                            "retry_count": state.get("retry_count", 0),
-                            "reason": action["reason"] if result.returncode == 0 else f"stop_failed_exit_code={result.returncode}",
-                            "control_type": "stop",
-                            "control_exit_code": result.returncode,
-                            "control_attempted": True,
-                            "external_control_performed": True,
-                        }
-                        output["control_stdout"] = result.stdout[-2000:]
-                    except subprocess.TimeoutExpired as exc:
-                        output["action"] = {
-                            "type": "notify",
-                            "retry_count": state.get("retry_count", 0),
-                            "reason": "stop_failed_timeout",
-                            "control_type": "stop",
-                            "control_error": str(exc),
-                            "control_attempted": True,
-                            "external_control_performed": True,
-                        }
-                    except Exception as exc:  # noqa: BLE001 - control boundary reports failures
-                        output["action"] = {
-                            "type": "notify",
-                            "retry_count": state.get("retry_count", 0),
-                            "reason": "stop_failed_exception",
-                            "control_type": "stop",
-                            "control_error": str(exc),
-                            "control_attempted": True,
-                            "external_control_performed": False,
-                        }
-        else:
-            output["action"] = action
+        requested_action = decide_action(
+            output,
+            retry_count=int(state.get("retry_count", 0) or 0),
+            max_retries=max_retries,
+        )
+        controller_result = execute_action(
+            requested_action,
+            restart_cmd=restart_cmd,
+            stop_cmd=stop_cmd,
+            run_dir=run_dir,
+            state=state,
+            observation=output,
+            history=history,
+        )
+        output["action"] = controller_result.action
+        history = controller_result.history
+        if controller_result.control_stdout is not None:
+            output["control_stdout"] = controller_result.control_stdout
 
         output["user_notify"] = build_user_notify(
             output=output,
@@ -452,10 +297,12 @@ def run_loop(
         if previous_notify and action_type != "notify":
             output["previous_action_required_notify"] = previous_notify
 
-        if action_type in {"wait", "restart"}:
+        if output.get("benchmark_status") == "completed":
+            output["monitor_follow_decision"] = "stop_completed"
+        elif action_type in {"wait", "restart"}:
             output["monitor_follow_decision"] = "continue"
         elif action_type == "stop":
-            output["monitor_follow_decision"] = "stop_completed"
+            output["monitor_follow_decision"] = "stop_user_requested"
         elif (
             action_type == "notify"
             and output.get("benchmark_status") == "running"
@@ -488,42 +335,22 @@ def run_loop(
             output_path.write_text(output_json + "\n", encoding="utf-8")
         write_json(user_report_output, output["user_notify"])
         analyzer_handover = output["analyzer_handover"]
-        if analyzer_handover_output and analyzer_handover.get("should_run_analyzer"):
-            spooled_raw = state.get("analyzer_spooled_terminal_fingerprints")
-            spooled = {
-                str(value)
-                for value in spooled_raw
-                if isinstance(value, str) and value
-            } if isinstance(spooled_raw, list) else set()
-            tasks = analyzer_handover.get("tasks")
-            new_tasks: list[dict[str, Any]] = []
-            new_fingerprints: list[str] = []
-            if isinstance(tasks, list):
-                for task in tasks:
-                    if not isinstance(task, dict):
-                        continue
-                    fingerprint = str(task.get("terminal_fingerprint") or "")
-                    if not fingerprint or fingerprint in spooled:
-                        continue
-                    new_tasks.append(task)
-                    new_fingerprints.append(fingerprint)
-            if new_tasks:
-                handoff = build_analyzer_handover_for_tasks(analyzer_handover, new_tasks)
-                handover_id = str(handoff.get("handover_id") or "")
-                if handover_id:
-                    spool_path = analyzer_handover_output.parent / "analyzer-handoffs" / f"{handover_id}.json"
-                    if not spool_path.exists():
-                        write_json(spool_path, handoff)
-                    state["analyzer_spooled_terminal_fingerprints"] = sorted(
-                        spooled | set(new_fingerprints)
-                    )
-        write_json(analyzer_handover_output, analyzer_handover)
+        dispatch_analyzer_handover(
+            analyzer_handover,
+            latest_output=analyzer_handover_output,
+            state=state,
+            write_json=write_json,
+        )
         write_json(runner_action_output, output["runner_action"])
         print(output_json)
         save_state(state_path, state)
 
         if loop_once:
             break
-        if output["monitor_follow_decision"] in {"stop_completed", "stop_action_required"}:
+        if output["monitor_follow_decision"] in {
+            "stop_completed",
+            "stop_action_required",
+            "stop_user_requested",
+        }:
             break
         time.sleep(poll_interval)

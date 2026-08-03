@@ -28,9 +28,13 @@ Agents/utils/common/Harbor/
     ├── harbor_monitor/
     │   ├── artifacts.py        # Queue, result, manifest, environment, and state I/O
     │   ├── classification.py   # Task and benchmark status classification
-    │   ├── evaluator.py        # Compose one monitor sample
+    │   ├── evaluator.py        # Compose one control-free monitor observation
     │   ├── contracts.py        # User, analyzer, and runner output contracts
-    │   └── runner.py           # Control commands, retries, and follow loop
+    │   └── runner.py           # Observation and follow-loop orchestration
+    ├── harbor_controller/
+    │   ├── policy.py           # Select wait/notify and state-safe user choices
+    │   ├── executor.py         # Validate and execute user-approved run-local controls
+    │   └── analyzer_dispatch.py # Deduplicate and spool Analyzer handovers
     ├── online_rule_analyzer.py # Optional console-only online analysis
     └── write_harbor_registry_summary.py # Native registry summary writer
 ```

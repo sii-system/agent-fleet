@@ -31,13 +31,12 @@ def evaluate_once(
     S: int,
     startup_grace: int,
     configured_timeout: int | None,
-    max_retries: int,
     state: dict[str, Any],
     include_unknown_not_complete: bool,
     task_records: dict[str, TaskInput] | None = None,
     terminal_artifacts_missing: bool | None = None,
     run_finalized: bool = True,
-) -> tuple[dict[str, Any], dict[str, Any], list[dict[str, Any]], dict[str, Any]]:
+) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str, Any]]:
     environment_events = parse_environment_events(environment_events_raw)
     queue_files_missing = (
         not done_path.exists() or not failed_path.exists()
@@ -218,19 +217,6 @@ def evaluate_once(
         if status == "not_complete":
             continue
 
-    action_type = "wait"
-    if benchmark_status == "blocked" and reason == "abnormal_exit":
-        if state.get("retry_count", 0) >= max_retries:
-            action_type = "notify"
-        else:
-            action_type = "restart"
-    elif benchmark_status == "running" and reason == "timeout_reached":
-        action_type = "notify"
-    elif benchmark_status == "completed":
-        action_type = "stop"
-    elif benchmark_status == "blocked":
-        action_type = "notify"
-
     return_data = {
         "benchmark_status": benchmark_status,
         "status_reason": reason,
@@ -270,13 +256,7 @@ def evaluate_once(
             "environment_events": environment_events,
         },
     }
-    action = {
-        "type": action_type,
-        "retry_count": state.get("retry_count", 0),
-        "reason": reason,
-        "external_control_performed": False,
-        "compatibility_note": "Harbor monitor control is command-based and runner-neutral; no runner-specific control is performed.",
+    return return_data, history, {
+        "last_progress_ts": last_progress_ts,
+        "run_start_ts": run_start_ts,
     }
-    if action_type == "notify" and benchmark_status == "blocked" and reason == "abnormal_exit":
-        action["reason"] = f"restart_retries_exhausted(max_retries={max_retries})"
-    return return_data, action, history, {"last_progress_ts": last_progress_ts, "run_start_ts": run_start_ts}

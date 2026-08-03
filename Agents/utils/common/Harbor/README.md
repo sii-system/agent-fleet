@@ -181,7 +181,10 @@ ROLLOUT=1 bash start.sh
 including detached zellij runs and command-mode runs such as
 `bash start.sh ./harboropik.sh`. Set `HARBOR_MONITOR_ENABLED=0` to disable it.
 The monitor reads Fleet queue artifacts for local datasets and Harbor job/trial
-results for registry datasets.
+results for registry datasets. Internally, `harbor_monitor` produces the
+observation while `harbor_controller` selects the state-appropriate action and
+retains run-local command execution behind a separate boundary. Restart and
+stop are not executed automatically from observations.
 
 Equivalent queue monitor command:
 
@@ -200,10 +203,11 @@ python3 Agents/utils/common/Harbor/scripts/monitor.py \
 ```
 
 Omit `--follow` for one sample. Control commands are optional executable files
-inside `RUN_DIR`; arguments are allowed but shell syntax is not. If absent or
-failed, the action becomes `notify`.
+inside `RUN_DIR`; arguments are allowed but shell syntax is not. They are
+retained for a subsequent explicit user-decision flow and are not invoked by
+the observation policy.
 
-For automatic runs, optional run-local controls can be set with
+Optional run-local controls can be set with
 `HARBOR_MONITOR_RESTART_CMD` and `HARBOR_MONITOR_STOP_CMD`.
 
 | Output | Used by | Content |
@@ -219,12 +223,16 @@ All files are refreshed on each sample. The actual action is
 
 | Observed state | Action |
 | --- | --- |
-| Worker active, including `suspected_stalled` | `wait` |
-| Worker active past `--configured-timeout` | `notify` and continue monitoring |
-| Tasks unfinished with no live worker | `restart`; after `--max-retries`, `notify` |
-| Every task has a terminal queue record | `stop` |
+| Worker active and making progress | `wait` |
+| Worker active past `--configured-timeout` | `notify`; allowed decisions are `wait`, `stop` |
+| Worker active after the confirmed stall duration | `notify`; allowed decisions are `wait`, `stop` |
+| Tasks unfinished with no live worker | `notify`; `restart` is allowed below `--max-retries` |
+| Every task has a terminal queue record | `wait`; finish the monitor loop without external control |
 
-Automatic restart is only used when tasks remain and no worker is alive.
+The monitor does not consume restart attempts or execute restart/stop commands
+without an explicit user decision. The bidirectional decision channel is not
+part of this structural refactor; `allowed_decisions` records what a later
+decision flow may safely execute.
 
 ## Harbor Analyzer
 

@@ -35,6 +35,8 @@ def suggested_user_checks(benchmark_status: str, status_reason: str, action: dic
     action_type = str(action.get("type") or "wait")
     if status_reason == "timeout_reached":
         checks.append("Review the configured monitoring SLA and current Harbor worker state before intervening.")
+    elif status_reason == "suspected_stalled":
+        checks.append("Review worker output and the confirmed stall duration before choosing wait or stop.")
     elif status_reason == "abnormal_exit":
         checks.extend(
             [
@@ -71,6 +73,11 @@ def build_user_notify(
     action_type = str(action.get("type") or "wait")
     task_summary = output.get("task_summary") if isinstance(output.get("task_summary"), dict) else {}
     retry_count = int(action.get("retry_count") or 0)
+    allowed_decisions = [
+        str(decision)
+        for decision in action.get("allowed_decisions", [])
+        if isinstance(decision, str)
+    ]
 
     control_failed = action.get("control_exit_code") not in (None, 0) or bool(action.get("control_error"))
     required = action_type in {"restart", "stop", "notify"} or status_reason in {"degraded", "unknown_or_conflicting_fields"} or control_failed
@@ -91,12 +98,16 @@ def build_user_notify(
         message_parts.append(f"control_exit_code={action.get('control_exit_code')}")
     message = "; ".join(message_parts)
 
-    if action_type == "notify" or control_failed or status_reason == "unknown_or_conflicting_fields":
+    if allowed_decisions == ["restart"]:
+        human_action_needed = "Review the abnormal exit and choose whether to restart the Harbor benchmark."
+    elif allowed_decisions == ["wait", "stop"]:
+        human_action_needed = "Choose whether to keep waiting or stop the running Harbor benchmark."
+    elif action_type == "notify" or control_failed or status_reason == "unknown_or_conflicting_fields":
         human_action_needed = "Human review is required for the Harbor queue, worker, Docker/API, and disk evidence."
     elif action_type == "restart":
-        human_action_needed = "No human action is currently required; the monitor executed the Harbor restart command."
+        human_action_needed = "The user-approved Harbor restart command was executed."
     elif action_type == "stop":
-        human_action_needed = "No human action is required; the monitor finalized the completed Harbor run."
+        human_action_needed = "The user-approved Harbor stop command was executed."
     else:
         human_action_needed = "No human action is required."
 
@@ -112,6 +123,8 @@ def build_user_notify(
         "status_reason": status_reason,
         "monitor_action_type": action_type,
         "runner_action_type": action_type,
+        "controller_status": action.get("controller_status", "observing"),
+        "allowed_decisions": allowed_decisions,
         "retry_count": retry_count,
         "max_retries": max_retries,
         "task_summary": task_summary,
@@ -248,6 +261,11 @@ def build_runner_action(
     control_attempted = bool(action.get("control_attempted"))
     control_performed = bool(action.get("external_control_performed"))
     retry_count = int(action.get("retry_count", 0) or 0)
+    allowed_decisions = [
+        str(decision)
+        for decision in action.get("allowed_decisions", [])
+        if isinstance(decision, str)
+    ]
     return {
         "audience": "harbor_runner_control",
         "kind": "harbor_control_action",
@@ -258,6 +276,8 @@ def build_runner_action(
         "stop_attempted_by_monitor": control_type == "stop" and control_attempted,
         "stop_auto_retry": action_type in {"stop", "notify"} or control_failed,
         "requires_human": action_type == "notify" or control_failed,
+        "controller_status": action.get("controller_status", "observing"),
+        "allowed_decisions": allowed_decisions,
         "benchmark_status": benchmark_status,
         "status_reason": status_reason,
         "evidence": evidence,
@@ -270,12 +290,12 @@ def build_runner_action(
         "restart_exit_code": action.get("control_exit_code") if control_type == "restart" else None,
         "restart_error": action.get("control_error") if control_type == "restart" else None,
         "external_control_performed": control_performed,
-        "auto_retry_supported": action_type == "restart" and control_performed and retry_count < max_retries,
-        "compatibility_note": "Harbor control is command-based and runner-neutral; monitor does not know or call runner-specific commands.",
+        "auto_retry_supported": False,
+        "compatibility_note": "Harbor control is command-based and runner-neutral; restart and stop require an explicit user decision.",
         "contract": {
             "wait": "Harbor run is still observable; sample Harbor artifacts again after interval.",
-            "restart": "Monitor executes only the configured run-local Harbor restart command with shell=False; recovery is confirmed by later samples.",
-            "stop": "Monitor executes the configured run-local Harbor stop command when provided, then stops the follow loop.",
-            "notify": "Harbor artifacts indicate blocked or ambiguous state that was not automatically recovered; surface user_notify and wait for human decision.",
+            "restart": "After explicit user approval, execute only the configured run-local Harbor restart command with shell=False.",
+            "stop": "After explicit user approval, execute the configured run-local Harbor stop command.",
+            "notify": "Surface user_notify with the state-appropriate allowed_decisions; no external control is executed automatically.",
         },
     }
