@@ -4,27 +4,12 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../../.." && pwd)"
 
-# Load shared site configuration (committed template; see config.env).
-# Values set there take effect for all tools; anything left unset falls
-# through to the public-safe defaults below. config.local.env (git-ignored) is
-# sourced after and overrides it; keep real credentials there, not in config.env.
-# Caller-provided environment wins over both files so a one-off override like
-# BASE_URL=... ./run still applies: snapshot it now, re-apply after sourcing.
-__caller_env="$(export -p)"
-if [[ -f "$REPO_ROOT/config.env" ]]; then
-  set -a
-  # shellcheck source=/dev/null
-  . "$REPO_ROOT/config.env"
-  set +a
-fi
-if [[ -f "$REPO_ROOT/config.local.env" ]]; then
-  set -a
-  # shellcheck source=/dev/null
-  . "$REPO_ROOT/config.local.env"
-  set +a
-fi
-eval "$__caller_env"
-unset __caller_env
+# Load shared site configuration with the same precedence used by the top-level
+# CLI and DinD entry point: runtime/exported values, config.local.env,
+# config.env, then the defaults below.
+# shellcheck source=../../../../scripts/config_loader.sh
+source "$REPO_ROOT/scripts/config_loader.sh"
+agent_fleet_load_config "$REPO_ROOT"
 
 # Keep setup-managed and explicitly supplied prerequisite directories visible
 # for direct Harbor entry points as well as scripts/run_fleet.sh.
@@ -45,7 +30,8 @@ N_ATTEMPTS="${N_ATTEMPTS:-1}"
 MAX_RETRIES="${MAX_RETRIES:-${TB_MAX_RETRIES:-2}}"
 # AGENT selects the runner: claude-code (default) or opencode.
 AGENT="${AGENT:-claude-code}"
-MODEL="${MODEL:-${TB_MODEL:-minimax2.7}}"
+MODEL="${MODEL:-minimax2.7}"
+_HARBOR_EFFECTIVE_MODEL="${TB_MODEL:-$MODEL}"
 # OpenCode requires provider/model for custom providers. Keep MODEL shared with
 # claude-code, and only add this prefix when AGENT=opencode.
 OPENCODE_PROVIDER="${OPENCODE_PROVIDER:-custom}"
@@ -105,8 +91,8 @@ HARBOR_MONITOR_STALL_SECONDS="${HARBOR_MONITOR_STALL_SECONDS:-1800}"
 HARBOR_MONITOR_MAX_RETRIES="${HARBOR_MONITOR_MAX_RETRIES:-3}"
 HARBOR_MONITOR_CONFIGURED_TIMEOUT="${HARBOR_MONITOR_CONFIGURED_TIMEOUT:-}"
 
-API_KEY="${API_KEY:-${ANTHROPIC_AUTH_TOKEN:-xxx}}"
-BASE_URL="${BASE_URL:-${ANTHROPIC_BASE_URL:-}}"
+API_KEY="${API_KEY:-xxx}"
+BASE_URL="${BASE_URL:-}"
 # Normalize to a versionless API root: callers may supply a value already ending
 # in /v1, but the endpoints below append /v1 (or /v1/chat/completions), so strip
 # one trailing /v1 to avoid doubling it.
@@ -114,9 +100,13 @@ if [[ -n "$BASE_URL" ]]; then
   BASE_URL="${BASE_URL%/}"
   BASE_URL="${BASE_URL%/v1}"
 fi
-HARBOR_ANALYZER_API_KEY="${HARBOR_ANALYZER_API_KEY:-$API_KEY}"
-HARBOR_ANALYZER_BASE_URL="${HARBOR_ANALYZER_BASE_URL:-${BASE_URL:+${BASE_URL}/v1}}"
-HARBOR_ANALYZER_MODEL="${HARBOR_ANALYZER_MODEL:-$MODEL}"
+TB_ANTHROPIC_BASE_URL="${TB_ANTHROPIC_BASE_URL:-${ANTHROPIC_BASE_URL:-${BASE_URL%/}}}"
+TB_ANTHROPIC_BASE_URL="${TB_ANTHROPIC_BASE_URL%/}"
+TB_ANTHROPIC_BASE_URL="${TB_ANTHROPIC_BASE_URL%/v1}"
+TB_ANTHROPIC_AUTH_TOKEN="${TB_ANTHROPIC_AUTH_TOKEN:-${ANTHROPIC_AUTH_TOKEN:-$API_KEY}}"
+HARBOR_ANALYZER_API_KEY="${HARBOR_ANALYZER_API_KEY:-$TB_ANTHROPIC_AUTH_TOKEN}"
+HARBOR_ANALYZER_BASE_URL="${HARBOR_ANALYZER_BASE_URL:-${TB_ANTHROPIC_BASE_URL:+${TB_ANTHROPIC_BASE_URL}/v1}}"
+HARBOR_ANALYZER_MODEL="${HARBOR_ANALYZER_MODEL:-$_HARBOR_EFFECTIVE_MODEL}"
 HARBOR_ANALYZER_PI_PROVIDER="${HARBOR_ANALYZER_PI_PROVIDER:-harbor-analyzer}"
 HARBOR_ANALYZER_NO_PROXY="${HARBOR_ANALYZER_NO_PROXY:-0}"
 HARBOR_ANALYZER_ENABLED="${HARBOR_ANALYZER_ENABLED:-$HARBOR_MONITOR_ENABLED}"
@@ -159,12 +149,12 @@ HARBOR_RUN_TIMESTAMP="${HARBOR_RUN_TIMESTAMP:-$(date +%Y%m%d-%H%M%S)}"
 HARBOR_SESSION_TIMESTAMP="${HARBOR_SESSION_TIMESTAMP:-$(date +%H%M%S)}"
 HARBOR_RUN_AGENT_NAME="$(harbor_run_name_component "$AGENT" 20)"
 HARBOR_RUN_DATASET_NAME="$(harbor_run_name_component "$DATASET_NAME" 32)"
-HARBOR_RUN_MODEL_NAME="$(harbor_run_name_component "$MODEL" 32)"
+HARBOR_RUN_MODEL_NAME="$(harbor_run_name_component "$_HARBOR_EFFECTIVE_MODEL" 32)"
 # Both defaults describe the effective run. Keep the Zellij name independent
 # from a caller-supplied Opik project so an unrelated project cannot relabel or
 # collide with the local session.
 OPIK_PROJECT_NAME="${OPIK_PROJECT_NAME:-agent-fleet-${HARBOR_RUN_AGENT_NAME}-${HARBOR_RUN_DATASET_NAME}-${HARBOR_RUN_MODEL_NAME}-${HARBOR_RUN_TIMESTAMP}}"
-HARBOR_ZELLIJ_SESSION_NAME="${HARBOR_ZELLIJ_SESSION_NAME:-$(harbor_run_name_component "h-${HARBOR_SESSION_TIMESTAMP}-$$-$(harbor_run_name_component "$AGENT" 8)-$(harbor_run_name_component "$DATASET_NAME" 8)-$(harbor_run_name_component "$MODEL" 8)" 40)}"
+HARBOR_ZELLIJ_SESSION_NAME="${HARBOR_ZELLIJ_SESSION_NAME:-$(harbor_run_name_component "h-${HARBOR_SESSION_TIMESTAMP}-$$-$(harbor_run_name_component "$AGENT" 8)-$(harbor_run_name_component "$DATASET_NAME" 8)-$(harbor_run_name_component "$_HARBOR_EFFECTIVE_MODEL" 8)" 40)}"
 # Some launch wrappers pass the placeholder literally. Do not forward that
 # into task containers, otherwise Opik auth/config becomes invalid.
 if [[ "${OPIK_API_KEY:-}" == '${OPIK_API_KEY}' ]]; then
@@ -224,14 +214,14 @@ TB_LIMIT="${TB_LIMIT:-}"
 TB_RUNS="${TB_RUNS:-$N_ATTEMPTS}"
 TB_AGENT="${TB_AGENT:-$AGENT}"
 TB_AGENT_IMPORT_PATH="${TB_AGENT_IMPORT_PATH:-}"
-TB_MODEL="${TB_MODEL:-$MODEL}"
+TB_MODEL="${TB_MODEL:-$_HARBOR_EFFECTIVE_MODEL}"
 if [[ "$AGENT" == "opencode" && "$TB_MODEL" != */* && -n "$OPENCODE_PROVIDER" ]]; then
   TB_MODEL="${OPENCODE_PROVIDER}/${TB_MODEL}"
 fi
 INCLUDE_TASKS="${INCLUDE_TASKS:-${TB_INCLUDE_TASKS:-}}"
 TB_DRY_RUN="${TB_DRY_RUN:-0}"
-TB_MIN_TEST="${TB_MIN_TEST:-0}"
-TB_MIN_TEST_INCLUDE_TASK="${TB_MIN_TEST_INCLUDE_TASK:-fix-git}"
+MIN_TEST="${MIN_TEST:-0}"
+MIN_TEST_INCLUDE_TASK="${MIN_TEST_INCLUDE_TASK:-fix-git}"
 TB_N_CONCURRENT="${TB_N_CONCURRENT:-$TOTAL_WORKERS}"
 TB_MAX_RETRIES="${TB_MAX_RETRIES:-$MAX_RETRIES}"
 TB_RETRY_INCLUDE_EXCEPTIONS="${TB_RETRY_INCLUDE_EXCEPTIONS-}"
@@ -241,28 +231,45 @@ TB_AK_COLLECT_ROLLOUT_DETAILS="${TB_AK_COLLECT_ROLLOUT_DETAILS:-}"
 TB_AK_ENABLE_SUMMARIZE="${TB_AK_ENABLE_SUMMARIZE:-}"
 TB_DISALLOWED_TOOLS="${TB_DISALLOWED_TOOLS:-WebSearch WebFetch RemoteTrigger AskUserQuestion}"
 TB_APPEND_SYSTEM_PROMPT="${TB_APPEND_SYSTEM_PROMPT:-Use English only for all reasoning, messages, filenames, and tool arguments. Use ASCII characters only unless reading existing non-ASCII file contents is strictly necessary.}"
-TB_API_BASE="${TB_API_BASE:-${BASE_URL%/}/v1/chat/completions}"
-if [[ -z "${TB_LLM_KWARGS:-}" ]]; then
-  TB_LLM_KWARGS='{"api_key":"'"${API_KEY}"'","temperature":1.0}'
+TB_API_BASE="${TB_API_BASE:-${TB_ANTHROPIC_BASE_URL%/}/v1/chat/completions}"
+ROLLOUT="${ROLLOUT:-0}"
+HARBOR_TEMPERATURE="${HARBOR_TEMPERATURE:-}"
+HARBOR_TOP_P="${HARBOR_TOP_P:-}"
+HARBOR_MAX_TOKENS="${HARBOR_MAX_TOKENS:-}"
+if [[ "$ROLLOUT" == "1" ]]; then
+  HARBOR_TEMPERATURE=""
+  HARBOR_TOP_P=""
+  HARBOR_MAX_TOKENS=""
 fi
-TB_MAX_NEW_TOKENS="${TB_MAX_NEW_TOKENS:-65536}"
+if [[ -z "${TB_LLM_KWARGS:-}" ]]; then
+  TB_LLM_KWARGS="$(
+    TB_ANTHROPIC_AUTH_TOKEN="$TB_ANTHROPIC_AUTH_TOKEN" \
+    HARBOR_TEMPERATURE="$HARBOR_TEMPERATURE" \
+    HARBOR_TOP_P="$HARBOR_TOP_P" \
+      python3 "$SCRIPT_DIR/env.py" llm-kwargs
+  )"
+fi
+_HARBOR_OUTPUT_TOKEN_LIMIT="${HARBOR_MAX_TOKENS:-65536}"
+TB_MAX_NEW_TOKENS="${TB_MAX_NEW_TOKENS:-$_HARBOR_OUTPUT_TOKEN_LIMIT}"
 TB_MODEL_INFO="${TB_MODEL_INFO:-}"
 if [[ -z "$TB_MODEL_INFO" ]]; then
-  TB_MODEL_INFO='{"max_input_tokens":204800,"max_output_tokens":65536}'
+  TB_MODEL_INFO="$(
+    _HARBOR_OUTPUT_TOKEN_LIMIT="$_HARBOR_OUTPUT_TOKEN_LIMIT" \
+      python3 "$SCRIPT_DIR/env.py" model-info
+  )"
 fi
-TB_ANTHROPIC_BASE_URL="${TB_ANTHROPIC_BASE_URL:-${BASE_URL%/}}"
-TB_ANTHROPIC_AUTH_TOKEN="${TB_ANTHROPIC_AUTH_TOKEN:-$API_KEY}"
 TB_ANTHROPIC_CUSTOM_HEADERS="${TB_ANTHROPIC_CUSTOM_HEADERS:-${ANTHROPIC_CUSTOM_HEADERS:-}}"
-TB_CLAUDE_CODE_MAX_OUTPUT_TOKENS="${TB_CLAUDE_CODE_MAX_OUTPUT_TOKENS:-65536}"
+TB_CLAUDE_CODE_MAX_OUTPUT_TOKENS="${TB_CLAUDE_CODE_MAX_OUTPUT_TOKENS:-$_HARBOR_OUTPUT_TOKEN_LIMIT}"
 TB_CLAUDE_CODE_DISABLE_AUTOUPDATER="${TB_CLAUDE_CODE_DISABLE_AUTOUPDATER:-1}"
 
-# Advanced Claude Code model routing defaults. Most users only need MODEL; these
-# are kept here so frontgate-style gateways can map primary/subagent models.
-TB_ANTHROPIC_MODEL="${TB_ANTHROPIC_MODEL:-$MODEL}"
-TB_ANTHROPIC_DEFAULT_OPUS_MODEL="${TB_ANTHROPIC_DEFAULT_OPUS_MODEL:-$MODEL}"
-TB_ANTHROPIC_DEFAULT_SONNET_MODEL="${TB_ANTHROPIC_DEFAULT_SONNET_MODEL:-$MODEL}"
-TB_ANTHROPIC_DEFAULT_HAIKU_MODEL="${TB_ANTHROPIC_DEFAULT_HAIKU_MODEL:-$MODEL}"
-TB_CLAUDE_CODE_SUBAGENT_MODEL="${TB_CLAUDE_CODE_SUBAGENT_MODEL:-$MODEL}"
+# Advanced Claude Code model routing defaults follow Harbor's effective task
+# model. This keeps direct TB_MODEL compatibility scoped to Harbor without
+# promoting it into the repository-wide MODEL variable.
+TB_ANTHROPIC_MODEL="${TB_ANTHROPIC_MODEL:-$TB_MODEL}"
+TB_ANTHROPIC_DEFAULT_OPUS_MODEL="${TB_ANTHROPIC_DEFAULT_OPUS_MODEL:-$TB_MODEL}"
+TB_ANTHROPIC_DEFAULT_SONNET_MODEL="${TB_ANTHROPIC_DEFAULT_SONNET_MODEL:-$TB_MODEL}"
+TB_ANTHROPIC_DEFAULT_HAIKU_MODEL="${TB_ANTHROPIC_DEFAULT_HAIKU_MODEL:-$TB_MODEL}"
+TB_CLAUDE_CODE_SUBAGENT_MODEL="${TB_CLAUDE_CODE_SUBAGENT_MODEL:-$TB_MODEL}"
 TB_CLAUDE_CODE_EFFORT_LEVEL="${TB_CLAUDE_CODE_EFFORT_LEVEL:-max}"
 
 TB_TIMEOUT_MULTIPLIER="${TB_TIMEOUT_MULTIPLIER:-3.0}"
@@ -327,32 +334,22 @@ OPENCODE_VERSION="${OPENCODE_VERSION:-latest}"
 OPENCODE_TGZ_BASENAME="${OPENCODE_TGZ_BASENAME:-opencode-ai-${OPENCODE_VERSION}.tgz}"
 OPENCODE_LINUX_X64_TGZ_BASENAME="${OPENCODE_LINUX_X64_TGZ_BASENAME:-opencode-linux-x64-${OPENCODE_VERSION}.tgz}"
 OPENCODE_CONFIG_CONTENT="${OPENCODE_CONFIG_CONTENT:-}"
-if [[ "$AGENT" == "opencode" && -z "$OPENCODE_CONFIG_CONTENT" && "${TB_MODEL%%/*}" == "custom" ]]; then
+if [[ "$AGENT" == "opencode" \
+  && ( ( -z "$OPENCODE_CONFIG_CONTENT" && "${TB_MODEL%%/*}" == "custom" ) \
+    || -n "$HARBOR_TEMPERATURE" \
+    || -n "$HARBOR_TOP_P" \
+    || -n "$HARBOR_MAX_TOKENS" ) ]]; then
   # OpenCode's built-in minimax provider ignores our gateway BASE_URL and calls
   # api.minimax.io directly. Use an OpenAI-compatible custom provider by default.
   OPENCODE_CONFIG_CONTENT="$(
-    python3 - "$BASE_URL" "$API_KEY" "${TB_MODEL#*/}" <<'PY'
-import json
-import sys
-
-base_url = sys.argv[1].rstrip("/") + "/v1"
-api_key = sys.argv[2]
-model = sys.argv[3]
-print(json.dumps({
-    "provider": {
-        "custom": {
-            "npm": "@ai-sdk/openai-compatible",
-            "options": {
-                "baseURL": base_url,
-                "apiKey": api_key,
-            },
-            "models": {
-                model: {"name": model},
-            },
-        },
-    },
-}, separators=(",", ":")))
-PY
+    TB_ANTHROPIC_BASE_URL="$TB_ANTHROPIC_BASE_URL" \
+    TB_ANTHROPIC_AUTH_TOKEN="$TB_ANTHROPIC_AUTH_TOKEN" \
+    TB_MODEL="$TB_MODEL" \
+    HARBOR_TEMPERATURE="$HARBOR_TEMPERATURE" \
+    HARBOR_TOP_P="$HARBOR_TOP_P" \
+    HARBOR_MAX_TOKENS="$HARBOR_MAX_TOKENS" \
+    OPENCODE_CONFIG_CONTENT="$OPENCODE_CONFIG_CONTENT" \
+      python3 "$SCRIPT_DIR/env.py" opencode-config
   )"
 fi
 
@@ -364,10 +361,12 @@ WORKERS_FAILED_FILE="${RUNTIME_DIR}/workers.failed"
 # ── RL rollout mode ──────────────────────────────────────────────────────────
 # Keep RL-specific implementation outside common/Harbor; Harbor only exposes the
 # start.sh entry point and shared benchmark/runtime configuration.
-ROLLOUT="${ROLLOUT:-0}"
 RL_UTILS_DIR="${RL_UTILS_DIR:-$REPO_ROOT/Agents/utils/rl}"
 RL_ENV_FILE="${RL_ENV_FILE:-$RL_UTILS_DIR/RL-env.sh}"
 if [[ "$ROLLOUT" == "1" && -f "$RL_ENV_FILE" ]]; then
+  RL_MODEL_NAME="${RL_MODEL_NAME:-$_HARBOR_EFFECTIVE_MODEL}"
+  RL_API_BASE="${RL_API_BASE:-${TB_ANTHROPIC_BASE_URL:+${TB_ANTHROPIC_BASE_URL}/v1}}"
+  RL_API_KEY="${RL_API_KEY:-$TB_ANTHROPIC_AUTH_TOKEN}"
   # shellcheck source=/dev/null
   . "$RL_ENV_FILE"
 fi
@@ -382,7 +381,7 @@ RL_DATASET_ROOTS="${RL_DATASET_ROOTS:-}"
 RL_TRIALS_DIR="${RL_TRIALS_DIR:-${OUTPUT_ROOT}/rl-remote-trials}"
 RL_MAX_CONCURRENT="${RL_MAX_CONCURRENT:-16}"
 RL_AGENT="${RL_AGENT:-claude-code}"
-RL_MODEL_NAME="${RL_MODEL_NAME:-$MODEL}"
+RL_MODEL_NAME="${RL_MODEL_NAME:-$_HARBOR_EFFECTIVE_MODEL}"
 RL_MODEL_PREFIX="${RL_MODEL_PREFIX:-hosted_vllm}"
 if [[ -z "${RL_API_BASE:-}" && -n "${BASE_URL:-}" ]]; then
   RL_API_BASE="${BASE_URL%/}/v1"
@@ -429,8 +428,9 @@ export API_KEY BASE_URL HARBOR_ANALYZER_API_KEY HARBOR_ANALYZER_BASE_URL HARBOR_
 export HARBOR_RUN_TIMESTAMP HARBOR_SESSION_TIMESTAMP HARBOR_RUN_AGENT_NAME HARBOR_RUN_DATASET_NAME HARBOR_RUN_MODEL_NAME HARBOR_ZELLIJ_SESSION_NAME
 export CLAUDE_CODE_VERSION CLAUDE_CODE_TGZ_BASENAME LOCAL_WHEEL_DIR LOCAL_WHEEL_PORT LOCAL_WHEEL_PORT_ATTEMPTS LOCAL_WHEEL_HOST_IP
 export TB_LOCAL_WHEEL_SERVER_URL TB_LOCAL_CLAUDE_TGZ_URL TB_REMOTE_WHEEL_SERVER_URLS EFFECTIVE_WHEEL_URL_FILE EFFECTIVE_CLAUDE_TGZ_URL_FILE LOCAL_DEPS_LOG_FILE HARBOR_RUNNER_PREPARE HARBOR_RUNNER_IMAGE_DIR HARBOR_RUNNER_HOST_DIR HARBOR_RUNNER_PYTHON_VERSION HARBOR_RUNNER_DIR HARBOR_OPIK_BIN HARBOR_CLI_BIN HARBOR_OPIK_PYTHON HARBOR_RUNNER_REQUIREMENTS HARBOR_RUNNER_PREPARE_STATUS_FILE HARBOR_RUNNER_PREPARE_LOG_FILE
-export TB_DATASET_GIT_URL TB_PATH TB_LIMIT TB_RUNS TB_AGENT TB_AGENT_IMPORT_PATH TB_MODEL INCLUDE_TASKS TB_DRY_RUN TB_MIN_TEST TB_MIN_TEST_INCLUDE_TASK
+export TB_DATASET_GIT_URL TB_PATH TB_LIMIT TB_RUNS TB_AGENT TB_AGENT_IMPORT_PATH TB_MODEL INCLUDE_TASKS TB_DRY_RUN MIN_TEST MIN_TEST_INCLUDE_TASK
 export TB_N_CONCURRENT TB_MAX_RETRIES TB_RETRY_INCLUDE_EXCEPTIONS TB_RETRY_EXCLUDE_EXCEPTIONS TB_AK_MAX_TURNS TB_AK_COLLECT_ROLLOUT_DETAILS TB_AK_ENABLE_SUMMARIZE TB_DISALLOWED_TOOLS TB_APPEND_SYSTEM_PROMPT
+export HARBOR_TEMPERATURE HARBOR_TOP_P HARBOR_MAX_TOKENS
 export TB_API_BASE TB_LLM_KWARGS TB_MAX_NEW_TOKENS TB_MODEL_INFO TB_ANTHROPIC_BASE_URL TB_ANTHROPIC_AUTH_TOKEN TB_ANTHROPIC_CUSTOM_HEADERS TB_CLAUDE_CODE_MAX_OUTPUT_TOKENS
 export TB_CLAUDE_CODE_DISABLE_AUTOUPDATER TB_ANTHROPIC_MODEL TB_ANTHROPIC_DEFAULT_OPUS_MODEL TB_ANTHROPIC_DEFAULT_SONNET_MODEL TB_ANTHROPIC_DEFAULT_HAIKU_MODEL TB_CLAUDE_CODE_SUBAGENT_MODEL TB_CLAUDE_CODE_EFFORT_LEVEL
 export TB_TIMEOUT_MULTIPLIER TB_AGENT_TIMEOUT_MULTIPLIER TB_AGENT_SETUP_TIMEOUT_MULTIPLIER TB_FORCE_BUILD TB_DEBUG TRACE_PLUGIN_SOURCE_DIR TRACE_PLUGIN_CLAUDE_HOOK_SOURCE TRACE_PLUGIN_OPENCODE_PLUGIN_SOURCE TRACE_PLUGIN_OPENCODE_HOOK_SOURCE TB_CC_OPIK_ENABLE_HOOK
@@ -460,6 +460,20 @@ harbor_agent_is_opencode() {
 
 harbor_agent_is_claude_code() {
   [[ "$AGENT" == "claude-code" ]]
+}
+
+harbor_validate_generation_controls() {
+  if [[ -n "$HARBOR_MAX_TOKENS" && ! "$HARBOR_MAX_TOKENS" =~ ^[1-9][0-9]*$ ]]; then
+    echo "[ERROR] HARBOR_MAX_TOKENS must be a positive integer." >&2
+    return 1
+  fi
+  if [[ "$ROLLOUT" != "1" ]] \
+    && harbor_agent_is_claude_code \
+    && [[ -n "$HARBOR_TEMPERATURE" || -n "$HARBOR_TOP_P" ]]; then
+    echo "[ERROR] Claude Code does not expose temperature or top_p controls." >&2
+    echo "[ERROR] Use AGENT=opencode for these settings, or leave them unset." >&2
+    return 1
+  fi
 }
 
 harbor_analyzer_pid_matches_run() {
@@ -625,7 +639,8 @@ harbor_reset_run_state() {
   rm -f "$NEXT_INDEX_FILE"
   rm -f "$OUTPUT_PATH/.monitor_state.json" "$HARBOR_MONITOR_LOG_FILE" "$HARBOR_BENCHMARK_PID_FILE" "$HARBOR_BENCHMARK_EXIT_FILE" "$HARBOR_JOB_DIR_FILE"
   rm -rf "$HARBOR_MONITOR_DIR"
-  rm -f "$HARBOR_ANALYZER_PID_FILE" "$HARBOR_ANALYZER_SUPERVISOR_PID_FILE" "$HARBOR_ANALYZER_SUPERVISOR_ID_FILE" "$HARBOR_ANALYZER_LOG_FILE" "$HARBOR_ANALYZER_OUTPUT_DIR/.analyzer_state.json" "$HARBOR_ANALYZER_OUTPUT_DIR/.analyzer-ready"
+  rm -f "$HARBOR_ANALYZER_PID_FILE" "$HARBOR_ANALYZER_SUPERVISOR_PID_FILE" "$HARBOR_ANALYZER_SUPERVISOR_ID_FILE" "$HARBOR_ANALYZER_LOG_FILE" "$HARBOR_ANALYZER_OUTPUT_DIR/.analyzer_state.json" "$HARBOR_ANALYZER_OUTPUT_DIR/.analyzer-ready" "$HARBOR_ANALYZER_OUTPUT_DIR/analyzer-artifacts-latest.json" "$HARBOR_ANALYZER_OUTPUT_DIR/benchmark-summary.md"
+  rm -rf "$HARBOR_ANALYZER_OUTPUT_DIR/benchmark-summary"
   rm -f "$HARBOR_ONLINE_ANALYSIS_PID_FILE" "$HARBOR_ONLINE_ANALYSIS_LOG_FILE"
   rm -f "$HARBOR_ONLINE_ANALYSIS_DIR/environment-events.jsonl" "$HARBOR_ONLINE_ANALYSIS_DIR/environment-summary.json"
   : > "$QUEUE_DIR/done.txt"

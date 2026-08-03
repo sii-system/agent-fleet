@@ -235,6 +235,8 @@ run_harboropik() {
   local include_tasks="${6:-}"
   local trace="${7:-true}"
   local queue_worker="${8:-1}"
+  local min_test="${9:-0}"
+  local runs="${10:-1}"
   local opik_base="http://opik.example"
   local opik_url_override="http://opik.example/api"
   local hook_flag="1"
@@ -281,11 +283,13 @@ run_harboropik() {
     API_KEY="fake-llm-key" \
     MODEL="fake-model" \
     TRACE_TO_OPIK="$trace" \
+    MIN_TEST="$min_test" \
+    MIN_TEST_INCLUDE_TASK="fix-git" \
     TB_CC_OPIK_ENABLE_HOOK="$hook_flag" \
     TB_CC_PY_WHEEL_DIR_SOURCE="$wheel_dir" \
     TRACE_PLUGIN_SOURCE_DIR="$trace_dir" \
     TB_SKIP_DOCKERHUB_PREFLIGHT="1" \
-    TB_RUNS="1" \
+    TB_RUNS="$runs" \
     N_ATTEMPTS="1" \
     TB_N_CONCURRENT="1" \
     TOTAL_WORKERS="1" \
@@ -345,6 +349,7 @@ assert_registry_summary_requires_result() {
 main() {
   local tmp fake_bin default_overlay claude_capture opencode_capture capture_bin
   local seta_capture sweverify_capture registry_capture traceoff_capture traceoff_oc_capture
+  local min_test_capture
   tmp="$(mktemp -d)"
   TEST_TMP_DIR="$tmp"
   trap 'rm -rf "$TEST_TMP_DIR"' EXIT
@@ -396,6 +401,15 @@ main() {
     "sweverify" "astropy__astropy-12907"
   assert_arg_pair "$sweverify_capture" "--dataset" "swebench-verified"
   assert_arg_pair "$sweverify_capture" "-i" "astropy__astropy-12907"
+
+  min_test_capture="$tmp/claude-min-test.args"
+  run_harboropik \
+    "claude-code" "$capture_bin" "$min_test_capture" "$tmp/claude-min-test" \
+    "terminalbench21" "" "true" "1" "1" "10"
+  assert_arg_pair "$min_test_capture" "-k" "1"
+  assert_arg_pair "$min_test_capture" "-l" "1"
+  assert_arg_pair "$min_test_capture" "-i" "terminal-bench/fix-git"
+  grep -q 'MIN_TEST=1 enabled' "$tmp/claude-min-test/claude-code.log"
 
   # TRACE_TO_OPIK=false with no Opik configuration at all: the run must
   # still construct the benchmark command, with the realtime hook off.

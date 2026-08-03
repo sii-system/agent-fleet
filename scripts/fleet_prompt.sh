@@ -3,6 +3,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="${REPO_DIR:-$(cd "$SCRIPT_DIR/.." && pwd)}"
+# shellcheck source=config_loader.sh
+source "$SCRIPT_DIR/config_loader.sh"
 # shellcheck source=fleet_spec_io.sh
 source "$SCRIPT_DIR/fleet_spec_io.sh"
 # shellcheck source=prerequisites.sh
@@ -23,28 +25,6 @@ EOF
 }
 
 err() { printf '[ERROR] %s\n' "$*" >&2; }
-
-load_config() {
-  local entry file name
-  local -a caller_env=()
-
-  while IFS= read -r -d '' entry; do
-    caller_env+=("$entry")
-  done < <(env -0)
-  for file in "$REPO_DIR/config.env" "$REPO_DIR/config.local.env"; do
-    if [[ -f "$file" ]]; then
-      set -a
-      # shellcheck source=/dev/null
-      . "$file"
-      set +a
-    fi
-  done
-  for entry in "${caller_env[@]}"; do
-    name="${entry%%=*}"
-    [[ "$name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
-    export "$entry"
-  done
-}
 
 PROMPT="" OUTPUT="" DETACH=0 DRY_RUN=0
 while [[ $# -gt 0 ]]; do
@@ -83,7 +63,8 @@ if ! PI_BIN="$(command -v "$PI_BIN" 2>/dev/null)"; then
   exit 1
 fi
 
-load_config
+agent_fleet_load_config "$REPO_DIR"
+agent_fleet_apply_auth_token_fallback
 base="${BASE_URL:-}"
 base="${base%/}"
 base="${base%/v1}"

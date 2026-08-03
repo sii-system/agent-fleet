@@ -24,10 +24,8 @@ cd agent-fleet
 
 ### 3. Configure and set up
 
-Run the commands below, replacing the example values with your model gateway
-credentials. Setup then asks for an optional `OPIK_URL`: enter the endpoint to
-use Opik, or press Enter to continue without it. The resulting configuration
-is persisted in `config.local.env`:
+Setup asks for an optional `OPIK_URL`: enter the endpoint to use Opik, or press
+Enter to continue without it.
 
 ```bash
 export BASE_URL=https://your-model-gateway.example.com  # Do not include /v1
@@ -40,16 +38,12 @@ export MODEL=your-model-id
 ./scripts/setup.sh
 ```
 
-Setup stores your credentials in the git-ignored `config.local.env` and puts
-every managed tool on `PATH`, so the runner scripts work in this and future
-shells with no manual environment changes.
-
 ### 4. Run one benchmark
 
 Validate the environment with a one-task canary first:
 
 ```bash
-TB_MIN_TEST=1 ./scripts/run_fleet.sh \
+MIN_TEST=1 ./scripts/run_fleet.sh \
   --taskset terminalbench21 \
   --agent claude-code \
   --workers 1

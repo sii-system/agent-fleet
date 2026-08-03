@@ -491,12 +491,11 @@ interfaces:
   them, while runtime consumers treat only `false` or `0` as off.
 - With `TRACE_TO_OPIK=false` there are no traces and no dashboard, Opik
   settings are not exposed to task containers, and the Claude realtime hook
-  stays off even if `TB_CC_OPIK_ENABLE_HOOK=1` is set. `TRACE_TO_OPIK=false`
-  is authoritative in ClawBio: it forces `OPIK_PLUGIN=disabled` even over an
-  explicit `OPIK_PLUGIN=enabled`; with tracing on, an explicit `OPIK_PLUGIN`
-  wins and `OPIK_PLUGIN=enabled` requires `OPIK_URL`. Setup retains an existing
-  endpoint and credentials when tracing is disabled so they can be re-enabled
-  without re-entry.
+  is forced off. `TRACE_TO_OPIK=false` is authoritative in ClawBio: it forces
+  `OPIK_PLUGIN=disabled` even over an explicit `OPIK_PLUGIN=enabled`; with
+  tracing on, an explicit `OPIK_PLUGIN` wins and `OPIK_PLUGIN=enabled` requires
+  `OPIK_URL`. Setup retains an existing endpoint and credentials when tracing
+  is disabled so they can be re-enabled without re-entry.
 - PinchBench refuses a `TRACE_TO_OPIK=false` run while the OpenClaw gateway
   configs still enable the Opik tracer plugin; regenerate the fleet with
   `TRACE_TO_OPIK=false ./Agents/Openclaw/scripts/setup.sh <n>` first.

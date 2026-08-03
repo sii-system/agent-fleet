@@ -318,24 +318,12 @@ exit "${STUB_EXIT:-0}"
         self.assertIn("./scripts/setup.sh", result.stderr)
         self.assertNotIn("runner=harbor", result.stdout)
 
-    def test_caller_auth_token_alias_overrides_saved_api_key(self):
+    def test_tool_aliases_do_not_override_saved_global_config(self):
         result = self.run_fleet(
             "--taskset",
             "terminalbench21",
             extra_env={
                 "AUTH_TOKEN": "fake-caller-token",
-                "TRACE_TO_OPIK": "false",
-            },
-        )
-
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("API_KEY=fake-caller-token", result.stdout)
-
-    def test_harbor_aliases_override_saved_canonical_config(self):
-        result = self.run_fleet(
-            "--taskset",
-            "terminalbench21",
-            extra_env={
                 "ANTHROPIC_BASE_URL": "https://alias-gateway.example.invalid",
                 "ANTHROPIC_AUTH_TOKEN": "fake-alias-token",
                 "TB_MODEL": "alias-model",
@@ -344,12 +332,62 @@ exit "${STUB_EXIT:-0}"
         )
 
         self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("BASE_URL=https://gateway.example.invalid", result.stdout)
+        self.assertIn("API_KEY=fake-runner-key", result.stdout)
+        self.assertIn("MODEL=test-model", result.stdout)
+
+    def test_auth_token_supplies_a_missing_api_key(self):
+        (self.repo / "config.local.env").write_text(
+            "BASE_URL=https://gateway.example.invalid\n"
+            "MODEL=test-model\n"
+            "TRACE_TO_OPIK=false\n",
+            encoding="utf-8",
+        )
+
+        result = self.run_fleet(
+            "--taskset",
+            "terminalbench21",
+            extra_env={"AUTH_TOKEN": "fake-caller-token"},
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("API_KEY=fake-caller-token", result.stdout)
+
+    def test_runtime_canonical_config_overrides_saved_config(self):
+        result = self.run_fleet(
+            "--taskset",
+            "terminalbench21",
+            extra_env={
+                "BASE_URL": "https://runtime-gateway.example.invalid",
+                "API_KEY": "fake-runtime-token",
+                "MODEL": "runtime-model",
+                "TRACE_TO_OPIK": "false",
+            },
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn(
-            "BASE_URL=https://alias-gateway.example.invalid",
+            "BASE_URL=https://runtime-gateway.example.invalid",
             result.stdout,
         )
-        self.assertIn("API_KEY=fake-alias-token", result.stdout)
-        self.assertIn("MODEL=alias-model", result.stdout)
+        self.assertIn("API_KEY=fake-runtime-token", result.stdout)
+        self.assertIn("MODEL=runtime-model", result.stdout)
+
+    def test_saved_local_config_wins_over_public_config(self):
+        (self.repo / "config.env").write_text(
+            "BASE_URL=https://public-gateway.example.invalid\n"
+            "API_KEY=fake-public-token\n"
+            "MODEL=public-model\n"
+            "TRACE_TO_OPIK=true\n",
+            encoding="utf-8",
+        )
+
+        result = self.run_fleet("--taskset", "terminalbench21")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("BASE_URL=https://gateway.example.invalid", result.stdout)
+        self.assertIn("API_KEY=fake-runner-key", result.stdout)
+        self.assertIn("MODEL=test-model", result.stdout)
 
     def test_direct_output_writes_replayable_spec_before_runner(self):
         output = self.root / "fleet-spec.json"

@@ -153,6 +153,7 @@ exit "${STUB_EXIT:-0}"
             "PI_OFFLINE",
             "AGENT_FLEET_API_KEY",
             "API_KEY",
+            "AUTH_TOKEN",
             "BASE_URL",
             "MODEL",
             "TRACE_TO_OPIK",
@@ -349,6 +350,25 @@ exec {shlex.quote(str(self.bin_dir / "pi"))} "$@"
         self.assertIn("another registry id", captured)
         self.assertIn('"specs"', captured)
         self.assertIn('"maxItems": 16', captured)
+
+    def test_auth_token_supplies_a_missing_prompt_api_key(self):
+        (self.repo / "config.env").write_text("", encoding="utf-8")
+        (self.repo / "config.local.env").write_text(
+            "BASE_URL=https://local.example.invalid/v1\n"
+            "MODEL=local-model\n"
+            "TRACE_TO_OPIK=false\n",
+            encoding="utf-8",
+        )
+
+        result = self.run_goal(
+            "--prompt",
+            "Run terminalbench21",
+            extra_env={"AUTH_TOKEN": "fake-caller-token"},
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        captured = self.pi_capture.read_text(encoding="utf-8")
+        self.assertIn("token=fake-caller-token", captured)
 
     def test_prompt_multiple_specs_run_through_spec_dispatch_and_write_array(self):
         output = self.root / "fleet-specs.json"

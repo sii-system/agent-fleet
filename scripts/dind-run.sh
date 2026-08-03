@@ -46,6 +46,8 @@ trim() {
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+# shellcheck source=config_loader.sh
+source "$SCRIPT_DIR/config_loader.sh"
 
 running_in_container() {
   local marker
@@ -76,21 +78,8 @@ if [[ $# -eq 0 || "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
 fi
 fleet_args=("$@")
 
-caller_env="$(export -p)"
-if [[ -f "$REPO_ROOT/config.env" ]]; then
-  set -a
-  # shellcheck source=/dev/null
-  . "$REPO_ROOT/config.env"
-  set +a
-fi
-if [[ -f "$REPO_ROOT/config.local.env" ]]; then
-  set -a
-  # shellcheck source=/dev/null
-  . "$REPO_ROOT/config.local.env"
-  set +a
-fi
-eval "$caller_env"
-unset caller_env
+agent_fleet_load_config "$REPO_ROOT"
+agent_fleet_apply_auth_token_fallback
 
 DIND_NAME="${DIND_NAME:-agent-fleet-dind}"
 DIND_IMAGE_DOCKERFILE="${DIND_IMAGE_DOCKERFILE:-$REPO_ROOT/scripts/dind/Dockerfile}"
@@ -381,8 +370,13 @@ declare -a run_env=(
   "HOME=$DIND_HOME_DIR"
 )
 run_env+=("${proxy_env[@]}")
-for optional in PI_VERSION TRACE_TO_OPIK OPIK_URL OPIK_API_KEY OPIK_WORKSPACE OPIK_PROJECT_NAME CLAUDE_TGZ_SOURCE CLAUDE_WHEEL_DIR_SOURCE TB_CC_CLAUDE_TGZ_SOURCE TB_CC_PY_WHEEL_DIR_SOURCE; do
+for optional in PI_VERSION TRACE_TO_OPIK OPIK_URL OPIK_API_KEY OPIK_WORKSPACE OPIK_PROJECT_NAME MIN_TEST MIN_TEST_INCLUDE_TASK CLAUDE_TGZ_SOURCE CLAUDE_WHEEL_DIR_SOURCE TB_CC_CLAUDE_TGZ_SOURCE TB_CC_PY_WHEEL_DIR_SOURCE; do
   if [[ -n "${!optional:-}" ]]; then
+    run_env+=("$optional=${!optional}")
+  fi
+done
+for optional in HARBOR_TEMPERATURE HARBOR_TOP_P HARBOR_MAX_TOKENS; do
+  if [[ ${!optional+x} ]]; then
     run_env+=("$optional=${!optional}")
   fi
 done

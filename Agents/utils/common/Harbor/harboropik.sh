@@ -20,7 +20,7 @@ trap cleanup_verifier_uv_bin_dir EXIT
 # Workflow:
 #   1. Validate prerequisites (git, curl, python3, Docker daemon)
 #   2. Normalize the Opik API URL (ensures /api suffix is present)
-#   3. Apply minimal-test defaults when TB_MIN_TEST=1 (fast smoke test)
+#   3. Apply minimal-test defaults when MIN_TEST=1 (fast smoke test)
 #   4. Docker Hub connectivity preflight (warn or abort if unreachable)
 #   5. Ensure Opik is available:
 #        - OPIK_MODE=local  → clone Opik repo and start via docker-compose
@@ -35,7 +35,7 @@ trap cleanup_verifier_uv_bin_dir EXIT
 # environment.  See README.md for the complete variable reference.
 #
 # Usage examples:
-#   TB_MIN_TEST=1 bash harboropik.sh                    # quick smoke test
+#   MIN_TEST=1 bash harboropik.sh                       # quick smoke test
 #   TB_DRY_RUN=1  bash harboropik.sh                    # print command, skip run
 #   OPIK_MODE=remote OPIK_BASE=http://host:5173 \
 #     TB_RUNS=10 TB_N_CONCURRENT=4 bash harboropik.sh   # standard remote run
@@ -499,7 +499,7 @@ PY
 }
 
 apply_min_test_defaults() {
-  if [[ "$TB_MIN_TEST" != "1" ]]; then
+  if [[ "$MIN_TEST" != "1" ]]; then
     return 0
   fi
 
@@ -509,11 +509,11 @@ apply_min_test_defaults() {
   if [[ -z "$TB_LIMIT" ]]; then
     TB_LIMIT="1"
   fi
-  if [[ -z "$INCLUDE_TASKS" && -n "$TB_MIN_TEST_INCLUDE_TASK" ]]; then
-    INCLUDE_TASKS="$TB_MIN_TEST_INCLUDE_TASK"
+  if [[ -z "$INCLUDE_TASKS" && -n "$MIN_TEST_INCLUDE_TASK" ]]; then
+    INCLUDE_TASKS="$MIN_TEST_INCLUDE_TASK"
   fi
 
-  echo "[INFO] TB_MIN_TEST=1 enabled (runs=$TB_RUNS, limit=$TB_LIMIT, include_tasks=$INCLUDE_TASKS)"
+  echo "[INFO] MIN_TEST=1 enabled (runs=$TB_RUNS, limit=$TB_LIMIT, include_tasks=$INCLUDE_TASKS)"
 }
 
 run_tb() {
@@ -1026,7 +1026,8 @@ PY
 
     if [[ -n "${OPENCODE_CONFIG_CONTENT:-}" ]]; then
       cmd+=( --ak "opencode_config=$OPENCODE_CONFIG_CONTENT" )
-    else
+    fi
+    if [[ -z "${OPENCODE_CONFIG_CONTENT:-}" || "${TB_MODEL%%/*}" != "custom" ]]; then
       if [[ -n "${TB_ANTHROPIC_BASE_URL:-}" ]]; then
         cmd+=( --ae "ANTHROPIC_BASE_URL=$TB_ANTHROPIC_BASE_URL" )
       fi
@@ -1155,6 +1156,7 @@ PY
 
 main() {
   harbor_validate_agent
+  harbor_validate_generation_controls
   configure_trace_disabled_runtime
   if harbor_agent_is_opencode; then
     need_cmd curl

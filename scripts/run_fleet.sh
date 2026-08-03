@@ -6,6 +6,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/prerequisites.sh"
 agent_fleet_prerequisite_init_path
 REPO_DIR="${REPO_DIR:-$(cd "$SCRIPT_DIR/.." && pwd)}"
+# shellcheck source=config_loader.sh
+source "$SCRIPT_DIR/config_loader.sh"
 # shellcheck source=fleet_spec_io.sh
 source "$SCRIPT_DIR/fleet_spec_io.sh"
 case "${1:-}" in
@@ -52,55 +54,14 @@ run_command() {
 }
 
 load_run_config() {
-  local entry file name
-  local -a caller_env=()
-
-  # Normalize supported caller aliases before the snapshot so they also
-  # override canonical values stored in config.local.env.
-  if [[ -z "${BASE_URL:-}" && -n "${ANTHROPIC_BASE_URL:-}" ]]; then
-    BASE_URL="$ANTHROPIC_BASE_URL"
-    export BASE_URL
-  fi
-  if [[ -z "${API_KEY:-}" ]]; then
-    if [[ -n "${AUTH_TOKEN:-}" ]]; then
-      API_KEY="$AUTH_TOKEN"
-    elif [[ -n "${ANTHROPIC_AUTH_TOKEN:-}" ]]; then
-      API_KEY="$ANTHROPIC_AUTH_TOKEN"
-    fi
-  fi
-  if [[ -n "${API_KEY:-}" ]]; then
-    export API_KEY
-  fi
-  if [[ -z "${MODEL:-}" && -n "${TB_MODEL:-}" ]]; then
-    MODEL="$TB_MODEL"
-    export MODEL
-  fi
-  while IFS= read -r -d '' entry; do
-    caller_env+=("$entry")
-  done < <(env -0)
-  for file in "$REPO_DIR/config.env" "$REPO_DIR/config.local.env"; do
-    if [[ -f "$file" ]]; then
-      set -a
-      # shellcheck source=/dev/null
-      . "$file"
-      set +a
-    fi
-  done
-  for entry in "${caller_env[@]}"; do
-    name="${entry%%=*}"
-    [[ "$name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
-    export "$entry"
-  done
+  agent_fleet_load_config "$REPO_DIR"
+  agent_fleet_apply_auth_token_fallback
 }
 
 validate_run_config() {
   local -a missing=()
   local required
 
-  BASE_URL="${BASE_URL:-${ANTHROPIC_BASE_URL:-}}"
-  API_KEY="${API_KEY:-${AUTH_TOKEN:-${ANTHROPIC_AUTH_TOKEN:-}}}"
-  MODEL="${MODEL:-${TB_MODEL:-}}"
-  export BASE_URL API_KEY MODEL
   for required in BASE_URL API_KEY MODEL; do
     [[ -n "${!required:-}" ]] || missing+=("$required")
   done

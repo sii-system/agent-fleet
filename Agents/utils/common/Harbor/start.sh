@@ -241,6 +241,7 @@ harbor_start_analyzer_if_enabled() {
         --handover "$HARBOR_MONITOR_DIR/analyzer-handover-latest.json" \
         --handoff-dir "$HARBOR_MONITOR_DIR/analyzer-handoffs" \
         --run-dir "$OUTPUT_PATH" \
+        --run-id "$RUN_ID" \
         --queue-dir "$QUEUE_DIR" \
         --agent "$AGENT" \
         --output-dir "$HARBOR_ANALYZER_OUTPUT_DIR" \
@@ -355,11 +356,20 @@ harbor_wait_for_analyzer_drain() {
   echo "[WARN] Harbor analyzer still has pending handovers after ${timeout}s drain wait; stopping it" >&2
 }
 
+harbor_write_benchmark_summary() {
+  python3 "$SCRIPT_DIR/scripts/write_benchmark_summary.py" \
+    "$HARBOR_MONITOR_DIR/monitor-latest.json" \
+    "$HARBOR_ANALYZER_OUTPUT_DIR/analyzer-artifacts-latest.json" \
+    "$HARBOR_ANALYZER_OUTPUT_DIR/benchmark-summary.md" "$RUN_ID" \
+    || echo "[WARN] failed to write Harbor benchmark summary" >&2
+}
+
 harbor_finish_analyzer_lifecycle() {
   [[ "$HARBOR_ANALYZER_ENABLED" == "1" && "$ROLLOUT" != "1" ]] || return 0
   harbor_wait_for_monitor_completion
   harbor_wait_for_analyzer_drain
   harbor_stop_analyzer || true
+  harbor_write_benchmark_summary
 }
 
 harbor_analyzer_shutdown_timeout() {
@@ -448,6 +458,7 @@ harbor_start_detached_analyzer_supervisor_if_enabled() {
     done
     harbor_wait_for_analyzer_drain "$analyzer_pid"
     harbor_stop_analyzer "$analyzer_pid" || true
+    harbor_write_benchmark_summary
   ) >>"$HARBOR_ANALYZER_LOG_FILE" 2>&1 &
   local supervisor_pid="$!"
   if ! harbor_write_analyzer_supervisor_identity "$supervisor_pid" "$analyzer_pid"; then
@@ -475,6 +486,7 @@ if [[ "$ROLLOUT" != "1" ]] && harbor_uses_registry_dataset; then
 fi
 if [[ "$ROLLOUT" != "1" ]]; then
   harbor_validate_agent
+  harbor_validate_generation_controls
   harbor_ensure_dataset
 else
   mkdir -p "$RL_TRIALS_DIR" "$RL_ACTIVE_DIR" "$RL_QUEUE_DIR/pending" "$RL_QUEUE_DIR/results" "$RL_JOB_QUEUE_ROOT" "$RL_JOB_RUNTIME_ROOT" "$(dirname "$RL_TRACE_LOG")"

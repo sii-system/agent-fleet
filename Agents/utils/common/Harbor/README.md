@@ -65,6 +65,20 @@ TOTAL_WORKERS="80"
 TB_N_CONCURRENT="80"
 ```
 
+For OpenCode fixed benchmark runs, optional generation controls can be set in
+`config.local.env` or the shell:
+
+```bash
+HARBOR_TEMPERATURE=0.2
+HARBOR_TOP_P=0.9
+HARBOR_MAX_TOKENS=8192
+```
+
+`HARBOR_MAX_TOKENS` also applies to Claude Code. Claude Code does not expose
+temperature or top-p controls, so the runner rejects those two settings when
+`AGENT=claude-code` instead of silently ignoring them. Rollout mode keeps its
+separate `RL_TEMPERATURE`, `RL_TOP_P`, and `RL_MAX_NEW_TOKENS` interface.
+
 When `TRACE_TO_OPIK=true` (the default), the Opik tracing plugin is loaded from
 the `third_party/agent-opik-plugin` submodule. Initialize it before a traced run:
 
@@ -257,6 +271,67 @@ control the benchmark run. Before using the default analyzer path, configure
 `HARBOR_ANALYZER_BASE_URL`, `HARBOR_ANALYZER_API_KEY`, and
 `HARBOR_ANALYZER_MODEL` overrides. If no analyzer model gateway should be used
 for a run, set `HARBOR_ANALYZER_ENABLED=0`.
+
+## Harbor Fixer: Plan Generation
+
+`scripts/fixer.py` reads Analyzer output artifacts and generates a validated
+`fix-plan-latest.json`. From `analyzer-artifacts-latest.json`, Fixer selects
+each handover's current publication and reads:
+
+```text
+env-infra-tasks/<handover-id>/<publication-id>.json
+fix-line-index/<handover-id>/<publication-id>.jsonl
+```
+
+`--analyzer-output` must point to the Analyzer root containing the manifest.
+All unique environment and infrastructure failures across the benchmark's
+handovers are planned together. If the same task identity appears more than
+once, the later publication entry in the manifest supersedes the earlier
+snapshot.
+
+It builds one input per unique failure, asks isolated no-tool Pi agents for
+task summaries, and asks one planning agent to group shared fixes. Before model
+calls, the Python harness records a bounded
+`target-environment.json` runtime inventory and redacted
+`target-context.json` workspace/evidence snapshot. Both are embedded in
+`main-agent-input.json`; the agents receive no filesystem tools.
+
+Prepare inputs and prompts without invoking Pi:
+
+```bash
+python3 Agents/utils/common/Harbor/scripts/fixer.py \
+  --analyzer-output /path/to/analyzer-output \
+  --output-dir /path/to/fixer-output \
+  --prepare-only \
+  --write-prompts
+```
+
+Generate a plan:
+
+```bash
+python3 Agents/utils/common/Harbor/scripts/fixer.py \
+  --analyzer-output /path/to/analyzer-output \
+  --output-dir /path/to/fixer-output \
+  --pi-bin pi \
+  --pi-provider harbor-fixer \
+  --pi-model "$HARBOR_FIXER_MODEL" \
+  --pi-base-url "$BASE_URL" \
+  --workspace-root /path/to/workspace \
+  --max-concurrency 4 \
+  --max-task-summary-chars 24000 \
+  --max-task-summaries-chars 400000
+```
+
+The two summary limits are optional and default to the values shown. Oversized
+summaries are omitted and recorded in `generation_errors`.
+
+Each invocation uses an isolated `pi --mode json --print --no-session`
+subprocess. Task summarizers use `thinking=off`; the plan agent retains the
+configured thinking level. Events, stderr, prompts, and provenance are retained
+under the output directory. No default model is assumed. An Analyzer snapshot
+with no env/infra tasks produces an empty fix plan without invoking Pi.
+Starting generation removes any stale `fix-plan-latest.json`; if no task
+summary succeeds, Fixer writes a diagnostic empty plan and exits nonzero.
 
 ## More Details
 
