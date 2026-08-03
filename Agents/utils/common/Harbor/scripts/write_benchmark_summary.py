@@ -64,24 +64,51 @@ def _task_label(analysis: dict[str, Any]) -> str:
     return f"{name} ({attempt_id})" if attempt_id else name
 
 
-def _analyzer_tasks(manifest_path: Path) -> tuple[str | None, list[dict[str, Any]]]:
+def _task_identity(task: dict[str, Any]) -> tuple[Any, Any]:
+    return task.get("task_index"), task.get("task_name")
+
+
+def _final_failed_task_ids(monitor: dict[str, Any]) -> set[tuple[Any, Any]] | None:
+    handover = monitor.get("task_handover")
+    if not isinstance(handover, list):
+        return None
+    return {
+        _task_identity(task)
+        for task in handover
+        if isinstance(task, dict)
+        and task.get("task_complete_status")
+        in {"complete_failed", "complete_unknown", "not_complete"}
+    }
+
+
+def _analyzer_tasks(
+    manifest_path: Path,
+    *,
+    expected_run_id: str | None,
+    eligible_task_ids: set[tuple[Any, Any]] | None,
+) -> tuple[str | None, list[dict[str, Any]]]:
     if not manifest_path.is_file():
         return None, []
 
     manifest = _load_json(manifest_path)
+    manifest_run_id = manifest.get("run_id")
+    if expected_run_id and manifest_run_id != expected_run_id:
+        return None, []
     tasks_by_identity: dict[tuple[Any, Any, Any], dict[str, Any]] = {}
     for publication in manifest.get("publications", []):
         report_path = Path(publication["artifacts"]["benchmark_report_path"])
         report = _load_json(report_path)
         for analysis in report.get("tasks", []):
             task = analysis.get("task", {})
+            if eligible_task_ids is not None and _task_identity(task) not in eligible_task_ids:
+                continue
             identity = (
                 task.get("task_index"),
                 task.get("task_name"),
                 task.get("attempt_id"),
             )
             tasks_by_identity[identity] = analysis
-    return manifest.get("run_id"), list(tasks_by_identity.values())
+    return manifest_run_id, list(tasks_by_identity.values())
 
 
 def _append_unique(values: list[str], value: Any) -> None:
@@ -129,6 +156,7 @@ def _analysis_groups(analyses: list[dict[str, Any]]) -> list[dict[str, Any]]:
 def _summary_input(
     monitor: dict[str, Any],
     manifest_path: Path,
+    expected_run_id: str | None,
 ) -> dict[str, Any]:
     evidence = monitor.get("evidence", {})
     task_summary = monitor.get("task_summary", {})
@@ -138,7 +166,11 @@ def _summary_input(
         int(task_summary.get(status, 0))
         for status in ("complete_failed", "complete_unknown", "not_complete")
     )
-    run_id, analyses = _analyzer_tasks(manifest_path)
+    run_id, analyses = _analyzer_tasks(
+        manifest_path,
+        expected_run_id=expected_run_id,
+        eligible_task_ids=_final_failed_task_ids(monitor),
+    )
     findings = {
         "analysis_complete": 0,
         "env_fail": 0,
@@ -157,9 +189,10 @@ def _summary_input(
             if final_class in {"env_fail", "infra_fail", "model_fail", "unknown"}:
                 findings[final_class] += 1
 
+    analysis_groups = _analysis_groups(analyses)
     return {
         "run": {
-            "run_id": run_id or os.environ.get("RUN_ID", "unknown"),
+            "run_id": expected_run_id or run_id or os.environ.get("RUN_ID", "unknown"),
             "runtime": _format_runtime(float(evidence.get("elapsed_since_run_start", 0))),
             "total_tasks": total,
             "successful_tasks": success,
@@ -168,7 +201,14 @@ def _summary_input(
             "failure_rate": f"{failure / total:.2%}" if total else "0.00%",
         },
         "analyzer_findings": findings,
-        "analysis_groups": _analysis_groups(analyses),
+        "analysis_groups": analysis_groups,
+        "analyzer_result_status": (
+            "not_required"
+            if failure == 0
+            else "available"
+            if analysis_groups
+            else "unavailable"
+        ),
     }
 
 
@@ -331,6 +371,12 @@ def _render_markdown(
             if group["analysis_status"] == "analysis_failed":
                 text += " The task's root cause remains undetermined."
             lines.append(f"- **{label} - {_inline_tasks(group['tasks'])}:** {text}")
+    elif payload["analyzer_result_status"] == "unavailable":
+        lines.append(
+            "Analyzer results are unavailable for "
+            f"{run['failed_tasks']} failed/unknown/not-complete task(s); "
+            "inspect Analyzer handovers and stderr."
+        )
     else:
         lines.append("No failed task required Analyzer work.")
 
@@ -355,12 +401,13 @@ def write_benchmark_summary(
     monitor_path: Path,
     manifest_path: Path,
     output_path: Path,
+    expected_run_id: str | None = None,
 ) -> None:
     monitor = _load_json(monitor_path)
     if monitor.get("benchmark_status") == "running":
         raise ValueError("monitor still reports benchmark_status=running")
 
-    payload = _summary_input(monitor, manifest_path)
+    payload = _summary_input(monitor, manifest_path, expected_run_id)
     summary_dir = output_path.parent / "benchmark-summary"
     summary_output_path = summary_dir / "summary-output.json"
     write_json_atomic(summary_dir / "summary-input.json", payload)
@@ -378,14 +425,17 @@ def write_benchmark_summary(
 
 
 def main() -> int:
-    if len(sys.argv) != 4:
+    if len(sys.argv) not in {4, 5}:
         print(
-            f"usage: {Path(sys.argv[0]).name} MONITOR_JSON ANALYZER_MANIFEST OUTPUT_MD",
+            f"usage: {Path(sys.argv[0]).name} MONITOR_JSON ANALYZER_MANIFEST OUTPUT_MD [RUN_ID]",
             file=sys.stderr,
         )
         return 2
     try:
-        write_benchmark_summary(*(Path(value) for value in sys.argv[1:]))
+        write_benchmark_summary(
+            *(Path(value) for value in sys.argv[1:4]),
+            expected_run_id=sys.argv[4] if len(sys.argv) == 5 else None,
+        )
     except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
         print(f"benchmark summary not written: {exc}", file=sys.stderr)
         return 1

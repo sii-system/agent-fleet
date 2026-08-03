@@ -316,6 +316,214 @@ class BenchmarkSummaryTests(unittest.TestCase):
                 output_path.read_text(encoding="utf-8"),
             )
 
+    def test_ignores_stale_manifest_for_another_run(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            root_path = Path(root)
+            monitor_path = root_path / "monitor-latest.json"
+            manifest_path = root_path / "analyzer-artifacts-latest.json"
+            report_path = root_path / "old-report.json"
+            output_path = root_path / "benchmark-summary.md"
+            _write_json(
+                monitor_path,
+                {
+                    "benchmark_status": "completed",
+                    "task_summary": {
+                        "complete_success": 0,
+                        "complete_failed": 1,
+                        "complete_unknown": 0,
+                        "not_complete": 0,
+                        "total_evaluated": 1,
+                    },
+                    "task_handover": [
+                        {
+                            "task_index": "1",
+                            "task_name": "task-1",
+                            "task_complete_status": "complete_failed",
+                        }
+                    ],
+                },
+            )
+            _write_json(
+                report_path,
+                {
+                    "tasks": [
+                        _analysis(
+                            "1",
+                            attempt_id="attempt-1",
+                            status="analysis_complete",
+                            final_class="model_fail",
+                            root_cause_code="old",
+                            root_cause_summary="Old result.",
+                        )
+                    ]
+                },
+            )
+            _write_json(
+                manifest_path,
+                {
+                    "run_id": "old-run",
+                    "publications": [
+                        {"artifacts": {"benchmark_report_path": str(report_path)}}
+                    ],
+                },
+            )
+            model_output = {
+                "summary": "Analyzer output was unavailable.",
+                "analysis_summary": [],
+                "recommended_actions": [],
+            }
+            with mock.patch.object(
+                summary_writer,
+                "run_pi_json_process",
+                return_value=_pi_result(model_output),
+            ):
+                summary_writer.write_benchmark_summary(
+                    monitor_path,
+                    manifest_path,
+                    output_path,
+                    expected_run_id="current-run",
+                )
+
+            summary = output_path.read_text(encoding="utf-8")
+            self.assertIn("Run ID: `current-run`", summary)
+            self.assertIn(
+                "Analyzer results are unavailable for 1 failed/unknown/not-complete task(s)",
+                summary,
+            )
+            self.assertNotIn("task-1", summary)
+
+    def test_filters_analyses_for_tasks_that_recovered(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            root_path = Path(root)
+            monitor_path = root_path / "monitor-latest.json"
+            manifest_path = root_path / "analyzer-artifacts-latest.json"
+            report_path = root_path / "report.json"
+            output_path = root_path / "benchmark-summary.md"
+            _write_json(
+                monitor_path,
+                {
+                    "benchmark_status": "completed",
+                    "task_summary": {
+                        "complete_success": 1,
+                        "complete_failed": 1,
+                        "complete_unknown": 0,
+                        "not_complete": 0,
+                        "total_evaluated": 2,
+                    },
+                    "task_handover": [
+                        {
+                            "task_index": "2",
+                            "task_name": "task-2",
+                            "task_complete_status": "complete_failed",
+                        }
+                    ],
+                },
+            )
+            _write_json(
+                report_path,
+                {
+                    "tasks": [
+                        _analysis(
+                            "1",
+                            attempt_id="attempt-1",
+                            status="analysis_complete",
+                            final_class="model_fail",
+                            root_cause_code="recovered",
+                            root_cause_summary="Recovered task.",
+                        ),
+                        _analysis(
+                            "2",
+                            attempt_id="attempt-1",
+                            status="analysis_complete",
+                            final_class="infra_fail",
+                            root_cause_code="current",
+                            root_cause_summary="Current failure.",
+                        ),
+                    ]
+                },
+            )
+            _write_json(
+                manifest_path,
+                {
+                    "run_id": "current-run",
+                    "publications": [
+                        {"artifacts": {"benchmark_report_path": str(report_path)}}
+                    ],
+                },
+            )
+            model_output = {
+                "summary": "One current failure was analyzed.",
+                "analysis_summary": [{"group_id": "G1", "summary": "Current failure."}],
+                "recommended_actions": [],
+            }
+            with mock.patch.object(
+                summary_writer,
+                "run_pi_json_process",
+                return_value=_pi_result(model_output),
+            ):
+                summary_writer.write_benchmark_summary(
+                    monitor_path,
+                    manifest_path,
+                    output_path,
+                    expected_run_id="current-run",
+                )
+
+            summary = output_path.read_text(encoding="utf-8")
+            self.assertIn("`task-2 (attempt-1)`", summary)
+            self.assertNotIn("task-1", summary)
+
+    def test_marks_missing_analyzer_output_unavailable_only_when_tasks_failed(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            root_path = Path(root)
+            missing_manifest = root_path / "missing-manifest.json"
+            failed_monitor = root_path / "failed-monitor.json"
+            clean_monitor = root_path / "clean-monitor.json"
+            failed_output = root_path / "failed-summary.md"
+            clean_output = root_path / "clean-summary.md"
+            _write_json(
+                failed_monitor,
+                {
+                    "benchmark_status": "completed",
+                    "task_summary": {
+                        "complete_success": 0,
+                        "complete_failed": 1,
+                        "complete_unknown": 0,
+                        "not_complete": 0,
+                        "total_evaluated": 1,
+                    },
+                },
+            )
+            _write_json(
+                clean_monitor,
+                {
+                    "benchmark_status": "completed",
+                    "task_summary": {
+                        "complete_success": 1,
+                        "complete_failed": 0,
+                        "complete_unknown": 0,
+                        "not_complete": 0,
+                        "total_evaluated": 1,
+                    },
+                },
+            )
+            model_output = {
+                "summary": "No groups were supplied.",
+                "analysis_summary": [],
+                "recommended_actions": [],
+            }
+            with mock.patch.object(summary_writer, "run_pi_json_process", return_value=_pi_result(model_output)):
+                summary_writer.write_benchmark_summary(failed_monitor, missing_manifest, failed_output)
+                summary_writer.write_benchmark_summary(clean_monitor, missing_manifest, clean_output)
+
+            self.assertIn(
+                "Analyzer results are unavailable for 1 failed/unknown/not-complete task(s)",
+                failed_output.read_text(encoding="utf-8"),
+            )
+            self.assertIn(
+                "No failed task required Analyzer work.",
+                clean_output.read_text(encoding="utf-8"),
+            )
+
     def test_does_not_write_summary_while_monitor_is_running(self) -> None:
         with tempfile.TemporaryDirectory() as root:
             root_path = Path(root)
