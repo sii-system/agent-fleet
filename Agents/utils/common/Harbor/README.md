@@ -65,6 +65,20 @@ TOTAL_WORKERS="80"
 TB_N_CONCURRENT="80"
 ```
 
+For OpenCode fixed benchmark runs, optional generation controls can be set in
+`config.local.env` or the shell:
+
+```bash
+HARBOR_TEMPERATURE=0.2
+HARBOR_TOP_P=0.9
+HARBOR_MAX_TOKENS=8192
+```
+
+`HARBOR_MAX_TOKENS` also applies to Claude Code. Claude Code does not expose
+temperature or top-p controls, so the runner rejects those two settings when
+`AGENT=claude-code` instead of silently ignoring them. Rollout mode keeps its
+separate `RL_TEMPERATURE`, `RL_TOP_P`, and `RL_MAX_NEW_TOKENS` interface.
+
 When `TRACE_TO_OPIK=true` (the default), the Opik tracing plugin is loaded from
 the `third_party/agent-opik-plugin` submodule. Initialize it before a traced run:
 

@@ -475,6 +475,7 @@ if [[ "$ROLLOUT" != "1" ]] && harbor_uses_registry_dataset; then
 fi
 if [[ "$ROLLOUT" != "1" ]]; then
   harbor_validate_agent
+  harbor_validate_generation_controls
   harbor_ensure_dataset
 else
   mkdir -p "$RL_TRIALS_DIR" "$RL_ACTIVE_DIR" "$RL_QUEUE_DIR/pending" "$RL_QUEUE_DIR/results" "$RL_JOB_QUEUE_ROOT" "$RL_JOB_RUNTIME_ROOT" "$(dirname "$RL_TRACE_LOG")"

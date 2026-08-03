@@ -112,6 +112,9 @@ Typical dataset paths:
 | `MODEL` | Model name passed to Harbor |
 | `BASE_URL` | Model gateway base URL |
 | `API_KEY` | Model gateway API key |
+| `HARBOR_TEMPERATURE` | OpenCode sampling temperature for fixed benchmark runs; unset by default |
+| `HARBOR_TOP_P` | OpenCode nucleus-sampling value for fixed benchmark runs; unset by default |
+| `HARBOR_MAX_TOKENS` | Maximum output tokens for OpenCode or Claude Code fixed benchmark runs; defaults to existing agent limits when unset |
 | `DATASET_NAME` | Built-in local dataset selector, or Harbor registry dataset id |
 | `DATASET_PATH` | Local dataset directory |
 | `TASK_SOURCE_FILE` | Explicit task list path |

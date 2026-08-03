@@ -1155,6 +1155,7 @@ PY
 
 main() {
   harbor_validate_agent
+  harbor_validate_generation_controls
   configure_trace_disabled_runtime
   if harbor_agent_is_opencode; then
     need_cmd curl

@@ -232,16 +232,47 @@ TB_AK_ENABLE_SUMMARIZE="${TB_AK_ENABLE_SUMMARIZE:-}"
 TB_DISALLOWED_TOOLS="${TB_DISALLOWED_TOOLS:-WebSearch WebFetch RemoteTrigger AskUserQuestion}"
 TB_APPEND_SYSTEM_PROMPT="${TB_APPEND_SYSTEM_PROMPT:-Use English only for all reasoning, messages, filenames, and tool arguments. Use ASCII characters only unless reading existing non-ASCII file contents is strictly necessary.}"
 TB_API_BASE="${TB_API_BASE:-${TB_ANTHROPIC_BASE_URL%/}/v1/chat/completions}"
+HARBOR_TEMPERATURE="${HARBOR_TEMPERATURE:-}"
+HARBOR_TOP_P="${HARBOR_TOP_P:-}"
+HARBOR_MAX_TOKENS="${HARBOR_MAX_TOKENS:-}"
 if [[ -z "${TB_LLM_KWARGS:-}" ]]; then
-  TB_LLM_KWARGS='{"api_key":"'"${TB_ANTHROPIC_AUTH_TOKEN}"'","temperature":1.0}'
+  TB_LLM_KWARGS="$(
+    python3 - "$TB_ANTHROPIC_AUTH_TOKEN" "${HARBOR_TEMPERATURE:-1.0}" "$HARBOR_TOP_P" <<'PY'
+import json
+import sys
+
+api_key, temperature, top_p = sys.argv[1:4]
+payload = {
+    "api_key": api_key,
+    "temperature": float(temperature),
+}
+if top_p:
+    payload["top_p"] = float(top_p)
+print(json.dumps(payload, separators=(",", ":")))
+PY
+  )"
 fi
-TB_MAX_NEW_TOKENS="${TB_MAX_NEW_TOKENS:-65536}"
+_HARBOR_OUTPUT_TOKEN_LIMIT="${HARBOR_MAX_TOKENS:-65536}"
+TB_MAX_NEW_TOKENS="${TB_MAX_NEW_TOKENS:-$_HARBOR_OUTPUT_TOKEN_LIMIT}"
 TB_MODEL_INFO="${TB_MODEL_INFO:-}"
 if [[ -z "$TB_MODEL_INFO" ]]; then
-  TB_MODEL_INFO='{"max_input_tokens":204800,"max_output_tokens":65536}'
+  TB_MODEL_INFO="$(
+    python3 - "$_HARBOR_OUTPUT_TOKEN_LIMIT" <<'PY'
+import json
+import sys
+
+max_output_tokens = int(sys.argv[1])
+if max_output_tokens <= 0:
+    raise ValueError("HARBOR_MAX_TOKENS must be greater than zero")
+print(json.dumps({
+    "max_input_tokens": 204800,
+    "max_output_tokens": max_output_tokens,
+}, separators=(",", ":")))
+PY
+  )"
 fi
 TB_ANTHROPIC_CUSTOM_HEADERS="${TB_ANTHROPIC_CUSTOM_HEADERS:-${ANTHROPIC_CUSTOM_HEADERS:-}}"
-TB_CLAUDE_CODE_MAX_OUTPUT_TOKENS="${TB_CLAUDE_CODE_MAX_OUTPUT_TOKENS:-65536}"
+TB_CLAUDE_CODE_MAX_OUTPUT_TOKENS="${TB_CLAUDE_CODE_MAX_OUTPUT_TOKENS:-$_HARBOR_OUTPUT_TOKEN_LIMIT}"
 TB_CLAUDE_CODE_DISABLE_AUTOUPDATER="${TB_CLAUDE_CODE_DISABLE_AUTOUPDATER:-1}"
 
 # Advanced Claude Code model routing defaults follow Harbor's effective task
@@ -316,31 +347,71 @@ OPENCODE_VERSION="${OPENCODE_VERSION:-latest}"
 OPENCODE_TGZ_BASENAME="${OPENCODE_TGZ_BASENAME:-opencode-ai-${OPENCODE_VERSION}.tgz}"
 OPENCODE_LINUX_X64_TGZ_BASENAME="${OPENCODE_LINUX_X64_TGZ_BASENAME:-opencode-linux-x64-${OPENCODE_VERSION}.tgz}"
 OPENCODE_CONFIG_CONTENT="${OPENCODE_CONFIG_CONTENT:-}"
-if [[ "$AGENT" == "opencode" && -z "$OPENCODE_CONFIG_CONTENT" && "${TB_MODEL%%/*}" == "custom" ]]; then
+if [[ "$AGENT" == "opencode" \
+  && ( ( -z "$OPENCODE_CONFIG_CONTENT" && "${TB_MODEL%%/*}" == "custom" ) \
+    || -n "$HARBOR_TEMPERATURE" \
+    || -n "$HARBOR_TOP_P" \
+    || -n "$HARBOR_MAX_TOKENS" ) ]]; then
   # OpenCode's built-in minimax provider ignores our gateway BASE_URL and calls
   # api.minimax.io directly. Use an OpenAI-compatible custom provider by default.
   OPENCODE_CONFIG_CONTENT="$(
-    python3 - "$TB_ANTHROPIC_BASE_URL" "$TB_ANTHROPIC_AUTH_TOKEN" "${TB_MODEL#*/}" <<'PY'
+    python3 - \
+      "$TB_ANTHROPIC_BASE_URL" \
+      "$TB_ANTHROPIC_AUTH_TOKEN" \
+      "${TB_MODEL%%/*}" \
+      "${TB_MODEL#*/}" \
+      "$HARBOR_TEMPERATURE" \
+      "$HARBOR_TOP_P" \
+      "$HARBOR_MAX_TOKENS" \
+      "$OPENCODE_CONFIG_CONTENT" <<'PY'
 import json
 import sys
 
 base_url = sys.argv[1].rstrip("/") + "/v1"
 api_key = sys.argv[2]
-model = sys.argv[3]
-print(json.dumps({
-    "provider": {
-        "custom": {
-            "npm": "@ai-sdk/openai-compatible",
-            "options": {
-                "baseURL": base_url,
-                "apiKey": api_key,
-            },
-            "models": {
-                model: {"name": model},
-            },
-        },
-    },
-}, separators=(",", ":")))
+provider = sys.argv[3]
+model = sys.argv[4]
+temperature = sys.argv[5]
+top_p = sys.argv[6]
+max_tokens = sys.argv[7]
+existing_config = sys.argv[8]
+
+payload = json.loads(existing_config) if existing_config else {}
+if not isinstance(payload, dict):
+    raise ValueError("OPENCODE_CONFIG_CONTENT must be a JSON object")
+
+if provider == "custom":
+    provider_config = payload.setdefault("provider", {}).setdefault("custom", {})
+    provider_config.setdefault("npm", "@ai-sdk/openai-compatible")
+    options = provider_config.setdefault("options", {})
+    options.setdefault("baseURL", base_url)
+    options.setdefault("apiKey", api_key)
+    model_config = provider_config.setdefault("models", {}).setdefault(model, {})
+    model_config.setdefault("name", model)
+elif max_tokens:
+    model_config = (
+        payload.setdefault("provider", {})
+        .setdefault(provider, {})
+        .setdefault("models", {})
+        .setdefault(model, {})
+    )
+else:
+    model_config = None
+
+if max_tokens and model_config is not None:
+    model_config.setdefault("limit", {})["output"] = int(max_tokens)
+
+agent_config = payload.setdefault("agent", {}).setdefault("build", {})
+if temperature:
+    agent_config["temperature"] = float(temperature)
+if top_p:
+    agent_config["top_p"] = float(top_p)
+if not agent_config:
+    payload["agent"].pop("build")
+    if not payload["agent"]:
+        payload.pop("agent")
+
+print(json.dumps(payload, separators=(",", ":")))
 PY
   )"
 fi
@@ -423,6 +494,7 @@ export CLAUDE_CODE_VERSION CLAUDE_CODE_TGZ_BASENAME LOCAL_WHEEL_DIR LOCAL_WHEEL_
 export TB_LOCAL_WHEEL_SERVER_URL TB_LOCAL_CLAUDE_TGZ_URL TB_REMOTE_WHEEL_SERVER_URLS EFFECTIVE_WHEEL_URL_FILE EFFECTIVE_CLAUDE_TGZ_URL_FILE LOCAL_DEPS_LOG_FILE HARBOR_RUNNER_PREPARE HARBOR_RUNNER_IMAGE_DIR HARBOR_RUNNER_HOST_DIR HARBOR_RUNNER_PYTHON_VERSION HARBOR_RUNNER_DIR HARBOR_OPIK_BIN HARBOR_CLI_BIN HARBOR_OPIK_PYTHON HARBOR_RUNNER_REQUIREMENTS HARBOR_RUNNER_PREPARE_STATUS_FILE HARBOR_RUNNER_PREPARE_LOG_FILE
 export TB_DATASET_GIT_URL TB_PATH TB_LIMIT TB_RUNS TB_AGENT TB_AGENT_IMPORT_PATH TB_MODEL INCLUDE_TASKS TB_DRY_RUN MIN_TEST MIN_TEST_INCLUDE_TASK
 export TB_N_CONCURRENT TB_MAX_RETRIES TB_RETRY_INCLUDE_EXCEPTIONS TB_RETRY_EXCLUDE_EXCEPTIONS TB_AK_MAX_TURNS TB_AK_COLLECT_ROLLOUT_DETAILS TB_AK_ENABLE_SUMMARIZE TB_DISALLOWED_TOOLS TB_APPEND_SYSTEM_PROMPT
+export HARBOR_TEMPERATURE HARBOR_TOP_P HARBOR_MAX_TOKENS
 export TB_API_BASE TB_LLM_KWARGS TB_MAX_NEW_TOKENS TB_MODEL_INFO TB_ANTHROPIC_BASE_URL TB_ANTHROPIC_AUTH_TOKEN TB_ANTHROPIC_CUSTOM_HEADERS TB_CLAUDE_CODE_MAX_OUTPUT_TOKENS
 export TB_CLAUDE_CODE_DISABLE_AUTOUPDATER TB_ANTHROPIC_MODEL TB_ANTHROPIC_DEFAULT_OPUS_MODEL TB_ANTHROPIC_DEFAULT_SONNET_MODEL TB_ANTHROPIC_DEFAULT_HAIKU_MODEL TB_CLAUDE_CODE_SUBAGENT_MODEL TB_CLAUDE_CODE_EFFORT_LEVEL
 export TB_TIMEOUT_MULTIPLIER TB_AGENT_TIMEOUT_MULTIPLIER TB_AGENT_SETUP_TIMEOUT_MULTIPLIER TB_FORCE_BUILD TB_DEBUG TRACE_PLUGIN_SOURCE_DIR TRACE_PLUGIN_CLAUDE_HOOK_SOURCE TRACE_PLUGIN_OPENCODE_PLUGIN_SOURCE TRACE_PLUGIN_OPENCODE_HOOK_SOURCE TB_CC_OPIK_ENABLE_HOOK
@@ -452,6 +524,16 @@ harbor_agent_is_opencode() {
 
 harbor_agent_is_claude_code() {
   [[ "$AGENT" == "claude-code" ]]
+}
+
+harbor_validate_generation_controls() {
+  if [[ "$ROLLOUT" != "1" ]] \
+    && harbor_agent_is_claude_code \
+    && [[ -n "$HARBOR_TEMPERATURE" || -n "$HARBOR_TOP_P" ]]; then
+    echo "[ERROR] Claude Code does not expose temperature or top_p controls." >&2
+    echo "[ERROR] Use AGENT=opencode for these settings, or leave them unset." >&2
+    return 1
+  fi
 }
 
 harbor_analyzer_pid_matches_run() {
