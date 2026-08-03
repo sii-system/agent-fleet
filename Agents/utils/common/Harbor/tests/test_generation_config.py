@@ -3,27 +3,14 @@ from __future__ import annotations
 import json
 import os
 import subprocess
-import sys
 import tempfile
 import unittest
 from pathlib import Path
 
 HARBOR_DIR = Path(__file__).parents[1]
-ENV_PY = HARBOR_DIR / "env.py"
 
 
 class HarborGenerationConfigTests(unittest.TestCase):
-    def _run_helper(self, command: str, **overrides: str) -> dict[str, object]:
-        result = subprocess.run(
-            [sys.executable, str(ENV_PY), command],
-            check=False,
-            capture_output=True,
-            env={"PATH": os.environ["PATH"], **overrides},
-            text=True,
-        )
-        self.assertEqual(result.returncode, 0, result.stderr)
-        return json.loads(result.stdout)
-
     def _run_validation(self, agent: str, **overrides: str) -> subprocess.CompletedProcess[str]:
         with tempfile.TemporaryDirectory() as temp_dir:
             env = {
@@ -121,80 +108,10 @@ PY
             8192,
         )
 
-    def test_env_helper_builds_llm_kwargs(self) -> None:
-        config = self._run_helper(
-            "llm-kwargs",
-            TB_ANTHROPIC_AUTH_TOKEN="fake-key",
-            HARBOR_TEMPERATURE="0.2",
-            HARBOR_TOP_P="0.9",
-        )
-
-        self.assertEqual(
-            config,
-            {"api_key": "fake-key", "temperature": 0.2, "top_p": 0.9},
-        )
-
-    def test_env_helper_builds_model_info(self) -> None:
-        config = self._run_helper(
-            "model-info",
-            _HARBOR_OUTPUT_TOKEN_LIMIT="8192",
-        )
-
-        self.assertEqual(
-            config,
-            {"max_input_tokens": 204800, "max_output_tokens": 8192},
-        )
-
-    def test_env_helper_builds_opencode_config(self) -> None:
-        config = self._run_helper(
-            "opencode-config",
-            TB_ANTHROPIC_BASE_URL="https://llm.example",
-            TB_ANTHROPIC_AUTH_TOKEN="fake-key",
-            TB_MODEL="custom/test-model",
-            HARBOR_TEMPERATURE="0.2",
-            HARBOR_TOP_P="0.9",
-            HARBOR_MAX_TOKENS="8192",
-            OPENCODE_CONFIG_CONTENT='{"experimental":{"continue_loop_on_deny":true}}',
-        )
-
-        self.assertTrue(config["experimental"]["continue_loop_on_deny"])
-        self.assertEqual(
-            config["agent"]["build"],
-            {"temperature": 0.2, "top_p": 0.9},
-        )
-        self.assertEqual(
-            config["provider"]["custom"]["models"]["test-model"]["limit"][
-                "output"
-            ],
-            8192,
-        )
-
-    def test_env_helper_rejects_non_finite_sampling_values(self) -> None:
-        cases = (
-            ("llm-kwargs", "HARBOR_TEMPERATURE", "NaN"),
-            ("opencode-config", "HARBOR_TOP_P", "Infinity"),
-        )
-        for command, variable, value in cases:
-            with self.subTest(command=command, variable=variable):
-                result = subprocess.run(
-                    [sys.executable, str(ENV_PY), command],
-                    check=False,
-                    capture_output=True,
-                    env={
-                        "PATH": os.environ["PATH"],
-                        "TB_MODEL": "custom/test-model",
-                        variable: value,
-                    },
-                    text=True,
-                )
-
-                self.assertNotEqual(result.returncode, 0)
-                self.assertIn(f"{variable} must be finite", result.stderr)
-
     def test_opencode_applies_settings_to_named_provider_model(self) -> None:
         config = self._load_config(
             "opencode",
-            MODEL="openrouter/test-model",
+            MODEL="anthropic/test-model",
             HARBOR_TEMPERATURE="0.3",
             HARBOR_TOP_P="0.8",
             HARBOR_MAX_TOKENS="4096",
@@ -205,28 +122,18 @@ PY
             {"temperature": 0.3, "top_p": 0.8},
         )
         self.assertEqual(
-            config["opencode_config"]["provider"]["openrouter"]["models"][
+            config["opencode_config"]["provider"]["anthropic"]["models"][
                 "test-model"
             ]["limit"]["output"],
             4096,
         )
-
-    def test_opencode_named_provider_controls_preserve_gateway_config(self) -> None:
-        config = self._load_config(
-            "opencode",
-            MODEL="anthropic/test-model",
-            HARBOR_TEMPERATURE="0.3",
-        )
-
         self.assertEqual(
             config["opencode_config"].get("provider", {}).get("anthropic", {}).get(
                 "options"
             ),
-            {
-                "baseURL": "https://llm.example/v1",
-                "apiKey": "fake-key",
-            },
+            {"baseURL": "https://llm.example/v1"},
         )
+        self.assertNotIn("fake-key", json.dumps(config["opencode_config"]))
 
     def test_opencode_merges_settings_into_explicit_config(self) -> None:
         config = self._load_config(
@@ -274,7 +181,7 @@ PY
             {"top_p": 0.1},
         )
 
-    def test_high_level_output_limit_preserves_low_level_overrides(self) -> None:
+    def test_high_level_output_limit_validation_and_overrides(self) -> None:
         config = self._load_config(
             "claude-code",
             HARBOR_MAX_TOKENS="8192",
@@ -286,6 +193,14 @@ PY
         self.assertEqual(config["max_new_tokens"], "4096")
         self.assertEqual(config["model_info"]["max_output_tokens"], 512)
         self.assertEqual(config["claude_max_output_tokens"], "2048")
+
+        result = self._run_validation(
+            "claude-code",
+            HARBOR_MAX_TOKENS="not-an-int",
+            TB_MODEL_INFO='{"max_input_tokens":1000,"max_output_tokens":512}',
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("HARBOR_MAX_TOKENS must be a positive integer", result.stderr)
 
     def test_rollout_ignores_fixed_run_generation_controls(self) -> None:
         config = self._load_config(

@@ -53,10 +53,10 @@ def build_opencode_config() -> dict[str, object]:
     provider_config = payload.setdefault("provider", {}).setdefault(provider, {})
     options = provider_config.setdefault("options", {})
     options.setdefault("baseURL", base_url)
-    options.setdefault("apiKey", api_key)
 
     if provider == "custom":
         provider_config.setdefault("npm", "@ai-sdk/openai-compatible")
+        options.setdefault("apiKey", api_key)
         model_config = provider_config.setdefault("models", {}).setdefault(model, {})
         model_config.setdefault("name", model)
     elif max_tokens:

@@ -1026,7 +1026,8 @@ PY
 
     if [[ -n "${OPENCODE_CONFIG_CONTENT:-}" ]]; then
       cmd+=( --ak "opencode_config=$OPENCODE_CONFIG_CONTENT" )
-    else
+    fi
+    if [[ -z "${OPENCODE_CONFIG_CONTENT:-}" || "${TB_MODEL%%/*}" != "custom" ]]; then
       if [[ -n "${TB_ANTHROPIC_BASE_URL:-}" ]]; then
         cmd+=( --ae "ANTHROPIC_BASE_URL=$TB_ANTHROPIC_BASE_URL" )
       fi

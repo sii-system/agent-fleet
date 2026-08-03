@@ -463,6 +463,10 @@ harbor_agent_is_claude_code() {
 }
 
 harbor_validate_generation_controls() {
+  if [[ -n "$HARBOR_MAX_TOKENS" && ! "$HARBOR_MAX_TOKENS" =~ ^[1-9][0-9]*$ ]]; then
+    echo "[ERROR] HARBOR_MAX_TOKENS must be a positive integer." >&2
+    return 1
+  fi
   if [[ "$ROLLOUT" != "1" ]] \
     && harbor_agent_is_claude_code \
     && [[ -n "$HARBOR_TEMPERATURE" || -n "$HARBOR_TOP_P" ]]; then

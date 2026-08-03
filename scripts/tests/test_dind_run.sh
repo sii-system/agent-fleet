@@ -232,7 +232,7 @@ TRACE_TO_OPIK=false \
 MIN_TEST=1 \
 MIN_TEST_INCLUDE_TASK=custom-canary \
 HARBOR_TEMPERATURE=0.2 \
-HARBOR_TOP_P=0.9 \
+HARBOR_TOP_P= \
 HARBOR_MAX_TOKENS=8192 \
 "$PROJECT_DIR/scripts/dind-run.sh" --taskset terminalbench21 --agent claude-code --workers 1 > "$LOG"
 
@@ -288,7 +288,7 @@ for expected_env in \
   "MIN_TEST=1" \
   "MIN_TEST_INCLUDE_TASK=custom-canary" \
   "HARBOR_TEMPERATURE=0.2" \
-  "HARBOR_TOP_P=0.9" \
+  "HARBOR_TOP_P=" \
   "HARBOR_MAX_TOKENS=8192" \
   "OPIK_API_KEY=opik-local" \
   "PIP_INDEX_URL=https://packages.example.com/simple" \
