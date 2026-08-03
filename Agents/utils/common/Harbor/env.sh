@@ -237,19 +237,10 @@ HARBOR_TOP_P="${HARBOR_TOP_P:-}"
 HARBOR_MAX_TOKENS="${HARBOR_MAX_TOKENS:-}"
 if [[ -z "${TB_LLM_KWARGS:-}" ]]; then
   TB_LLM_KWARGS="$(
-    python3 - "$TB_ANTHROPIC_AUTH_TOKEN" "${HARBOR_TEMPERATURE:-1.0}" "$HARBOR_TOP_P" <<'PY'
-import json
-import sys
-
-api_key, temperature, top_p = sys.argv[1:4]
-payload = {
-    "api_key": api_key,
-    "temperature": float(temperature),
-}
-if top_p:
-    payload["top_p"] = float(top_p)
-print(json.dumps(payload, separators=(",", ":")))
-PY
+    TB_ANTHROPIC_AUTH_TOKEN="$TB_ANTHROPIC_AUTH_TOKEN" \
+    HARBOR_TEMPERATURE="$HARBOR_TEMPERATURE" \
+    HARBOR_TOP_P="$HARBOR_TOP_P" \
+      python3 "$SCRIPT_DIR/env.py" llm-kwargs
   )"
 fi
 _HARBOR_OUTPUT_TOKEN_LIMIT="${HARBOR_MAX_TOKENS:-65536}"
@@ -257,18 +248,8 @@ TB_MAX_NEW_TOKENS="${TB_MAX_NEW_TOKENS:-$_HARBOR_OUTPUT_TOKEN_LIMIT}"
 TB_MODEL_INFO="${TB_MODEL_INFO:-}"
 if [[ -z "$TB_MODEL_INFO" ]]; then
   TB_MODEL_INFO="$(
-    python3 - "$_HARBOR_OUTPUT_TOKEN_LIMIT" <<'PY'
-import json
-import sys
-
-max_output_tokens = int(sys.argv[1])
-if max_output_tokens <= 0:
-    raise ValueError("HARBOR_MAX_TOKENS must be greater than zero")
-print(json.dumps({
-    "max_input_tokens": 204800,
-    "max_output_tokens": max_output_tokens,
-}, separators=(",", ":")))
-PY
+    _HARBOR_OUTPUT_TOKEN_LIMIT="$_HARBOR_OUTPUT_TOKEN_LIMIT" \
+      python3 "$SCRIPT_DIR/env.py" model-info
   )"
 fi
 TB_ANTHROPIC_CUSTOM_HEADERS="${TB_ANTHROPIC_CUSTOM_HEADERS:-${ANTHROPIC_CUSTOM_HEADERS:-}}"
@@ -355,64 +336,14 @@ if [[ "$AGENT" == "opencode" \
   # OpenCode's built-in minimax provider ignores our gateway BASE_URL and calls
   # api.minimax.io directly. Use an OpenAI-compatible custom provider by default.
   OPENCODE_CONFIG_CONTENT="$(
-    python3 - \
-      "$TB_ANTHROPIC_BASE_URL" \
-      "$TB_ANTHROPIC_AUTH_TOKEN" \
-      "${TB_MODEL%%/*}" \
-      "${TB_MODEL#*/}" \
-      "$HARBOR_TEMPERATURE" \
-      "$HARBOR_TOP_P" \
-      "$HARBOR_MAX_TOKENS" \
-      "$OPENCODE_CONFIG_CONTENT" <<'PY'
-import json
-import sys
-
-base_url = sys.argv[1].rstrip("/") + "/v1"
-api_key = sys.argv[2]
-provider = sys.argv[3]
-model = sys.argv[4]
-temperature = sys.argv[5]
-top_p = sys.argv[6]
-max_tokens = sys.argv[7]
-existing_config = sys.argv[8]
-
-payload = json.loads(existing_config) if existing_config else {}
-if not isinstance(payload, dict):
-    raise ValueError("OPENCODE_CONFIG_CONTENT must be a JSON object")
-
-if provider == "custom":
-    provider_config = payload.setdefault("provider", {}).setdefault("custom", {})
-    provider_config.setdefault("npm", "@ai-sdk/openai-compatible")
-    options = provider_config.setdefault("options", {})
-    options.setdefault("baseURL", base_url)
-    options.setdefault("apiKey", api_key)
-    model_config = provider_config.setdefault("models", {}).setdefault(model, {})
-    model_config.setdefault("name", model)
-elif max_tokens:
-    model_config = (
-        payload.setdefault("provider", {})
-        .setdefault(provider, {})
-        .setdefault("models", {})
-        .setdefault(model, {})
-    )
-else:
-    model_config = None
-
-if max_tokens and model_config is not None:
-    model_config.setdefault("limit", {})["output"] = int(max_tokens)
-
-agent_config = payload.setdefault("agent", {}).setdefault("build", {})
-if temperature:
-    agent_config["temperature"] = float(temperature)
-if top_p:
-    agent_config["top_p"] = float(top_p)
-if not agent_config:
-    payload["agent"].pop("build")
-    if not payload["agent"]:
-        payload.pop("agent")
-
-print(json.dumps(payload, separators=(",", ":")))
-PY
+    TB_ANTHROPIC_BASE_URL="$TB_ANTHROPIC_BASE_URL" \
+    TB_ANTHROPIC_AUTH_TOKEN="$TB_ANTHROPIC_AUTH_TOKEN" \
+    TB_MODEL="$TB_MODEL" \
+    HARBOR_TEMPERATURE="$HARBOR_TEMPERATURE" \
+    HARBOR_TOP_P="$HARBOR_TOP_P" \
+    HARBOR_MAX_TOKENS="$HARBOR_MAX_TOKENS" \
+    OPENCODE_CONFIG_CONTENT="$OPENCODE_CONFIG_CONTENT" \
+      python3 "$SCRIPT_DIR/env.py" opencode-config
   )"
 fi
 

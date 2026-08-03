@@ -3,14 +3,27 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 
 HARBOR_DIR = Path(__file__).parents[1]
+ENV_PY = HARBOR_DIR / "env.py"
 
 
 class HarborGenerationConfigTests(unittest.TestCase):
+    def _run_helper(self, command: str, **overrides: str) -> dict[str, object]:
+        result = subprocess.run(
+            [sys.executable, str(ENV_PY), command],
+            check=False,
+            capture_output=True,
+            env={"PATH": os.environ["PATH"], **overrides},
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(result.stdout)
+
     def _run_validation(self, agent: str, **overrides: str) -> subprocess.CompletedProcess[str]:
         with tempfile.TemporaryDirectory() as temp_dir:
             env = {
@@ -105,6 +118,54 @@ PY
             config["opencode_config"]["provider"]["custom"]["models"]["test-model"][
                 "limit"
             ]["output"],
+            8192,
+        )
+
+    def test_env_helper_builds_llm_kwargs(self) -> None:
+        config = self._run_helper(
+            "llm-kwargs",
+            TB_ANTHROPIC_AUTH_TOKEN="fake-key",
+            HARBOR_TEMPERATURE="0.2",
+            HARBOR_TOP_P="0.9",
+        )
+
+        self.assertEqual(
+            config,
+            {"api_key": "fake-key", "temperature": 0.2, "top_p": 0.9},
+        )
+
+    def test_env_helper_builds_model_info(self) -> None:
+        config = self._run_helper(
+            "model-info",
+            _HARBOR_OUTPUT_TOKEN_LIMIT="8192",
+        )
+
+        self.assertEqual(
+            config,
+            {"max_input_tokens": 204800, "max_output_tokens": 8192},
+        )
+
+    def test_env_helper_builds_opencode_config(self) -> None:
+        config = self._run_helper(
+            "opencode-config",
+            TB_ANTHROPIC_BASE_URL="https://llm.example",
+            TB_ANTHROPIC_AUTH_TOKEN="fake-key",
+            TB_MODEL="custom/test-model",
+            HARBOR_TEMPERATURE="0.2",
+            HARBOR_TOP_P="0.9",
+            HARBOR_MAX_TOKENS="8192",
+            OPENCODE_CONFIG_CONTENT='{"experimental":{"continue_loop_on_deny":true}}',
+        )
+
+        self.assertTrue(config["experimental"]["continue_loop_on_deny"])
+        self.assertEqual(
+            config["agent"]["build"],
+            {"temperature": 0.2, "top_p": 0.9},
+        )
+        self.assertEqual(
+            config["provider"]["custom"]["models"]["test-model"]["limit"][
+                "output"
+            ],
             8192,
         )
 
