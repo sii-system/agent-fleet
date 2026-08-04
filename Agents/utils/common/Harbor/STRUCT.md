@@ -10,7 +10,7 @@ keeps the shared entry point and Harbor runner wrappers.
 Agents/utils/common/Harbor/
 ├── start.sh                    # Main zellij launcher
 ├── env.sh                      # Path resolution and runtime defaults
-├── env.py                      # JSON builders invoked by env.sh
+├── env.py                      # JSON and data/cache helpers invoked by env.sh
 ├── gen_harbor_zellij_layout.sh # zellij layout generator
 ├── monitor_harbor.sh           # Run monitor pane
 ├── run_harbor_worker.sh        # Worker loop for one zellij pane

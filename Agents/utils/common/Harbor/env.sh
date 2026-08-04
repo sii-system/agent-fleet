@@ -720,63 +720,12 @@ harbor_generate_task_file() {
   # Harbor local datasets are one task per top-level directory.  SWE-smith uses
   # instruction.md, while SETA/Terminal-Bench tasks use task.yaml.  Keep this
   # scan format-neutral so the same zellij runner can handle both datasets.
-  python3 - "$DATASET_PATH" "$destination" <<'PY'
-import sys
-from pathlib import Path
-
-dataset = Path(sys.argv[1])
-task_file = Path(sys.argv[2])
-tasks = []
-for task_dir in dataset.iterdir():
-    if not task_dir.is_dir():
-        continue
-    instruction = task_dir / "instruction.md"
-    task_yaml = task_dir / "task.yaml"
-    if instruction.is_file():
-        try:
-            if instruction.read_text(errors="ignore").strip():
-                tasks.append(task_dir.name)
-        except OSError:
-            continue
-    elif task_yaml.is_file():
-        tasks.append(task_dir.name)
-task_file.write_text("\n".join(sorted(tasks)) + ("\n" if tasks else ""))
-PY
+  python3 "$SCRIPT_DIR/env.py" generate-task-file "$DATASET_PATH" "$destination"
 }
 
 harbor_filter_task_file() {
   local source_file="$1" destination="$2"
-  python3 - "$source_file" "$destination" "$FLEET_TASKS" <<'PY'
-import sys
-from pathlib import Path
-
-source = Path(sys.argv[1])
-destination = Path(sys.argv[2])
-raw = sys.argv[3]
-
-requested = []
-seen = set()
-for part in raw.split(","):
-    task = part.strip()
-    if task and task not in seen:
-        requested.append(task)
-        seen.add(task)
-
-available = {
-    line.strip()
-    for line in source.read_text(encoding="utf-8").splitlines()
-    if line.strip()
-}
-missing = [task for task in requested if task not in available]
-if missing:
-    print("[ERROR] unknown task(s): " + ", ".join(missing), file=sys.stderr)
-    raise SystemExit(2)
-
-destination.write_text(
-    "\n".join(requested) + ("\n" if requested else ""),
-    encoding="utf-8",
-)
-PY
+  python3 "$SCRIPT_DIR/env.py" filter-task-file "$source_file" "$destination" "$FLEET_TASKS"
 }
 
 harbor_validate_local_task_selection() {
@@ -1094,29 +1043,12 @@ harbor_ensure_local_wheels_server() {
 
 harbor_url_is_reachable() {
   local url="$1"
-  TARGET_URL="$url" python3 - <<'PY'
-import os
-import urllib.request
-try:
-    with urllib.request.urlopen(os.environ["TARGET_URL"], timeout=2) as response:
-        raise SystemExit(0 if response.status < 400 else 1)
-except Exception:
-    raise SystemExit(1)
-PY
+  python3 "$SCRIPT_DIR/env.py" url-reachable "$url"
 }
 
 harbor_manifest_url_ready() {
   local url="$1"
-  TARGET_URL="$url" python3 - <<'PY'
-import os
-import urllib.request
-try:
-    with urllib.request.urlopen(os.environ["TARGET_URL"], timeout=2) as response:
-        content = response.read(1024 * 64).decode("utf-8", "replace")
-    raise SystemExit(0 if "cache_schema=3\n" in content else 1)
-except Exception:
-    raise SystemExit(1)
-PY
+  python3 "$SCRIPT_DIR/env.py" manifest-url-ready "$url"
 }
 
 harbor_gzip_file_ready() {
@@ -1126,14 +1058,7 @@ harbor_gzip_file_ready() {
 
 harbor_tar_file_ready() {
   local path="$1"
-  [[ -f "$path" ]] || return 1
-  python3 - "$path" <<'PY' >/dev/null 2>&1
-import sys
-import tarfile
-
-with tarfile.open(sys.argv[1]) as archive:
-    archive.getmembers()
-PY
+  python3 "$SCRIPT_DIR/env.py" tar-file-ready "$path" >/dev/null 2>&1
 }
 
 harbor_local_cache_ready() {
