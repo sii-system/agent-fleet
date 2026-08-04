@@ -220,9 +220,26 @@ python3 Agents/utils/common/Harbor/scripts/monitor.py \
 ```
 
 Omit `--follow` for one sample. Control commands are optional executable files
-inside `RUN_DIR`; arguments are allowed but shell syntax is not. They are
-retained for a subsequent explicit user-decision flow and are not invoked by
-the observation policy.
+inside `RUN_DIR`; arguments are allowed but shell syntax is not. The observation
+policy never invokes them by itself. When the controller is awaiting a decision,
+the user can explicitly choose an allowed action with the run-local decision
+CLI:
+
+```bash
+python3 Agents/utils/common/Harbor/scripts/controller.py \
+  --run-dir "$RUN_DIR" status
+python3 Agents/utils/common/Harbor/scripts/controller.py \
+  --run-dir "$RUN_DIR" decide wait --wait-seconds 300
+python3 Agents/utils/common/Harbor/scripts/controller.py \
+  --run-dir "$RUN_DIR" decide stop
+```
+
+`restart` is accepted instead of `stop` after an abnormal exit when it appears
+in `allowed_decisions`. The CLI atomically writes
+`monitor/user-decision.json`; the already-running monitor validates the run,
+incident, allowed action, and unique decision ID before using the existing
+controller executor. `wait` defers the incident without external control.
+`restart` and `stop` execute only their configured run-local command.
 
 Optional run-local controls can be set with
 `HARBOR_MONITOR_RESTART_CMD` and `HARBOR_MONITOR_STOP_CMD`.
@@ -231,6 +248,7 @@ Optional run-local controls can be set with
 | --- | --- | --- |
 | `monitor-latest.json` | Debugging | Full state and evidence |
 | `user-notify-latest.json` | User | Objective status and required human action |
+| `user-decision.json` | Monitor/controller | Explicit decision submitted for the current notification |
 | `analyzer-handover-latest.json` | Analyzer | Tasks requiring deeper analysis |
 | `runner-action-latest.json` | Runner | `wait`, `restart`, `stop`, or `notify`, plus execution result |
 
@@ -246,10 +264,13 @@ All files are refreshed on each sample. The actual action is
 | Tasks unfinished with no live worker | `notify`; `restart` is allowed below `--max-retries` |
 | Every task has a terminal queue record | `wait`; finish the monitor loop without external control |
 
+The interaction path is available whenever `HARBOR_MONITOR_ENABLED=1`; it has
+no separate feature flag or daemon. The monitor reads the decision file only
+while `controller_status=awaiting_user_decision`. Normal progressing and
+completed samples do not read it. The CLI and controller do not call zellij or
+Opik APIs, so their existing lifecycle and telemetry paths remain unchanged.
 The monitor does not consume restart attempts or execute restart/stop commands
-without an explicit user decision. The bidirectional decision channel is not
-part of this structural refactor; `allowed_decisions` records what a later
-decision flow may safely execute.
+without a matching explicit user decision.
 
 ## Harbor Analyzer
 
