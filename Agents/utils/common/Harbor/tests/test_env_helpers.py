@@ -12,6 +12,15 @@ HARBOR_DIR = Path(__file__).parents[1]
 ENV_PY = HARBOR_DIR / "env.py"
 
 
+def run_env_helper(*args: str | Path) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["python3", str(ENV_PY), *(str(arg) for arg in args)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
 class _CacheHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         body = b"cache_schema=3\n" if self.path == "/manifest.txt" else b"ready\n"
@@ -40,12 +49,7 @@ class HarborEnvHelperTests(unittest.TestCase):
             (dataset / "not-a-task" / "README.md").write_text("not a task\n")
             (dataset / "not-a-directory").write_text("ignore\n")
 
-            result = subprocess.run(
-                ["python3", str(ENV_PY), "generate-task-file", str(dataset), str(output)],
-                capture_output=True,
-                text=True,
-                check=False,
-            )
+            result = run_env_helper("generate-task-file", dataset, output)
 
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(output.read_text(), "text-task\nyaml-task\n")
@@ -57,35 +61,21 @@ class HarborEnvHelperTests(unittest.TestCase):
             output = root / "selected.txt"
             source.write_text("task-a\ntask-b\ntask-c\n")
 
-            result = subprocess.run(
-                [
-                    "python3",
-                    str(ENV_PY),
-                    "filter-task-file",
-                    str(source),
-                    str(output),
-                    "task-c, task-a, task-c",
-                ],
-                capture_output=True,
-                text=True,
-                check=False,
+            result = run_env_helper(
+                "filter-task-file",
+                source,
+                output,
+                "task-c, task-a, task-c",
             )
 
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(output.read_text(), "task-c\ntask-a\n")
 
-            missing = subprocess.run(
-                [
-                    "python3",
-                    str(ENV_PY),
-                    "filter-task-file",
-                    str(source),
-                    str(root / "missing.txt"),
-                    "missing-a,task-a,missing-b",
-                ],
-                capture_output=True,
-                text=True,
-                check=False,
+            missing = run_env_helper(
+                "filter-task-file",
+                source,
+                root / "missing.txt",
+                "missing-a,task-a,missing-b",
             )
 
             self.assertEqual(missing.returncode, 2)
@@ -101,18 +91,8 @@ class HarborEnvHelperTests(unittest.TestCase):
                 archive.addfile(tarfile.TarInfo("runtime/bin/python"))
             invalid.write_text("not a tar archive")
 
-            ready = subprocess.run(
-                ["python3", str(ENV_PY), "tar-file-ready", str(valid)],
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-            not_ready = subprocess.run(
-                ["python3", str(ENV_PY), "tar-file-ready", str(invalid)],
-                capture_output=True,
-                text=True,
-                check=False,
-            )
+            ready = run_env_helper("tar-file-ready", valid)
+            not_ready = run_env_helper("tar-file-ready", invalid)
 
             self.assertEqual(ready.returncode, 0, ready.stderr)
             self.assertNotEqual(not_ready.returncode, 0)
@@ -123,23 +103,12 @@ class HarborEnvHelperTests(unittest.TestCase):
         thread.start()
         try:
             base_url = f"http://127.0.0.1:{server.server_port}"
-            reachable = subprocess.run(
-                ["python3", str(ENV_PY), "url-reachable", f"{base_url}/agent.tgz"],
-                capture_output=True,
-                text=True,
-                check=False,
+            reachable = run_env_helper("url-reachable", f"{base_url}/agent.tgz")
+            manifest = run_env_helper(
+                "manifest-url-ready", f"{base_url}/manifest.txt"
             )
-            manifest = subprocess.run(
-                ["python3", str(ENV_PY), "manifest-url-ready", f"{base_url}/manifest.txt"],
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-            invalid_manifest = subprocess.run(
-                ["python3", str(ENV_PY), "manifest-url-ready", f"{base_url}/agent.tgz"],
-                capture_output=True,
-                text=True,
-                check=False,
+            invalid_manifest = run_env_helper(
+                "manifest-url-ready", f"{base_url}/agent.tgz"
             )
         finally:
             server.shutdown()
