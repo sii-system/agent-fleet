@@ -149,7 +149,7 @@ def url_is_reachable(url: str) -> None:
     try:
         with urllib.request.urlopen(url, timeout=2) as response:
             raise SystemExit(0 if response.status < 400 else 1)
-    except Exception:
+    except Exception:  # noqa: BLE001 - any failed probe is not reachable.
         raise SystemExit(1) from None
 
 
@@ -158,7 +158,7 @@ def manifest_url_ready(url: str) -> None:
         with urllib.request.urlopen(url, timeout=2) as response:
             content = response.read(1024 * 64).decode("utf-8", "replace")
         raise SystemExit(0 if "cache_schema=3\n" in content else 1)
-    except Exception:
+    except Exception:  # noqa: BLE001 - any failed probe is not ready.
         raise SystemExit(1) from None
 
 
