@@ -26,7 +26,9 @@ Return exactly one JSON object with this shape:
 Include every supplied analysis group exactly once in analysis_summary. For an
 analysis_failed group, explain why Analyzer failed; do not claim that this is
 the benchmark task's root cause. Use at most three recommended actions. Do not
-return Markdown."""
+return Markdown. When analysis_groups is empty, return empty analysis_summary
+and recommended_actions arrays. Do not create run-level actions or actions with
+empty group_ids."""
 
 FINDING_LABELS = {
     "success": "No failure found",
@@ -282,6 +284,16 @@ def _validate_model_output(
     return payload
 
 
+def _normalize_model_output(
+    payload: dict[str, Any],
+    groups: list[dict[str, Any]],
+) -> dict[str, Any]:
+    normalized = dict(payload)
+    if not groups and isinstance(normalized.get("recommended_actions"), list):
+        normalized["recommended_actions"] = []
+    return normalized
+
+
 def _run_summary_model(
     payload: dict[str, Any],
     summary_dir: Path,
@@ -315,7 +327,11 @@ def _run_summary_model(
     if result.block_reason or result.output_json is None:
         return None, result
     try:
-        return _validate_model_output(result.output_json, payload["analysis_groups"]), result
+        normalized = _normalize_model_output(
+            result.output_json,
+            payload["analysis_groups"],
+        )
+        return _validate_model_output(normalized, payload["analysis_groups"]), result
     except (TypeError, ValueError) as exc:
         result.block_reason = f"pi_summary_output_invalid:{exc}"
         return None, result

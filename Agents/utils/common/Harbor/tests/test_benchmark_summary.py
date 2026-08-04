@@ -524,6 +524,75 @@ class BenchmarkSummaryTests(unittest.TestCase):
                 clean_output.read_text(encoding="utf-8"),
             )
 
+    def test_empty_analysis_groups_drop_unscoped_recommended_actions(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            root_path = Path(root)
+            monitor_path = root_path / "monitor-latest.json"
+            output_path = root_path / "benchmark-summary.md"
+            _write_json(
+                monitor_path,
+                {
+                    "benchmark_status": "blocked",
+                    "status_reason": "abnormal_exit",
+                    "evidence": {"elapsed_since_run_start": 1},
+                    "task_summary": {
+                        "complete_success": 0,
+                        "complete_failed": 0,
+                        "complete_unknown": 0,
+                        "not_complete": 1,
+                        "total_evaluated": 1,
+                    },
+                    "task_handover": [
+                        {
+                            "task_index": "pending-1",
+                            "task_name": "",
+                            "task_complete_status": "not_complete",
+                        }
+                    ],
+                },
+            )
+            model_output = {
+                "summary": "The benchmark runner exited before the task started.",
+                "analysis_summary": [],
+                "recommended_actions": [
+                    {
+                        "group_ids": [],
+                        "action": "Re-run Analyzer.",
+                    }
+                ],
+            }
+
+            with mock.patch.object(
+                summary_writer,
+                "run_pi_json_process",
+                return_value=_pi_result(model_output),
+            ):
+                summary_writer.write_benchmark_summary(
+                    monitor_path,
+                    root_path / "missing-manifest.json",
+                    output_path,
+                )
+
+            summary = output_path.read_text(encoding="utf-8")
+            self.assertIn(
+                "The benchmark runner exited before the task started.",
+                summary,
+            )
+            self.assertNotIn("automated narrative summary is unavailable", summary)
+            self.assertIn(
+                "Analyzer results are unavailable for 1 failed/unknown/not-complete task(s)",
+                summary,
+            )
+            self.assertIn("No additional action was generated.", summary)
+            self.assertEqual(
+                json.loads(
+                    (root_path / "benchmark-summary" / "summary-output.json").read_text(
+                        encoding="utf-8"
+                    )
+                )["recommended_actions"],
+                [],
+            )
+
     def test_reports_partial_analyzer_coverage(self) -> None:
         with tempfile.TemporaryDirectory() as root:
             root_path = Path(root)
