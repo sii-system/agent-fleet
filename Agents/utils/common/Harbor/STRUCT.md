@@ -21,6 +21,7 @@ Agents/utils/common/Harbor/
 ├── setup_runner_env.sh         # Explicit host setup / image validation
 ├── harbor_prepare_runner_cli.py # Startup validation for the configured CLI
 ├── harbor_worker_utils.py
+├── model-fusion/               # Isolated Router wrappers (mid-turn, Mimo, OpenRouter)
 └── scripts/
     ├── monitor.py              # Monitor CLI entrypoint and path resolution
     ├── analyzer_subagent.py    # Analyzer entrypoint for Pi/GLM-5.2 root-cause analysis
@@ -44,6 +45,16 @@ Agents/utils/common/Harbor/
     ├── online_rule_analyzer.py # Optional console-only online analysis
     └── write_harbor_registry_summary.py # Native registry summary writer
 ```
+
+The three Fusion Router integrations are opt-in and do not alter the shared
+Harbor path:
+
+- `model-fusion/run_one_tb21_task.sh` runs one task through the Router-owned
+  Claude Code mid-turn gate.
+- `model-fusion/mimo-code/run_tb21.sh` builds a commit-scoped Router wheel and runs
+  `pipeline=mimo_max` in `doctor`, `dry-run`, `smoke`, or `full` mode.
+- `model-fusion/openrouter/run_tb21.sh` uses the same isolated wheel/mount
+  boundary for the original `pipeline=openrouter_fusion`.
 
 Analyzer architecture and output boundaries are documented in
 [ANALYZER_ARCHITECTURE.md](ANALYZER_ARCHITECTURE.md). Analyzer credentials stay

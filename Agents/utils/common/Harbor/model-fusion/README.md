@@ -57,3 +57,11 @@ Consequently, none of this directory is sourced or imported unless the
 single-task wrapper is invoked. Router owns the matching hook-message file:
 each fusion writes `boundary.json`, and hook stdout returns the `BOUNDARY_FILE`
 pointer instead of the full boundary payload.
+
+The `mimo-code/` subdirectory contains the separately isolated `mimo_max`
+Router CLI integration. It lives here so Fusion Router integrations have one
+Harbor home, but it does not reuse or alter this mid-turn execution path.
+
+The `openrouter/` subdirectory contains the original `openrouter_fusion`
+pipeline using the same isolation rule. It is selected only through its own
+`run_tb21.sh` entry point and does not modify Mimo Max or mid-turn runs.
