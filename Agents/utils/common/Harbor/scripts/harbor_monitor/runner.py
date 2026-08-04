@@ -6,7 +6,6 @@ import json
 import os
 import time
 from pathlib import Path
-from typing import Any
 
 from harbor_controller.analyzer_dispatch import dispatch_analyzer_handover
 from harbor_controller.executor import execute_action

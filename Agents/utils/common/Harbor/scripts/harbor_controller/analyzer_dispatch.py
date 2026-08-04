@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from harbor_monitor.contracts import build_analyzer_handover_for_tasks
 
@@ -47,4 +48,3 @@ def dispatch_analyzer_handover(
                     spooled | set(new_fingerprints)
                 )
     write_json(latest_output, handover)
-

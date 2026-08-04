@@ -384,9 +384,11 @@ def _render_markdown(
     if coverage and 0 < coverage["analyzed"] < coverage["expected"]:
         lines.extend(
             [
-                "Analyzer results are incomplete: analysis is available for "
-                f"{coverage['analyzed']} of {coverage['expected']} final "
-                "failed/unknown/not-complete task(s).",
+                (
+                    "Analyzer results are incomplete: analysis is available for "
+                    f"{coverage['analyzed']} of {coverage['expected']} final "
+                    "failed/unknown/not-complete task(s)."
+                ),
                 "",
             ]
         )
