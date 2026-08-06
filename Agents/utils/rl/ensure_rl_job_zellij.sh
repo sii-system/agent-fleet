@@ -25,9 +25,10 @@ ensure_zellij_web_sharing_config() {
 
 submission_storage_id="${RL_ZELLIJ_SUBMISSION_STORAGE_ID:-$ray_submission_id}"
 submission_slug="$(safe_name "$submission_storage_id")"
-agent_slug="$(safe_name "${RL_AGENT:-claude-code}")"
-dataset_slug="$(safe_name "$dataset_name")"
-session_name="harbor-rollout-${agent_slug}-${dataset_slug}-${submission_slug}"
+# Keep the Zellij name below its Unix-socket path limit. submission_slug is a
+# storage-safe `submission-<128-bit digest>`, so the compact name remains
+# deterministic and collision-resistant without agent/dataset prefixes.
+session_name="hr-${submission_slug#submission-}"
 job_runtime_dir="${RL_JOB_RUNTIME_ROOT}/${submission_slug}"
 layout_file="${job_runtime_dir}/harbor-rollout-${submission_slug}.kdl"
 lock_file="${RL_JOB_RUNTIME_ROOT}/${submission_slug}.lock"

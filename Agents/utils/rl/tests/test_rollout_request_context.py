@@ -176,6 +176,7 @@ class RolloutRequestContextTest(unittest.TestCase):
                     "request_id": "request-1",
                     "task_id": "task-1",
                     "dataset_name": "seta",
+                    "environment_type": "E2B",
                     "model_name": "model-from-request",
                     "ray_submission_id": "ray-submission-test",
                     "polar_task_id": "polar-task-test",
@@ -191,10 +192,12 @@ class RolloutRequestContextTest(unittest.TestCase):
             self.assertEqual(request_id, "request-1")
             self.assertEqual(result_path, queue_dir / "results" / f"{request_file_id}.json")
             self.assertEqual(payload["model_name"], "model-from-request")
+            self.assertEqual(payload["environment_type"], "e2b")
             self.assertEqual(payload["ray_submission_id"], "ray-submission-test")
             self.assertNotIn("ray_job_id", payload)
             self.assertEqual(payload["opik_project_name"], "ray-submission-test")
             self.assertEqual(trace["model_name"], "model-from-request")
+            self.assertEqual(trace["environment_type"], "e2b")
             self.assertEqual(trace["ray_submission_id"], "ray-submission-test")
             self.assertNotIn("ray_job_id", trace)
             self.assertEqual(trace["opik_project_name"], "ray-submission-test")
@@ -259,6 +262,16 @@ class RolloutRequestContextTest(unittest.TestCase):
         self.assertEqual(env["RL_ZELLIJ_SUBMISSION_ID"], "ray-submission-test")
         self.assertEqual(env["RL_ZELLIJ_SUBMISSION_STORAGE_ID"], storage_id)
         self.assertEqual(env["RL_ZELLIJ_JOB_QUEUE_DIR"], str(queue_dir))
+
+    def test_submission_zellij_session_name_is_compact_and_stable(self) -> None:
+        first = MODULE._submission_session_name("ray-submission-test", "seta")
+        repeated = MODULE._submission_session_name("ray-submission-test", "other-dataset")
+        other = MODULE._submission_session_name("other-submission", "seta")
+
+        self.assertEqual(first, repeated)
+        self.assertTrue(first.startswith("hr-"))
+        self.assertLessEqual(len(first), 40)
+        self.assertNotEqual(first, other)
 
     def test_existing_hashed_zellij_session_is_reused_without_helper(self) -> None:
         storage_id = MODULE._storage_id("ray-submission-test", prefix="submission")
@@ -376,28 +389,31 @@ class RolloutRequestContextTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "dataset_root must match a configured dataset root"):
             MODULE._dataset_root("seta", str(root_path / "other"))
 
-    def test_secret_like_request_fields_are_not_persisted_to_queue(self) -> None:
-        _, _, job_queue_root, _ = self._enqueue_with_temp_context({
-            "trial_config": {
-                "agent": {
-                    "kwargs": {
-                        "api_base": "https://example.test/v1",
-                        "llm_kwargs": {
-                            "api_key": "request-secret",
+    def test_model_credentials_are_rejected_before_queueing(self) -> None:
+        with self.assertRaisesRegex(ValueError, "host environment"):
+            self._enqueue_with_temp_context({
+                "trial_config": {
+                    "agent": {
+                        "kwargs": {
+                            "api_base": "https://example.test/v1",
+                            "llm_kwargs": {
+                                "api_key": "request-secret",
+                            },
                         },
                     },
                 },
-            },
-            "metadata": {"access_token": "request-token"},
-        })
+                "metadata": {"access_token": "request-token"},
+            })
 
-        payload = self._read_default_payload(job_queue_root)
-        serialized = json.dumps(payload, sort_keys=True)
-        self.assertNotIn("api_key", payload)
-        self.assertNotIn("trial_config", payload)
-        self.assertNotIn("metadata", payload)
-        self.assertNotIn("request-secret", serialized)
-        self.assertNotIn("request-token", serialized)
+    def test_e2b_credentials_are_rejected_before_queueing(self) -> None:
+        for request in (
+            {"E2B_API_KEY": "request-secret"},
+            {"trial_config": {"environment": {"e2b_template": "template-id"}}},
+        ):
+            with self.subTest(request=request), self.assertRaisesRegex(
+                ValueError, "host environment"
+            ):
+                self._enqueue_with_temp_context(request)
 
     def _read_default_payload(self, job_queue_root: Path) -> dict[str, object]:
         return json.loads(
