@@ -13,6 +13,7 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 from harbor_controller.analyzer_dispatch import dispatch_analyzer_handover
+from harbor_controller.decision import build_decision_request_id, resolve_user_decision
 from harbor_controller.executor import build_control_argv, execute_action
 from harbor_controller.policy import decide_action
 
@@ -181,6 +182,157 @@ class HarborControllerExecutorTest(unittest.TestCase):
             self.assertEqual(result.action["control_exit_code"], 0)
             self.assertEqual(result.control_stdout, "stopped\n")
             self.assertTrue((run_dir / "stopped.marker").is_file())
+
+    def test_missing_stop_command_becomes_notify(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            result = execute_action(
+                {"type": "stop", "reason": "user_approved", "retry_count": 0},
+                restart_cmd=None,
+                stop_cmd=None,
+                run_dir=Path(root),
+                state={"retry_count": 0},
+                observation=_observation("running", "timeout_reached", running=1),
+                history=[],
+            )
+
+            self.assertEqual(result.action["type"], "notify")
+            self.assertEqual(result.action["reason"], "stop_needed_but_stop_cmd_missing")
+            self.assertFalse(result.action["external_control_performed"])
+
+
+class HarborControllerDecisionTest(unittest.TestCase):
+    def _requested(self) -> dict[str, object]:
+        return {
+            "type": "notify",
+            "retry_count": 0,
+            "allowed_decisions": ["wait", "stop"],
+            "controller_status": "awaiting_user_decision",
+        }
+
+    def test_request_id_is_stable_and_incident_specific(self) -> None:
+        first = build_decision_request_id("run-1", "incident-1")
+        self.assertEqual(first, build_decision_request_id("run-1", "incident-1"))
+        self.assertNotEqual(first, build_decision_request_id("run-1", "incident-2"))
+
+    def test_valid_wait_is_consumed_and_deferred(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "user-decision.json"
+            request_id = build_decision_request_id("run-1", "incident")
+            path.write_text(
+                json.dumps(
+                    {
+                        "run_id": "run-1",
+                        "decision_id": "decision-1",
+                        "decision_request_id": request_id,
+                        "decision": "wait",
+                        "wait_seconds": 30,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            state: dict[str, object] = {}
+
+            action, record = resolve_user_decision(
+                self._requested(),
+                decision_path=path,
+                request_id=request_id,
+                run_id="run-1",
+                state=state,
+                now=100.0,
+            )
+
+            self.assertEqual(action["type"], "wait")
+            self.assertEqual(record["status"], "executed")
+            self.assertEqual(state["consumed_user_decision_ids"], ["decision-1"])
+            self.assertEqual(state["deferred_user_wait"]["wait_until"], 130.0)
+
+    def test_stale_and_wrong_run_decisions_are_rejected(self) -> None:
+        cases = [
+            ("other-run", "request-current", "run_id_mismatch"),
+            ("run-1", "request-stale", "decision_request_id_mismatch"),
+        ]
+        for run_id, payload_request, expected_reason in cases:
+            with self.subTest(reason=expected_reason), tempfile.TemporaryDirectory() as root:
+                path = Path(root) / "user-decision.json"
+                path.write_text(
+                    json.dumps(
+                        {
+                            "run_id": run_id,
+                            "decision_id": "decision-1",
+                            "decision_request_id": payload_request,
+                            "decision": "stop",
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                action, record = resolve_user_decision(
+                    self._requested(),
+                    decision_path=path,
+                    request_id="request-current",
+                    run_id="run-1",
+                    state={},
+                )
+                self.assertEqual(action["type"], "notify")
+                self.assertEqual(record["reason"], expected_reason)
+
+    def test_duplicate_decision_is_not_replayed(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "user-decision.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "run_id": "run-1",
+                        "decision_id": "decision-1",
+                        "decision_request_id": "request-1",
+                        "decision": "stop",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            state: dict[str, object] = {}
+            first, _ = resolve_user_decision(
+                self._requested(),
+                decision_path=path,
+                request_id="request-1",
+                run_id="run-1",
+                state=state,
+            )
+            second, record = resolve_user_decision(
+                self._requested(),
+                decision_path=path,
+                request_id="request-1",
+                run_id="run-1",
+                state=state,
+            )
+            self.assertEqual(first["type"], "stop")
+            self.assertEqual(second["type"], "notify")
+            self.assertIsNone(record)
+
+    def test_invalid_wait_is_not_consumed(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "user-decision.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "run_id": "run-1",
+                        "decision_id": "decision-1",
+                        "decision_request_id": "request-1",
+                        "decision": "wait",
+                        "wait_seconds": 0,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            state: dict[str, object] = {}
+            _, record = resolve_user_decision(
+                self._requested(),
+                decision_path=path,
+                request_id="request-1",
+                run_id="run-1",
+                state=state,
+            )
+            self.assertEqual(record["reason"], "wait_seconds_invalid")
+            self.assertEqual(state.get("consumed_user_decision_ids", []), [])
 
 
 class HarborControllerAnalyzerDispatchTest(unittest.TestCase):

@@ -8,6 +8,7 @@ import time
 from pathlib import Path
 
 from harbor_controller.analyzer_dispatch import dispatch_analyzer_handover
+from harbor_controller.decision import build_decision_request_id, resolve_user_decision
 from harbor_controller.executor import execute_action
 from harbor_controller.policy import decide_action
 
@@ -120,6 +121,14 @@ def run_loop(
     state.setdefault("notify_recheck_key", None)
     state.setdefault("last_action_required_notify", None)
     state.setdefault("analyzer_spooled_terminal_fingerprints", [])
+    state.setdefault("consumed_user_decision_ids", [])
+    state.setdefault("deferred_user_wait", None)
+
+    decision_path = (
+        user_report_output.parent / "user-decision.json"
+        if user_report_output is not None
+        else run_dir / "monitor" / "user-decision.json"
+    )
 
     tasks_manifest = load_manifest(task_manifest_path)
     if not tasks_manifest:
@@ -228,8 +237,22 @@ def run_loop(
             retry_count=int(state.get("retry_count", 0) or 0),
             max_retries=max_retries,
         )
-        controller_result = execute_action(
+        decision_request_id = None
+        if requested_action.get("type") == "notify" and requested_action.get(
+            "allowed_decisions"
+        ):
+            incident_key = build_notify_incident_key(output, requested_action)
+            decision_request_id = build_decision_request_id(run_dir.name, incident_key)
+            requested_action["decision_request_id"] = decision_request_id
+        selected_action, user_decision = resolve_user_decision(
             requested_action,
+            decision_path=decision_path,
+            request_id=decision_request_id,
+            run_id=run_dir.name,
+            state=state,
+        )
+        controller_result = execute_action(
+            selected_action,
             restart_cmd=restart_cmd,
             stop_cmd=stop_cmd,
             run_dir=run_dir,
@@ -237,10 +260,51 @@ def run_loop(
             observation=output,
             history=history,
         )
+        if user_decision is not None:
+            decision_status = str(user_decision.get("status") or "")
+            submitted_decision = str(user_decision.get("decision") or "")
+            if decision_status == "accepted":
+                control_succeeded = (
+                    controller_result.action.get("type") == submitted_decision
+                    and controller_result.action.get("control_exit_code") == 0
+                    and controller_result.action.get("external_control_performed") is True
+                )
+                decision_status = "executed" if control_succeeded else "failed"
+            controller_result.action.update(
+                {
+                    "decision_id": user_decision.get("decision_id"),
+                    "decision_request_id": user_decision.get("decision_request_id"),
+                    "submitted_decision": submitted_decision,
+                    "decision_status": decision_status,
+                }
+            )
+            if decision_status == "executed" and submitted_decision == "restart":
+                controller_result.action["controller_status"] = "observing"
+            elif decision_status == "executed" and submitted_decision == "stop":
+                controller_result.action["controller_status"] = "stopped"
+            elif decision_status in {"failed", "rejected"}:
+                controller_result.action["controller_status"] = (
+                    "awaiting_user_decision"
+                )
+                controller_result.action["allowed_decisions"] = requested_action.get(
+                    "allowed_decisions", []
+                )
+                controller_result.action["decision_request_id"] = decision_request_id
+                if user_decision.get("reason"):
+                    controller_result.action["decision_error"] = user_decision["reason"]
         output["action"] = controller_result.action
         history = controller_result.history
         if controller_result.control_stdout is not None:
             output["control_stdout"] = controller_result.control_stdout
+
+        if (
+            output["action"].get("type") == "stop"
+            and output["action"].get("external_control_performed") is True
+            and output["action"].get("control_exit_code") == 0
+        ):
+            output["benchmark_status"] = "stopped"
+            output["status_reason"] = "stopped_by_user"
+            output["running"] = 0
 
         output["user_notify"] = build_user_notify(
             output=output,
@@ -249,12 +313,24 @@ def run_loop(
             run_dir=run_dir,
             queue_dir=queue_dir,
             output_path=output_path,
+            decision_path=decision_path,
         )
         output["analyzer_handover"] = build_analyzer_handover(
             output,
             run_dir=run_dir,
             queue_dir=queue_dir,
         )
+        if (
+            output["action"].get("type") == "restart"
+            and output["action"].get("external_control_performed") is True
+            and output["action"].get("control_exit_code") == 0
+        ):
+            output["analyzer_handover"]["should_run_analyzer"] = False
+            output["analyzer_handover"]["tasks"] = []
+            output["analyzer_handover"]["instruction"] = (
+                "The user-approved restart was executed; wait for terminal evidence "
+                "from the new attempt before running Analyzer."
+            )
         output["runner_action"] = build_runner_action(
             action=output["action"],
             benchmark_status=str(output.get("benchmark_status") or "blocked"),
@@ -302,12 +378,8 @@ def run_loop(
             output["monitor_follow_decision"] = "continue"
         elif action_type == "stop":
             output["monitor_follow_decision"] = "stop_user_requested"
-        elif (
-            action_type == "notify"
-            and output.get("benchmark_status") == "running"
-            and output.get("status_reason") == "timeout_reached"
-        ):
-            output["monitor_follow_decision"] = "continue"
+        elif action_type == "notify" and output["action"].get("allowed_decisions"):
+            output["monitor_follow_decision"] = "continue_awaiting_user_decision"
         elif notify_recheck_allowed:
             state["notify_recheck_count"] = int(state.get("notify_recheck_count", 0) or 0) + 1
             output["notify_recheck"] = {

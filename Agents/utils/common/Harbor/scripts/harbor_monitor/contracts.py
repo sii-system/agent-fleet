@@ -67,6 +67,7 @@ def build_user_notify(
     run_dir: Path,
     queue_dir: Path | None,
     output_path: Path | None,
+    decision_path: Path,
 ) -> dict[str, Any]:
     benchmark_status = str(output.get("benchmark_status") or "blocked")
     status_reason = str(output.get("status_reason") or "")
@@ -112,6 +113,7 @@ def build_user_notify(
         human_action_needed = "No human action is required."
 
     return {
+        "run_id": run_dir.name,
         "audience": "user",
         "kind": "notify_report",
         "required": required,
@@ -125,6 +127,12 @@ def build_user_notify(
         "runner_action_type": action_type,
         "controller_status": action.get("controller_status", "observing"),
         "allowed_decisions": allowed_decisions,
+        "decision_request_id": action.get("decision_request_id"),
+        "decision_id": action.get("decision_id"),
+        "decision_status": action.get("decision_status"),
+        "decision_error": action.get("decision_error"),
+        "submitted_decision": action.get("submitted_decision"),
+        "external_control_performed": bool(action.get("external_control_performed")),
         "retry_count": retry_count,
         "max_retries": max_retries,
         "task_summary": task_summary,
@@ -133,6 +141,7 @@ def build_user_notify(
             "run_dir": str(run_dir),
             "queue_dir": str(queue_dir) if queue_dir else None,
             "monitor_output": str(output_path) if output_path else None,
+            "user_decision_input": str(decision_path),
         },
     }
 
@@ -278,6 +287,12 @@ def build_runner_action(
         "requires_human": action_type == "notify" or control_failed,
         "controller_status": action.get("controller_status", "observing"),
         "allowed_decisions": allowed_decisions,
+        "decision_request_id": action.get("decision_request_id"),
+        "decision_id": action.get("decision_id"),
+        "decision_status": action.get("decision_status"),
+        "decision_error": action.get("decision_error"),
+        "submitted_decision": action.get("submitted_decision"),
+        "external_control_performed": control_performed,
         "benchmark_status": benchmark_status,
         "status_reason": status_reason,
         "evidence": evidence,
@@ -289,7 +304,6 @@ def build_runner_action(
         "control_error": action.get("control_error"),
         "restart_exit_code": action.get("control_exit_code") if control_type == "restart" else None,
         "restart_error": action.get("control_error") if control_type == "restart" else None,
-        "external_control_performed": control_performed,
         "auto_retry_supported": False,
         "compatibility_note": "Harbor control is command-based and runner-neutral; restart and stop require an explicit user decision.",
         "contract": {

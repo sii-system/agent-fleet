@@ -206,7 +206,16 @@ def _execute_stop(
     timeout_seconds: int,
 ) -> ControllerResult:
     if not stop_cmd:
-        return ControllerResult(action=requested_action, history=history)
+        return ControllerResult(
+            action=_notify_action(
+                state=state,
+                reason="stop_needed_but_stop_cmd_missing",
+                control_type="stop",
+                attempted=False,
+                performed=False,
+            ),
+            history=history,
+        )
 
     argv, control_error = build_control_argv(stop_cmd, run_dir, "stop")
     if control_error or argv is None:
@@ -302,4 +311,3 @@ def execute_action(
             timeout_seconds=timeout_seconds,
         )
     return ControllerResult(action=requested_action, history=history)
-
