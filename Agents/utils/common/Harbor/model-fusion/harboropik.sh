@@ -43,6 +43,43 @@ if [[ ! -f "$TB_FUSION_TASK_FILE_SOURCE" ]]; then
 fi
 
 args=("$@")
+
+# The host may use an outbound proxy, but Anthropic-compatible campus/private
+# gateways must be reached directly from the task container. The shared Harbor
+# command already carries NO_PROXY for Opik and wheel hosts; retain that value
+# and add the model gateway host for this scoped integration.
+gateway_host="$(
+  python3 - "${TB_ANTHROPIC_BASE_URL:-${BASE_URL:-}}" <<'PY'
+from urllib.parse import urlparse
+import sys
+
+print(urlparse(sys.argv[1]).hostname or "")
+PY
+)"
+if [[ -n "$gateway_host" ]]; then
+  found_upper=0
+  found_lower=0
+  for ((i = 0; i + 1 < ${#args[@]}; i++)); do
+    [[ "${args[$i]}" == "--ae" ]] || continue
+    case "${args[$((i + 1))]}" in
+      NO_PROXY=*)
+        found_upper=1
+        value="${args[$((i + 1))]#NO_PROXY=}"
+        [[ ",$value," == *",$gateway_host,"* ]] \
+          || args[$((i + 1))]="NO_PROXY=${value:+$value,}$gateway_host"
+        ;;
+      no_proxy=*)
+        found_lower=1
+        value="${args[$((i + 1))]#no_proxy=}"
+        [[ ",$value," == *",$gateway_host,"* ]] \
+          || args[$((i + 1))]="no_proxy=${value:+$value,}$gateway_host"
+        ;;
+    esac
+  done
+  [[ "$found_upper" == "1" ]] || args+=(--ae "NO_PROXY=$gateway_host")
+  [[ "$found_lower" == "1" ]] || args+=(--ae "no_proxy=$gateway_host")
+fi
+
 mount_value_index=-1
 for ((i = 0; i < ${#args[@]}; i++)); do
   if [[ "${args[$i]}" == "--mounts-json" ]]; then
