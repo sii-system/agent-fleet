@@ -134,23 +134,33 @@ class HarborTaskSelectionTest(unittest.TestCase):
             self.assertIn("unknown task(s): missing-a, missing-b", result.stderr)
             self.assertFalse((output / "tasks.txt").exists())
 
-    def test_reset_removes_generated_benchmark_summary(self) -> None:
+    def test_reset_removes_generated_benchmark_and_fixer_summaries(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             output, common = self.local_fixture(Path(tmp), "task-a")
             analyzer_dir = output / "analyzer"
             summary_dir = analyzer_dir / "benchmark-summary"
+            fixer_dir = output / "fixer"
             summary_dir.mkdir(parents=True)
+            fixer_dir.mkdir()
             (analyzer_dir / "benchmark-summary.md").write_text("old summary\n", encoding="utf-8")
             (summary_dir / "summary-input.json").write_text("{}\n", encoding="utf-8")
+            (fixer_dir / "fix-report-latest.md").write_text(
+                "old fixer report\n",
+                encoding="utf-8",
+            )
             unrelated = analyzer_dir / "keep.txt"
             unrelated.write_text("keep\n", encoding="utf-8")
+            fixer_unrelated = fixer_dir / "keep.json"
+            fixer_unrelated.write_text("{}\n", encoding="utf-8")
 
             result = self.run_env('mkdir -p "$QUEUE_DIR"; harbor_reset_run_state', **common)
 
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertFalse((analyzer_dir / "benchmark-summary.md").exists())
             self.assertFalse(summary_dir.exists())
+            self.assertFalse((fixer_dir / "fix-report-latest.md").exists())
             self.assertTrue(unrelated.exists())
+            self.assertTrue(fixer_unrelated.exists())
 
     def test_start_passes_run_id_to_analyzer(self) -> None:
         self.assertIn('--run-id "$RUN_ID"', START_SH.read_text(encoding="utf-8"))
