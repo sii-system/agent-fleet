@@ -77,7 +77,7 @@ def _validate_diagram(value: Any) -> str | None:
     if first_line != "sequenceDiagram" and not first_line.startswith(
         ("flowchart ", "graph ")
     ):
-        raise PiSummaryError("diagram must be a Mermaid flowchart or sequence")
+        return None
     lowered = diagram.casefold()
     if any(
         token in lowered

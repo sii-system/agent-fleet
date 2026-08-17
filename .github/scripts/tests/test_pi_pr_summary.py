@@ -51,6 +51,17 @@ class SummaryContractTest(unittest.TestCase):
                 }
             )
 
+    def test_omits_unsupported_diagram_type(self) -> None:
+        result = summary.validate_summary(
+            {
+                "description": ["Summarizes the pull request."],
+                "diagram": "classDiagram\n  Controller --> Worker",
+                "assessment": "The change keeps the existing architecture.",
+            }
+        )
+
+        self.assertIsNone(result.diagram)
+
     def test_rejects_unsafe_mermaid(self) -> None:
         with self.assertRaisesRegex(summary.PiSummaryError, "diagram"):
             summary.validate_summary(
