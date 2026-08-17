@@ -1,4 +1,4 @@
-"""Write a human-readable benchmark summary from Monitor and Analyzer artifacts."""
+"""Write a human-readable benchmark summary from Monitor, Analyzer, and Fixer artifacts."""
 
 from __future__ import annotations
 
@@ -429,11 +429,95 @@ def _render_markdown(
     return "\n".join(lines) + "\n"
 
 
+def _markdown_section(markdown: str, heading: str) -> str | None:
+    lines = markdown.splitlines()
+    target = f"## {heading}".casefold()
+    start: int | None = None
+    for index, line in enumerate(lines):
+        if line.strip().casefold() == target:
+            start = index + 1
+            break
+    if start is None:
+        return None
+
+    end = len(lines)
+    for index in range(start, len(lines)):
+        if lines[index].startswith("## "):
+            end = index
+            break
+    content = "\n".join(lines[start:end]).strip()
+    return content or None
+
+
+def _first_markdown_section(markdown: str, headings: tuple[str, ...]) -> str | None:
+    for heading in headings:
+        if section := _markdown_section(markdown, heading):
+            return section
+    return None
+
+
+def _markdown_preamble(markdown: str) -> str | None:
+    lines = markdown.splitlines()
+    start = 1 if lines and lines[0].startswith("# ") else 0
+    end = next(
+        (index for index in range(start, len(lines)) if lines[index].startswith("## ")),
+        len(lines),
+    )
+    content = "\n".join(lines[start:end]).strip()
+    return content or None
+
+
+def _fixer_report_link(fixer_report_path: Path, output_path: Path) -> str:
+    target = Path(os.path.relpath(fixer_report_path, start=output_path.parent)).as_posix()
+    if any(character.isspace() for character in target):
+        target = f"<{target}>"
+    return f"[fix-report-latest.md]({target})"
+
+
+def _render_fixer_markdown(fixer_report_path: Path, output_path: Path) -> str:
+    lines = ["## Fixer Results", ""]
+    if not fixer_report_path.is_file():
+        lines.append("No Fixer report has been generated for this benchmark run.")
+        return "\n".join(lines) + "\n"
+
+    report = fixer_report_path.read_text(encoding="utf-8")
+    summary = _markdown_section(report, "Summary")
+    if summary is None:
+        human_summary = _markdown_section(report, "Human summary")
+        summary = "\n\n".join(
+            section
+            for section in (human_summary, _markdown_preamble(report))
+            if section
+        ) or None
+    changes = _first_markdown_section(
+        report,
+        ("Changes Applied", "Trial execution"),
+    )
+    remaining_issues = _first_markdown_section(
+        report,
+        ("Remaining Issues", "Failures and interruptions"),
+    )
+
+    lines.append(summary or "The Fixer report does not contain a summary.")
+    lines.extend(["", "### What Fixer Changed", ""])
+    lines.append(changes or "No applied changes were recorded.")
+    lines.extend(["", "### Remaining Issues", ""])
+    lines.append(remaining_issues or "No remaining issues were recorded.")
+    lines.extend(
+        [
+            "",
+            f"Full Fixer report: {_fixer_report_link(fixer_report_path, output_path)}",
+        ]
+    )
+    return "\n".join(lines) + "\n"
+
+
 def write_benchmark_summary(
     monitor_path: Path,
     manifest_path: Path,
     output_path: Path,
     expected_run_id: str | None = None,
+    fixer_report_path: Path | None = None,
 ) -> None:
     monitor = _load_json(monitor_path)
     if monitor.get("benchmark_status") == "running":
@@ -453,20 +537,25 @@ def write_benchmark_summary(
         model_output = _fallback_model_output(payload)
     else:
         write_json_atomic(summary_output_path, model_output)
-    write_text_atomic(output_path, _render_markdown(payload, model_output))
+    markdown = _render_markdown(payload, model_output)
+    if fixer_report_path is not None:
+        markdown += "\n" + _render_fixer_markdown(fixer_report_path, output_path)
+    write_text_atomic(output_path, markdown)
 
 
 def main() -> int:
-    if len(sys.argv) not in {4, 5}:
+    if len(sys.argv) not in {4, 5, 6}:
         print(
-            f"usage: {Path(sys.argv[0]).name} MONITOR_JSON ANALYZER_MANIFEST OUTPUT_MD [RUN_ID]",
+            f"usage: {Path(sys.argv[0]).name} MONITOR_JSON ANALYZER_MANIFEST "
+            "OUTPUT_MD [RUN_ID] [FIXER_REPORT_MD]",
             file=sys.stderr,
         )
         return 2
     try:
         write_benchmark_summary(
             *(Path(value) for value in sys.argv[1:4]),
-            expected_run_id=sys.argv[4] if len(sys.argv) == 5 else None,
+            expected_run_id=sys.argv[4] if len(sys.argv) >= 5 else None,
+            fixer_report_path=Path(sys.argv[5]) if len(sys.argv) == 6 else None,
         )
     except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
         print(f"benchmark summary not written: {exc}", file=sys.stderr)

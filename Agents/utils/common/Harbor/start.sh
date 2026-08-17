@@ -361,6 +361,7 @@ harbor_write_benchmark_summary() {
     "$HARBOR_MONITOR_DIR/monitor-latest.json" \
     "$HARBOR_ANALYZER_OUTPUT_DIR/analyzer-artifacts-latest.json" \
     "$HARBOR_ANALYZER_OUTPUT_DIR/benchmark-summary.md" "$RUN_ID" \
+    "$OUTPUT_PATH/fixer/fix-report-latest.md" \
     || echo "[WARN] failed to write Harbor benchmark summary" >&2
 }
 

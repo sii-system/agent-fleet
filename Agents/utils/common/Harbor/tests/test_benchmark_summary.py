@@ -622,6 +622,181 @@ class BenchmarkSummaryTests(unittest.TestCase):
 
             self.assertFalse(output_path.exists())
 
+    def test_appends_selected_fixer_report_sections_without_duplicate_verification(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            root_path = Path(root)
+            monitor_path = root_path / "monitor-latest.json"
+            output_path = root_path / "analyzer" / "benchmark-summary.md"
+            fixer_report_path = root_path / "fixer" / "fix-report-latest.md"
+            _write_json(
+                monitor_path,
+                {
+                    "benchmark_status": "completed",
+                    "task_summary": {
+                        "complete_success": 1,
+                        "complete_failed": 0,
+                        "complete_unknown": 0,
+                        "not_complete": 0,
+                        "total_evaluated": 1,
+                    },
+                },
+            )
+            fixer_report_path.parent.mkdir(parents=True)
+            fixer_report_path.write_text(
+                """# Fixer Report
+
+## Summary
+
+Fixer attempted four tasks and verified three fixes.
+
+| Item | Result |
+| --- | --- |
+| Status | Partially fixed |
+| Verification | 3 fixed, 1 still failing |
+
+## Changes Applied
+
+- `task-001`: Corrected the configuration path.
+
+## Verification Result
+
+This detail is already represented by the Summary table.
+
+## Remaining Issues
+
+- `task-004`: The expected configuration file is missing.
+
+## Execution Details
+
+Internal command output that should remain in the full report.
+""",
+                encoding="utf-8",
+            )
+            model_output = {
+                "summary": "The benchmark completed successfully.",
+                "analysis_summary": [],
+                "recommended_actions": [],
+            }
+
+            with mock.patch.object(
+                summary_writer,
+                "run_pi_json_process",
+                return_value=_pi_result(model_output),
+            ):
+                summary_writer.write_benchmark_summary(
+                    monitor_path,
+                    root_path / "missing-manifest.json",
+                    output_path,
+                    fixer_report_path=fixer_report_path,
+                )
+
+            summary = output_path.read_text(encoding="utf-8")
+            self.assertIn("## Fixer Results", summary)
+            self.assertIn("Fixer attempted four tasks and verified three fixes.", summary)
+            self.assertIn("| Verification | 3 fixed, 1 still failing |", summary)
+            self.assertIn("### What Fixer Changed", summary)
+            self.assertIn("Corrected the configuration path.", summary)
+            self.assertIn("### Remaining Issues", summary)
+            self.assertIn("The expected configuration file is missing.", summary)
+            self.assertIn(
+                "Full Fixer report: [fix-report-latest.md](../fixer/fix-report-latest.md)",
+                summary,
+            )
+            self.assertNotIn("## Verification Result", summary)
+            self.assertNotIn("Internal command output", summary)
+
+    def test_reports_missing_fixer_report_without_changing_existing_callers(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            root_path = Path(root)
+            monitor_path = root_path / "monitor-latest.json"
+            output_path = root_path / "benchmark-summary.md"
+            missing_fixer_report = root_path / "fixer" / "fix-report-latest.md"
+            _write_json(
+                monitor_path,
+                {
+                    "benchmark_status": "completed",
+                    "task_summary": {
+                        "complete_success": 1,
+                        "complete_failed": 0,
+                        "complete_unknown": 0,
+                        "not_complete": 0,
+                        "total_evaluated": 1,
+                    },
+                },
+            )
+            model_output = {
+                "summary": "The benchmark completed successfully.",
+                "analysis_summary": [],
+                "recommended_actions": [],
+            }
+
+            with mock.patch.object(
+                summary_writer,
+                "run_pi_json_process",
+                return_value=_pi_result(model_output),
+            ):
+                summary_writer.write_benchmark_summary(
+                    monitor_path,
+                    root_path / "missing-manifest.json",
+                    output_path,
+                    fixer_report_path=missing_fixer_report,
+                )
+
+            summary = output_path.read_text(encoding="utf-8")
+            self.assertIn("## Fixer Results", summary)
+            self.assertIn(
+                "No Fixer report has been generated for this benchmark run.",
+                summary,
+            )
+
+    def test_supports_current_fixer_report_headings(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            root_path = Path(root)
+            output_path = root_path / "analyzer" / "benchmark-summary.md"
+            fixer_report_path = root_path / "fixer" / "fix-report-latest.md"
+            fixer_report_path.parent.mkdir(parents=True)
+            fixer_report_path.write_text(
+                """# Harbor Fixer Report: run-001
+
+| Field | Value |
+| --- | --- |
+| Overall status | partially_fixed |
+| Sampled tasks | 4 |
+
+## Human summary
+
+Three sampled tasks were fixed and one still fails.
+
+## Trial execution
+
+| Plan | Command | Status | Purpose |
+| --- | --- | --- | --- |
+| fix-001 | cmd-001 | success | Correct the configuration path. |
+
+## Verification
+
+Detailed verification data remains in the full report.
+
+## Failures and interruptions
+
+| Stage | Item | Cause |
+| --- | --- | --- |
+| verification | task-004 | configuration file missing |
+""",
+                encoding="utf-8",
+            )
+
+            summary = summary_writer._render_fixer_markdown(
+                fixer_report_path,
+                output_path,
+            )
+
+            self.assertIn("Three sampled tasks were fixed and one still fails.", summary)
+            self.assertIn("| Overall status | partially_fixed |", summary)
+            self.assertIn("Correct the configuration path.", summary)
+            self.assertIn("configuration file missing", summary)
+            self.assertNotIn("Detailed verification data", summary)
+
 
 if __name__ == "__main__":
     unittest.main()
