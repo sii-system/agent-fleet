@@ -80,6 +80,46 @@ def read_exit_code(exit_file: Path | None) -> int | None:
         return None
 
 
+def _prepare_user_decision_request(
+    output: dict[str, object],
+    action: dict[str, object],
+    *,
+    run_id: str,
+    restart_cmd: str | None,
+    stop_cmd: str | None,
+) -> tuple[dict[str, object], str | None]:
+    """Expose only decisions backed by the configured run-local controls."""
+
+    restart_available = bool(restart_cmd and restart_cmd.strip())
+    stop_available = bool(stop_cmd and stop_cmd.strip())
+    allowed = action.get("allowed_decisions")
+    action["allowed_decisions"] = [
+        decision
+        for decision in allowed
+        if isinstance(decision, str)
+        and (
+            decision == "wait"
+            or (decision == "restart" and restart_available)
+            or (decision == "stop" and stop_available)
+        )
+    ] if isinstance(allowed, list) else []
+    has_decisions = action.get("type") == "notify" and bool(
+        action["allowed_decisions"]
+    )
+    action["decision_required"] = has_decisions
+    if not has_decisions:
+        action.pop("decision_request_id", None)
+        if action.get("type") == "notify":
+            action["controller_status"] = "action_required"
+        return action, None
+
+    action["controller_status"] = "awaiting_user_decision"
+    incident_key = build_notify_incident_key(output, action)
+    decision_request_id = build_decision_request_id(run_id, incident_key)
+    action["decision_request_id"] = decision_request_id
+    return action, decision_request_id
+
+
 def run_loop(
     run_dir: Path,
     done_path: Path,
@@ -237,13 +277,13 @@ def run_loop(
             retry_count=int(state.get("retry_count", 0) or 0),
             max_retries=max_retries,
         )
-        decision_request_id = None
-        if requested_action.get("type") == "notify" and requested_action.get(
-            "allowed_decisions"
-        ):
-            incident_key = build_notify_incident_key(output, requested_action)
-            decision_request_id = build_decision_request_id(run_dir.name, incident_key)
-            requested_action["decision_request_id"] = decision_request_id
+        requested_action, decision_request_id = _prepare_user_decision_request(
+            output,
+            requested_action,
+            run_id=run_dir.name,
+            restart_cmd=restart_cmd,
+            stop_cmd=stop_cmd,
+        )
         selected_action, user_decision = resolve_user_decision(
             requested_action,
             decision_path=decision_path,
@@ -283,15 +323,31 @@ def run_loop(
             elif decision_status == "executed" and submitted_decision == "stop":
                 controller_result.action["controller_status"] = "stopped"
             elif decision_status in {"failed", "rejected"}:
-                controller_result.action["controller_status"] = (
-                    "awaiting_user_decision"
+                retry_action, retry_request_id = _prepare_user_decision_request(
+                    output,
+                    decide_action(
+                        output,
+                        retry_count=int(state.get("retry_count", 0) or 0),
+                        max_retries=max_retries,
+                    ),
+                    run_id=run_dir.name,
+                    restart_cmd=restart_cmd,
+                    stop_cmd=stop_cmd,
                 )
-                controller_result.action["allowed_decisions"] = requested_action.get(
-                    "allowed_decisions", []
+                controller_result.action.update(
+                    {
+                        "controller_status": retry_action["controller_status"],
+                        "allowed_decisions": retry_action["allowed_decisions"],
+                        "decision_required": retry_action["decision_required"],
+                        "decision_request_id": retry_request_id,
+                    }
                 )
-                controller_result.action["decision_request_id"] = decision_request_id
-                if user_decision.get("reason"):
-                    controller_result.action["decision_error"] = user_decision["reason"]
+                controller_result.action["decision_error"] = (
+                    user_decision.get("reason")
+                    or controller_result.action.get("reason")
+                    or controller_result.action.get("control_error")
+                    or "control execution failed"
+                )
         output["action"] = controller_result.action
         history = controller_result.history
         if controller_result.control_stdout is not None:
@@ -320,7 +376,18 @@ def run_loop(
             run_dir=run_dir,
             queue_dir=queue_dir,
         )
-        if (
+        restart_decision_pending = (
+            output["action"].get("controller_status") == "awaiting_user_decision"
+            and "restart" in output["action"].get("allowed_decisions", [])
+        )
+        if restart_decision_pending:
+            output["analyzer_handover"]["should_run_analyzer"] = False
+            output["analyzer_handover"]["tasks"] = []
+            output["analyzer_handover"]["instruction"] = (
+                "A restart decision is pending; wait for the user's decision before "
+                "running Analyzer."
+            )
+        elif (
             output["action"].get("type") == "restart"
             and output["action"].get("external_control_performed") is True
             and output["action"].get("control_exit_code") == 0

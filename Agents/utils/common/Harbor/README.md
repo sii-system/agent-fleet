@@ -259,9 +259,9 @@ All files are refreshed on each sample. The actual action is
 | Observed state | Action |
 | --- | --- |
 | Worker active and making progress | `wait` |
-| Worker active past `--configured-timeout` | `notify`; allowed decisions are `wait`, `stop` |
-| Worker active after the confirmed stall duration | `notify`; allowed decisions are `wait`, `stop` |
-| Tasks unfinished with no live worker | `notify`; `restart` is allowed below `--max-retries` |
+| Worker active past `--configured-timeout` | `notify`; `wait` is allowed, and `stop` is allowed when a stop command is configured |
+| Worker active after the confirmed stall duration | `notify`; `wait` is allowed, and `stop` is allowed when a stop command is configured |
+| Tasks unfinished with no live worker | `notify`; `restart` is allowed below `--max-retries` when a restart command is configured |
 | Every task has a terminal queue record | `wait`; finish the monitor loop without external control |
 
 The interaction path is available whenever `HARBOR_MONITOR_ENABLED=1`; it has
