@@ -11,6 +11,13 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from harbor_controller.fixer import (
+    approve_fixer,
+    cancel_fixer,
+    fixer_status,
+    start_fixer,
+)
+
 
 def _load_json(path: Path) -> dict[str, Any]:
     try:
@@ -54,8 +61,33 @@ def _status(run_dir: Path) -> int:
         "decision_status": notification.get("decision_status"),
         "submitted_decision": notification.get("submitted_decision"),
         "external_control_performed": notification.get("external_control_performed"),
+        "fixer": fixer_status(run_dir),
     }
     print(json.dumps(fields, ensure_ascii=False, indent=2))
+    return 0
+
+
+def _fixer_start(args: argparse.Namespace) -> int:
+    start_fixer(
+        args.run_dir,
+        workspace_root=args.workspace_root,
+        analyzer_output=args.analyzer_output,
+        policy_rules_path=args.policy_rules,
+        policy_write_roots=args.policy_write_root,
+    )
+    print(json.dumps(fixer_status(args.run_dir), ensure_ascii=False, indent=2))
+    return 0
+
+
+def _fixer_approve(run_dir: Path, request_id: str) -> int:
+    approve_fixer(run_dir, request_id)
+    print(json.dumps(fixer_status(run_dir), ensure_ascii=False, indent=2))
+    return 0
+
+
+def _fixer_cancel(run_dir: Path, workflow_id: str) -> int:
+    cancel_fixer(run_dir, workflow_id)
+    print(json.dumps(fixer_status(run_dir), ensure_ascii=False, indent=2))
     return 0
 
 
@@ -99,6 +131,22 @@ def parse_args() -> argparse.Namespace:
     decide = subparsers.add_parser("decide")
     decide.add_argument("decision", choices=("wait", "restart", "stop"))
     decide.add_argument("--wait-seconds", type=int, default=300)
+    fixer = subparsers.add_parser("fixer")
+    fixer_commands = fixer.add_subparsers(dest="fixer_command", required=True)
+    fixer_start = fixer_commands.add_parser("start")
+    fixer_start.add_argument("--workspace-root", required=True, type=Path)
+    fixer_start.add_argument("--analyzer-output", type=Path)
+    fixer_start.add_argument("--policy-rules", type=Path)
+    fixer_start.add_argument(
+        "--policy-write-root",
+        action="append",
+        type=Path,
+        default=[],
+    )
+    fixer_approve = fixer_commands.add_parser("approve")
+    fixer_approve.add_argument("--request-id", required=True)
+    fixer_cancel = fixer_commands.add_parser("cancel")
+    fixer_cancel.add_argument("--workflow-id", required=True)
     return parser.parse_args()
 
 
@@ -107,9 +155,20 @@ def main() -> int:
     try:
         if args.command == "status":
             return _status(args.run_dir)
-        return _decide(args.run_dir, args.decision, args.wait_seconds)
-    except (TypeError, ValueError) as exc:
-        print(f"controller decision rejected: {exc}", file=os.sys.stderr)
+        if args.command == "decide":
+            return _decide(args.run_dir, args.decision, args.wait_seconds)
+        if args.fixer_command == "start":
+            return _fixer_start(args)
+        if args.fixer_command == "approve":
+            return _fixer_approve(args.run_dir, args.request_id)
+        return _fixer_cancel(args.run_dir, args.workflow_id)
+    except (OSError, TypeError, ValueError) as exc:
+        prefix = (
+            "controller decision rejected"
+            if args.command == "decide"
+            else "controller Fixer request rejected"
+        )
+        print(f"{prefix}: {exc}", file=os.sys.stderr)
         return 2
 
 

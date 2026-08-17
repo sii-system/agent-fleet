@@ -302,6 +302,34 @@ for a run, set `HARBOR_ANALYZER_ENABLED=0`.
 Harbor Fixer consumes Analyzer output, generates a Fix Plan, checks every
 action against execution policy, and executes an allowed plan.
 
+The Controller provides the minimal user-controlled workflow for a completed
+or explicitly stopped benchmark. `fixer start` runs planning and policy only;
+it does not modify the workspace. Review the returned `approval.plans` (also
+available under `controller.py ... status`) before approving the exact plan:
+
+```bash
+python3 Agents/utils/common/Harbor/scripts/controller.py \
+  --run-dir "$RUN_DIR" fixer start --workspace-root /path/to/workspace
+python3 Agents/utils/common/Harbor/scripts/controller.py \
+  --run-dir "$RUN_DIR" status
+python3 Agents/utils/common/Harbor/scripts/controller.py \
+  --run-dir "$RUN_DIR" fixer approve --request-id "$APPROVAL_REQUEST_ID"
+```
+
+Use `fixer cancel --workflow-id "$FIXER_WORKFLOW_ID"` to reject a plan awaiting
+approval. A cancellation requested during planning or policy review takes
+effect at the next stage boundary. Execution is synchronous and cannot be
+safely cancelled after an action starts. Approval is bound to the run,
+workflow, approval request, and SHA-256 digest of the reviewed Fix Plan; a
+changed plan is blocked instead of executed.
+
+This Controller path currently covers Fixer Stages 1–3 only. Verification and
+the human-readable Fix Report are reported as `not_available`; it does not
+claim that either later stage ran. Workflow control state is written below
+`$RUN_DIR/fixer` as `fixer-state.json`, `fixer-control-request.json`,
+`fixer-approval-request.json`, and `fixer-user-decision.json` alongside the
+existing Fixer artifacts.
+
 ### Stage 1: Planning Context and Plan Generation
 
 Point `--analyzer-output` at an Analyzer output directory containing

@@ -175,6 +175,33 @@ class HarborTaskSelectionTest(unittest.TestCase):
             self.assertTrue(unrelated.exists())
             self.assertTrue(fixer_unrelated.exists())
 
+    def test_reset_removes_fixer_control_state_but_keeps_fixer_results(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output, common = self.local_fixture(Path(tmp), "task-a")
+            fixer_dir = output / "fixer"
+            fixer_dir.mkdir(parents=True)
+            for name in (
+                "fixer-state.json",
+                "fixer-control-request.json",
+                "fixer-approval-request.json",
+                "fixer-user-decision.json",
+            ):
+                (fixer_dir / name).write_text("{}\n", encoding="utf-8")
+            result_file = fixer_dir / "exec-result-latest.json"
+            result_file.write_text("{}\n", encoding="utf-8")
+
+            result = self.run_env('mkdir -p "$QUEUE_DIR"; harbor_reset_run_state', **common)
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            for name in (
+                "fixer-state.json",
+                "fixer-control-request.json",
+                "fixer-approval-request.json",
+                "fixer-user-decision.json",
+            ):
+                self.assertFalse((fixer_dir / name).exists())
+            self.assertTrue(result_file.exists())
+
     def test_start_passes_run_id_to_analyzer(self) -> None:
         self.assertIn('--run-id "$RUN_ID"', START_SH.read_text(encoding="utf-8"))
 

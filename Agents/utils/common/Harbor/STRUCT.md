@@ -25,7 +25,7 @@ Agents/utils/common/Harbor/
 ├── prebuild_opensandbox_dataset.sh # Batch prebuild/publish local dataset images
 └── scripts/
     ├── monitor.py              # Monitor CLI entrypoint and path resolution
-    ├── controller.py           # Inspect notifications and submit explicit user decisions
+    ├── controller.py           # Submit benchmark decisions and user-controlled Fixer actions
     ├── analyzer_subagent.py    # Analyzer entrypoint for Pi/GLM-5.2 root-cause analysis
     ├── harbor_analyzer/        # Analyzer policy, Pi adapter, contracts, and output validation
     ├── harbor_pi_runtime/      # Shared isolated Pi process and JSON-event helper
@@ -39,6 +39,7 @@ Agents/utils/common/Harbor/
     │   ├── policy.py           # Select wait/notify and state-safe user choices
     │   ├── decision.py         # Validate, deduplicate, and defer user decisions
     │   ├── executor.py         # Validate and execute user-approved run-local controls
+    │   ├── fixer.py            # Start, approve, cancel, and inspect run-local Fixer workflows
     │   └── analyzer_dispatch.py # Deduplicate and spool Analyzer handovers
     ├── fixer.py                # Fix Plan Generation CLI
     ├── harbor_fixer/
