@@ -69,15 +69,22 @@ def _required_text(value: Any, field: str, limit: int) -> str:
     return text
 
 
+def _is_supported_mermaid(diagram: str) -> bool:
+    first_line = diagram.splitlines()[0].strip()
+    return first_line == "sequenceDiagram" or first_line.startswith(
+        ("flowchart ", "graph ")
+    )
+
+
 def _validate_diagram(value: Any) -> str | None:
     if value is None or value == "":
         return None
     diagram = _required_text(value, "diagram", MAX_DIAGRAM_CHARS)
+    if not _is_supported_mermaid(diagram):
+        if "```" in diagram:
+            raise PiSummaryError("diagram contains unsupported content")
+        return diagram
     first_line = diagram.splitlines()[0].strip()
-    if first_line != "sequenceDiagram" and not first_line.startswith(
-        ("flowchart ", "graph ")
-    ):
-        return None
     lowered = diagram.casefold()
     if any(
         token in lowered
@@ -232,7 +239,7 @@ def render_summary(title: str, summary: Summary) -> str:
                 "<details>",
                 "<summary>Diagram</summary>",
                 "",
-                "```mermaid",
+                f"```{'mermaid' if _is_supported_mermaid(summary.diagram) else 'text'}",
                 summary.diagram,
                 "```",
                 "",

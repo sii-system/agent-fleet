@@ -51,16 +51,26 @@ class SummaryContractTest(unittest.TestCase):
                 }
             )
 
-    def test_omits_unsupported_diagram_type(self) -> None:
+    def test_accepts_ascii_diagram_fallback(self) -> None:
         result = summary.validate_summary(
             {
                 "description": ["Summarizes the pull request."],
-                "diagram": "classDiagram\n  Controller --> Worker",
+                "diagram": "Controller\n    |\n    v\nWorker",
                 "assessment": "The change keeps the existing architecture.",
             }
         )
 
-        self.assertIsNone(result.diagram)
+        self.assertEqual(result.diagram, "Controller\n    |\n    v\nWorker")
+
+    def test_rejects_fenced_ascii_diagram(self) -> None:
+        with self.assertRaisesRegex(summary.PiSummaryError, "diagram"):
+            summary.validate_summary(
+                {
+                    "description": ["Summary."],
+                    "diagram": "Controller\n```\n</details>",
+                    "assessment": "Assessment.",
+                }
+            )
 
     def test_rejects_unsafe_mermaid(self) -> None:
         with self.assertRaisesRegex(summary.PiSummaryError, "diagram"):
@@ -468,6 +478,21 @@ class SummaryRenderingTest(unittest.TestCase):
         body = summary.render_summary("Update docs", value)
 
         self.assertNotIn("<summary>Diagram</summary>", body)
+
+    def test_renders_ascii_diagram_as_plain_text(self) -> None:
+        value = summary.Summary(
+            description=("Uses an ASCII fallback.",),
+            diagram="Controller\n    |\n    v\nWorker",
+            assessment="The interaction remains visible without Mermaid.",
+        )
+
+        body = summary.render_summary("Update workflow", value)
+
+        self.assertIn(
+            "```text\nController\n    |\n    v\nWorker\n```",
+            body,
+        )
+        self.assertNotIn("```mermaid", body)
 
     def test_escapes_markdown_links_in_untrusted_prose(self) -> None:
         value = summary.Summary(

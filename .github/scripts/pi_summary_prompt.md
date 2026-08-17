@@ -13,12 +13,14 @@ Return exactly one JSON object and no surrounding prose:
   "description": [
     "one to six concise bullets explaining what changed and why"
   ],
-  "diagram": "optional Mermaid source, or null",
+  "diagram": "optional Mermaid or ASCII diagram source, or null",
   "assessment": "one concise paragraph assessing the overall approach"
 }
 
-Use a Mermaid `sequenceDiagram`, `flowchart`, or `graph` only when component
-interaction is meaningful. Return Mermaid source without code fences. Otherwise
-set `diagram` to null. For flowcharts and graphs, use simple alphanumeric node
-IDs, rectangular or diamond nodes, and double-quote all node text, for example
-`A["Start"] --> B{"Ready?"}`. Keep edge text to simple words.
+When component interaction is meaningful, use a Mermaid `sequenceDiagram`,
+`flowchart`, or `graph`. If the interaction cannot be represented with one of
+those supported Mermaid forms, use an ASCII diagram. Return diagram source
+without code fences. Otherwise set `diagram` to null. For flowcharts and graphs,
+use simple alphanumeric node IDs, rectangular or diamond nodes, and double-quote
+all node text, for example `A["Start"] --> B{"Ready?"}`. Keep edge text to simple
+words.
