@@ -786,9 +786,9 @@ harbor_reset_run_state() {
   rm -f "$HARBOR_ANALYZER_PID_FILE" "$HARBOR_ANALYZER_SUPERVISOR_PID_FILE" "$HARBOR_ANALYZER_SUPERVISOR_ID_FILE" "$HARBOR_ANALYZER_LOG_FILE" "$HARBOR_ANALYZER_OUTPUT_DIR/.analyzer_state.json" "$HARBOR_ANALYZER_OUTPUT_DIR/.analyzer-ready" "$HARBOR_ANALYZER_OUTPUT_DIR/analyzer-artifacts-latest.json" "$HARBOR_ANALYZER_OUTPUT_DIR/benchmark-summary.md"
   rm -rf "$HARBOR_ANALYZER_OUTPUT_DIR/benchmark-summary"
   rm -f "$OUTPUT_PATH/fixer/fix-report-latest.md"
-  rm -f "$OUTPUT_PATH/fixer/fixer-state.json" "$OUTPUT_PATH/fixer/fixer-control-request.json" "$OUTPUT_PATH/fixer/fixer-approval-request.json" "$OUTPUT_PATH/fixer/fixer-user-decision.json"
   rm -f "$HARBOR_ONLINE_ANALYSIS_PID_FILE" "$HARBOR_ONLINE_ANALYSIS_LOG_FILE"
   rm -f "$HARBOR_ONLINE_ANALYSIS_DIR/environment-events.jsonl" "$HARBOR_ONLINE_ANALYSIS_DIR/environment-summary.json"
+  rm -f "$OUTPUT_PATH/fixer/fixer-state.json" "$OUTPUT_PATH/fixer/fixer-control-request.json" "$OUTPUT_PATH/fixer/fixer-approval-request.json" "$OUTPUT_PATH/fixer/fixer-user-decision.json"
   : > "$QUEUE_DIR/done.txt"
   : > "$QUEUE_DIR/failed.txt"
 }
