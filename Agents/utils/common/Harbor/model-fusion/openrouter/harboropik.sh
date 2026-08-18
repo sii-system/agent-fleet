@@ -85,9 +85,11 @@ args+=(
   --ae "OPENROUTER_SUMMARY_PATH=${OPENROUTER_SUMMARY_PATH:-/logs/agent/router-run-summary.json}"
 )
 if [[ "${MODEL_FUSION_PROXY_RENDER_ONLY:-0}" == "1" ]]; then
-  printf '[openrouter] proxy command:'
-  printf ' %q' "$REAL_OPIK_BIN" "${args[@]}"
-  printf '\n'
+  rendered_command="$(
+    python3 "$OPENROUTER_DIR/../harbor_worker_utils.py" \
+      render-command "$REAL_OPIK_BIN" "${args[@]}"
+  )"
+  printf '[openrouter] proxy command: %s\n' "$rendered_command"
   exit 0
 fi
 exec "$REAL_OPIK_BIN" "${args[@]}"

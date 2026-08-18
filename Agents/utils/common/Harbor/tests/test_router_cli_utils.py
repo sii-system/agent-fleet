@@ -83,6 +83,64 @@ class RouterSourceFingerprintTest(unittest.TestCase):
                 utils.source_fingerprint(worktree), utils.source_fingerprint(repo)
             )
 
+    def test_fingerprint_streams_regular_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            (repo / "large.bin").write_bytes(b"x" * (2 * 1024 * 1024 + 1))
+            subprocess.run(["git", "-C", str(repo), "add", "large.bin"], check=True)
+
+            with mock.patch.object(
+                Path, "read_bytes", side_effect=AssertionError("whole-file read")
+            ):
+                self.assertEqual(len(utils.source_fingerprint(repo)), 64)
+
+    def test_fingerprint_handles_populated_gitlinks_and_submodule_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            child = root / "child"
+            repo = root / "repo"
+            subprocess.run(["git", "init", "-q", str(child)], check=True)
+            (child / "module.py").write_text("value = 1\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(child), "add", "module.py"], check=True)
+            subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(child),
+                    "-c",
+                    "user.name=Test",
+                    "-c",
+                    "user.email=test@example.com",
+                    "commit",
+                    "-qm",
+                    "fixture",
+                ],
+                check=True,
+            )
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            subprocess.run(
+                [
+                    "git",
+                    "-c",
+                    "protocol.file.allow=always",
+                    "-C",
+                    str(repo),
+                    "submodule",
+                    "add",
+                    "-q",
+                    str(child),
+                    "vendor/child",
+                ],
+                check=True,
+            )
+
+            baseline = utils.source_fingerprint(repo)
+            (repo / "vendor/child/module.py").write_text(
+                "value = 2\n", encoding="utf-8"
+            )
+            self.assertNotEqual(utils.source_fingerprint(repo), baseline)
+
 
 class RouterWheelBuildTest(unittest.TestCase):
     def test_build_is_cached_with_absolute_paths_and_checksum(self) -> None:

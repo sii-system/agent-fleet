@@ -123,6 +123,8 @@ class OpenRouterProxyTest(unittest.TestCase):
                 "terminal-bench/terminal-bench-2-1",
                 "-i",
                 "terminal-bench/fix-git",
+                "--ae",
+                "ANTHROPIC_AUTH_TOKEN=do-not-print-this",
             ],
             env=env,
             text=True,
@@ -134,6 +136,9 @@ class OpenRouterProxyTest(unittest.TestCase):
         self.assertIn("OPENROUTER_ENABLED=1", result.stdout)
         self.assertIn("terminal-bench/fix-git", result.stdout)
         self.assertIn("--mounts-json", result.stdout)
+        self.assertNotIn("do-not-print-this", result.stdout)
+        self.assertIn("ANTHROPIC_AUTH_TOKEN", result.stdout)
+        self.assertIn("redacted", result.stdout)
 
 
 class OpenRouterClaudeOverlayTest(unittest.TestCase):
@@ -143,7 +148,12 @@ class OpenRouterClaudeOverlayTest(unittest.TestCase):
         assert spec is not None and spec.loader is not None
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
-        command = (
+        command_prefix = (
+            'export PATH="$HOME/.local/bin:$PATH"; '
+            "ANTHROPIC_AUTH_TOKEN=fixture-token "
+            "ANTHROPIC_BASE_URL=https://gateway.internal "
+        )
+        command = command_prefix + (
             "claude --verbose --output-format=stream-json --print -- task"
             " 2>&1 </dev/null | tee /logs/agent/claude-code.txt"
         )
@@ -154,11 +164,30 @@ class OpenRouterClaudeOverlayTest(unittest.TestCase):
             "OPENROUTER_CONFIG_PATH": "/opt/router.json",
             "TB_TASK_ID": "fixture-task",
         }
-        wrapped = module._wrap_claude_command(command, "fixture prompt", extra_env)
+        wrapped = module._wrap_claude_command(
+            command, "fixture prompt", extra_env, "/workspace/task repo"
+        )
         self.assertIn("sii_fusion_router.cli claude", wrapped)
         self.assertIn("--pipeline openrouter_fusion", wrapped)
         self.assertIn("--task-id fixture-task", wrapped)
+        self.assertIn("--workspace '/workspace/task repo'", wrapped)
+        self.assertIn(command_prefix + "PYTHONPATH=", wrapped)
+        self.assertNotIn("--workspace /app", wrapped)
+        self.assertNotIn('--upstream "$ANTHROPIC_BASE_URL"', wrapped)
+        self.assertGreater(wrapped.index(command_prefix), wrapped.index("ZipFile"))
+        syntax = subprocess.run(
+            ["bash", "-n", "-c", wrapped],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(syntax.returncode, 0, syntax.stderr)
         self.assertEqual(module._wrap_claude_command(command, "prompt", {}), command)
+        setup_command = "mkdir -p $CLAUDE_CONFIG_DIR/debug"
+        self.assertEqual(
+            module._wrap_claude_command(setup_command, "fixture prompt", extra_env),
+            setup_command,
+        )
         with self.assertRaisesRegex(RuntimeError, "command shape is unsupported"):
             module._wrap_claude_command(
                 "claude --print -- task", "fixture prompt", extra_env

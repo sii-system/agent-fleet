@@ -39,13 +39,23 @@ def _value(extra_env: dict[str, str] | None, name: str, default: str = "") -> st
 
 
 def _wrap_claude_command(
-    command: str, instruction: str, extra_env: dict[str, str] | None
+    command: str,
+    instruction: str,
+    extra_env: dict[str, str] | None,
+    workspace: str | os.PathLike[str] | None = None,
 ) -> str:
     if not _enabled(extra_env):
         return command
     marker = "claude --verbose --output-format=stream-json"
     redirect = " 2>&1 </dev/null | tee "
-    if command.count(marker) != 1 or command.count(redirect) != 1:
+    marker_count = command.count(marker)
+    if marker_count == 0:
+        if "stream-json" in command or " --print --" in command:
+            raise RuntimeError(
+                "Mimo Router is enabled but the Claude command shape is unsupported"
+            )
+        return command
+    if marker_count != 1 or command.count(redirect) != 1:
         raise RuntimeError(
             "Mimo Router is enabled but the Claude command shape is unsupported"
         )
@@ -77,6 +87,10 @@ def _wrap_claude_command(
     )
     runtime = "/tmp/sii-fusion-router-runtime"
     task_file = "/logs/agent/router-task.md"
+    workspace_arg = (
+        shlex.quote(os.fspath(workspace)) if workspace else '"$(pwd -P)"'
+    )
+    command_prefix = command[:start]
     original_claude = command[start:end]
 
     bootstrap = (
@@ -98,14 +112,14 @@ def _wrap_claude_command(
         f" --pipeline {shlex.quote(pipeline)}"
         f" --task-id {shlex.quote(task_id)}"
         f" --task-file {shlex.quote(task_file)}"
-        " --workspace /app"
+        f" --workspace {workspace_arg}"
         f" --artifact-root {shlex.quote(artifact_root)}"
         f" --summary {shlex.quote(summary)}"
         f" --config {shlex.quote(config)}"
-        ' --upstream "$ANTHROPIC_BASE_URL" -- '
+        " -- "
         f"{original_claude}"
     )
-    return command[:start] + bootstrap + router + command[end:]
+    return bootstrap + "{ " + command_prefix + router + "; }" + command[end:]
 
 
 def _patch_mimo_run() -> None:
@@ -134,7 +148,7 @@ def _patch_mimo_run() -> None:
         ):
             return await original_exec_as_agent(
                 environment,
-                _wrap_claude_command(command, instruction, extra_env),
+                _wrap_claude_command(command, instruction, extra_env, cwd),
                 env=env,
                 cwd=cwd,
                 timeout_sec=timeout_sec,

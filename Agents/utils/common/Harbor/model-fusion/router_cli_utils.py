@@ -12,6 +12,17 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from typing import Protocol
+
+
+class _Digest(Protocol):
+    def update(self, data: bytes, /) -> None: ...
+
+
+def _update_digest_from_file(digest: _Digest, path: Path) -> None:
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
 
 
 def source_fingerprint(repo: Path) -> str:
@@ -30,6 +41,18 @@ def source_fingerprint(repo: Path) -> str:
         check=True,
         capture_output=True,
     ).stdout
+    index_output = subprocess.run(
+        ["git", "-C", str(repo), "ls-files", "-s", "-z", "--cached"],
+        check=True,
+        capture_output=True,
+    ).stdout
+    index_entries: dict[bytes, tuple[bytes, bytes]] = {}
+    for entry in (item for item in index_output.split(b"\0") if item):
+        metadata, separator, raw_path = entry.partition(b"\t")
+        fields = metadata.split()
+        if separator and len(fields) >= 2:
+            index_entries[raw_path] = (fields[0], fields[1])
+
     paths = sorted(item for item in output.split(b"\0") if item)
     digest = hashlib.sha256()
     for raw_path in paths:
@@ -45,17 +68,42 @@ def source_fingerprint(repo: Path) -> str:
         digest.update(b"\0")
         if path.is_symlink():
             digest.update(os.fsencode(os.readlink(path)))
+        elif stat.S_ISDIR(mode):
+            index_mode, index_object = index_entries.get(raw_path, (b"", b""))
+            digest.update(b"directory\0")
+            digest.update(index_mode)
+            digest.update(b"\0")
+            digest.update(index_object)
+            digest.update(b"\0")
+            if index_mode == b"160000":
+                submodule_root = subprocess.run(
+                    ["git", "-C", str(path), "rev-parse", "--show-toplevel"],
+                    check=False,
+                    capture_output=True,
+                )
+                is_populated_submodule = (
+                    submodule_root.returncode == 0
+                    and Path(os.fsdecode(submodule_root.stdout.strip())).resolve()
+                    == path.resolve()
+                )
+                if is_populated_submodule:
+                    submodule_head = subprocess.run(
+                        ["git", "-C", str(path), "rev-parse", "HEAD"],
+                        check=True,
+                        capture_output=True,
+                    )
+                    digest.update(submodule_head.stdout.strip())
+                    digest.update(b"\0")
+                    digest.update(source_fingerprint(path).encode("ascii"))
         else:
-            digest.update(path.read_bytes())
+            _update_digest_from_file(digest, path)
         digest.update(b"\0")
     return digest.hexdigest()
 
 
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
+    _update_digest_from_file(digest, path)
     return digest.hexdigest()
 
 
