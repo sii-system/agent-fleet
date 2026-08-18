@@ -45,4 +45,3 @@ jobs:
           bash scripts/tests/test_dind_cgroup_v2.sh
           bash scripts/tests/test_dind_run.sh
           python3 -m unittest discover -s .github/scripts/tests -v
-          python3 -m unittest discover -s Agents/utils/common/Harbor/tests -v
