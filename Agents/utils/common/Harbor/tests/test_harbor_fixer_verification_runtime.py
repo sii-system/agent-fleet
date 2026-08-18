@@ -21,6 +21,7 @@ from harbor_fixer.validation import ValidationError, task_key
 from harbor_fixer.verification.outcomes import aggregate_status, exec_failure_reason
 from harbor_fixer.verification.rerun import (
     GENERATED_MONITOR_FILES,
+    RUN_SCOPED_ENV_VARS,
     _terminate_process_group,
     map_run_records,
     run_command,
@@ -83,6 +84,9 @@ class HarborFixerVerificationRuntimeTest(FixerTestCase):
         self.assertEqual(exec_failure_reason("failed", "denied"), "policy_denied")
         self.assertEqual(exec_failure_reason("failed", "allowed"), "execution_failed")
         self.assertEqual(aggregate_status(["fixed", "not_fixed"], 0), "partially_fixed")
+
+    def test_operator_agent_config_is_not_classified_as_run_scoped(self) -> None:
+        self.assertNotIn("AGENT", RUN_SCOPED_ENV_VARS)
 
     def test_selection_is_stable_and_maps_full_task_identity(self) -> None:
         plan = _fix_plan()

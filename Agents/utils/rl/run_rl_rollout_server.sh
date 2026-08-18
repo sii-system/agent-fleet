@@ -53,7 +53,7 @@ require_trace_plugin_source() {
 }
 
 validate_trace_plugin_source() {
-  local trace_enabled="${TRACE_TO_OPIK:-${TRACE_TO_OPIK:-}}"
+  local trace_enabled="${TRACE_TO_OPIK:-}"
 
   if [[ "$RL_AGENT" == "opencode" ]]; then
     # The custom OpenCode runner always uploads both files during install,

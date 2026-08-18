@@ -220,6 +220,7 @@ exit 0
             "CLAUDE_WHEEL_DIR_SOURCE",
             "HARBOR_CC_CLAUDE_TGZ_SOURCE",
             "HARBOR_CC_PY_WHEEL_DIR_SOURCE",
+            "HARBOR_CC_OPIK_ENABLE_HOOK",
             "RL_ENVIRONMENT_TYPE",
             "HARBOR_ENVIRONMENT_TYPE",
             "AGENT_FLEET_REQUIRE_DOCKER",
@@ -347,6 +348,56 @@ exit 0
         self.assertNotEqual(denied.returncode, 0)
         self.assertIn("cannot access the Docker daemon", denied.stderr)
         self.assertNotIn("Environment setup complete", denied.stdout)
+
+    def test_setup_migrates_legacy_managed_offline_package_config(self):
+        legacy_prefix = "T" + "B_CC_"
+        (self.repo / "config.local.env").write_text(
+            "# keep comment\nKEEP_SETTING=yes\n",
+            encoding="utf-8",
+        )
+        (self.home / ".bashrc").write_text(
+            "export KEEP_ME=yes\n"
+            "# >>> agent-fleet env >>>\n"
+            f"export {legacy_prefix}OPIK_ENABLE_HOOK=1\n"
+            f"export {legacy_prefix}CLAUDE_TGZ_SOURCE={self.claude_tgz}\n"
+            f"export {legacy_prefix}PY_WHEEL_DIR_SOURCE={self.wheel_dir}\n"
+            "# <<< agent-fleet env <<<\n",
+            encoding="utf-8",
+        )
+        env = self.setup_env()
+        env.update(
+            {
+                "BASE_URL": "https://gateway.example.invalid",
+                "API_KEY": "fake-setup-secret",
+                "MODEL": "test-model",
+            }
+        )
+
+        result = subprocess.run(
+            [str(SETUP)],
+            cwd=self.repo,
+            env=env,
+            input="",
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(
+            "Migrating legacy TerminalBench Claude package settings",
+            result.stdout,
+        )
+        bashrc = (self.home / ".bashrc").read_text(encoding="utf-8")
+        self.assertIn("export KEEP_ME=yes", bashrc)
+        self.assertIn("export HARBOR_CC_OPIK_ENABLE_HOOK=1", bashrc)
+        self.assertIn(
+            f"export HARBOR_CC_CLAUDE_TGZ_SOURCE={self.claude_tgz}", bashrc
+        )
+        self.assertIn(
+            f"export HARBOR_CC_PY_WHEEL_DIR_SOURCE={self.wheel_dir}", bashrc
+        )
+        self.assertNotIn(legacy_prefix, bashrc)
 
     def test_setup_loads_saved_qz_backend_before_docker_prerequisites(self):
         (self.repo / "config.local.env").write_text(
