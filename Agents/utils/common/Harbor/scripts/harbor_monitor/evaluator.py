@@ -45,8 +45,17 @@ def evaluate_once(
     )
     tasks = dict(task_records) if task_records is not None else load_task_records(done_path, failed_path)
     # Add manifest tasks for not_complete inference
+    represented_names: dict[str, int] = {}
+    if task_records is not None:
+        for task in tasks.values():
+            task_name = task.task_name.removeprefix("terminal-bench/")
+            if task_name:
+                represented_names[task_name] = represented_names.get(task_name, 0) + 1
     for task_index, task_name in tasks_manifest.items():
         if task_index in tasks:
+            continue
+        if represented_names.get(task_name, 0):
+            represented_names[task_name] -= 1
             continue
         tasks[task_index] = TaskInput(task_index=task_index, task_name=task_name)
     if not tasks_manifest and total is not None:

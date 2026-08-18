@@ -41,6 +41,22 @@ def build_model_info() -> dict[str, object]:
     }
 
 
+def model_request_headers() -> dict[str, str]:
+    raw = os.environ.get("TB_LLM_KWARGS", "")
+    if not raw:
+        return {}
+    llm_kwargs = json.loads(raw)
+    if not isinstance(llm_kwargs, dict):
+        raise TypeError("TB_LLM_KWARGS must be a JSON object")
+    headers = llm_kwargs.get("extra_headers", {})
+    if not isinstance(headers, dict) or not all(
+        isinstance(name, str) and isinstance(value, str)
+        for name, value in headers.items()
+    ):
+        raise TypeError("TB_LLM_KWARGS.extra_headers must be a string map")
+    return headers
+
+
 def build_opencode_config() -> dict[str, object]:
     base_url = os.environ.get("TB_ANTHROPIC_BASE_URL", "").rstrip("/") + "/v1"
     api_key = os.environ.get("TB_ANTHROPIC_AUTH_TOKEN", "")
@@ -59,6 +75,11 @@ def build_opencode_config() -> dict[str, object]:
     provider_config = payload.setdefault("provider", {}).setdefault(provider, {})
     options = provider_config.setdefault("options", {})
     options.setdefault("baseURL", base_url)
+    if request_headers := model_request_headers():
+        configured_headers = options.setdefault("headers", {})
+        if not isinstance(configured_headers, dict):
+            raise TypeError("OpenCode provider options.headers must be an object")
+        configured_headers.update(request_headers)
 
     if provider == "custom":
         provider_config.setdefault("npm", "@ai-sdk/openai-compatible")
@@ -325,6 +346,7 @@ def parse_args() -> argparse.Namespace:
         "opencode-config",
         "pi-models-config",
         "pi-settings-config",
+        "has-model-request-headers",
     ):
         subparsers.add_parser(command)
     generate_parser = subparsers.add_parser("generate-task-file")
@@ -366,6 +388,9 @@ def main() -> None:
         return
     if args.command == "manifest-url-ready":
         manifest_url_ready(args.url, args.required_line)
+        return
+    if args.command == "has-model-request-headers":
+        print("1" if model_request_headers() else "0")
         return
 
     builders: dict[str, Callable[[], dict[str, object]]] = {

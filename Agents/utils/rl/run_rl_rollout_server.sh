@@ -78,6 +78,10 @@ fi
 
 # Do not expose a healthy rollout endpoint that can only return empty traces.
 validate_trace_plugin_source
+if ! python3 "$RL_SCRIPT_DIR/rollout_worker_utils.py" request-headers >/dev/null; then
+  echo "invalid MODEL_REQUEST_CONFIG_JSON; listener was not started" >&2
+  exit 1
+fi
 
 mkdir -p "$RL_TRIALS_DIR" "$RL_ACTIVE_DIR" "$RL_QUEUE_DIR/pending" "$RL_QUEUE_DIR/results" \
   "$RL_JOB_QUEUE_ROOT" "$RL_JOB_RUNTIME_ROOT" "$(dirname "$RL_TRACE_LOG")" "$RUNTIME_DIR"

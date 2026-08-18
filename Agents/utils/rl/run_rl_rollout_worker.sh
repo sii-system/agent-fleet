@@ -341,6 +341,13 @@ while true; do
     export RL_MODEL_NAME="$model_name"
     export TB_RUN_ID="$ray_submission_id"
     export OPIK_PROJECT_NAME="$opik_project_name"
+    if ! request_headers_json="$(
+      MODEL_REQUEST_SESSION_ID="$session_id" \
+        python3 "$RL_SCRIPT_DIR/rollout_worker_utils.py" request-headers
+    )"; then
+      echo "[ERROR] invalid MODEL_REQUEST_CONFIG_JSON" >&2
+      exit 1
+    fi
     if [[ "$RL_AGENT" == "claude-code" ]]; then
       # env.sh derives these aliases when the listener starts. Override every
       # alias per request so a later rollout model cannot inherit that default.
@@ -383,21 +390,13 @@ while true; do
       export TB_AK_COLLECT_ROLLOUT_DETAILS="${collect_rollout_details:-${RL_COLLECT_ROLLOUT_DETAILS:-${TB_AK_COLLECT_ROLLOUT_DETAILS:-}}}"
       export TB_AK_ENABLE_SUMMARIZE="${enable_summarize:-${RL_ENABLE_SUMMARIZE:-${TB_AK_ENABLE_SUMMARIZE:-}}}"
     fi
-    if [[ -n "$session_id" ]]; then
-      # Claude Code does not read Harbor's llm_kwargs.extra_headers. Pass the
-      # Polar session id through its supported newline-separated header env.
+    if [[ "$request_headers_json" != "{}" ]]; then
+      # Claude Code does not read Harbor's llm_kwargs.extra_headers. Apply the
+      # same effective request headers through its supported client setting.
       export TB_ANTHROPIC_CUSTOM_HEADERS="$(
-        python3 - "$session_id" "${TB_ANTHROPIC_CUSTOM_HEADERS:-}" <<'PY'
-import sys
-
-session_id, existing = sys.argv[1:3]
-lines = [line for line in existing.splitlines() if line.strip()]
-lines.extend([
-    f"X-Session-Id: {session_id}",
-    f"Proxy-X-Session-Id: {session_id}",
-])
-print("\n".join(lines))
-PY
+        MODEL_REQUEST_HEADERS_JSON="$request_headers_json" \
+        TB_ANTHROPIC_CUSTOM_HEADERS="${TB_ANTHROPIC_CUSTOM_HEADERS:-}" \
+          python3 "$RL_SCRIPT_DIR/rollout_worker_utils.py" render-header-lines
       )"
     fi
     if [[ -n "$api_base" ]]; then
@@ -416,8 +415,8 @@ PY
       export TB_ANTHROPIC_AUTH_TOKEN="$api_key"
     fi
     export TB_LLM_KWARGS="$(
-      python3 - "$session_id" \
-        "${temperature:-${RL_TEMPERATURE:-}}" \
+      MODEL_REQUEST_HEADERS_JSON="$request_headers_json" \
+        python3 - "${temperature:-${RL_TEMPERATURE:-}}" \
         "${top_p:-${RL_TOP_P:-}}" \
         "${top_k:-${RL_TOP_K:-}}" \
         "${min_p:-${RL_MIN_P:-}}" \
@@ -427,7 +426,7 @@ import json
 import os
 import sys
 
-session_id, temperature, top_p, top_k, min_p, timeout, max_retries = sys.argv[1:8]
+temperature, top_p, top_k, min_p, timeout, max_retries = sys.argv[1:7]
 payload = {}
 
 def add_number(name, value, cast=float):
@@ -445,11 +444,9 @@ add_number("top_k", top_k, int)
 add_number("min_p", min_p)
 add_number("timeout", timeout)
 add_number("max_retries", max_retries, int)
-if session_id:
-    payload["extra_headers"] = {
-        "X-Session-Id": session_id,
-        "Proxy-X-Session-Id": session_id,
-    }
+headers = json.loads(os.environ["MODEL_REQUEST_HEADERS_JSON"])
+if headers:
+    payload["extra_headers"] = headers
 print(json.dumps(payload, separators=(",", ":")))
 PY
     )"

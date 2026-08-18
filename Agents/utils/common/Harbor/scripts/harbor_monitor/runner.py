@@ -149,8 +149,9 @@ def run_loop(
     harbor_job_dir_file: Path | None = None,
     harbor_pid_file: Path | None = None,
     harbor_exit_file: Path | None = None,
+    state_path: Path | None = None,
 ) -> None:
-    state_path = run_dir / ".monitor_state.json"
+    state_path = state_path or run_dir / ".monitor_state.json"
     state = load_state(state_path)
     state.setdefault("retry_count", 0)
     state.setdefault("history", [])
@@ -191,7 +192,7 @@ def run_loop(
             if native_snapshot is None:
                 # Give the native Harbor process its normal startup window. If it
                 # exits without creating a job result, this becomes abnormal_exit.
-                total = total if total is not None else 1
+                total = total if total is not None else len(tasks_manifest) or 1
                 claimed = claimed if claimed is not None else 0
                 remaining = remaining if remaining is not None else total
                 running = 1 if process_is_alive(harbor_pid_file) else 0

@@ -257,6 +257,25 @@ PY
             config["opencode_config"]["provider"]["custom"]["models"]["test-model"],
         )
 
+    def test_opencode_rollout_builds_named_provider_config_for_headers(self) -> None:
+        config = self._load_config(
+            "opencode",
+            MODEL="hosted_vllm/test-model",
+            ROLLOUT="1",
+            TB_LLM_KWARGS=(
+                '{"extra_headers":{"X-Route-Key":"deployment-a"}}'
+            ),
+        )
+
+        self.assertEqual(
+            config["opencode_config"]["provider"]["hosted_vllm"]["options"],
+            {
+                "baseURL": "https://llm.example/v1",
+                "headers": {"X-Route-Key": "deployment-a"},
+            },
+        )
+        self.assertNotIn("agent", config["opencode_config"])
+
     def test_claude_code_rejects_unsupported_sampling_settings(self) -> None:
         result = self._run_validation(
             "claude-code",

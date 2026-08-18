@@ -28,6 +28,9 @@ fi
 RL_API_BASE="${RL_API_BASE:-}"
 RL_API_KEY="${RL_API_KEY:-${API_KEY:-}}"
 RL_API_KEY_MODE="${RL_API_KEY_MODE:-static}"
+# Trusted, host-side request customization. The version-1 contract supports
+# headers.set and is never accepted from /run_trial request payloads.
+MODEL_REQUEST_CONFIG_JSON="${MODEL_REQUEST_CONFIG_JSON:-}"
 
 RL_ENVIRONMENT_TYPE="${RL_ENVIRONMENT_TYPE:-docker}"
 RL_E2B_SANDBOX_TIMEOUT_SEC="${RL_E2B_SANDBOX_TIMEOUT_SEC:-}"

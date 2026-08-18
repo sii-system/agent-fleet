@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import os
 import signal
 import stat
@@ -16,7 +15,7 @@ from typing import Any
 from .agent_invocation import AgentInvoker
 from .artifact_io import read_json, write_json_atomic
 from .policy import run_policy_preflight
-from .validation import validate_exec_input, validate_exec_result
+from .validation import json_sha256, validate_exec_input, validate_exec_result
 
 SUMMARY_LIMIT = 4000
 MAX_SUMMARY_LIMIT = 100_000
@@ -46,16 +45,6 @@ COMMAND_ENV_ALLOWLIST = (
     "XDG_RUNTIME_DIR",
     "DBUS_SESSION_BUS_ADDRESS",
 )
-
-
-def _json_sha256(value: Any) -> str:
-    serialized = json.dumps(
-        value,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    )
-    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
 
 
 def _safe_label(value: str, prefix: str) -> str:
@@ -255,7 +244,7 @@ def _unexecuted_action_record(
 def _binding_error(
     action: dict[str, Any], cwd: Path, decision: dict[str, Any]
 ) -> str | None:
-    if _json_sha256(action) != decision["action_sha256"]:
+    if json_sha256(action) != decision["action_sha256"]:
         return "action no longer matches the policy decision"
     if str(cwd) != decision["resolved_cwd"]:
         return "action cwd no longer matches the policy decision"
@@ -675,6 +664,7 @@ def _publish_result(
             "fix_plan_path": exec_input["fix_plan_path"],
             "workspace_root": exec_input["workspace_root"],
             "policy_decision_path": str(output_dir / "execution-policy-decision.json"),
+            "fix_plan_sha256": json_sha256(exec_input["fix_plan"]),
         },
         "status": status,
         "policy_status": policy_status,
@@ -714,7 +704,7 @@ def run_fix_exec(
         user_rules_path=policy_rules_path,
         writable_roots=policy_write_roots,
     )
-    if policy_result["fix_plan_sha256"] != _json_sha256(fix_plan):
+    if policy_result["fix_plan_sha256"] != json_sha256(fix_plan):
         raise RuntimeError("policy decision does not match the execution fix plan")
     if policy_result["status"] == "denied":
         return _policy_blocked_result(

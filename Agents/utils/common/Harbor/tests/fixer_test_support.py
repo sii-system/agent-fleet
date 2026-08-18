@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sys
 import tempfile
@@ -290,6 +291,45 @@ def make_fix_plan() -> dict:
         ],
         "unplanned_tasks": [],
         "generation_errors": [],
+    }
+
+
+def make_exec_result(
+    plan_status: str = "success",
+    *,
+    policy_status: str = "allowed",
+    fix_plan: dict | None = None,
+) -> dict:
+    fix_plan = fix_plan or make_fix_plan()
+    serialized_plan = json.dumps(
+        fix_plan, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
+    action_status = "success" if plan_status == "success" else "failed"
+    return {
+        "schema_version": 1,
+        "kind": "harbor_fixer_exec_result",
+        "source": {
+            "fix_plan_path": "fix-plan-latest.json",
+            "workspace_root": "/workspace",
+            "fix_plan_sha256": hashlib.sha256(
+                serialized_plan.encode("utf-8")
+            ).hexdigest(),
+        },
+        "status": "success" if plan_status == "success" else "failed",
+        "policy_status": policy_status,
+        "plans": [
+            {
+                "plan_id": "fix-001",
+                "status": plan_status,
+                "actions": [
+                    {
+                        "action_id": "action-001",
+                        "status": action_status,
+                        "exit_code": 0 if action_status == "success" else 1,
+                    }
+                ],
+            }
+        ],
     }
 
 
