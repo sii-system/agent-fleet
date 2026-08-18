@@ -1,3 +1,4 @@
+import json
 import os
 import subprocess
 import tempfile
@@ -201,6 +202,45 @@ class HarborTaskSelectionTest(unittest.TestCase):
             ):
                 self.assertFalse((fixer_dir / name).exists())
             self.assertTrue(result_file.exists())
+
+    def test_reset_refuses_live_fixer_before_removing_run_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output, common = self.local_fixture(Path(tmp), "task-a")
+            fixer_dir = output / "fixer"
+            monitor_dir = output / "monitor"
+            fixer_dir.mkdir(parents=True)
+            monitor_dir.mkdir()
+            start_ticks = int(
+                Path(f"/proc/{os.getpid()}/stat")
+                .read_text(encoding="utf-8")
+                .rsplit(")", 1)[1]
+                .split()[19]
+            )
+            state_path = fixer_dir / "fixer-state.json"
+            state_path.write_text(
+                json.dumps(
+                    {
+                        "fixer_workflow_id": "fixer-live",
+                        "status": "planning",
+                        "owner": {
+                            "pid": os.getpid(),
+                            "start_ticks": start_ticks,
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            monitor_marker = monitor_dir / "keep.json"
+            monitor_marker.write_text("{}\n", encoding="utf-8")
+
+            result = self.run_env(
+                'mkdir -p "$QUEUE_DIR"; harbor_reset_run_state', **common
+            )
+
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("refusing to reset run state", result.stderr)
+            self.assertTrue(state_path.exists())
+            self.assertTrue(monitor_marker.exists())
 
     def test_start_passes_run_id_to_analyzer(self) -> None:
         self.assertIn('--run-id "$RUN_ID"', START_SH.read_text(encoding="utf-8"))

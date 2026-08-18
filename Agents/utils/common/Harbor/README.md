@@ -323,6 +323,11 @@ safely cancelled after an action starts. Approval is bound to the run,
 workflow, approval request, and SHA-256 digest of the reviewed Fix Plan; a
 changed plan is blocked instead of executed.
 
+`RESET_RUN=1` also coordinates with this workflow: reset is refused while a
+planning, policy, execution, or cancellation command is still running. If that
+Controller process exited unexpectedly, the next `fixer start` can recover the
+stale workflow state.
+
 This Controller path currently covers Fixer Stages 1–3 only. Verification and
 the human-readable Fix Report are reported as `not_available`; it does not
 claim that either later stage ran. Workflow control state is written below

@@ -775,6 +775,10 @@ harbor_stop_monitor() {
 }
 
 harbor_reset_run_state() {
+  if ! python3 "$SCRIPT_DIR/scripts/controller.py" --run-dir "$OUTPUT_PATH" fixer reset-control >/dev/null; then
+    echo "[ERROR] refusing to reset run state while Fixer is active" >&2
+    return 1
+  fi
   harbor_stop_analyzer_supervisor
   harbor_stop_analyzer
   harbor_stop_monitor
@@ -788,7 +792,6 @@ harbor_reset_run_state() {
   rm -f "$OUTPUT_PATH/fixer/fix-report-latest.md"
   rm -f "$HARBOR_ONLINE_ANALYSIS_PID_FILE" "$HARBOR_ONLINE_ANALYSIS_LOG_FILE"
   rm -f "$HARBOR_ONLINE_ANALYSIS_DIR/environment-events.jsonl" "$HARBOR_ONLINE_ANALYSIS_DIR/environment-summary.json"
-  rm -f "$OUTPUT_PATH/fixer/fixer-state.json" "$OUTPUT_PATH/fixer/fixer-control-request.json" "$OUTPUT_PATH/fixer/fixer-approval-request.json" "$OUTPUT_PATH/fixer/fixer-user-decision.json"
   : > "$QUEUE_DIR/done.txt"
   : > "$QUEUE_DIR/failed.txt"
 }

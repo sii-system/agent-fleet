@@ -137,8 +137,11 @@ def _write_action_logs(
     return _relative_log_paths(output_dir, stdout_path, stderr_path)
 
 
-def build_exec_input(fix_plan_path: Path, workspace_root: Path) -> dict[str, Any]:
-    fix_plan = read_json(fix_plan_path)
+def build_exec_input_from_plan(
+    fix_plan: dict[str, Any],
+    fix_plan_path: Path,
+    workspace_root: Path,
+) -> dict[str, Any]:
     payload = {
         "schema_version": 1,
         "kind": "harbor_fixer_exec_input",
@@ -148,6 +151,14 @@ def build_exec_input(fix_plan_path: Path, workspace_root: Path) -> dict[str, Any
     }
     validate_exec_input(payload)
     return payload
+
+
+def build_exec_input(fix_plan_path: Path, workspace_root: Path) -> dict[str, Any]:
+    return build_exec_input_from_plan(
+        read_json(fix_plan_path),
+        fix_plan_path,
+        workspace_root,
+    )
 
 
 def _action_record(

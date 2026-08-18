@@ -16,7 +16,11 @@ from typing import Any
 
 from harbor_fixer.agent_invocation import PiAgentInvoker, PiInvocationConfig
 from harbor_fixer.artifact_io import read_json, write_json_atomic
-from harbor_fixer.executor import MAX_SUMMARY_LIMIT, run_fix_exec_from_plan
+from harbor_fixer.executor import (
+    MAX_SUMMARY_LIMIT,
+    build_exec_input_from_plan,
+    run_fix_exec,
+)
 from harbor_fixer.plan_generation import (
     MAX_TASK_SUMMARIES_CHARS,
     MAX_TASK_SUMMARY_CHARS,
@@ -31,6 +35,7 @@ ACTIVE_STATUSES = {
     "executing",
     "cancelling",
 }
+OWNER_STATUSES = ACTIVE_STATUSES - {"awaiting_approval"}
 
 
 def _utc_now() -> str:
@@ -55,6 +60,15 @@ def _approval_request_path(run_dir: Path) -> Path:
 
 def _decision_path(run_dir: Path) -> Path:
     return _fixer_dir(run_dir) / "fixer-user-decision.json"
+
+
+def _control_paths(run_dir: Path) -> tuple[Path, ...]:
+    return (
+        _state_path(run_dir),
+        _control_request_path(run_dir),
+        _approval_request_path(run_dir),
+        _decision_path(run_dir),
+    )
 
 
 def _load_optional_json(path: Path) -> dict[str, Any] | None:
@@ -83,6 +97,36 @@ def _json_sha256(payload: Any) -> str:
         separators=(",", ":"),
     ).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
+
+
+def _process_start_ticks(pid: int) -> int | None:
+    try:
+        stat_fields = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8").rsplit(
+            ")", 1
+        )[1].split()
+        return int(stat_fields[19])
+    except (IndexError, OSError, ValueError):
+        return None
+
+
+def _current_owner() -> dict[str, int]:
+    pid = os.getpid()
+    start_ticks = _process_start_ticks(pid)
+    if start_ticks is None:
+        raise ValueError("cannot identify the Fixer controller process")
+    return {"pid": pid, "start_ticks": start_ticks}
+
+
+def _owner_is_live(state: dict[str, Any]) -> bool:
+    owner = state.get("owner")
+    if not isinstance(owner, dict):
+        return False
+    try:
+        pid = int(owner["pid"])
+        start_ticks = int(owner["start_ticks"])
+    except (KeyError, TypeError, ValueError):
+        return False
+    return pid > 0 and _process_start_ticks(pid) == start_ticks
 
 
 def _positive_env_int(name: str, default: int, *, maximum: int | None = None) -> int:
@@ -212,26 +256,11 @@ def _transition(
 ) -> dict[str, Any]:
     with _state_lock(run_dir):
         state = _state_for_workflow(run_dir, workflow_id)
+        if status not in OWNER_STATUSES:
+            fields.setdefault("owner", None)
         state.update(status=status, **fields)
         _write_state(run_dir, state)
         return state
-
-
-def _cancel_requested(run_dir: Path, workflow_id: str) -> bool:
-    with _state_lock(run_dir):
-        state = _state_for_workflow(run_dir, workflow_id)
-        return state.get("status") == "cancelling"
-
-
-def _finish_cancelled(run_dir: Path, workflow_id: str) -> dict[str, Any]:
-    return _transition(
-        run_dir,
-        workflow_id,
-        "cancelled",
-        finished_at=_utc_now(),
-        outcome="cancelled_before_execution",
-        available_actions=["start"],
-    )
 
 
 def _advance_or_cancel(
@@ -251,12 +280,51 @@ def _advance_or_cancel(
                 finished_at=_utc_now(),
                 outcome="cancelled_before_execution",
                 available_actions=["start"],
+                owner=None,
             )
         elif state.get("status") == expected_status:
-            state.update(status=next_status, available_actions=["cancel"])
+            state.update(
+                status=next_status,
+                available_actions=["cancel"],
+                owner=_current_owner(),
+            )
         else:
             raise ValueError(
                 f"Fixer cannot advance from status {state.get('status')}"
+            )
+        _write_state(run_dir, state)
+        return state
+
+
+def _fail_or_finish_cancelled(
+    run_dir: Path,
+    workflow_id: str,
+    exc: Exception,
+) -> dict[str, Any]:
+    """Finish a failed pre-execution stage without overwriting cancellation."""
+
+    with _state_lock(run_dir):
+        state = _state_for_workflow(run_dir, workflow_id)
+        if state.get("status") == "cancelling":
+            state.update(
+                status="cancelled",
+                outcome="cancelled_before_execution",
+                finished_at=_utc_now(),
+                available_actions=["start"],
+                owner=None,
+            )
+        elif state.get("status") in {"planning", "policy_review"}:
+            state.update(
+                status="failed",
+                outcome="planning_or_policy_failed",
+                finished_at=_utc_now(),
+                available_actions=["start"],
+                error={"stage": "planning_or_policy", "message": str(exc)},
+                owner=None,
+            )
+        else:
+            raise ValueError(
+                f"Fixer cannot finish failed planning from status {state.get('status')}"
             )
         _write_state(run_dir, state)
         return state
@@ -306,9 +374,13 @@ def _finish_empty_plan(run_dir: Path, workflow_id: str) -> dict[str, Any]:
     with _state_lock(run_dir):
         state = _state_for_workflow(run_dir, workflow_id)
         if state.get("status") == "cancelling":
-            state.update(status="cancelled", outcome="cancelled_before_execution")
+            state.update(
+                status="cancelled",
+                outcome="cancelled_before_execution",
+                owner=None,
+            )
         elif state.get("status") == "planning":
-            state.update(status="completed", outcome="no_actions")
+            state.update(status="completed", outcome="no_actions", owner=None)
         else:
             raise ValueError(f"Fixer cannot finish from status {state.get('status')}")
         state.update(finished_at=_utc_now(), available_actions=["start"])
@@ -331,6 +403,7 @@ def _finish_policy_review(
                 outcome="cancelled_before_execution",
                 finished_at=_utc_now(),
                 available_actions=["start"],
+                owner=None,
             )
             _write_state(run_dir, state)
             return state
@@ -346,6 +419,7 @@ def _finish_policy_review(
                 policy_status="denied",
                 policy_denials=_policy_denials(policy),
                 available_actions=["start"],
+                owner=None,
             )
             _write_state(run_dir, state)
             return state
@@ -374,6 +448,7 @@ def _finish_policy_review(
             plan_count=len(fix_plan["plans"]),
             action_count=sum(len(plan["actions"]) for plan in fix_plan["plans"]),
             available_actions=["approve", "cancel"],
+            owner=None,
         )
         _write_state(run_dir, state)
         return state
@@ -402,7 +477,14 @@ def start_fixer(
     workflow_id = f"fixer-{uuid.uuid4()}"
     with _state_lock(run_dir):
         current = _load_optional_json(_state_path(run_dir))
-        if current and current.get("status") in ACTIVE_STATUSES:
+        if (
+            current
+            and current.get("status") in ACTIVE_STATUSES
+            and (
+                current.get("status") == "awaiting_approval"
+                or _owner_is_live(current)
+            )
+        ):
             raise ValueError(
                 "another Fixer workflow is active: "
                 f"{current.get('fixer_workflow_id')} ({current.get('status')})"
@@ -421,6 +503,7 @@ def start_fixer(
             "run_id": run_id,
             "fixer_workflow_id": workflow_id,
             "status": "planning",
+            "owner": _current_owner(),
             "outcome": "",
             "started_at": _utc_now(),
             "updated_at": _utc_now(),
@@ -432,7 +515,7 @@ def start_fixer(
             "paths": {
                 "fix_plan": str(output_dir / "fix-plan-latest.json"),
                 "policy_decision": str(output_dir / "execution-policy-decision.json"),
-                "exec_result": str(output_dir / "exec-result-latest.json"),
+                "exec_result": "",
                 "verification_result": "",
                 "fix_report": "",
                 "benchmark_summary": str(run_dir / "analyzer" / "benchmark-summary.md"),
@@ -476,17 +559,9 @@ def start_fixer(
             policy=policy,
         )
     except Exception as exc:
-        if _cancel_requested(run_dir, workflow_id):
-            return _finish_cancelled(run_dir, workflow_id)
-        _transition(
-            run_dir,
-            workflow_id,
-            "failed",
-            outcome="planning_or_policy_failed",
-            finished_at=_utc_now(),
-            available_actions=["start"],
-            error={"stage": "planning_or_policy", "message": str(exc)},
-        )
+        failed = _fail_or_finish_cancelled(run_dir, workflow_id, exc)
+        if failed["status"] == "cancelled":
+            return failed
         raise ValueError(f"Fixer planning failed: {exc}") from exc
 
 
@@ -567,6 +642,7 @@ def approve_fixer(run_dir: Path, approval_request_id: str) -> dict[str, Any]:
         decision = _write_user_decision(run_dir, state=state, decision="approve")
         state.update(
             status="executing",
+            owner=_current_owner(),
             control_request_id=request["request_id"],
             decision_id=decision["decision_id"],
             available_actions=[],
@@ -576,10 +652,13 @@ def approve_fixer(run_dir: Path, approval_request_id: str) -> dict[str, Any]:
 
     config = state["config"]
     try:
-        result = run_fix_exec_from_plan(
-            fix_plan_path,
+        result = run_fix_exec(
+            build_exec_input_from_plan(
+                fix_plan,
+                fix_plan_path,
+                Path(config["workspace_root"]),
+            ),
             _fixer_dir(run_dir),
-            Path(config["workspace_root"]),
             policy_invoker=PiAgentInvoker(_fixer_dir(run_dir), _pi_config(config)),
             policy_rules_path=(
                 Path(config["policy_rules_path"])
@@ -591,6 +670,10 @@ def approve_fixer(run_dir: Path, approval_request_id: str) -> dict[str, Any]:
             summary_limit=int(config["summary_limit"]),
         )
         if result.get("policy_status") == "denied":
+            paths = {
+                **state["paths"],
+                "exec_result": str(_fixer_dir(run_dir) / "exec-result-latest.json"),
+            }
             return _transition(
                 run_dir,
                 state["fixer_workflow_id"],
@@ -600,8 +683,13 @@ def approve_fixer(run_dir: Path, approval_request_id: str) -> dict[str, Any]:
                 policy_status="denied",
                 execution_counts=_execution_counts(result),
                 available_actions=["start"],
+                paths=paths,
             )
         workflow_status = "completed" if result.get("status") == "success" else "failed"
+        paths = {
+            **state["paths"],
+            "exec_result": str(_fixer_dir(run_dir) / "exec-result-latest.json"),
+        }
         return _transition(
             run_dir,
             state["fixer_workflow_id"],
@@ -611,6 +699,7 @@ def approve_fixer(run_dir: Path, approval_request_id: str) -> dict[str, Any]:
             policy_status=str(result.get("policy_status") or ""),
             execution_counts=_execution_counts(result),
             available_actions=["start"],
+            paths=paths,
         )
     except Exception as exc:
         _transition(
@@ -653,6 +742,7 @@ def cancel_fixer(run_dir: Path, workflow_id: str) -> dict[str, Any]:
                 control_request_id=request["request_id"],
                 decision_id=decision["decision_id"],
                 available_actions=["start"],
+                owner=None,
             )
         else:
             state.update(
@@ -670,7 +760,6 @@ def fixer_status(run_dir: Path) -> dict[str, Any]:
     """Return the user-facing Fixer state for controller status."""
 
     run_dir = run_dir.resolve()
-    state = _load_optional_json(_state_path(run_dir))
     paths = {
         "state": str(_state_path(run_dir)),
         "approval_request": str(_approval_request_path(run_dir)),
@@ -678,6 +767,15 @@ def fixer_status(run_dir: Path) -> dict[str, Any]:
         "benchmark_summary": str(run_dir / "analyzer" / "benchmark-summary.md"),
         "fix_report": str(_fixer_dir(run_dir) / "fix-report-latest.md"),
     }
+    try:
+        state = _load_optional_json(_state_path(run_dir))
+    except (OSError, ValueError) as exc:
+        return {
+            "status": "error",
+            "error": {"stage": "status", "message": str(exc)},
+            "available_actions": [],
+            "paths": paths,
+        }
     if state is None:
         return {
             "status": "not_started",
@@ -710,7 +808,39 @@ def fixer_status(run_dir: Path) -> dict[str, Any]:
         )
         if state.get(key) not in (None, "")
     }
-    visible["paths"] = {**paths, **state.get("paths", {})}
+    state_paths = state.get("paths")
+    visible["paths"] = {
+        **paths,
+        **(state_paths if isinstance(state_paths, dict) else {}),
+    }
     if state.get("status") == "awaiting_approval":
-        visible["approval"] = read_json(_approval_request_path(run_dir))
+        try:
+            visible["approval"] = read_json(_approval_request_path(run_dir))
+        except (OSError, ValueError) as exc:
+            visible["approval_error"] = str(exc)
     return visible
+
+
+def reset_fixer_control(run_dir: Path) -> dict[str, Any]:
+    """Clear Controller-owned Fixer state unless its synchronous owner is live."""
+
+    run_dir = run_dir.resolve()
+    with _state_lock(run_dir):
+        state = _load_optional_json(_state_path(run_dir))
+        if (
+            state
+            and state.get("status") in OWNER_STATUSES
+            and _owner_is_live(state)
+        ):
+            owner = state["owner"]
+            raise ValueError(
+                "cannot reset while Fixer workflow is active: "
+                f"{state.get('fixer_workflow_id')} ({state.get('status')}), "
+                f"owner pid={owner.get('pid')}"
+            )
+        removed = []
+        for path in _control_paths(run_dir):
+            if path.exists():
+                path.unlink()
+                removed.append(str(path))
+    return {"status": "reset", "removed": removed}

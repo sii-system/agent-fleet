@@ -26,8 +26,10 @@ from harbor_controller.fixer import (
     approve_fixer,
     cancel_fixer,
     fixer_status,
+    reset_fixer_control,
     start_fixer,
 )
+from harbor_fixer.executor import build_exec_input_from_plan
 
 
 class HarborControllerFixerTest(FixerTestCase):
@@ -65,6 +67,7 @@ class HarborControllerFixerTest(FixerTestCase):
         state = self._start()
 
         self.assertEqual(state["status"], "awaiting_approval")
+        self.assertEqual(state["paths"]["exec_result"], "")
         status = fixer_status(self.run_dir)
         self.assertEqual(status["available_actions"], ["approve", "cancel"])
         self.assertEqual(status["approval"]["plans"][0]["plan_id"], "fix-001")
@@ -79,7 +82,32 @@ class HarborControllerFixerTest(FixerTestCase):
 
         self.assertEqual(completed["status"], "completed")
         self.assertEqual(completed["execution_counts"]["succeeded"], 1)
+        self.assertEqual(
+            completed["paths"]["exec_result"],
+            str(self.run_dir / "fixer" / "exec-result-latest.json"),
+        )
         self.assertTrue((self.run_dir / "fixer" / "exec-result-latest.json").is_file())
+
+    def test_status_survives_corrupt_state_and_missing_approval(self) -> None:
+        state_path = self.run_dir / "fixer" / "fixer-state.json"
+        state_path.parent.mkdir(parents=True)
+        state_path.write_text("{invalid", encoding="utf-8")
+
+        status = fixer_status(self.run_dir)
+
+        self.assertEqual(status["status"], "error")
+        self.assertEqual(status["available_actions"], [])
+        self.assertIn("invalid JSON", status["error"]["message"])
+
+        state_path.unlink()
+        state = self._start()
+        (self.run_dir / "fixer" / "fixer-approval-request.json").unlink()
+
+        status = fixer_status(self.run_dir)
+
+        self.assertEqual(status["status"], "awaiting_approval")
+        self.assertEqual(status["approval_request_id"], state["approval_request_id"])
+        self.assertIn("missing JSON", status["approval_error"])
 
     def test_start_requires_finished_benchmark_and_matching_analyzer(self) -> None:
         notification = self.run_dir / "monitor" / "user-notify-latest.json"
@@ -108,6 +136,54 @@ class HarborControllerFixerTest(FixerTestCase):
             fixer_status(self.run_dir)["fixer_workflow_id"],
             first["fixer_workflow_id"],
         )
+
+    def test_live_planning_owner_rejects_start_and_reset(self) -> None:
+        observed: dict[str, object] = {}
+
+        def check_live_owner(*args: object, **kwargs: object) -> dict:
+            with self.assertRaisesRegex(ValueError, "another Fixer workflow is active"):
+                self._start()
+            with self.assertRaisesRegex(ValueError, "cannot reset while Fixer"):
+                reset_fixer_control(self.run_dir)
+            observed["state_exists"] = (
+                self.run_dir / "fixer" / "fixer-state.json"
+            ).is_file()
+            return {**make_fix_plan(), "plans": []}
+
+        with mock.patch(
+            "harbor_controller.fixer._run_planning", side_effect=check_live_owner
+        ):
+            state = self._start()
+
+        self.assertTrue(observed["state_exists"])
+        self.assertEqual(state["status"], "completed")
+
+    def test_dead_active_owner_is_recovered_or_reset(self) -> None:
+        state_path = self.run_dir / "fixer" / "fixer-state.json"
+        write_json(
+            state_path,
+            {
+                "fixer_workflow_id": "fixer-dead",
+                "status": "executing",
+                "owner": {"pid": 999999999, "start_ticks": 1},
+            },
+        )
+
+        state = self._start()
+
+        self.assertEqual(state["status"], "awaiting_approval")
+        self.assertNotEqual(state["fixer_workflow_id"], "fixer-dead")
+
+        state["status"] = "cancelling"
+        state["owner"] = {
+            "pid": 999999999,
+            "start_ticks": 1,
+        }
+        write_json(state_path, state)
+        reset = reset_fixer_control(self.run_dir)
+
+        self.assertEqual(reset["status"], "reset")
+        self.assertFalse(state_path.exists())
 
     def test_cancel_rejects_pending_plan(self) -> None:
         state = self._start()
@@ -141,6 +217,24 @@ class HarborControllerFixerTest(FixerTestCase):
         self.assertEqual(state["status"], "cancelled")
         self.assertEqual(state["outcome"], "cancelled_before_execution")
 
+    def test_planning_exception_finishes_concurrent_cancel(self) -> None:
+        def cancel_then_fail(*args: object, **kwargs: object) -> dict:
+            state = json.loads(
+                (self.run_dir / "fixer" / "fixer-state.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            cancel_fixer(self.run_dir, state["fixer_workflow_id"])
+            raise RuntimeError("fixture failure")
+
+        with mock.patch(
+            "harbor_controller.fixer._run_planning", side_effect=cancel_then_fail
+        ):
+            state = self._start()
+
+        self.assertEqual(state["status"], "cancelled")
+        self.assertEqual(state["outcome"], "cancelled_before_execution")
+
     def test_approve_blocks_if_reviewed_plan_changes(self) -> None:
         state = self._start()
         plan_path = self.run_dir / "fixer" / "fix-plan-latest.json"
@@ -154,6 +248,51 @@ class HarborControllerFixerTest(FixerTestCase):
         status = fixer_status(self.run_dir)
         self.assertEqual(status["status"], "blocked")
         self.assertEqual(status["outcome"], "fix_plan_changed_after_review")
+
+    def test_approve_executes_in_memory_plan_after_hash_check(self) -> None:
+        state = self._start()
+        plan_path = self.run_dir / "fixer" / "fix-plan-latest.json"
+        reviewed = json.loads(plan_path.read_text(encoding="utf-8"))
+        observed: dict[str, object] = {}
+
+        def replace_disk_plan(
+            fix_plan: dict,
+            verified_plan_path: Path,
+            workspace_root: Path,
+        ) -> dict:
+            replacement = json.loads(json.dumps(reviewed))
+            replacement["plans"][0]["actions"][0]["arguments"] = ["replaced"]
+            write_json(plan_path, replacement)
+            observed["fix_plan"] = fix_plan
+            return build_exec_input_from_plan(
+                fix_plan,
+                verified_plan_path,
+                workspace_root,
+            )
+
+        with mock.patch(
+            "harbor_controller.fixer.build_exec_input_from_plan",
+            side_effect=replace_disk_plan,
+        ):
+            completed = approve_fixer(self.run_dir, state["approval_request_id"])
+
+        self.assertEqual(completed["status"], "completed")
+        self.assertEqual(observed["fix_plan"], reviewed)
+
+    def test_new_no_action_workflow_does_not_expose_previous_exec_result(self) -> None:
+        first = self._start()
+        approve_fixer(self.run_dir, first["approval_request_id"])
+        self.assertTrue((self.run_dir / "fixer" / "exec-result-latest.json").exists())
+
+        with mock.patch(
+            "harbor_controller.fixer._run_planning",
+            return_value={**make_fix_plan(), "plans": []},
+        ):
+            second = self._start()
+
+        self.assertEqual(second["status"], "completed")
+        self.assertEqual(second["outcome"], "no_actions")
+        self.assertEqual(second["paths"]["exec_result"], "")
 
     def test_policy_denial_blocks_before_approval(self) -> None:
         denied = {

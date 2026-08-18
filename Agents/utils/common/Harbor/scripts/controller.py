@@ -15,6 +15,7 @@ from harbor_controller.fixer import (
     approve_fixer,
     cancel_fixer,
     fixer_status,
+    reset_fixer_control,
     start_fixer,
 )
 
@@ -91,6 +92,11 @@ def _fixer_cancel(run_dir: Path, workflow_id: str) -> int:
     return 0
 
 
+def _fixer_reset_control(run_dir: Path) -> int:
+    print(json.dumps(reset_fixer_control(run_dir), ensure_ascii=False, indent=2))
+    return 0
+
+
 def _decide(run_dir: Path, decision: str, wait_seconds: int) -> int:
     notification = _load_json(_notification_path(run_dir))
     allowed = notification.get("allowed_decisions")
@@ -147,6 +153,7 @@ def parse_args() -> argparse.Namespace:
     fixer_approve.add_argument("--request-id", required=True)
     fixer_cancel = fixer_commands.add_parser("cancel")
     fixer_cancel.add_argument("--workflow-id", required=True)
+    fixer_commands.add_parser("reset-control")
     return parser.parse_args()
 
 
@@ -161,7 +168,9 @@ def main() -> int:
             return _fixer_start(args)
         if args.fixer_command == "approve":
             return _fixer_approve(args.run_dir, args.request_id)
-        return _fixer_cancel(args.run_dir, args.workflow_id)
+        if args.fixer_command == "cancel":
+            return _fixer_cancel(args.run_dir, args.workflow_id)
+        return _fixer_reset_control(args.run_dir)
     except (OSError, TypeError, ValueError) as exc:
         prefix = (
             "controller decision rejected"
