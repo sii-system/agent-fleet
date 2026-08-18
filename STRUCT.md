@@ -38,4 +38,4 @@ Harbor common resolves the repository root from `Agents/utils/common/Harbor/env.
 OpenClaw benchmark runners call `Agents/Openclaw` for fleet setup and Docker Compose, then use task-specific code under `Tasks/Pinchbench` or `Tasks/clawBio`.
 
 Opik tracing code is linked as a Git submodule at
-`third_party/agent-opik-plugin`, pinned to tag `v0.1.0`.
+`third_party/agent-opik-plugin`, pinned by the repository gitlink.

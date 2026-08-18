@@ -134,6 +134,19 @@ class HarborTaskSelectionTest(unittest.TestCase):
             self.assertIn("unknown task(s): missing-a, missing-b", result.stderr)
             self.assertFalse((output / "tasks.txt").exists())
 
+    def test_missing_generic_dataset_explains_removed_auto_provisioning(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            _, common = self.local_fixture(Path(tmp))
+
+            result = self.run_env("harbor_ensure_dataset", **common)
+
+            self.assertEqual(result.returncode, 1)
+            self.assertIn(
+                "automatic TerminalBench dataset cloning was removed",
+                result.stderr,
+            )
+            self.assertIn("set DATASET_PATH", result.stderr)
+
     def test_reset_removes_generated_benchmark_and_fixer_summaries(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             output, common = self.local_fixture(Path(tmp), "task-a")

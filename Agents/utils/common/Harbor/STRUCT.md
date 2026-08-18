@@ -240,8 +240,8 @@ OpenCode specific defaults:
 ## Opik Plugin Submodule
 
 The tracing plugin is linked as a Git submodule at
-`third_party/agent-opik-plugin`, pinned to tag `v0.1.0`. Initialize it before
-running:
+`third_party/agent-opik-plugin`, pinned by the repository gitlink. Initialize
+it before running:
 
 ```bash
 git submodule update --init --recursive

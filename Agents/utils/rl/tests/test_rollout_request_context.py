@@ -456,6 +456,11 @@ class RolloutRequestContextTest(unittest.TestCase):
         for request in (
             {"E2B_API_KEY": "request-secret"},
             {"trial_config": {"environment": {"e2b_template": "template-id"}}},
+            {
+                "trial_config": {
+                    "environment": {"tb_e2b_prebuilt_template": "template-id"}
+                }
+            },
         ):
             with self.subTest(request=request), self.assertRaisesRegex(
                 ValueError, "host environment"

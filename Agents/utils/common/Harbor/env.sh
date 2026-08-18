@@ -1091,6 +1091,12 @@ harbor_ensure_dataset() {
 
   if [[ ! -d "$DATASET_PATH" ]]; then
     echo "DATASET_PATH not found: $DATASET_PATH" >&2
+    if [[ "$dataset_kind" == "harbor" ]]; then
+      echo "automatic TerminalBench dataset cloning was removed" >&2
+      printf '%s\n' \
+        "set DATASET_PATH to an existing local Harbor dataset" \
+        "or select a registry DATASET_NAME" >&2
+    fi
     return 1
   fi
 }

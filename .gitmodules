@@ -1,4 +1,3 @@
 [submodule "third_party/agent-opik-plugin"]
 	path = third_party/agent-opik-plugin
 	url = https://github.com/sii-system/agent-opik-plugin.git
-	tag = v0.1.0

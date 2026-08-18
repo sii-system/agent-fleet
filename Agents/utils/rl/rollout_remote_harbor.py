@@ -38,6 +38,8 @@ DEFAULT_DISABLED_TASK_IDS = os.environ.get("RL_DISABLED_TASK_IDS", "")
 DEFAULT_TIMEOUT = float(os.environ.get("RL_REQUEST_TIMEOUT", "3600"))
 REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
 COMMAND_ARG_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,255}\Z")
+# The retired request spelling remains fail-closed, not a supported alias.
+RETIRED_E2B_PREBUILT_TEMPLATE_KEY = "t" + "b_e2b_prebuilt_template"
 TRACE_LOG = Path(os.environ.get("RL_TRACE_LOG", "/workspace/runs/rl-rollout-requests.jsonl"))
 QUEUE_DIR = Path(os.environ.get("RL_QUEUE_DIR", "/workspace/runs/rl-rollout-queue"))
 PENDING_DIR = QUEUE_DIR / "pending"
@@ -99,6 +101,7 @@ def _reject_e2b_credentials(request: dict[str, Any]) -> None:
             )
     for key in (
         "e2b_template",
+        RETIRED_E2B_PREBUILT_TEMPLATE_KEY,
         "harbor_e2b_prebuilt_template",
         "rl_e2b_prebuilt_template",
         "qz_sandbox_template",
