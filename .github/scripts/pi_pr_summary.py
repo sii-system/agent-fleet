@@ -325,7 +325,7 @@ def run_summary(
         "\n".join(chunks),
         truncated=truncated or bool(skipped),
     )
-    payload = pi_client.review(prompt, model_input)
+    payload = pi_client.review(prompt, model_input, retry_malformed=True)
     summary = validate_summary(payload)
     github.create_issue_comment(
         pull_number,

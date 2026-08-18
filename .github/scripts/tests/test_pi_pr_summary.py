@@ -549,9 +549,17 @@ class FakeGitHub:
 class FakePi:
     def __init__(self) -> None:
         self.calls: list[tuple[str, str]] = []
+        self.retry_malformed: list[bool] = []
 
-    def review(self, prompt: str, model_input: str) -> dict[str, object]:
+    def review(
+        self,
+        prompt: str,
+        model_input: str,
+        *,
+        retry_malformed: bool = False,
+    ) -> dict[str, object]:
         self.calls.append((prompt, model_input))
+        self.retry_malformed.append(retry_malformed)
         return {
             "description": ["Adds an initial PR summary."],
             "diagram": "flowchart TD\n  PR --> Pi --> Comment",
@@ -579,6 +587,13 @@ class SummaryOrchestrationTest(unittest.TestCase):
         self.assertIn("PR TITLE: Add one-time PR summary", model_input)
         self.assertIn("src/summary.py (modified, +12/-3)", model_input)
         self.assertIn("UNTRUSTED DIFF:", model_input)
+
+    def test_retries_one_malformed_model_response(self) -> None:
+        pi = FakePi()
+
+        summary.run_summary(FakeGitHub(), pi, 17, "summary prompt")
+
+        self.assertEqual(pi.retry_malformed, [True])
 
     def test_large_diff_is_bounded_without_extra_pi_calls(self) -> None:
         github = FakeGitHub()
