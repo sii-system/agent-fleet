@@ -67,7 +67,7 @@ DATASET_NAME=auto \
 DATASET_PATH=/absolute/path/to/Harbor-Dataset \
 INCLUDE_TASKS=0 \
 TOTAL_WORKERS=1 \
-TB_N_CONCURRENT=1 \
+HARBOR_N_CONCURRENT=1 \
 bash start.sh
 ```
 
@@ -104,7 +104,7 @@ Sandbox. It does not describe or rule out E2B-managed storage capabilities.
 variables as above plus the model gateway settings from `config.local.env`).
 Under the hood:
 
-- Node comes from a dist tarball (`TB_CC_NODE_DIST_URL`, resolved from
+- Node comes from a dist tarball (`HARBOR_CC_NODE_DIST_URL`, resolved from
   `QZ_NODE_DIST_URL` or the npmmirror default) downloaded and unpacked inside
   the Sandbox without depending on its package manager;
 - `@anthropic-ai/claude-code` (repo-pinned `CLAUDE_CODE_VERSION`) installs

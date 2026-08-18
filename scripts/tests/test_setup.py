@@ -218,10 +218,10 @@ exit 0
             "OPIK_PROJECT_NAME",
             "CLAUDE_TGZ_SOURCE",
             "CLAUDE_WHEEL_DIR_SOURCE",
-            "TB_CC_CLAUDE_TGZ_SOURCE",
-            "TB_CC_PY_WHEEL_DIR_SOURCE",
+            "HARBOR_CC_CLAUDE_TGZ_SOURCE",
+            "HARBOR_CC_PY_WHEEL_DIR_SOURCE",
             "RL_ENVIRONMENT_TYPE",
-            "TB_ENVIRONMENT_TYPE",
+            "HARBOR_ENVIRONMENT_TYPE",
             "AGENT_FLEET_REQUIRE_DOCKER",
         ):
             env.pop(name, None)
@@ -310,8 +310,8 @@ exit 0
         self.assertIn(
             f"export AGENT_FLEET_NPM_BIN_DIR={managed_npm / 'bin'}", paths
         )
-        self.assertIn(f"export TB_CC_CLAUDE_TGZ_SOURCE={self.claude_tgz}", bashrc)
-        self.assertIn(f"export TB_CC_PY_WHEEL_DIR_SOURCE={self.wheel_dir}", bashrc)
+        self.assertIn(f"export HARBOR_CC_CLAUDE_TGZ_SOURCE={self.claude_tgz}", bashrc)
+        self.assertIn(f"export HARBOR_CC_PY_WHEEL_DIR_SOURCE={self.wheel_dir}", bashrc)
         self.assertNotIn("ANTHROPIC_AUTH_TOKEN", bashrc)
 
         for skill in (

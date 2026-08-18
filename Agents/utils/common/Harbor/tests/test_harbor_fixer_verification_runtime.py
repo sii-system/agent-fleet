@@ -64,7 +64,7 @@ class HarborFixerVerificationRuntimeTest(FixerTestCase):
             "DATASET_NAME": "auto",
             "DATASET_PATH": str(dataset),
             "MODEL": "fake-model",
-            "TB_DRY_RUN": "1",
+            "HARBOR_DRY_RUN": "1",
             "TRACE_TO_OPIK": "false",
             **env_overrides,
         }
@@ -142,14 +142,14 @@ class HarborFixerVerificationRuntimeTest(FixerTestCase):
             "QUEUE_DIR": "/stale/queue",
             "FLEET_TASKS": "old-task",
             "INCLUDE_TASKS": "old-task",
-            "TB_LIMIT": "1",
-            "TB_RUNS": "3",
+            "HARBOR_LIMIT": "1",
+            "HARBOR_RUNS": "3",
             "N_ATTEMPTS": "4",
             "MIN_TEST": "1",
-            "TB_AGENT": "claude-code",
-            "TB_AGENT_IMPORT_PATH": "/stale/agent.py",
-            "TB_N_CONCURRENT": "1",
-            "TB_TASK_ID": "old-task",
+            "AGENT": "claude-code",
+            "HARBOR_AGENT_IMPORT_PATH": "/stale/agent.py",
+            "HARBOR_N_CONCURRENT": "1",
+            "HARBOR_TASK_ID": "old-task",
             "HARBOR_ANALYZER_OUTPUT_DIR": "/stale/analyzer",
             "HARBOR_QUEUE_WORKER": "1",
             "HARBOR_ZELLIJ_SESSION_NAME": "original-run",
@@ -180,15 +180,14 @@ class HarborFixerVerificationRuntimeTest(FixerTestCase):
         self.assertNotIn("HARBOR_ANALYZER_OUTPUT_DIR", env)
         self.assertNotIn("HARBOR_ZELLIJ_SESSION_NAME", env)
         self.assertEqual(env["AGENT"], "opencode")
-        self.assertEqual(env["TB_AGENT"], "opencode")
-        self.assertEqual(env["TB_AGENT_IMPORT_PATH"], "")
+        self.assertEqual(env["HARBOR_AGENT_IMPORT_PATH"], "")
         self.assertEqual(env["HARBOR_QUEUE_WORKER"], "0")
-        self.assertNotIn("TB_N_CONCURRENT", env)
-        self.assertNotIn("TB_TASK_ID", env)
+        self.assertNotIn("HARBOR_N_CONCURRENT", env)
+        self.assertNotIn("HARBOR_TASK_ID", env)
         self.assertEqual(env["FLEET_TASKS"], "task-b,task-a")
         self.assertEqual(env["INCLUDE_TASKS"], "task-b,task-a")
-        self.assertEqual(env["TB_LIMIT"], "")
-        self.assertEqual(env["TB_RUNS"], "1")
+        self.assertEqual(env["HARBOR_LIMIT"], "")
+        self.assertEqual(env["HARBOR_RUNS"], "1")
         self.assertEqual(env["N_ATTEMPTS"], "1")
         self.assertEqual(env["MIN_TEST"], "0")
         self.assertEqual(call["cwd"], self.root / "run")
@@ -333,7 +332,7 @@ class HarborFixerVerificationRuntimeTest(FixerTestCase):
         )
 
         self.assertEqual(result["exit_code"], 0, result["stderr_summary"])
-        self.assertIn("TB_DRY_RUN=1", result["stdout_summary"])
+        self.assertIn("HARBOR_DRY_RUN=1", result["stdout_summary"])
         self.assertNotIn("Zellij session", result["stdout_summary"])
         self.assertFalse(zellij_marker.exists())
         job_dir_file = self.root / "run" / "runtime" / "claude-code" / "harbor-job-dir"
@@ -346,7 +345,7 @@ class HarborFixerVerificationRuntimeTest(FixerTestCase):
 
     def test_verification_local_opencode_owns_concurrency(self) -> None:
         result = self._run_local_start(
-            "opencode", ["task-a", "task-b"], TB_N_CONCURRENT="8"
+            "opencode", ["task-a", "task-b"], HARBOR_N_CONCURRENT="8"
         )
 
         self.assertEqual(result["exit_code"], 0, result["stderr_summary"])

@@ -99,7 +99,7 @@ def _reject_e2b_credentials(request: dict[str, Any]) -> None:
             )
     for key in (
         "e2b_template",
-        "tb_e2b_prebuilt_template",
+        "harbor_e2b_prebuilt_template",
         "rl_e2b_prebuilt_template",
         "qz_sandbox_template",
     ):
@@ -652,7 +652,7 @@ class Handler(BaseHTTPRequestHandler):
                     "default_environment_type": DEFAULT_ENVIRONMENT_TYPE,
                     "e2b_prebuilt_template_configured": bool(
                         os.environ.get("RL_E2B_PREBUILT_TEMPLATE")
-                        or os.environ.get("TB_E2B_PREBUILT_TEMPLATE")
+                        or os.environ.get("HARBOR_E2B_PREBUILT_TEMPLATE")
                         or os.environ.get("E2B_TEMPLATE")
                     ),
                     "api_key_mode": DEFAULT_API_KEY_MODE,

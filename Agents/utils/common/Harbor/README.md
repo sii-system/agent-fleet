@@ -66,7 +66,7 @@ Then edit the run parameters in `env.sh`:
 AGENT="claude-code"        # claude-code or opencode
 DATASET_NAME="seta"        # built-in Harbor registry alias
 TOTAL_WORKERS="80"
-TB_N_CONCURRENT="80"
+HARBOR_N_CONCURRENT="80"
 ```
 
 For OpenCode fixed benchmark runs, optional generation controls can be set in

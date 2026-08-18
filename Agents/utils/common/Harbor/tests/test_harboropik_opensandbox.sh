@@ -54,27 +54,25 @@ run_dry() {
     PATH="$tmp/bin:/usr/bin:/bin" \
     HOME="$tmp/home" \
     AGENT="$agent" \
-    TB_AGENT="$agent" \
     DATASET_NAME="$dataset_name" \
     DATASET_PATH="$tmp/dataset" \
     INCLUDE_TASKS=0 \
     OUTPUT_PATH="$tmp/output" \
     QUEUE_DIR="$queue_dir" \
     RUNTIME_DIR="$runtime_dir" \
-    TB_DRY_RUN="$dry_run" \
-    TB_FORCE_BUILD="$force_build" \
-    TB_N_CONCURRENT=1 \
-    TB_MAX_RETRIES=0 \
+    HARBOR_DRY_RUN="$dry_run" \
+    HARBOR_FORCE_BUILD="$force_build" \
+    HARBOR_N_CONCURRENT=1 \
+    HARBOR_MAX_RETRIES=0 \
     API_KEY=fake-api-key \
     BASE_URL=https://model.example \
     MODEL=test-model \
-    TB_ANTHROPIC_AUTH_TOKEN=fake-api-key \
-    TB_LLM_KWARGS='{"temperature":1.0}' \
-    TB_CC_CLAUDE_TGZ_SOURCE="$tmp/deps/claude.tgz" \
-    TB_CC_PY_WHEEL_DIR_SOURCE="$tmp/deps/wheels" \
+    HARBOR_ANTHROPIC_AUTH_TOKEN=fake-api-key \
+    HARBOR_LLM_KWARGS='{"temperature":1.0}' \
+    HARBOR_CC_CLAUDE_TGZ_SOURCE="$tmp/deps/claude.tgz" \
+    HARBOR_CC_PY_WHEEL_DIR_SOURCE="$tmp/deps/wheels" \
     TRACE_TO_OPIK=false \
-    TB_TRACE_TO_OPIK=false \
-    TB_ENVIRONMENT_TYPE="$environment_type" \
+    HARBOR_ENVIRONMENT_TYPE="$environment_type" \
     HARBOR_OPENSANDBOX_IMAGE_REF="$image_ref" \
     HARBOR_OPENSANDBOX_IMAGE_REPOSITORY=test-project/test-repository \
     HARBOR_OPENSANDBOX_IMAGE_MANAGER="$manager" \
@@ -97,7 +95,7 @@ grep -E -- '--ek image_ref=test-project/test-repository:harbor-0-[0-9a-f]{20}' \
   <<< "$automatic" >/dev/null
 grep -F -- '--ek lifecycle_minutes=120' <<< "$automatic" >/dev/null
 grep -F -- '--mounts-json' <<< "$automatic" >/dev/null
-grep -F -- 'TB_VERIFIER_UV_BIN_DIR=/opt/tb-uv-backup/bin' \
+grep -F -- 'HARBOR_VERIFIER_UV_BIN_DIR=/opt/tb-uv-backup/bin' \
   <<< "$automatic" >/dev/null
 if grep -F -- '--extra-docker-compose' <<< "$automatic" >/dev/null; then
   echo 'OpenSandbox command unexpectedly contains a Docker compose overlay' >&2
@@ -149,7 +147,7 @@ claude_opensandbox="$(run_dry \
 grep -F -- 'FAKE_HARBOR_ARG=--mounts-json' <<< "$claude_opensandbox" >/dev/null
 grep -F -- 'FAKE_HARBOR_ARG=CC_OPIK_CLAUDE_TGZ_PATH=' \
   <<< "$claude_opensandbox" >/dev/null
-grep -F -- 'FAKE_HARBOR_ARG=TB_VERIFIER_UV_BIN_DIR=/opt/tb-uv-backup/bin' \
+grep -F -- 'FAKE_HARBOR_ARG=HARBOR_VERIFIER_UV_BIN_DIR=/opt/tb-uv-backup/bin' \
   <<< "$claude_opensandbox" >/dev/null
 
 opencode_opensandbox="$(run_dry \
@@ -158,5 +156,5 @@ opencode_opensandbox="$(run_dry \
 grep -F -- 'FAKE_HARBOR_ARG=--mounts-json' <<< "$opencode_opensandbox" >/dev/null
 grep -F -- 'FAKE_HARBOR_ARG=OPENCODE_TGZ_PATH=' \
   <<< "$opencode_opensandbox" >/dev/null
-grep -F -- 'FAKE_HARBOR_ARG=TB_VERIFIER_UV_BIN_DIR=/opt/tb-uv-backup/bin' \
+grep -F -- 'FAKE_HARBOR_ARG=HARBOR_VERIFIER_UV_BIN_DIR=/opt/tb-uv-backup/bin' \
   <<< "$opencode_opensandbox" >/dev/null

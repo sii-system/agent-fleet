@@ -182,11 +182,11 @@ render_report() {
     prep_status="unknown"
     [[ -f "$RUNTIME_DIR/local-deps-prepare.status" ]] && prep_status="$(cat "$RUNTIME_DIR/local-deps-prepare.status" 2>/dev/null || true)"
     echo "LOCAL_DEPS_PREP: $prep_status"
-    echo "LOCAL_WHEEL_URL: ${TB_LOCAL_WHEEL_SERVER_URL:-<none>}"
+    echo "LOCAL_WHEEL_URL: ${HARBOR_LOCAL_WHEEL_SERVER_URL:-<none>}"
     echo "LOCAL_WHEEL_LOG: $LOCAL_DEPS_LOG_FILE"
   else
     echo "OPENCODE_VERSION: $OPENCODE_VERSION"
-    echo "MODEL:       $TB_MODEL"
+    echo "MODEL:       $HARBOR_MODEL"
     prep_status="unknown"
     [[ -f "$HARBOR_RUNNER_PREPARE_STATUS_FILE" ]] && prep_status="$(cat "$HARBOR_RUNNER_PREPARE_STATUS_FILE" 2>/dev/null || true)"
     echo "RUNNER_CLI_PREP: $prep_status"

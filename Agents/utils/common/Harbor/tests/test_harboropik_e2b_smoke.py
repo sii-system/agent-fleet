@@ -29,13 +29,11 @@ class HarborOpikE2BSmokeTest(unittest.TestCase):
             env.update(
                 {
                     "AGENT": agent,
-                    "TB_AGENT": agent,
-                    "TB_ENVIRONMENT_TYPE": environment_type,
-                    "TB_E2B_SANDBOX_TIMEOUT_SEC": "3600",
-                    "TB_E2B_PREBUILT_TEMPLATE": prebuilt_template,
+                    "HARBOR_ENVIRONMENT_TYPE": environment_type,
+                    "HARBOR_E2B_SANDBOX_TIMEOUT_SEC": "3600",
+                    "HARBOR_E2B_PREBUILT_TEMPLATE": prebuilt_template,
                     "E2B_TEMPLATE": "",
-                    "TB_DRY_RUN": "1",
-                    "TB_PATH": str(root_path / "dataset"),
+                    "HARBOR_DRY_RUN": "1",
                     "DATASET_PATH": str(root_path / "dataset"),
                     "JOBS_ROOT": str(root_path / "jobs"),
                     "OUTPUT_ROOT": str(root_path / "output"),
@@ -44,13 +42,12 @@ class HarborOpikE2BSmokeTest(unittest.TestCase):
                     "QUEUE_DIR": str(root_path / "queue"),
                     "HARBOR_DIRECT_BIN": "/tmp/direct-harbor",
                     "TRACE_TO_OPIK": "false",
-                    "TB_TRACE_TO_OPIK": "false",
                     "API_KEY": "fake-api-key",
                     "BASE_URL": "https://model.example",
                     "MODEL": "test-model",
-                    "TB_MODEL": "test-model",
-                    "TB_ANTHROPIC_AUTH_TOKEN": "fake-api-key",
-                    "TB_LLM_KWARGS": '{"temperature":1.0}',
+                    "HARBOR_MODEL": "test-model",
+                    "HARBOR_ANTHROPIC_AUTH_TOKEN": "fake-api-key",
+                    "HARBOR_LLM_KWARGS": '{"temperature":1.0}',
                     "PATH": f"{tools_path}:{env.get('PATH', '')}",
                 }
             )
@@ -77,7 +74,7 @@ class HarborOpikE2BSmokeTest(unittest.TestCase):
         self.assertNotIn("Docker Hub", completed.stdout)
         self.assertIn("E2B verifier uv tools will be uploaded", completed.stdout)
         self.assertIn(
-            "TB_VERIFIER_UV_BIN_DIR=/opt/tb-uv-backup/bin", completed.stdout
+            "HARBOR_VERIFIER_UV_BIN_DIR=/opt/tb-uv-backup/bin", completed.stdout
         )
 
     def test_oracle_e2b_uses_host_configured_prebuilt_environment(self) -> None:
@@ -133,7 +130,7 @@ class HarborOpikE2BSmokeTest(unittest.TestCase):
                     "RL_AGENT": "claude-code",
                     "ROLLOUT": "1",
                     "RL_ENVIRONMENT_TYPE": "e2b",
-                    "TB_ENVIRONMENT_TYPE": "e2b",
+                    "HARBOR_ENVIRONMENT_TYPE": "e2b",
                     "RUNTIME_DIR": root,
                 }
             )

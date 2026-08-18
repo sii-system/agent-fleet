@@ -18,7 +18,7 @@ def parse_finite_float(name: str, value: str) -> float:
 
 def build_llm_kwargs() -> dict[str, object]:
     payload: dict[str, object] = {
-        "api_key": os.environ.get("TB_ANTHROPIC_AUTH_TOKEN", ""),
+        "api_key": os.environ.get("HARBOR_ANTHROPIC_AUTH_TOKEN", ""),
         "temperature": parse_finite_float(
             "HARBOR_TEMPERATURE",
             os.environ.get("HARBOR_TEMPERATURE") or "1.0",
@@ -40,25 +40,25 @@ def build_model_info() -> dict[str, object]:
 
 
 def model_request_headers() -> dict[str, str]:
-    raw = os.environ.get("TB_LLM_KWARGS", "")
+    raw = os.environ.get("HARBOR_LLM_KWARGS", "")
     if not raw:
         return {}
     llm_kwargs = json.loads(raw)
     if not isinstance(llm_kwargs, dict):
-        raise TypeError("TB_LLM_KWARGS must be a JSON object")
+        raise TypeError("HARBOR_LLM_KWARGS must be a JSON object")
     headers = llm_kwargs.get("extra_headers", {})
     if not isinstance(headers, dict) or not all(
         isinstance(name, str) and isinstance(value, str)
         for name, value in headers.items()
     ):
-        raise TypeError("TB_LLM_KWARGS.extra_headers must be a string map")
+        raise TypeError("HARBOR_LLM_KWARGS.extra_headers must be a string map")
     return headers
 
 
 def build_opencode_config() -> dict[str, object]:
-    base_url = os.environ.get("TB_ANTHROPIC_BASE_URL", "").rstrip("/") + "/v1"
-    api_key = os.environ.get("TB_ANTHROPIC_AUTH_TOKEN", "")
-    provider, separator, model = os.environ.get("TB_MODEL", "").partition("/")
+    base_url = os.environ.get("HARBOR_ANTHROPIC_BASE_URL", "").rstrip("/") + "/v1"
+    api_key = os.environ.get("HARBOR_ANTHROPIC_AUTH_TOKEN", "")
+    provider, separator, model = os.environ.get("HARBOR_MODEL", "").partition("/")
     if not separator:
         model = provider
     temperature = os.environ.get("HARBOR_TEMPERATURE", "")

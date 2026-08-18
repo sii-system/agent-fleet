@@ -23,10 +23,10 @@ What this script does:
      `Verifier.verify`, and `Step.__init__` to emit a per-trial trace
      tree, including verifier rewards as feedback scores.
   2. Patches `HarborTrialRunDecorator._start_span_inputs_preprocessor`
-     to also tag trace trees with `tb-run:`, `tb-task:`, `tb-trial:`
+     to also tag trace trees with `harbor-run:`, `harbor-task:`, `harbor-trial:`
      when the corresponding env vars are present. The default decorator
      uses `config.agent.name` (which is `None` when `--agent-import-path`
-     is used instead of `--agent`) and never reads TB_* env, so tags
+     is used instead of `--agent`) and never reads HARBOR_* env, so tags
      would otherwise miss the run/task/trial identifiers needed to
      correlate harbor traces with the realtime traces emitted by the
      in-container plugin.
@@ -83,12 +83,12 @@ def _install_track_harbor() -> None:
     track_harbor(project_name=os.environ.get("OPIK_PROJECT_NAME"))
 
 
-def _patch_trial_decorator_with_tb_tags() -> None:
-    """Append `tb-run:<id>`, `tb-task:<id>`, `tb-trial:<id>` tags to
+def _patch_trial_decorator_with_harbor_tags() -> None:
+    """Append `harbor-run:<id>`, `harbor-task:<id>`, `harbor-trial:<id>` tags to
     every harbor trial trace. The default preprocessor doesn't read the
-    TB env vars; without this patch, traces have only the harbor +
+    Harbor env vars; without this patch, traces have only the harbor +
     agent-name tags and can't be cross-referenced with the realtime
-    trace tree (which uses `tb-trial:` as its primary correlation key).
+    trace tree (which uses `harbor-trial:` as its primary correlation key).
     """
     from opik.integrations.harbor.opik_tracker import HarborTrialRunDecorator
 
@@ -98,9 +98,9 @@ def _patch_trial_decorator_with_tb_tags() -> None:
         params = original(self, func, track_options, args, kwargs)
         extra: list[str] = []
         for env_key, prefix in (
-            ("TB_RUN_ID", "tb-run:"),
-            ("TB_TASK_ID", "tb-task:"),
-            ("TB_TRIAL_ID", "tb-trial:"),
+            ("HARBOR_RUN_ID", "harbor-run:"),
+            ("HARBOR_TASK_ID", "harbor-task:"),
+            ("HARBOR_TRIAL_ID", "harbor-trial:"),
         ):
             value = os.environ.get(env_key)
             if value:
@@ -112,7 +112,7 @@ def _patch_trial_decorator_with_tb_tags() -> None:
 
 
 def main() -> None:
-    if os.environ.get("TB_ENVIRONMENT_TYPE", "docker").strip().lower() in {
+    if os.environ.get("HARBOR_ENVIRONMENT_TYPE", "docker").strip().lower() in {
         "e2b",
         "qz",
     }:
@@ -122,7 +122,7 @@ def main() -> None:
     if _trace_to_opik_enabled():
         _patch_opik_batch_tags()
         _install_track_harbor()
-        _patch_trial_decorator_with_tb_tags()
+        _patch_trial_decorator_with_harbor_tags()
 
     from harbor.cli.main import app
 

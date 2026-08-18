@@ -66,8 +66,8 @@ class HarborTaskSelectionTest(unittest.TestCase):
         result = self.run_env(
             (
                 "harbor_prepare_registry_task_selection; "
-                'printf "include=%s\\ntb_include=%s\\n" '
-                '"$INCLUDE_TASKS" "$TB_INCLUDE_TASKS"'
+                'printf "include=%s\\nharbor_include=%s\\n" '
+                '"$INCLUDE_TASKS" "$HARBOR_INCLUDE_TASKS"'
             ),
             DATASET_NAME="terminalbench21",
             FLEET_TASKS="fix-git,break-filter-js-from-html",
@@ -76,7 +76,7 @@ class HarborTaskSelectionTest(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("include=fix-git,break-filter-js-from-html", result.stdout)
-        self.assertIn("tb_include=fix-git,break-filter-js-from-html", result.stdout)
+        self.assertIn("harbor_include=fix-git,break-filter-js-from-html", result.stdout)
 
     def test_registry_selection_reports_every_missing_task(self) -> None:
         result = self.run_env(

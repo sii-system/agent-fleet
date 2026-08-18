@@ -38,7 +38,7 @@ fi
 args=("$@")
 
 gateway_host="$(
-  python3 - "${TB_ANTHROPIC_BASE_URL:-${BASE_URL:-}}" <<'PY'
+  python3 - "${HARBOR_ANTHROPIC_BASE_URL:-${BASE_URL:-}}" <<'PY'
 from urllib.parse import urlparse
 import sys
 

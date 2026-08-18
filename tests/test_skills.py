@@ -95,7 +95,7 @@ class SkillDocsTest(unittest.TestCase):
                 "config.local.env",
                 "skills/harbor-benchmark-runner",
                 "TOTAL_WORKERS=3",
-                "TB_N_CONCURRENT=3",
+                "HARBOR_N_CONCURRENT=3",
             ],
             "e2e-openclaw-benchmark.txt": [
                 "config.local.env",

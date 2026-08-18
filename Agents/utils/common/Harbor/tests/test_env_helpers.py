@@ -43,10 +43,10 @@ class HarborEnvHelperTests(unittest.TestCase):
         environment = os.environ.copy()
         environment.update(
             {
-                "TB_ANTHROPIC_BASE_URL": "http://model.example",
-                "TB_ANTHROPIC_AUTH_TOKEN": "test-key",
-                "TB_MODEL": "custom/test-model",
-                "TB_LLM_KWARGS": (
+                "HARBOR_ANTHROPIC_BASE_URL": "http://model.example",
+                "HARBOR_ANTHROPIC_AUTH_TOKEN": "test-key",
+                "HARBOR_MODEL": "custom/test-model",
+                "HARBOR_LLM_KWARGS": (
                     '{"extra_headers":{"X-Route-Key":"deployment-a"}}'
                 ),
             }

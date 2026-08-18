@@ -37,7 +37,7 @@ RL_E2B_SANDBOX_TIMEOUT_SEC="${RL_E2B_SANDBOX_TIMEOUT_SEC:-}"
 # Host-only compatibility setting. The template ID is inherited by workers and
 # must never be accepted from /run_trial request payloads.
 RL_E2B_PREBUILT_TEMPLATE="${RL_E2B_PREBUILT_TEMPLATE:-${E2B_TEMPLATE:-}}"
-RL_FORCE_BUILD="${RL_FORCE_BUILD:-${TB_FORCE_BUILD:-0}}"
+RL_FORCE_BUILD="${RL_FORCE_BUILD:-${HARBOR_FORCE_BUILD:-0}}"
 if [[ -z "${RL_MODEL_INFO:-}" ]]; then
   # Polar rollout currently serves 32k-context models by default. Keep the
   # advertised input + output budget within that limit so Claude does not
@@ -48,7 +48,7 @@ RL_MAX_NEW_TOKENS="${RL_MAX_NEW_TOKENS:-8192}"
 RL_CLAUDE_CODE_MAX_OUTPUT_TOKENS="${RL_CLAUDE_CODE_MAX_OUTPUT_TOKENS:-$RL_MAX_NEW_TOKENS}"
 RL_MAX_TURNS="${RL_MAX_TURNS:-32}"
 # Harbor exposes agent timeout as a multiplier, not an absolute second value.
-RL_AGENT_TIMEOUT_MULTIPLIER="${RL_AGENT_TIMEOUT_MULTIPLIER:-${TB_AGENT_TIMEOUT_MULTIPLIER:-}}"
+RL_AGENT_TIMEOUT_MULTIPLIER="${RL_AGENT_TIMEOUT_MULTIPLIER:-${HARBOR_AGENT_TIMEOUT_MULTIPLIER:-}}"
 RL_LLM_TIMEOUT="${RL_LLM_TIMEOUT:-900}"
 RL_LLM_MAX_RETRIES="${RL_LLM_MAX_RETRIES:-0}"
 RL_TEMPERATURE="${RL_TEMPERATURE:-1.0}"

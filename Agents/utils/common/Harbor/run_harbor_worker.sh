@@ -147,16 +147,15 @@ run_claimed_task() {
   local task_index="$3"
   (
     export HARBOR_ROOT MODEL AGENT API_KEY BASE_URL TRACE_TO_OPIK OPIK_URL OPIK_URL_OVERRIDE OPIK_PROJECT_NAME OPIK_API_KEY OPIK_WORKSPACE
-    export TB_PATH="$DATASET_PATH"
-    # Trace naming in the Claude hook uses TB_TASK_ID as the canonical
+    # Trace naming in the Claude hook uses HARBOR_TASK_ID as the canonical
     # per-task identifier. Keep INCLUDE_TASKS for Harbor task selection.
-    export TB_TASK_ID="$task_name"
-    export TB_INCLUDE_TASKS="$task_name"
+    export HARBOR_TASK_ID="$task_name"
+    export HARBOR_INCLUDE_TASKS="$task_name"
     export INCLUDE_TASKS="$task_name"
-    export TB_LIMIT=""
-    export TB_RUNS="$N_ATTEMPTS"
-    export TB_N_CONCURRENT=1
-    export TB_MAX_RETRIES="$MAX_RETRIES"
+    export HARBOR_LIMIT=""
+    export HARBOR_RUNS="$N_ATTEMPTS"
+    export HARBOR_N_CONCURRENT=1
+    export HARBOR_MAX_RETRIES="$MAX_RETRIES"
     export JOBS_ROOT="$task_jobs_root"
     export HARBOR_QUEUE_WORKER=1
 
@@ -165,7 +164,7 @@ run_claimed_task() {
     else
       export CC_OPIK_DEBUG
       export CLAUDE_CODE_VERSION CLAUDE_CODE_TGZ_BASENAME LOCAL_WHEEL_DIR
-      export TB_LOCAL_WHEEL_SERVER_URL TB_LOCAL_CLAUDE_TGZ_URL LOCAL_WHEEL_PORT
+      export HARBOR_LOCAL_WHEEL_SERVER_URL HARBOR_LOCAL_CLAUDE_TGZ_URL LOCAL_WHEEL_PORT
     fi
 
     if seta_online_early_stop_enabled; then
@@ -213,7 +212,7 @@ while true; do
   log_msg "starting task ${task_index}: $task_name"
   # Dry-run does not create agent JSONL logs; starting the tailer there leaves
   # a waiting Python process behind after the worker exits.
-  if [[ "${TB_DRY_RUN:-0}" != "1" ]]; then
+  if [[ "${HARBOR_DRY_RUN:-0}" != "1" ]]; then
     if [[ "$AGENT" == "claude-code" ]]; then
       stream_claude_log "$task_jobs_root" &
       AGENT_TAIL_PID="$!"
@@ -242,7 +241,7 @@ while true; do
   if [[ -n "$early_stop_reason" ]]; then
     printf '%s\t%s\t%s\t%s\n' "$task_index" "$task_name" "$rc" "$early_stop_reason" >> "$QUEUE_DIR/failed.txt"
     log_msg "early-stopped task ${task_index}: ${task_name} (${early_stop_reason})"
-  elif [[ "${TB_DRY_RUN:-0}" == "1" ]]; then
+  elif [[ "${HARBOR_DRY_RUN:-0}" == "1" ]]; then
     printf '%s\t%s\t%s\t%s\t%s\n' "$task_index" "$task_name" "dry-run" "" "$task_console_log" >> "$QUEUE_DIR/done.txt"
     log_msg "dry-run task ${task_index}: ${task_name} (exit=$rc)"
   elif [[ -n "${result_file:-}" ]] && summary="$(summarize_result "$result_file")"; then

@@ -59,7 +59,7 @@ def _wrap_claude_command(
     wheel = _value(extra_env, "OPENROUTER_WHEEL_PATH", "/opt/sii-fusion-router/router.whl")
     config = _value(extra_env, "OPENROUTER_CONFIG_PATH", "/opt/sii-fusion-router/router-config.json")
     version = _value(extra_env, "OPENROUTER_VERSION")
-    task_id = _value(extra_env, "TB_TASK_ID", "harbor-task")
+    task_id = _value(extra_env, "HARBOR_TASK_ID", "harbor-task")
     artifacts = _value(extra_env, "OPENROUTER_ARTIFACT_ROOT", "/logs/agent/router")
     summary = _value(extra_env, "OPENROUTER_SUMMARY_PATH", "/logs/agent/router-run-summary.json")
     runtime = "/tmp/sii-fusion-router-runtime"

@@ -38,7 +38,7 @@ commands you actually ran. The expected bar:
 ## Configuration & Environment Variables
 
 - **One canonical name per setting** — no aliases. Standardize on the repo var
-  (`API_KEY`, `MODEL`, `GOPROXY`, `PIP_INDEX_URL`, `TB_CC_*`, …); don't also
+  (`API_KEY`, `MODEL`, `GOPROXY`, `PIP_INDEX_URL`, `HARBOR_CC_*`, …); don't also
   accept a second spelling for the same value.
 - **Precedence:** caller env > `config.local.env` > `config.env` > built-in
   defaults. OpenClaw-family flows (fleet setup, PinchBench, ClawBio) insert

@@ -36,9 +36,9 @@ trap cleanup_verifier_uv_bin_dir EXIT
 #
 # Usage examples:
 #   MIN_TEST=1 bash harboropik.sh                       # quick smoke test
-#   TB_DRY_RUN=1  bash harboropik.sh                    # print command, skip run
+#   HARBOR_DRY_RUN=1  bash harboropik.sh                    # print command, skip run
 #   OPIK_MODE=remote OPIK_BASE=http://host:5173 \
-#     TB_RUNS=10 TB_N_CONCURRENT=4 bash harboropik.sh   # standard remote run
+#     HARBOR_RUNS=10 HARBOR_N_CONCURRENT=4 bash harboropik.sh   # standard remote run
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$SCRIPT_DIR/env.sh"
@@ -60,9 +60,9 @@ harbor_publishes_job_dir() {
 }
 
 harbor_uses_local_opensandbox_dataset() {
-  [[ "$TB_ENVIRONMENT_TYPE" == "opensandbox" ]] \
-    && [[ -n "${TB_PATH:-}" ]] \
-    && [[ -d "$TB_PATH" ]]
+  [[ "$HARBOR_ENVIRONMENT_TYPE" == "opensandbox" ]] \
+    && [[ -n "${DATASET_PATH:-}" ]] \
+    && [[ -d "$DATASET_PATH" ]]
 }
 
 write_harbor_registry_summary() {
@@ -70,7 +70,7 @@ write_harbor_registry_summary() {
   local job_dir=""
   local dataset
 
-  [[ "$TB_DRY_RUN" != "1" ]] || return 0
+  [[ "$HARBOR_DRY_RUN" != "1" ]] || return 0
   [[ -f "$HARBOR_JOB_DIR_FILE" ]] && job_dir="$(cat "$HARBOR_JOB_DIR_FILE" 2>/dev/null || true)"
   dataset="$(harbor_registry_dataset_name)"
   python3 "$SCRIPT_DIR/scripts/write_harbor_registry_summary.py" \
@@ -129,8 +129,8 @@ import sys
 phase, component, event, severity, fatal, message = sys.argv[1:]
 print("[ONLINE_ENV] " + json.dumps({
     "schema": 1,
-    "task_id": int(os.environ["TB_TASK_INDEX"]) if os.environ.get("TB_TASK_INDEX", "").isdigit() else None,
-    "task_name": os.environ.get("TB_TASK_ID", ""),
+    "task_id": int(os.environ["HARBOR_TASK_INDEX"]) if os.environ.get("HARBOR_TASK_INDEX", "").isdigit() else None,
+    "task_name": os.environ.get("HARBOR_TASK_ID", ""),
     "phase": phase,
     "component": component,
     "event": event,
@@ -224,20 +224,20 @@ append_rust_package_mirror_env() {
 }
 
 append_harbor_unprivileged_docker_compose() {
-  if [[ "${TB_ENVIRONMENT_TYPE:-docker}" != "docker" ]]; then
-    if [[ "${TB_DRY_RUN:-0}" == "1" ]]; then
-      echo "[INFO] ${TB_ENVIRONMENT_TYPE} environment; skip unprivileged Docker Compose overlay"
+  if [[ "${HARBOR_ENVIRONMENT_TYPE:-docker}" != "docker" ]]; then
+    if [[ "${HARBOR_DRY_RUN:-0}" == "1" ]]; then
+      echo "[INFO] ${HARBOR_ENVIRONMENT_TYPE} environment; skip unprivileged Docker Compose overlay"
     fi
     return 0
   fi
   cmd+=( --extra-docker-compose "$SCRIPT_DIR/overlays/unprivileged-task.yaml" )
-  if [[ "${TB_DRY_RUN:-0}" == "1" ]]; then
+  if [[ "${HARBOR_DRY_RUN:-0}" == "1" ]]; then
     echo "[INFO] Docker environment; add unprivileged Docker Compose overlay"
   fi
 }
 
 validate_environment_backend() {
-  case "$TB_ENVIRONMENT_TYPE" in
+  case "$HARBOR_ENVIRONMENT_TYPE" in
     docker|e2b)
       ;;
     opensandbox)
@@ -284,56 +284,56 @@ validate_environment_backend() {
           exit 1
         fi
       fi
-      case "${TB_FORCE_BUILD:-0}" in
+      case "${HARBOR_FORCE_BUILD:-0}" in
         0|false|no|"") ;;
         *)
-          echo '[ERROR] TB_FORCE_BUILD is not supported on qz: templates are registered on the platform, not built by Harbor' >&2
+          echo '[ERROR] HARBOR_FORCE_BUILD is not supported on qz: templates are registered on the platform, not built by Harbor' >&2
           exit 1
           ;;
       esac
       echo "[INFO] qz sandbox template: $QZ_SANDBOX_TEMPLATE"
       if harbor_agent_is_claude_code; then
-        echo "[INFO] qz claude-code delivery: npm registry ${NPM_CONFIG_REGISTRY:-<unset>} | node dist ${TB_CC_NODE_DIST_URL:-<unset>}"
+        echo "[INFO] qz claude-code delivery: npm registry ${NPM_CONFIG_REGISTRY:-<unset>} | node dist ${HARBOR_CC_NODE_DIST_URL:-<unset>}"
       elif harbor_agent_is_opencode; then
-        echo "[INFO] qz opencode delivery: npm registry ${NPM_CONFIG_REGISTRY:-<unset>} | node dist ${TB_CC_NODE_DIST_URL:-<unset>}"
+        echo "[INFO] qz opencode delivery: npm registry ${NPM_CONFIG_REGISTRY:-<unset>} | node dist ${HARBOR_CC_NODE_DIST_URL:-<unset>}"
       fi
       ;;
     *)
-      echo "[ERROR] TB_ENVIRONMENT_TYPE must be docker, e2b, opensandbox, or qz, got: $TB_ENVIRONMENT_TYPE" >&2
+      echo "[ERROR] HARBOR_ENVIRONMENT_TYPE must be docker, e2b, opensandbox, or qz, got: $HARBOR_ENVIRONMENT_TYPE" >&2
       exit 1
       ;;
   esac
 
-  if [[ -n "${TB_E2B_SANDBOX_TIMEOUT_SEC:-}" ]] \
-    && [[ ! "$TB_E2B_SANDBOX_TIMEOUT_SEC" =~ ^[1-9][0-9]*$ ]]; then
-    echo "[ERROR] TB_E2B_SANDBOX_TIMEOUT_SEC must be a positive integer" >&2
+  if [[ -n "${HARBOR_E2B_SANDBOX_TIMEOUT_SEC:-}" ]] \
+    && [[ ! "$HARBOR_E2B_SANDBOX_TIMEOUT_SEC" =~ ^[1-9][0-9]*$ ]]; then
+    echo "[ERROR] HARBOR_E2B_SANDBOX_TIMEOUT_SEC must be a positive integer" >&2
     exit 1
   fi
 }
 
 ensure_environment_backend() {
   validate_environment_backend
-  if [[ "$TB_ENVIRONMENT_TYPE" == "docker" ]]; then
+  if [[ "$HARBOR_ENVIRONMENT_TYPE" == "docker" ]]; then
     ensure_docker_daemon
     docker_hub_preflight_check
     return 0
   fi
-  if [[ "$TB_ENVIRONMENT_TYPE" == "e2b" ]]; then
+  if [[ "$HARBOR_ENVIRONMENT_TYPE" == "e2b" ]]; then
     if [[ -z "${E2B_API_KEY:-}" ]]; then
-      echo "[ERROR] E2B_API_KEY is required when TB_ENVIRONMENT_TYPE=e2b" >&2
+      echo "[ERROR] E2B_API_KEY is required when HARBOR_ENVIRONMENT_TYPE=e2b" >&2
       exit 1
     fi
     if ! harbor_agent_is_oracle && [[ "$OPIK_MODE" != "remote" ]]; then
-      echo "[ERROR] OPIK_MODE=remote is required when TB_ENVIRONMENT_TYPE=e2b" >&2
+      echo "[ERROR] OPIK_MODE=remote is required when HARBOR_ENVIRONMENT_TYPE=e2b" >&2
       exit 1
     fi
     echo "[INFO] using E2B environment; skip host Docker daemon and Docker Hub preflight"
   fi
-  if [[ "$TB_ENVIRONMENT_TYPE" == "qz" ]]; then
+  if [[ "$HARBOR_ENVIRONMENT_TYPE" == "qz" ]]; then
     if ! harbor_agent_is_oracle && [[ "$OPIK_MODE" != "remote" ]]; then
       # Same constraint as e2b: a local Opik stack needs the host Docker
       # daemon, which qz runs skip entirely.
-      echo "[ERROR] OPIK_MODE=remote is required when TB_ENVIRONMENT_TYPE=qz" >&2
+      echo "[ERROR] OPIK_MODE=remote is required when HARBOR_ENVIRONMENT_TYPE=qz" >&2
       exit 1
     fi
     echo "[INFO] using qz sandbox environment; skip host Docker daemon and Docker Hub preflight"
@@ -341,14 +341,14 @@ ensure_environment_backend() {
 }
 
 prepare_opensandbox_image_ref() {
-  if [[ "$TB_ENVIRONMENT_TYPE" != "opensandbox" || -n "$HARBOR_OPENSANDBOX_IMAGE_REF" ]]; then
+  if [[ "$HARBOR_ENVIRONMENT_TYPE" != "opensandbox" || -n "$HARBOR_OPENSANDBOX_IMAGE_REF" ]]; then
     return 0
   fi
   # DATASET_NAME can have a Harbor Registry alias (for example, seta ->
-  # seta-env) while rollout workers still provide a real local TB_PATH.
+  # seta-env) while rollout workers still provide a real local DATASET_PATH.
   # OpenSandbox image preparation needs the local task definition, so decide
   # from the path itself instead of the dataset's registry capability.
-  if [[ -z "${TB_PATH:-}" || ! -d "$TB_PATH" ]]; then
+  if [[ -z "${DATASET_PATH:-}" || ! -d "$DATASET_PATH" ]]; then
     echo "[ERROR] automatic OpenSandbox image preparation currently requires a local dataset path" >&2
     exit 1
   fi
@@ -359,7 +359,7 @@ prepare_opensandbox_image_ref() {
   fi
   local -a manager_cmd=(
     "$manager_python" "$HARBOR_OPENSANDBOX_IMAGE_MANAGER"
-    --dataset-root "$TB_PATH"
+    --dataset-root "$DATASET_PATH"
     --include "$INCLUDE_TASKS"
     --registry "$HARBOR_OPENSANDBOX_REGISTRY"
     --repository "$HARBOR_OPENSANDBOX_IMAGE_REPOSITORY"
@@ -372,13 +372,13 @@ prepare_opensandbox_image_ref() {
     --apt-mirror "$HARBOR_OPENSANDBOX_APT_MIRROR"
     --build-args-json "$HARBOR_OPENSANDBOX_BUILD_ARGS_JSON"
   )
-  if [[ "${TB_FORCE_BUILD:-0}" == "1" || "${TB_FORCE_BUILD:-0}" == "true" ]]; then
+  if [[ "${HARBOR_FORCE_BUILD:-0}" == "1" || "${HARBOR_FORCE_BUILD:-0}" == "true" ]]; then
     manager_cmd+=( --force )
   fi
   if [[ "$HARBOR_OPENSANDBOX_BUILD_USE_PROXY" == "1" ]]; then
     manager_cmd+=( --use-proxy )
   fi
-  if [[ "$TB_DRY_RUN" == "1" ]]; then
+  if [[ "$HARBOR_DRY_RUN" == "1" ]]; then
     manager_cmd+=( --dry-run )
   else
     ensure_docker_daemon
@@ -398,8 +398,8 @@ prepare_opensandbox_image_ref() {
 }
 
 append_environment_backend_args() {
-  cmd+=( --env "$TB_ENVIRONMENT_SPEC" )
-  if [[ "$TB_ENVIRONMENT_TYPE" == "opensandbox" ]]; then
+  cmd+=( --env "$HARBOR_ENVIRONMENT_SPEC" )
+  if [[ "$HARBOR_ENVIRONMENT_TYPE" == "opensandbox" ]]; then
     cmd+=(
       --ek "image_ref=$HARBOR_OPENSANDBOX_IMAGE_REF"
       --ek "lifecycle_minutes=$YICLOUD_SANDBOX_LIFECYCLE_MINUTES"
@@ -413,7 +413,7 @@ append_environment_backend_args() {
 }
 
 ensure_trace_plugin_source_if_needed() {
-  if [[ "$TB_DRY_RUN" == "1" ]]; then
+  if [[ "$HARBOR_DRY_RUN" == "1" ]]; then
     return 0
   fi
   local trace_enabled="${TRACE_TO_OPIK:-}"
@@ -424,8 +424,8 @@ ensure_trace_plugin_source_if_needed() {
     fi
   elif harbor_trace_to_opik_enabled &&
     [[ "$AGENT" == "claude-code" ]] &&
-    [[ "$TB_ENVIRONMENT_TYPE" == "docker" ]] &&
-    [[ "$trace_enabled" == "true" || "$trace_enabled" == "1" || "$TB_CC_OPIK_ENABLE_HOOK" == "1" ]]; then
+    [[ "$HARBOR_ENVIRONMENT_TYPE" == "docker" ]] &&
+    [[ "$trace_enabled" == "true" || "$trace_enabled" == "1" || "$HARBOR_CC_OPIK_ENABLE_HOOK" == "1" ]]; then
     # With tracing off the realtime hook is forced off at command
     # construction. E2B cannot use the host bind-mounted hook source.
     required=("$TRACE_PLUGIN_CLAUDE_HOOK_SOURCE")
@@ -484,7 +484,7 @@ prepare_verifier_uv_bin() {
   # binaries without touching the network. The common installer locations
   # remain ahead of this directory so the task observes its expected layout.
   cat >"$target_dir/env" <<EOF
-export PATH="\$HOME/.local/bin:$TB_VERIFIER_UV_BIN_DIR_MOUNT_PATH:\$PATH"
+export PATH="\$HOME/.local/bin:$HARBOR_VERIFIER_UV_BIN_DIR_MOUNT_PATH:\$PATH"
 EOF
 }
 
@@ -496,17 +496,17 @@ verifier_uv_bin_ready() {
 }
 
 configure_e2b_verifier_uv_upload() {
-  TB_E2B_VERIFIER_UV_SOURCE=""
-  if [[ "$TB_ENVIRONMENT_TYPE" == "e2b" || "$TB_ENVIRONMENT_TYPE" == "qz" ]] \
+  HARBOR_E2B_VERIFIER_UV_SOURCE=""
+  if [[ "$HARBOR_ENVIRONMENT_TYPE" == "e2b" || "$HARBOR_ENVIRONMENT_TYPE" == "qz" ]] \
     && verifier_uv_bin_ready; then
-    TB_E2B_VERIFIER_UV_SOURCE="$VERIFIER_UV_BIN_DIR_SOURCE"
-    if [[ "$TB_ENVIRONMENT_TYPE" == "e2b" ]]; then
+    HARBOR_E2B_VERIFIER_UV_SOURCE="$VERIFIER_UV_BIN_DIR_SOURCE"
+    if [[ "$HARBOR_ENVIRONMENT_TYPE" == "e2b" ]]; then
       echo "[INFO] E2B verifier uv tools will be uploaded after sandbox start"
     else
       echo "[INFO] qz verifier uv tools will be uploaded after sandbox start"
     fi
   fi
-  export TB_E2B_VERIFIER_UV_SOURCE
+  export HARBOR_E2B_VERIFIER_UV_SOURCE
 }
 
 task_is_included() {
@@ -591,25 +591,12 @@ ensure_opik_repo() {
   git clone https://github.com/comet-ml/opik.git "$OPIK_REPO_DIR"
 }
 
-ensure_tb_dataset() {
-  if [[ -d "$TB_PATH" ]]; then
-    echo "[INFO] using existing TB dataset: $TB_PATH"
-    return 0
-  fi
-  echo "[INFO] cloning TB dataset: $TB_DATASET_GIT_URL"
-  git clone "$TB_DATASET_GIT_URL" "$TB_PATH"
-}
-
 prepare_local_dataset_if_needed() {
   if harbor_uses_registry_dataset; then
     return 0
   fi
 
-  if [[ "$(harbor_dataset_kind)" == "harbor" ]]; then
-    ensure_tb_dataset
-  else
-    harbor_ensure_dataset
-  fi
+  harbor_ensure_dataset
   harbor_prepare_task_file
 }
 
@@ -671,11 +658,11 @@ verify_opik_ingestion_route() {
 }
 
 docker_hub_preflight_check() {
-  if [[ "$TB_ENVIRONMENT_TYPE" != "docker" ]]; then
+  if [[ "$HARBOR_ENVIRONMENT_TYPE" != "docker" ]]; then
     return 0
   fi
-  if [[ "$TB_SKIP_DOCKERHUB_PREFLIGHT" == "1" ]]; then
-    echo "[INFO] TB_SKIP_DOCKERHUB_PREFLIGHT=1, skip Docker Hub connectivity preflight"
+  if [[ "$HARBOR_SKIP_DOCKERHUB_PREFLIGHT" == "1" ]]; then
+    echo "[INFO] HARBOR_SKIP_DOCKERHUB_PREFLIGHT=1, skip Docker Hub connectivity preflight"
     return 0
   fi
 
@@ -685,7 +672,7 @@ docker_hub_preflight_check() {
     return 0
   fi
 
-  local timeout="$TB_DOCKERHUB_CHECK_TIMEOUT"
+  local timeout="$HARBOR_DOCKERHUB_CHECK_TIMEOUT"
   echo "[INFO] checking Docker Hub connectivity (timeout=${timeout}s)"
 
   local registry_status
@@ -709,10 +696,10 @@ docker_hub_preflight_check() {
   fi
 
   if [[ "$preflight_failed" == "1" ]]; then
-    if [[ "$TB_DOCKERHUB_PREFLIGHT_STRICT" == "1" ]]; then
+    if [[ "$HARBOR_DOCKERHUB_PREFLIGHT_STRICT" == "1" ]]; then
       online_env_event "preflight" "docker_registry" "connectivity_unavailable" "critical" "true" "Docker Hub preflight failed in strict mode"
       echo "[ERROR] Docker Hub preflight failed in strict mode." >&2
-      echo "[ERROR] fix network/proxy/registry mirror first, or set TB_DOCKERHUB_PREFLIGHT_STRICT=0 / TB_SKIP_DOCKERHUB_PREFLIGHT=1." >&2
+      echo "[ERROR] fix network/proxy/registry mirror first, or set HARBOR_DOCKERHUB_PREFLIGHT_STRICT=0 / HARBOR_SKIP_DOCKERHUB_PREFLIGHT=1." >&2
       exit 1
     fi
     online_env_event "preflight" "docker_registry" "connectivity_degraded" "warning" "false" "Docker Hub preflight failed; continuing because strict mode is disabled"
@@ -743,17 +730,17 @@ apply_min_test_defaults() {
     return 0
   fi
 
-  if [[ "$TB_RUNS" == "10" ]]; then
-    TB_RUNS="1"
+  if [[ "$HARBOR_RUNS" == "10" ]]; then
+    HARBOR_RUNS="1"
   fi
-  if [[ -z "$TB_LIMIT" ]]; then
-    TB_LIMIT="1"
+  if [[ -z "$HARBOR_LIMIT" ]]; then
+    HARBOR_LIMIT="1"
   fi
   if [[ -z "$INCLUDE_TASKS" && -n "$MIN_TEST_INCLUDE_TASK" ]]; then
     INCLUDE_TASKS="$MIN_TEST_INCLUDE_TASK"
   fi
 
-  echo "[INFO] MIN_TEST=1 enabled (runs=$TB_RUNS, limit=$TB_LIMIT, include_tasks=$INCLUDE_TASKS)"
+  echo "[INFO] MIN_TEST=1 enabled (runs=$HARBOR_RUNS, limit=$HARBOR_LIMIT, include_tasks=$INCLUDE_TASKS)"
 }
 
 run_oracle_task() {
@@ -780,7 +767,7 @@ run_oracle_task() {
   fi
   configure_e2b_verifier_uv_upload
 
-  if [[ "$TB_DRY_RUN" != "1" ]]; then
+  if [[ "$HARBOR_DRY_RUN" != "1" ]]; then
     harbor_validate_runner_cli
   fi
   prepare_opensandbox_image_ref
@@ -788,27 +775,27 @@ run_oracle_task() {
   local cmd=(
     "$HARBOR_CLI_BIN" run
     -y
-    --n-concurrent "$TB_N_CONCURRENT"
-    --max-retries "$TB_MAX_RETRIES"
+    --n-concurrent "$HARBOR_N_CONCURRENT"
+    --max-retries "$HARBOR_MAX_RETRIES"
     -o "$out_dir"
-    -k "$TB_RUNS"
+    -k "$HARBOR_RUNS"
     -a oracle
-    --timeout-multiplier "$TB_TIMEOUT_MULTIPLIER"
-    --agent-setup-timeout-multiplier "$TB_AGENT_SETUP_TIMEOUT_MULTIPLIER"
+    --timeout-multiplier "$HARBOR_TIMEOUT_MULTIPLIER"
+    --agent-setup-timeout-multiplier "$HARBOR_AGENT_SETUP_TIMEOUT_MULTIPLIER"
   )
   if harbor_uses_local_opensandbox_dataset; then
-    cmd+=( --path "$TB_PATH" )
+    cmd+=( --path "$DATASET_PATH" )
   elif harbor_uses_registry_dataset; then
     cmd+=( --dataset "$(harbor_registry_dataset_name)" )
   else
-    cmd+=( --path "$TB_PATH" )
+    cmd+=( --path "$DATASET_PATH" )
   fi
   append_environment_backend_args
-  if [[ "$TB_ENVIRONMENT_TYPE" != "e2b" && "$TB_ENVIRONMENT_TYPE" != "qz" ]] \
+  if [[ "$HARBOR_ENVIRONMENT_TYPE" != "e2b" && "$HARBOR_ENVIRONMENT_TYPE" != "qz" ]] \
     && verifier_uv_bin_ready; then
     local verifier_mounts_json verifier_uv_path_prefix
     verifier_mounts_json="$(
-      python3 - "$VERIFIER_UV_BIN_DIR_SOURCE" "$TB_VERIFIER_UV_BIN_DIR_MOUNT_PATH" <<'PY'
+      python3 - "$VERIFIER_UV_BIN_DIR_SOURCE" "$HARBOR_VERIFIER_UV_BIN_DIR_MOUNT_PATH" <<'PY'
 import json
 import sys
 
@@ -821,25 +808,25 @@ print(json.dumps([{
 PY
     )"
     verifier_uv_path_prefix="/root/.local/bin:/home/oai/.local/bin:/home/agent/.local/bin:/home/ubuntu/.local/bin"
-    if [[ -n "${TB_VERIFIER_UV_HOME:-}" ]]; then
-      verifier_uv_path_prefix="$TB_VERIFIER_UV_HOME/.local/bin:$verifier_uv_path_prefix"
+    if [[ -n "${HARBOR_VERIFIER_UV_HOME:-}" ]]; then
+      verifier_uv_path_prefix="$HARBOR_VERIFIER_UV_HOME/.local/bin:$verifier_uv_path_prefix"
     fi
     cmd+=(
       --mounts-json "$verifier_mounts_json"
-      --ve "PATH=$verifier_uv_path_prefix:$TB_VERIFIER_UV_BIN_DIR_MOUNT_PATH:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-      --ve "TB_VERIFIER_UV_BIN_DIR=$TB_VERIFIER_UV_BIN_DIR_MOUNT_PATH"
+      --ve "PATH=$verifier_uv_path_prefix:$HARBOR_VERIFIER_UV_BIN_DIR_MOUNT_PATH:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+      --ve "HARBOR_VERIFIER_UV_BIN_DIR=$HARBOR_VERIFIER_UV_BIN_DIR_MOUNT_PATH"
     )
   fi
-  if [[ "$TB_ENVIRONMENT_TYPE" == "e2b" || "$TB_ENVIRONMENT_TYPE" == "qz" ]] \
+  if [[ "$HARBOR_ENVIRONMENT_TYPE" == "e2b" || "$HARBOR_ENVIRONMENT_TYPE" == "qz" ]] \
     && verifier_uv_bin_ready; then
     local verifier_uv_path_prefix
     verifier_uv_path_prefix="/root/.local/bin:/home/oai/.local/bin:/home/agent/.local/bin:/home/ubuntu/.local/bin"
-    if [[ -n "${TB_VERIFIER_UV_HOME:-}" ]]; then
-      verifier_uv_path_prefix="$TB_VERIFIER_UV_HOME/.local/bin:$verifier_uv_path_prefix"
+    if [[ -n "${HARBOR_VERIFIER_UV_HOME:-}" ]]; then
+      verifier_uv_path_prefix="$HARBOR_VERIFIER_UV_HOME/.local/bin:$verifier_uv_path_prefix"
     fi
     cmd+=(
-      --ve "PATH=$verifier_uv_path_prefix:$TB_VERIFIER_UV_BIN_DIR_MOUNT_PATH:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-      --ve "TB_VERIFIER_UV_BIN_DIR=$TB_VERIFIER_UV_BIN_DIR_MOUNT_PATH"
+      --ve "PATH=$verifier_uv_path_prefix:$HARBOR_VERIFIER_UV_BIN_DIR_MOUNT_PATH:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+      --ve "HARBOR_VERIFIER_UV_BIN_DIR=$HARBOR_VERIFIER_UV_BIN_DIR_MOUNT_PATH"
     )
   fi
   if [[ -n "${PIP_INDEX_URL:-}" ]]; then
@@ -863,8 +850,8 @@ PY
   if [[ -n "${UV_PYTHON_PREFERENCE:-}" ]]; then
     cmd+=( --ve "UV_PYTHON_PREFERENCE=$UV_PYTHON_PREFERENCE" )
   fi
-  if [[ -n "$TB_LIMIT" ]]; then
-    cmd+=( -l "$TB_LIMIT" )
+  if [[ -n "$HARBOR_LIMIT" ]]; then
+    cmd+=( -l "$HARBOR_LIMIT" )
   fi
   if [[ -n "$INCLUDE_TASKS" ]]; then
     local task_name
@@ -878,20 +865,20 @@ PY
       fi
     done
   fi
-  if [[ "$TB_DEBUG" == "1" ]]; then
+  if [[ "$HARBOR_DEBUG" == "1" ]]; then
     cmd+=( --debug )
   fi
-  if [[ "$TB_FORCE_BUILD" == "1" || "$TB_FORCE_BUILD" == "true" ]]; then
+  if [[ "$HARBOR_FORCE_BUILD" == "1" || "$HARBOR_FORCE_BUILD" == "true" ]]; then
     cmd+=( --force-build )
   fi
 
   echo "[INFO] running Harbor Oracle"
-  echo "[INFO] environment: $TB_ENVIRONMENT_TYPE ($TB_ENVIRONMENT_SPEC)"
+  echo "[INFO] environment: $HARBOR_ENVIRONMENT_TYPE ($HARBOR_ENVIRONMENT_SPEC)"
   echo "[INFO] output dir: $out_dir"
-  echo "[INFO] n_concurrent: $TB_N_CONCURRENT | max_retries: $TB_MAX_RETRIES"
+  echo "[INFO] n_concurrent: $HARBOR_N_CONCURRENT | max_retries: $HARBOR_MAX_RETRIES"
 
-  if [[ "$TB_DRY_RUN" == "1" ]]; then
-    echo "[INFO] TB_DRY_RUN=1, skip execution"
+  if [[ "$HARBOR_DRY_RUN" == "1" ]]; then
+    echo "[INFO] HARBOR_DRY_RUN=1, skip execution"
     printf '[INFO] command:'
     printf ' %q' "${cmd[@]}"
     printf '\n'
@@ -907,7 +894,7 @@ PY
   echo "[INFO] results: $out_dir"
 }
 
-run_tb() {
+run_harbor() {
   local effective_jobs_root="$JOBS_ROOT"
   harbor_apply_effective_wheel_source
   if ! mkdir -p "$effective_jobs_root" 2>/dev/null; then
@@ -924,8 +911,8 @@ run_tb() {
   fi
   mkdir -p "$out_dir"
 
-  if [[ "$TB_DRY_RUN" == "1" ]]; then
-    echo "[INFO] TB_DRY_RUN=1, skip Opik project preflight check"
+  if [[ "$HARBOR_DRY_RUN" == "1" ]]; then
+    echo "[INFO] HARBOR_DRY_RUN=1, skip Opik project preflight check"
   elif ! harbor_trace_to_opik_enabled; then
     echo "[INFO] TRACE_TO_OPIK=false, skip Opik project preflight check"
   else
@@ -948,14 +935,14 @@ run_tb() {
   fi
 
   local normalized_llm_kwargs
-  if ! normalized_llm_kwargs="$(normalize_json_or_fail "$TB_LLM_KWARGS")"; then
-    online_env_event "agent_setup" "agent_configuration" "invalid_llm_kwargs" "critical" "true" "TB_LLM_KWARGS is not valid JSON"
-    echo "[ERROR] TB_LLM_KWARGS is not valid JSON" >&2
-    echo "[ERROR] current TB_LLM_KWARGS: $TB_LLM_KWARGS" >&2
+  if ! normalized_llm_kwargs="$(normalize_json_or_fail "$HARBOR_LLM_KWARGS")"; then
+    online_env_event "agent_setup" "agent_configuration" "invalid_llm_kwargs" "critical" "true" "HARBOR_LLM_KWARGS is not valid JSON"
+    echo "[ERROR] HARBOR_LLM_KWARGS is not valid JSON" >&2
+    echo "[ERROR] current HARBOR_LLM_KWARGS: $HARBOR_LLM_KWARGS" >&2
     exit 1
   fi
-  if [[ "$TB_ENVIRONMENT_TYPE" == "docker" || "$TB_ENVIRONMENT_TYPE" == "e2b" \
-    || "$TB_ENVIRONMENT_TYPE" == "opensandbox" || "$TB_ENVIRONMENT_TYPE" == "qz" ]]; then
+  if [[ "$HARBOR_ENVIRONMENT_TYPE" == "docker" || "$HARBOR_ENVIRONMENT_TYPE" == "e2b" \
+    || "$HARBOR_ENVIRONMENT_TYPE" == "opensandbox" || "$HARBOR_ENVIRONMENT_TYPE" == "qz" ]]; then
     VERIFIER_UV_BIN_DIR_SOURCE="$(mktemp -d "${RUNTIME_DIR%/}/verifier-uv.${job_name}.XXXXXX" 2>/dev/null || true)"
     if [[ -n "$VERIFIER_UV_BIN_DIR_SOURCE" ]]; then
       prepare_verifier_uv_bin "$VERIFIER_UV_BIN_DIR_SOURCE" || true
@@ -965,16 +952,16 @@ run_tb() {
   fi
   configure_e2b_verifier_uv_upload
 
-  local effective_tb_task_id include_task
-  effective_tb_task_id="${TB_TASK_ID:-}"
-  if [[ -z "$effective_tb_task_id" ]]; then
-    include_task="$(single_include_task "${INCLUDE_TASKS:-${TB_INCLUDE_TASKS:-}}" || true)"
+  local effective_harbor_task_id include_task
+  effective_harbor_task_id="${HARBOR_TASK_ID:-}"
+  if [[ -z "$effective_harbor_task_id" ]]; then
+    include_task="$(single_include_task "${INCLUDE_TASKS:-${HARBOR_INCLUDE_TASKS:-}}" || true)"
     if [[ -n "$include_task" ]]; then
-      effective_tb_task_id="$include_task"
+      effective_harbor_task_id="$include_task"
     fi
   fi
 
-  if [[ -z "$TB_ANTHROPIC_AUTH_TOKEN" ]]; then
+  if [[ -z "$HARBOR_ANTHROPIC_AUTH_TOKEN" ]]; then
     local inferred_api_key
     inferred_api_key="$(
       python3 - "$normalized_llm_kwargs" <<'PY'
@@ -989,63 +976,63 @@ if isinstance(api_key, str):
 PY
     )"
     if [[ -n "$inferred_api_key" ]]; then
-      TB_ANTHROPIC_AUTH_TOKEN="$inferred_api_key"
-      echo "[INFO] TB_ANTHROPIC_AUTH_TOKEN is empty; using api_key from TB_LLM_KWARGS"
+      HARBOR_ANTHROPIC_AUTH_TOKEN="$inferred_api_key"
+      echo "[INFO] HARBOR_ANTHROPIC_AUTH_TOKEN is empty; using api_key from HARBOR_LLM_KWARGS"
     else
-      online_env_event "agent_setup" "agent_configuration" "auth_token_missing" "critical" "true" "TB_ANTHROPIC_AUTH_TOKEN and TB_LLM_KWARGS.api_key are both missing"
-      echo "[ERROR] TB_ANTHROPIC_AUTH_TOKEN is empty and TB_LLM_KWARGS.api_key is missing" >&2
+      online_env_event "agent_setup" "agent_configuration" "auth_token_missing" "critical" "true" "HARBOR_ANTHROPIC_AUTH_TOKEN and HARBOR_LLM_KWARGS.api_key are both missing"
+      echo "[ERROR] HARBOR_ANTHROPIC_AUTH_TOKEN is empty and HARBOR_LLM_KWARGS.api_key is missing" >&2
       exit 1
     fi
   fi
 
-  if [[ "$TB_DRY_RUN" != "1" ]] && ! harbor_runner_cli_ready; then
+  if [[ "$HARBOR_DRY_RUN" != "1" ]] && ! harbor_runner_cli_ready; then
     harbor_validate_runner_cli
   fi
 
   local cmd=(
     "$HARBOR_OPIK_BIN" harbor run
     -y
-    --n-concurrent "$TB_N_CONCURRENT"
-    --max-retries "$TB_MAX_RETRIES"
+    --n-concurrent "$HARBOR_N_CONCURRENT"
+    --max-retries "$HARBOR_MAX_RETRIES"
     -o "$out_dir"
-    -k "$TB_RUNS"
+    -k "$HARBOR_RUNS"
     --ak "version=$CLAUDE_CODE_VERSION"
-    --ak "disallowed_tools=$TB_DISALLOWED_TOOLS"
-    --ak "append_system_prompt=$TB_APPEND_SYSTEM_PROMPT"
-    --ak "api_base=$TB_API_BASE"
+    --ak "disallowed_tools=$HARBOR_DISALLOWED_TOOLS"
+    --ak "append_system_prompt=$HARBOR_APPEND_SYSTEM_PROMPT"
+    --ak "api_base=$HARBOR_API_BASE"
     --ak "llm_kwargs=$normalized_llm_kwargs"
-    --ak "max_new_tokens=$TB_MAX_NEW_TOKENS"
-    --ak "model_info=$TB_MODEL_INFO"
-    --ae "ANTHROPIC_BASE_URL=$TB_ANTHROPIC_BASE_URL"
-    --ae "ANTHROPIC_AUTH_TOKEN=$TB_ANTHROPIC_AUTH_TOKEN"
-    --ae "ANTHROPIC_CUSTOM_HEADERS=$TB_ANTHROPIC_CUSTOM_HEADERS"
-    --ae "ANTHROPIC_MODEL=$TB_ANTHROPIC_MODEL"
-    --ae "ANTHROPIC_DEFAULT_OPUS_MODEL=$TB_ANTHROPIC_DEFAULT_OPUS_MODEL"
-    --ae "ANTHROPIC_DEFAULT_SONNET_MODEL=$TB_ANTHROPIC_DEFAULT_SONNET_MODEL"
-    --ae "ANTHROPIC_DEFAULT_HAIKU_MODEL=$TB_ANTHROPIC_DEFAULT_HAIKU_MODEL"
-    --ae "CLAUDE_CODE_SUBAGENT_MODEL=$TB_CLAUDE_CODE_SUBAGENT_MODEL"
-    --ae "CLAUDE_CODE_EFFORT_LEVEL=$TB_CLAUDE_CODE_EFFORT_LEVEL"
-    --ae "CLAUDE_CODE_MAX_OUTPUT_TOKENS=$TB_CLAUDE_CODE_MAX_OUTPUT_TOKENS"
-    --ae "CLAUDE_CODE_DISABLE_AUTOUPDATER=$TB_CLAUDE_CODE_DISABLE_AUTOUPDATER"
+    --ak "max_new_tokens=$HARBOR_MAX_NEW_TOKENS"
+    --ak "model_info=$HARBOR_MODEL_INFO"
+    --ae "ANTHROPIC_BASE_URL=$HARBOR_ANTHROPIC_BASE_URL"
+    --ae "ANTHROPIC_AUTH_TOKEN=$HARBOR_ANTHROPIC_AUTH_TOKEN"
+    --ae "ANTHROPIC_CUSTOM_HEADERS=$HARBOR_ANTHROPIC_CUSTOM_HEADERS"
+    --ae "ANTHROPIC_MODEL=$HARBOR_ANTHROPIC_MODEL"
+    --ae "ANTHROPIC_DEFAULT_OPUS_MODEL=$HARBOR_ANTHROPIC_DEFAULT_OPUS_MODEL"
+    --ae "ANTHROPIC_DEFAULT_SONNET_MODEL=$HARBOR_ANTHROPIC_DEFAULT_SONNET_MODEL"
+    --ae "ANTHROPIC_DEFAULT_HAIKU_MODEL=$HARBOR_ANTHROPIC_DEFAULT_HAIKU_MODEL"
+    --ae "CLAUDE_CODE_SUBAGENT_MODEL=$HARBOR_CLAUDE_CODE_SUBAGENT_MODEL"
+    --ae "CLAUDE_CODE_EFFORT_LEVEL=$HARBOR_CLAUDE_CODE_EFFORT_LEVEL"
+    --ae "CLAUDE_CODE_MAX_OUTPUT_TOKENS=$HARBOR_CLAUDE_CODE_MAX_OUTPUT_TOKENS"
+    --ae "CLAUDE_CODE_DISABLE_AUTOUPDATER=$HARBOR_CLAUDE_CODE_DISABLE_AUTOUPDATER"
     --ae "TRACE_TO_OPIK=$TRACE_TO_OPIK"
-    --ae "CC_OPIK_DEBUG=$TB_CC_OPIK_DEBUG"
-    --ae "CC_OPIK_INSTALL_DEPS=$TB_CC_OPIK_INSTALL_DEPS"
-    --ae "CC_OPIK_HOOK_MOUNT_PATH=$TB_CC_HOOK_MOUNT_PATH"
-    --ae "CC_OPIK_CLAUDE_TGZ_PATH=$TB_CC_CLAUDE_TGZ_MOUNT_PATH"
-    --ae "CC_OPIK_PY_WHEEL_DIR=$TB_CC_PY_WHEEL_DIR_MOUNT_PATH"
-    --ae "CC_OPIK_NPM_CACHE_DIR=$TB_CC_NPM_CACHE_MOUNT_PATH"
-    --ae "TB_LOCAL_WHEEL_SERVER_URL=${TB_LOCAL_WHEEL_SERVER_URL:-}"
-    --ae "TB_LOCAL_CLAUDE_TGZ_URL=${TB_LOCAL_CLAUDE_TGZ_URL:-}"
-    --ae "TB_LOCAL_WHEEL_PORT=$LOCAL_WHEEL_PORT"
-    --ae "PIP_DEFAULT_TIMEOUT=$TB_PIP_DEFAULT_TIMEOUT"
-    --ae "PIP_RETRIES=$TB_PIP_RETRIES"
+    --ae "CC_OPIK_DEBUG=$HARBOR_CC_OPIK_DEBUG"
+    --ae "CC_OPIK_INSTALL_DEPS=$HARBOR_CC_OPIK_INSTALL_DEPS"
+    --ae "CC_OPIK_HOOK_MOUNT_PATH=$HARBOR_CC_HOOK_MOUNT_PATH"
+    --ae "CC_OPIK_CLAUDE_TGZ_PATH=$HARBOR_CC_CLAUDE_TGZ_MOUNT_PATH"
+    --ae "CC_OPIK_PY_WHEEL_DIR=$HARBOR_CC_PY_WHEEL_DIR_MOUNT_PATH"
+    --ae "CC_OPIK_NPM_CACHE_DIR=$HARBOR_CC_NPM_CACHE_MOUNT_PATH"
+    --ae "HARBOR_LOCAL_WHEEL_SERVER_URL=${HARBOR_LOCAL_WHEEL_SERVER_URL:-}"
+    --ae "HARBOR_LOCAL_CLAUDE_TGZ_URL=${HARBOR_LOCAL_CLAUDE_TGZ_URL:-}"
+    --ae "PIP_DEFAULT_TIMEOUT=$HARBOR_PIP_DEFAULT_TIMEOUT"
+    --ae "PIP_RETRIES=$HARBOR_PIP_RETRIES"
     --ae "PIP_DISABLE_PIP_VERSION_CHECK=1"
-    --ae "TB_RUN_ID=${TB_RUN_ID:-$job_name}"
-    --ae "TB_TASK_ID=$effective_tb_task_id"
-    --ae "TB_INCLUDE_TASKS=${TB_INCLUDE_TASKS:-$INCLUDE_TASKS}"
+    --ae "HARBOR_DATASET=$(harbor_metadata_dataset_name)"
+    --ae "HARBOR_RUN_ID=${HARBOR_RUN_ID:-$job_name}"
+    --ae "HARBOR_TASK_ID=$effective_harbor_task_id"
+    --ae "HARBOR_INCLUDE_TASKS=${HARBOR_INCLUDE_TASKS:-$INCLUDE_TASKS}"
     --ae "INCLUDE_TASKS=$INCLUDE_TASKS"
-    --timeout-multiplier "$TB_TIMEOUT_MULTIPLIER"
-    --agent-setup-timeout-multiplier "$TB_AGENT_SETUP_TIMEOUT_MULTIPLIER"
+    --timeout-multiplier "$HARBOR_TIMEOUT_MULTIPLIER"
+    --agent-setup-timeout-multiplier "$HARBOR_AGENT_SETUP_TIMEOUT_MULTIPLIER"
   )
   # Task code can read its own environment. With tracing disabled nothing in
   # the container consumes the Opik connection fields, so do not expose the
@@ -1060,30 +1047,30 @@ PY
     )
   fi
   if harbor_uses_local_opensandbox_dataset; then
-    cmd+=( --path "$TB_PATH" )
+    cmd+=( --path "$DATASET_PATH" )
   elif harbor_uses_registry_dataset; then
     cmd+=( --dataset "$(harbor_registry_dataset_name)" )
   else
-    cmd+=( --path "$TB_PATH" )
+    cmd+=( --path "$DATASET_PATH" )
   fi
   prepare_opensandbox_image_ref
   append_environment_backend_args
-  if [[ -n "${TB_VERIFIER_UV_HOME:-}" ]]; then
-    cmd+=( --ve "HOME=$TB_VERIFIER_UV_HOME" )
+  if [[ -n "${HARBOR_VERIFIER_UV_HOME:-}" ]]; then
+    cmd+=( --ve "HOME=$HARBOR_VERIFIER_UV_HOME" )
   fi
 
-  if [[ -n "${TB_AGENT_TIMEOUT_MULTIPLIER:-}" ]]; then
-    cmd+=( --agent-timeout-multiplier "$TB_AGENT_TIMEOUT_MULTIPLIER" )
+  if [[ -n "${HARBOR_AGENT_TIMEOUT_MULTIPLIER:-}" ]]; then
+    cmd+=( --agent-timeout-multiplier "$HARBOR_AGENT_TIMEOUT_MULTIPLIER" )
   fi
 
-  if [[ -n "$TB_AK_MAX_TURNS" ]]; then
-    cmd+=( --ak "max_turns=$TB_AK_MAX_TURNS" )
+  if [[ -n "$HARBOR_AK_MAX_TURNS" ]]; then
+    cmd+=( --ak "max_turns=$HARBOR_AK_MAX_TURNS" )
   fi
-  if [[ -n "$TB_AK_COLLECT_ROLLOUT_DETAILS" ]]; then
-    cmd+=( --ak "collect_rollout_details=$TB_AK_COLLECT_ROLLOUT_DETAILS" )
+  if [[ -n "$HARBOR_AK_COLLECT_ROLLOUT_DETAILS" ]]; then
+    cmd+=( --ak "collect_rollout_details=$HARBOR_AK_COLLECT_ROLLOUT_DETAILS" )
   fi
-  if [[ -n "$TB_AK_ENABLE_SUMMARIZE" ]]; then
-    cmd+=( --ak "enable_summarize=$TB_AK_ENABLE_SUMMARIZE" )
+  if [[ -n "$HARBOR_AK_ENABLE_SUMMARIZE" ]]; then
+    cmd+=( --ak "enable_summarize=$HARBOR_AK_ENABLE_SUMMARIZE" )
   fi
 
   local opik_host wheel_host no_proxy_value
@@ -1097,7 +1084,7 @@ print(u.hostname or "")
 PY
   )"
   wheel_host="$(
-    python3 - "${TB_LOCAL_WHEEL_SERVER_URL:-}" <<'PY'
+    python3 - "${HARBOR_LOCAL_WHEEL_SERVER_URL:-}" <<'PY'
 from urllib.parse import urlparse
 import sys
 
@@ -1116,28 +1103,28 @@ PY
 
   local hook_mount_enabled=0
   # The hook has no Opik server to talk to when tracing is off, so an
-  # exported TB_CC_OPIK_ENABLE_HOOK=1 (e.g. persisted by setup.sh) must not
+  # exported HARBOR_CC_OPIK_ENABLE_HOOK=1 (e.g. persisted by setup.sh) must not
   # re-enable it.
-  if [[ "$TB_CC_OPIK_ENABLE_HOOK" == "1" && "$TB_ENVIRONMENT_TYPE" == "docker" ]] &&
+  if [[ "$HARBOR_CC_OPIK_ENABLE_HOOK" == "1" && "$HARBOR_ENVIRONMENT_TYPE" == "docker" ]] &&
     harbor_trace_to_opik_enabled; then
-    if [[ -f "$TB_CC_HOOK_SOURCE" ]]; then
+    if [[ -f "$HARBOR_CC_HOOK_SOURCE" ]]; then
       hook_mount_enabled=1
       cmd+=( --ae "CC_OPIK_ENABLE_HOOK=true" )
     else
-      echo "[WARN] CC hook source not found, disable realtime hook: $TB_CC_HOOK_SOURCE"
+      echo "[WARN] CC hook source not found, disable realtime hook: $HARBOR_CC_HOOK_SOURCE"
       cmd+=( --ae "CC_OPIK_ENABLE_HOOK=false" )
     fi
   else
-    if [[ "$TB_CC_OPIK_ENABLE_HOOK" == "1" && "$TB_ENVIRONMENT_TYPE" == "e2b" ]]; then
+    if [[ "$HARBOR_CC_OPIK_ENABLE_HOOK" == "1" && "$HARBOR_ENVIRONMENT_TYPE" == "e2b" ]]; then
       echo "[INFO] disable realtime Claude hook for E2B because its source is a host bind mount"
     fi
     cmd+=( --ae "CC_OPIK_ENABLE_HOOK=false" )
   fi
 
   local mounts_json="[]"
-  if [[ "$TB_ENVIRONMENT_TYPE" == "docker" || "$TB_ENVIRONMENT_TYPE" == "opensandbox" ]]; then
+  if [[ "$HARBOR_ENVIRONMENT_TYPE" == "docker" || "$HARBOR_ENVIRONMENT_TYPE" == "opensandbox" ]]; then
     mounts_json="$(
-    python3 - "$hook_mount_enabled" "$TB_CC_HOOK_SOURCE" "$TB_CC_HOOK_MOUNT_PATH" "$TB_CC_CLAUDE_TGZ_SOURCE" "$TB_CC_CLAUDE_TGZ_MOUNT_PATH" "$TB_CC_PY_WHEEL_DIR_SOURCE" "$TB_CC_PY_WHEEL_DIR_MOUNT_PATH" "$VERIFIER_UV_BIN_DIR_SOURCE" "$TB_VERIFIER_UV_BIN_DIR_MOUNT_PATH" <<'PY'
+    python3 - "$hook_mount_enabled" "$HARBOR_CC_HOOK_SOURCE" "$HARBOR_CC_HOOK_MOUNT_PATH" "$HARBOR_CC_CLAUDE_TGZ_SOURCE" "$HARBOR_CC_CLAUDE_TGZ_MOUNT_PATH" "$HARBOR_CC_PY_WHEEL_DIR_SOURCE" "$HARBOR_CC_PY_WHEEL_DIR_MOUNT_PATH" "$VERIFIER_UV_BIN_DIR_SOURCE" "$HARBOR_VERIFIER_UV_BIN_DIR_MOUNT_PATH" <<'PY'
 import json
 import os
 import sys
@@ -1175,23 +1162,23 @@ if (
 print(json.dumps(mounts, ensure_ascii=True))
 PY
     )"
-  elif [[ "$TB_ENVIRONMENT_TYPE" == "e2b" ]]; then
+  elif [[ "$HARBOR_ENVIRONMENT_TYPE" == "e2b" ]]; then
     echo "[INFO] E2B environment does not support host bind mounts; skip hook, dependency, and verifier uv mounts"
   fi
   if [[ "$mounts_json" != "[]" ]]; then
     cmd+=( --mounts-json "$mounts_json" )
   fi
-  if [[ "$TB_ENVIRONMENT_TYPE" == "docker" || "$TB_ENVIRONMENT_TYPE" == "e2b" \
-    || "$TB_ENVIRONMENT_TYPE" == "opensandbox" || "$TB_ENVIRONMENT_TYPE" == "qz" ]] \
+  if [[ "$HARBOR_ENVIRONMENT_TYPE" == "docker" || "$HARBOR_ENVIRONMENT_TYPE" == "e2b" \
+    || "$HARBOR_ENVIRONMENT_TYPE" == "opensandbox" || "$HARBOR_ENVIRONMENT_TYPE" == "qz" ]] \
     && verifier_uv_bin_ready; then
     local verifier_uv_path_prefix
     verifier_uv_path_prefix="/root/.local/bin:/home/oai/.local/bin:/home/agent/.local/bin:/home/ubuntu/.local/bin"
-    if [[ -n "${TB_VERIFIER_UV_HOME:-}" ]]; then
-      verifier_uv_path_prefix="$TB_VERIFIER_UV_HOME/.local/bin:$verifier_uv_path_prefix"
+    if [[ -n "${HARBOR_VERIFIER_UV_HOME:-}" ]]; then
+      verifier_uv_path_prefix="$HARBOR_VERIFIER_UV_HOME/.local/bin:$verifier_uv_path_prefix"
     fi
     cmd+=(
-      --ve "PATH=$verifier_uv_path_prefix:$TB_VERIFIER_UV_BIN_DIR_MOUNT_PATH:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-      --ve "TB_VERIFIER_UV_BIN_DIR=$TB_VERIFIER_UV_BIN_DIR_MOUNT_PATH"
+      --ve "PATH=$verifier_uv_path_prefix:$HARBOR_VERIFIER_UV_BIN_DIR_MOUNT_PATH:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+      --ve "HARBOR_VERIFIER_UV_BIN_DIR=$HARBOR_VERIFIER_UV_BIN_DIR_MOUNT_PATH"
     )
   fi
 
@@ -1214,8 +1201,8 @@ PY
   if [[ -n "${NPM_CONFIG_REGISTRY:-}" ]]; then
     cmd+=( --ae "NPM_CONFIG_REGISTRY=$NPM_CONFIG_REGISTRY" --ve "NPM_CONFIG_REGISTRY=$NPM_CONFIG_REGISTRY" )
   fi
-  if [[ -n "${TB_CC_NODE_DIST_URL:-}" ]]; then
-    cmd+=( --ae "CC_NODE_DIST_URL=$TB_CC_NODE_DIST_URL" )
+  if [[ -n "${HARBOR_CC_NODE_DIST_URL:-}" ]]; then
+    cmd+=( --ae "CC_NODE_DIST_URL=$HARBOR_CC_NODE_DIST_URL" )
   fi
   if [[ -n "${GO111MODULE:-}" ]]; then
     cmd+=( --ae "GO111MODULE=$GO111MODULE" --ve "GO111MODULE=$GO111MODULE" )
@@ -1229,24 +1216,24 @@ PY
   append_rust_package_mirror_env --ae
   append_rust_package_mirror_env --ve
 
-  if [[ "$TB_DEBUG" == "1" ]]; then
+  if [[ "$HARBOR_DEBUG" == "1" ]]; then
     cmd+=( --debug )
   fi
 
-  if [[ -n "$TB_AGENT" ]]; then
-    cmd+=( -a "$TB_AGENT" )
+  if [[ -n "$AGENT" ]]; then
+    cmd+=( -a "$AGENT" )
   fi
 
-  if [[ -n "$TB_AGENT_IMPORT_PATH" ]]; then
-    cmd+=( --agent-import-path "$TB_AGENT_IMPORT_PATH" )
+  if [[ -n "$HARBOR_AGENT_IMPORT_PATH" ]]; then
+    cmd+=( --agent-import-path "$HARBOR_AGENT_IMPORT_PATH" )
   fi
 
-  if [[ -n "$TB_MODEL" ]]; then
-    cmd+=( -m "$TB_MODEL" )
+  if [[ -n "$HARBOR_MODEL" ]]; then
+    cmd+=( -m "$HARBOR_MODEL" )
   fi
 
-  if [[ -n "$TB_LIMIT" ]]; then
-    cmd+=( -l "$TB_LIMIT" )
+  if [[ -n "$HARBOR_LIMIT" ]]; then
+    cmd+=( -l "$HARBOR_LIMIT" )
   fi
 
   if [[ -n "$INCLUDE_TASKS" ]]; then
@@ -1260,8 +1247,8 @@ PY
     done
   fi
 
-  if [[ -n "$TB_RETRY_INCLUDE_EXCEPTIONS" ]]; then
-    IFS=',' read -r -a retry_include_arr <<< "$TB_RETRY_INCLUDE_EXCEPTIONS"
+  if [[ -n "$HARBOR_RETRY_INCLUDE_EXCEPTIONS" ]]; then
+    IFS=',' read -r -a retry_include_arr <<< "$HARBOR_RETRY_INCLUDE_EXCEPTIONS"
     for exception_name in "${retry_include_arr[@]}"; do
       exception_name="${exception_name#"${exception_name%%[![:space:]]*}"}"
       exception_name="${exception_name%"${exception_name##*[![:space:]]}"}"
@@ -1271,8 +1258,8 @@ PY
     done
   fi
 
-  if [[ -n "$TB_RETRY_EXCLUDE_EXCEPTIONS" ]]; then
-    IFS=',' read -r -a retry_exclude_arr <<< "$TB_RETRY_EXCLUDE_EXCEPTIONS"
+  if [[ -n "$HARBOR_RETRY_EXCLUDE_EXCEPTIONS" ]]; then
+    IFS=',' read -r -a retry_exclude_arr <<< "$HARBOR_RETRY_EXCLUDE_EXCEPTIONS"
     for exception_name in "${retry_exclude_arr[@]}"; do
       exception_name="${exception_name#"${exception_name%%[![:space:]]*}"}"
       exception_name="${exception_name%"${exception_name##*[![:space:]]}"}"
@@ -1282,49 +1269,49 @@ PY
     done
   fi
 
-  if [[ "${TB_FORCE_BUILD:-0}" == "1" || "${TB_FORCE_BUILD:-0}" == "true" ]]; then
+  if [[ "${HARBOR_FORCE_BUILD:-0}" == "1" || "${HARBOR_FORCE_BUILD:-0}" == "true" ]]; then
     # Some datasets publish prebuilt task images, but registry mirrors can return
     # 429/not-found. Force-build bypasses those prebuilt pulls when needed.
     cmd+=( --force-build )
   fi
 
   if harbor_trace_to_opik_enabled; then
-    echo "[INFO] running TB with real-time Opik tracking"
+    echo "[INFO] running Harbor with real-time Opik tracking"
     echo "[INFO] project: $OPIK_PROJECT_NAME"
   else
-    echo "[INFO] running TB without Opik tracing"
+    echo "[INFO] running Harbor without Opik tracing"
   fi
   if harbor_uses_local_opensandbox_dataset; then
-    echo "[INFO] agent: $TB_AGENT | runs: $TB_RUNS | path: $TB_PATH"
+    echo "[INFO] agent: $AGENT | runs: $HARBOR_RUNS | path: $DATASET_PATH"
   elif harbor_uses_registry_dataset; then
-    echo "[INFO] agent: $TB_AGENT | runs: $TB_RUNS | dataset: $(harbor_registry_dataset_name)"
+    echo "[INFO] agent: $AGENT | runs: $HARBOR_RUNS | dataset: $(harbor_registry_dataset_name)"
   else
-    echo "[INFO] agent: $TB_AGENT | runs: $TB_RUNS | path: $TB_PATH"
+    echo "[INFO] agent: $AGENT | runs: $HARBOR_RUNS | path: $DATASET_PATH"
   fi
-  echo "[INFO] agent_import_path: ${TB_AGENT_IMPORT_PATH:-<none>}"
+  echo "[INFO] agent_import_path: ${HARBOR_AGENT_IMPORT_PATH:-<none>}"
   echo "[INFO] output dir: $out_dir"
   if harbor_trace_to_opik_enabled; then
     echo "[INFO] dashboard: ${OPIK_BASE%/}/${OPIK_WORKSPACE}/home"
   fi
-  echo "[INFO] model: $TB_MODEL"
-  echo "[INFO] environment: $TB_ENVIRONMENT_TYPE"
-  echo "[INFO] claude max_turns: ${TB_AK_MAX_TURNS:-<default>}"
-  echo "[INFO] n_concurrent: $TB_N_CONCURRENT | max_retries: $TB_MAX_RETRIES"
-  echo "[INFO] retry_include_exceptions: ${TB_RETRY_INCLUDE_EXCEPTIONS:-<all-except-excludes>}"
-  echo "[INFO] retry_exclude_exceptions: ${TB_RETRY_EXCLUDE_EXCEPTIONS:-<none>}"
-  echo "[INFO] realtime_hook_enabled: $TB_CC_OPIK_ENABLE_HOOK | hook_source: $TB_CC_HOOK_SOURCE"
-  echo "[INFO] pip_index_url: ${PIP_INDEX_URL:-<default>} | pip_timeout: $TB_PIP_DEFAULT_TIMEOUT | pip_retries: $TB_PIP_RETRIES"
-  echo "[INFO] api_base: ${TB_API_BASE:-<empty>}"
-  echo "[INFO] timeout_multiplier: $TB_TIMEOUT_MULTIPLIER | agent_setup_timeout_multiplier: $TB_AGENT_SETUP_TIMEOUT_MULTIPLIER"
-  echo "[INFO] disallowed_tools: $TB_DISALLOWED_TOOLS"
+  echo "[INFO] model: $HARBOR_MODEL"
+  echo "[INFO] environment: $HARBOR_ENVIRONMENT_TYPE"
+  echo "[INFO] claude max_turns: ${HARBOR_AK_MAX_TURNS:-<default>}"
+  echo "[INFO] n_concurrent: $HARBOR_N_CONCURRENT | max_retries: $HARBOR_MAX_RETRIES"
+  echo "[INFO] retry_include_exceptions: ${HARBOR_RETRY_INCLUDE_EXCEPTIONS:-<all-except-excludes>}"
+  echo "[INFO] retry_exclude_exceptions: ${HARBOR_RETRY_EXCLUDE_EXCEPTIONS:-<none>}"
+  echo "[INFO] realtime_hook_enabled: $HARBOR_CC_OPIK_ENABLE_HOOK | hook_source: $HARBOR_CC_HOOK_SOURCE"
+  echo "[INFO] pip_index_url: ${PIP_INDEX_URL:-<default>} | pip_timeout: $HARBOR_PIP_DEFAULT_TIMEOUT | pip_retries: $HARBOR_PIP_RETRIES"
+  echo "[INFO] api_base: ${HARBOR_API_BASE:-<empty>}"
+  echo "[INFO] timeout_multiplier: $HARBOR_TIMEOUT_MULTIPLIER | agent_setup_timeout_multiplier: $HARBOR_AGENT_SETUP_TIMEOUT_MULTIPLIER"
+  echo "[INFO] disallowed_tools: $HARBOR_DISALLOWED_TOOLS"
   echo "[INFO] append_system_prompt configured: yes"
   if [[ "$normalized_llm_kwargs" == *'"api_key":"="'* || "$normalized_llm_kwargs" == *'"api_key": "="'* ]]; then
     echo "[WARN] llm_kwargs is using placeholder api_key='='; this often yields all-zero scores"
   fi
   echo "[INFO] harbor cmd: $HARBOR_OPIK_BIN harbor run ..."
 
-  if [[ "$TB_DRY_RUN" == "1" ]]; then
-    echo "[INFO] TB_DRY_RUN=1, skip execution"
+  if [[ "$HARBOR_DRY_RUN" == "1" ]]; then
+    echo "[INFO] HARBOR_DRY_RUN=1, skip execution"
     return 0
   fi
 
@@ -1351,16 +1338,16 @@ run_opencode_task() {
     normalize_opik_url_override
   fi
 
-  if [[ "$TB_DRY_RUN" != "1" ]] && ! harbor_runner_cli_ready; then
+  if [[ "$HARBOR_DRY_RUN" != "1" ]] && ! harbor_runner_cli_ready; then
     harbor_validate_runner_cli
   fi
-  if [[ "$TB_DRY_RUN" != "1" && ! -x "$HARBOR_OPIK_PYTHON" ]]; then
+  if [[ "$HARBOR_DRY_RUN" != "1" && ! -x "$HARBOR_OPIK_PYTHON" ]]; then
     echo "[ERROR] HARBOR_OPIK_PYTHON not executable: $HARBOR_OPIK_PYTHON" >&2
     echo "[ERROR] set HARBOR_OPIK_PYTHON to the Python inside the Harbor runner environment" >&2
     exit 1
   fi
 
-  if [[ "$TB_DRY_RUN" != "1" && "$OPIK_MODE" == "remote" ]] && harbor_trace_to_opik_enabled; then
+  if [[ "$HARBOR_DRY_RUN" != "1" && "$OPIK_MODE" == "remote" ]] && harbor_trace_to_opik_enabled; then
     verify_opik_reachable
     verify_opik_ingestion_route
   fi
@@ -1374,12 +1361,12 @@ run_opencode_task() {
   fi
   mkdir -p "$out_dir"
 
-  local effective_tb_task_id include_task
-  effective_tb_task_id="${TB_TASK_ID:-}"
-  if [[ -z "$effective_tb_task_id" ]]; then
-    include_task="$(single_include_task "${INCLUDE_TASKS:-${TB_INCLUDE_TASKS:-}}" || true)"
+  local effective_harbor_task_id include_task
+  effective_harbor_task_id="${HARBOR_TASK_ID:-}"
+  if [[ -z "$effective_harbor_task_id" ]]; then
+    include_task="$(single_include_task "${INCLUDE_TASKS:-${HARBOR_INCLUDE_TASKS:-}}" || true)"
     if [[ -n "$include_task" ]]; then
-      effective_tb_task_id="$include_task"
+      effective_harbor_task_id="$include_task"
     fi
   fi
 
@@ -1401,42 +1388,43 @@ PY
   if harbor_is_native_registry_main || harbor_is_fixer_verification_main; then
     # Registry and Fixer verification runs use one Harbor process, so it must
     # own the requested concurrency. Normal local runs shard across workers.
-    opencode_n_concurrent="$TB_N_CONCURRENT"
+    opencode_n_concurrent="$HARBOR_N_CONCURRENT"
   fi
   build_opencode_cmd() {
     local trial_id="$1"
     local opencode_tgz_url=""
     local opencode_linux_x64_tgz_url=""
-    if [[ -n "${TB_LOCAL_WHEEL_SERVER_URL:-}" ]]; then
-      opencode_tgz_url="${TB_LOCAL_WHEEL_SERVER_URL%/}/${OPENCODE_TGZ_BASENAME}"
-      opencode_linux_x64_tgz_url="${TB_LOCAL_WHEEL_SERVER_URL%/}/${OPENCODE_LINUX_X64_TGZ_BASENAME}"
+    if [[ -n "${HARBOR_LOCAL_WHEEL_SERVER_URL:-}" ]]; then
+      opencode_tgz_url="${HARBOR_LOCAL_WHEEL_SERVER_URL%/}/${OPENCODE_TGZ_BASENAME}"
+      opencode_linux_x64_tgz_url="${HARBOR_LOCAL_WHEEL_SERVER_URL%/}/${OPENCODE_LINUX_X64_TGZ_BASENAME}"
     fi
     cmd=(
       "$HARBOR_OPIK_PYTHON" "$HARBOR_OPENCODE_DIR/enable_track_harbor.py" run
       -y
       --n-concurrent "$opencode_n_concurrent"
-      --max-retries "$TB_MAX_RETRIES"
+      --max-retries "$HARBOR_MAX_RETRIES"
       -o "$out_dir"
       -k 1
       --ak "version=$OPENCODE_VERSION"
       --agent-import-path opik_opencode_harbor:OpikOpenCodeHarbor
-      -m "$TB_MODEL"
+      -m "$HARBOR_MODEL"
       --ae "TRACE_TO_OPIK=$TRACE_TO_OPIK"
-      --ae "CC_OPIK_PY_WHEEL_DIR=$TB_CC_PY_WHEEL_DIR_MOUNT_PATH"
-      --ae "TB_LOCAL_WHEEL_SERVER_URL=${TB_LOCAL_WHEEL_SERVER_URL:-}"
-      --ae "OPENCODE_TGZ_PATH=$TB_CC_PY_WHEEL_DIR_MOUNT_PATH/$OPENCODE_TGZ_BASENAME"
-      --ae "OPENCODE_LINUX_X64_TGZ_PATH=$TB_CC_PY_WHEEL_DIR_MOUNT_PATH/$OPENCODE_LINUX_X64_TGZ_BASENAME"
-      --ae "TB_LOCAL_OPENCODE_TGZ_URL=$opencode_tgz_url"
-      --ae "TB_LOCAL_OPENCODE_LINUX_X64_TGZ_URL=$opencode_linux_x64_tgz_url"
-      --ae "TB_RUN_ID=${TB_RUN_ID:-$RUN_ID}"
-      --ae "TB_TASK_ID=$effective_tb_task_id"
-      --ae "TB_INCLUDE_TASKS=${TB_INCLUDE_TASKS:-$INCLUDE_TASKS}"
+      --ae "CC_OPIK_PY_WHEEL_DIR=$HARBOR_CC_PY_WHEEL_DIR_MOUNT_PATH"
+      --ae "HARBOR_LOCAL_WHEEL_SERVER_URL=${HARBOR_LOCAL_WHEEL_SERVER_URL:-}"
+      --ae "OPENCODE_TGZ_PATH=$HARBOR_CC_PY_WHEEL_DIR_MOUNT_PATH/$OPENCODE_TGZ_BASENAME"
+      --ae "OPENCODE_LINUX_X64_TGZ_PATH=$HARBOR_CC_PY_WHEEL_DIR_MOUNT_PATH/$OPENCODE_LINUX_X64_TGZ_BASENAME"
+      --ae "HARBOR_LOCAL_OPENCODE_TGZ_URL=$opencode_tgz_url"
+      --ae "HARBOR_LOCAL_OPENCODE_LINUX_X64_TGZ_URL=$opencode_linux_x64_tgz_url"
+      --ae "HARBOR_DATASET=$(harbor_metadata_dataset_name)"
+      --ae "HARBOR_RUN_ID=${HARBOR_RUN_ID:-$RUN_ID}"
+      --ae "HARBOR_TASK_ID=$effective_harbor_task_id"
+      --ae "HARBOR_INCLUDE_TASKS=${HARBOR_INCLUDE_TASKS:-$INCLUDE_TASKS}"
       --ae "INCLUDE_TASKS=$INCLUDE_TASKS"
-      --ae "TB_TRIAL_ID=$trial_id"
+      --ae "HARBOR_TRIAL_ID=$trial_id"
       --ae "NO_PROXY=$no_proxy_value"
       --ae "no_proxy=$no_proxy_value"
-      --timeout-multiplier "$TB_TIMEOUT_MULTIPLIER"
-      --agent-setup-timeout-multiplier "$TB_AGENT_SETUP_TIMEOUT_MULTIPLIER"
+      --timeout-multiplier "$HARBOR_TIMEOUT_MULTIPLIER"
+      --agent-setup-timeout-multiplier "$HARBOR_AGENT_SETUP_TIMEOUT_MULTIPLIER"
     )
     # Same rule as the Claude builder: no Opik endpoint or credentials in
     # trace-off task environments.
@@ -1450,36 +1438,36 @@ PY
       )
     fi
     if harbor_uses_local_opensandbox_dataset; then
-      cmd+=( --path "$TB_PATH" )
+      cmd+=( --path "$DATASET_PATH" )
     elif harbor_uses_registry_dataset; then
       cmd+=( --dataset "$(harbor_registry_dataset_name)" )
     else
-      cmd+=( --path "$TB_PATH" )
+      cmd+=( --path "$DATASET_PATH" )
     fi
     prepare_opensandbox_image_ref
     append_environment_backend_args
 
-    if [[ -n "${TB_AGENT_TIMEOUT_MULTIPLIER:-}" ]]; then
-      cmd+=( --agent-timeout-multiplier "$TB_AGENT_TIMEOUT_MULTIPLIER" )
+    if [[ -n "${HARBOR_AGENT_TIMEOUT_MULTIPLIER:-}" ]]; then
+      cmd+=( --agent-timeout-multiplier "$HARBOR_AGENT_TIMEOUT_MULTIPLIER" )
     fi
 
     if [[ -n "${OPENCODE_CONFIG_CONTENT:-}" ]]; then
       cmd+=( --ak "opencode_config=$OPENCODE_CONFIG_CONTENT" )
     fi
-    if [[ -z "${OPENCODE_CONFIG_CONTENT:-}" || "${TB_MODEL%%/*}" != "custom" ]]; then
-      if [[ -n "${TB_ANTHROPIC_BASE_URL:-}" ]]; then
-        cmd+=( --ae "ANTHROPIC_BASE_URL=$TB_ANTHROPIC_BASE_URL" )
+    if [[ -z "${OPENCODE_CONFIG_CONTENT:-}" || "${HARBOR_MODEL%%/*}" != "custom" ]]; then
+      if [[ -n "${HARBOR_ANTHROPIC_BASE_URL:-}" ]]; then
+        cmd+=( --ae "ANTHROPIC_BASE_URL=$HARBOR_ANTHROPIC_BASE_URL" )
       fi
-      if [[ -n "${TB_ANTHROPIC_AUTH_TOKEN:-}" ]]; then
-        cmd+=( --ae "ANTHROPIC_AUTH_TOKEN=$TB_ANTHROPIC_AUTH_TOKEN" )
-        cmd+=( --ae "ANTHROPIC_API_KEY=$TB_ANTHROPIC_AUTH_TOKEN" )
+      if [[ -n "${HARBOR_ANTHROPIC_AUTH_TOKEN:-}" ]]; then
+        cmd+=( --ae "ANTHROPIC_AUTH_TOKEN=$HARBOR_ANTHROPIC_AUTH_TOKEN" )
+        cmd+=( --ae "ANTHROPIC_API_KEY=$HARBOR_ANTHROPIC_AUTH_TOKEN" )
       fi
     fi
 
     local mounts_json="[]"
-    if [[ "$TB_ENVIRONMENT_TYPE" == "docker" || "$TB_ENVIRONMENT_TYPE" == "opensandbox" ]]; then
+    if [[ "$HARBOR_ENVIRONMENT_TYPE" == "docker" || "$HARBOR_ENVIRONMENT_TYPE" == "opensandbox" ]]; then
       mounts_json="$(
-      python3 - "$TB_CC_PY_WHEEL_DIR_SOURCE" "$TB_CC_PY_WHEEL_DIR_MOUNT_PATH" "$VERIFIER_UV_BIN_DIR_SOURCE" "$TB_VERIFIER_UV_BIN_DIR_MOUNT_PATH" <<'PY'
+      python3 - "$HARBOR_CC_PY_WHEEL_DIR_SOURCE" "$HARBOR_CC_PY_WHEEL_DIR_MOUNT_PATH" "$VERIFIER_UV_BIN_DIR_SOURCE" "$HARBOR_VERIFIER_UV_BIN_DIR_MOUNT_PATH" <<'PY'
 import json
 import os
 import sys
@@ -1515,12 +1503,12 @@ PY
     if [[ "$mounts_json" != "[]" ]]; then
       cmd+=( --mounts-json "$mounts_json" )
     fi
-    if [[ "$TB_ENVIRONMENT_TYPE" == "docker" || "$TB_ENVIRONMENT_TYPE" == "e2b" \
-      || "$TB_ENVIRONMENT_TYPE" == "opensandbox" || "$TB_ENVIRONMENT_TYPE" == "qz" ]] \
+    if [[ "$HARBOR_ENVIRONMENT_TYPE" == "docker" || "$HARBOR_ENVIRONMENT_TYPE" == "e2b" \
+      || "$HARBOR_ENVIRONMENT_TYPE" == "opensandbox" || "$HARBOR_ENVIRONMENT_TYPE" == "qz" ]] \
       && verifier_uv_bin_ready; then
       cmd+=(
-        --ve "PATH=/root/.local/bin:/home/oai/.local/bin:/home/agent/.local/bin:/home/ubuntu/.local/bin:$TB_VERIFIER_UV_BIN_DIR_MOUNT_PATH:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-        --ve "TB_VERIFIER_UV_BIN_DIR=$TB_VERIFIER_UV_BIN_DIR_MOUNT_PATH"
+        --ve "PATH=/root/.local/bin:/home/oai/.local/bin:/home/agent/.local/bin:/home/ubuntu/.local/bin:$HARBOR_VERIFIER_UV_BIN_DIR_MOUNT_PATH:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+        --ve "HARBOR_VERIFIER_UV_BIN_DIR=$HARBOR_VERIFIER_UV_BIN_DIR_MOUNT_PATH"
       )
     fi
 
@@ -1548,8 +1536,8 @@ PY
     if [[ -n "${NPM_CONFIG_REGISTRY:-}" ]]; then
       cmd+=( --ae "NPM_CONFIG_REGISTRY=$NPM_CONFIG_REGISTRY" --ve "NPM_CONFIG_REGISTRY=$NPM_CONFIG_REGISTRY" )
     fi
-    if [[ -n "${TB_CC_NODE_DIST_URL:-}" ]]; then
-      cmd+=( --ae "CC_NODE_DIST_URL=$TB_CC_NODE_DIST_URL" )
+    if [[ -n "${HARBOR_CC_NODE_DIST_URL:-}" ]]; then
+      cmd+=( --ae "CC_NODE_DIST_URL=$HARBOR_CC_NODE_DIST_URL" )
     fi
     if [[ -n "${GO111MODULE:-}" ]]; then
       cmd+=( --ae "GO111MODULE=$GO111MODULE" --ve "GO111MODULE=$GO111MODULE" )
@@ -1576,7 +1564,7 @@ PY
       done
     fi
 
-    if [[ "$TB_DEBUG" == "1" ]]; then
+    if [[ "$HARBOR_DEBUG" == "1" ]]; then
       cmd+=( --debug )
     fi
   }
@@ -1585,13 +1573,13 @@ PY
   echo "[INFO] project: $OPIK_PROJECT_NAME"
   echo "[INFO] output dir: $out_dir"
   if harbor_uses_local_opensandbox_dataset; then
-    echo "[INFO] path: $TB_PATH"
+    echo "[INFO] path: $DATASET_PATH"
   elif harbor_uses_registry_dataset; then
     echo "[INFO] dataset: $(harbor_registry_dataset_name)"
   else
-    echo "[INFO] path: $TB_PATH"
+    echo "[INFO] path: $DATASET_PATH"
   fi
-  echo "[INFO] model: $TB_MODEL"
+  echo "[INFO] model: $HARBOR_MODEL"
   echo "[INFO] opencode version: $OPENCODE_VERSION"
 
   export PYTHONPATH="$SCRIPT_DIR${PYTHONPATH:+:$PYTHONPATH}"
@@ -1604,7 +1592,7 @@ PY
     echo "[INFO] attempt $attempt/$N_ATTEMPTS trial_id=$trial_id"
     echo "[INFO] harbor cmd: $HARBOR_OPIK_PYTHON $HARBOR_OPENCODE_DIR/enable_track_harbor.py run ..."
 
-    if [[ "$TB_DRY_RUN" == "1" ]]; then
+    if [[ "$HARBOR_DRY_RUN" == "1" ]]; then
       printf '  %s\n' "${cmd[@]}"
       continue
     fi
@@ -1635,10 +1623,10 @@ main() {
     need_cmd uv
     harbor_init_run_dirs
     apply_min_test_defaults
-    if [[ "$TB_DRY_RUN" != "1" ]]; then
+    if [[ "$HARBOR_DRY_RUN" != "1" ]]; then
       ensure_environment_backend
-      if ! harbor_uses_registry_dataset && [[ ! -d "$TB_PATH" ]]; then
-        echo "[ERROR] local dataset path not found: $TB_PATH" >&2
+      if ! harbor_uses_registry_dataset && [[ ! -d "$DATASET_PATH" ]]; then
+        echo "[ERROR] local dataset path not found: $DATASET_PATH" >&2
         exit 1
       fi
     fi
@@ -1652,8 +1640,8 @@ main() {
     ensure_trace_plugin_source_if_needed
     apply_min_test_defaults
 
-    if [[ "$TB_DRY_RUN" == "1" ]]; then
-      echo "[INFO] TB_DRY_RUN=1, skip dataset/opik readiness checks"
+    if [[ "$HARBOR_DRY_RUN" == "1" ]]; then
+      echo "[INFO] HARBOR_DRY_RUN=1, skip dataset/opik readiness checks"
       run_opencode_task
       return $?
     fi
@@ -1693,24 +1681,24 @@ main() {
   need_cmd python3
   ensure_trace_plugin_source_if_needed
 
-  if [[ -z "$TB_AGENT" && -z "$TB_AGENT_IMPORT_PATH" ]]; then
-    echo "[ERROR] at least one of TB_AGENT or TB_AGENT_IMPORT_PATH must be set" >&2
+  if [[ -z "$AGENT" && -z "$HARBOR_AGENT_IMPORT_PATH" ]]; then
+    echo "[ERROR] at least one of AGENT or HARBOR_AGENT_IMPORT_PATH must be set" >&2
     exit 1
   fi
 
-  if [[ -z "$TB_AGENT_IMPORT_PATH" && "$TB_AGENT" != "claude-code" && "$TB_AGENT" != "oracle" ]]; then
-    echo "[ERROR] when TB_AGENT_IMPORT_PATH is empty, TB_AGENT must be claude-code or oracle (got: $TB_AGENT)" >&2
+  if [[ -z "$HARBOR_AGENT_IMPORT_PATH" && "$AGENT" != "claude-code" && "$AGENT" != "oracle" ]]; then
+    echo "[ERROR] when HARBOR_AGENT_IMPORT_PATH is empty, AGENT must be claude-code or oracle (got: $AGENT)" >&2
     exit 1
   fi
 
   apply_min_test_defaults
 
-  if [[ "$TB_DRY_RUN" == "1" ]]; then
-    echo "[INFO] TB_DRY_RUN=1, skip dataset/opik readiness checks"
+  if [[ "$HARBOR_DRY_RUN" == "1" ]]; then
+    echo "[INFO] HARBOR_DRY_RUN=1, skip dataset/opik readiness checks"
     if harbor_agent_is_oracle; then
       run_oracle_task
     else
-      run_tb
+      run_harbor
     fi
     return 0
   fi
@@ -1750,7 +1738,7 @@ main() {
       verify_opik_ingestion_route
     fi
   fi
-  run_tb
+  run_harbor
 }
 
 main

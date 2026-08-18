@@ -47,10 +47,10 @@ RUN_SCOPED_ENV_VARS = {
     "ZELLIJ_PANE_ID",
     "FLEET_TASKS",
     "INCLUDE_TASKS",
-    "TB_INCLUDE_TASKS",
-    "TB_AGENT",
-    "TB_AGENT_IMPORT_PATH",
-    "TB_TASK_ID",
+    "HARBOR_INCLUDE_TASKS",
+    "AGENT",
+    "HARBOR_AGENT_IMPORT_PATH",
+    "HARBOR_TASK_ID",
     "NEXT_INDEX_FILE",
     "LOCK_FILE",
     "WORKERS_READY_FILE",
@@ -201,19 +201,18 @@ def run_command(
     if inherited_queue_worker:
         # Queue workers force one Harbor task per process. Verification runs a
         # complete smoke set directly, so env.sh must restore normal concurrency.
-        env.pop("TB_N_CONCURRENT", None)
+        env.pop("HARBOR_N_CONCURRENT", None)
     env.update(
         {
             "AGENT": agent,
-            "TB_AGENT": agent,
-            "TB_AGENT_IMPORT_PATH": "",
+            "HARBOR_AGENT_IMPORT_PATH": "",
             "TASK_SOURCE_FILE": str(task_source),
             "TASK_FILE": str(task_file),
             "FLEET_TASKS": smoke_tasks,
             "INCLUDE_TASKS": smoke_tasks,
-            "TB_INCLUDE_TASKS": smoke_tasks,
-            "TB_LIMIT": "",
-            "TB_RUNS": "1",
+            "HARBOR_INCLUDE_TASKS": smoke_tasks,
+            "HARBOR_LIMIT": "",
+            "HARBOR_RUNS": "1",
             "N_ATTEMPTS": "1",
             "MIN_TEST": "0",
             "OUTPUT_PATH": str(run_dir),

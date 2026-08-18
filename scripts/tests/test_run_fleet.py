@@ -21,11 +21,9 @@ class FleetRouterTest(unittest.TestCase):
 printf 'runner=harbor\\n'
 printf 'DATASET_NAME=%s\\n' "${DATASET_NAME-}"
 printf 'DATASET_PATH=%s\\n' "${DATASET_PATH-}"
-printf 'TB_PATH=%s\\n' "${TB_PATH-}"
 printf 'AGENT=%s\\n' "${AGENT-}"
-printf 'TB_AGENT=%s\\n' "${TB_AGENT-}"
 printf 'TOTAL_WORKERS=%s\\n' "${TOTAL_WORKERS-}"
-printf 'TB_N_CONCURRENT=%s\\n' "${TB_N_CONCURRENT-}"
+printf 'HARBOR_N_CONCURRENT=%s\\n' "${HARBOR_N_CONCURRENT-}"
 printf 'FLEET_TASKS=%s\\n' "${FLEET_TASKS-}"
 printf 'RUN_ID=%s\\n' "${RUN_ID-}"
 printf 'BASE_URL=%s\\n' "${BASE_URL-}"
@@ -84,12 +82,10 @@ exit "${STUB_EXIT:-0}"
         env = os.environ.copy()
         for name in (
             "AGENT",
-            "TB_AGENT",
             "TOTAL_WORKERS",
-            "TB_N_CONCURRENT",
+            "HARBOR_N_CONCURRENT",
             "DATASET_NAME",
             "DATASET_PATH",
-            "TB_PATH",
             "FLEET_TASKS",
             "RUN_ID",
             "BASE_URL",
@@ -98,11 +94,11 @@ exit "${STUB_EXIT:-0}"
             "ANTHROPIC_BASE_URL",
             "ANTHROPIC_AUTH_TOKEN",
             "MODEL",
-            "TB_MODEL",
+            "HARBOR_MODEL",
             "TRACE_TO_OPIK",
             "OPIK_URL",
             "RL_ENVIRONMENT_TYPE",
-            "TB_ENVIRONMENT_TYPE",
+            "HARBOR_ENVIRONMENT_TYPE",
             "QZ_SANDBOX_TEMPLATE",
             "SBX_API_KEY",
         ):
@@ -132,9 +128,8 @@ exit "${STUB_EXIT:-0}"
         self.assertIn("runner=harbor", result.stdout)
         self.assertIn("DATASET_NAME=terminal-bench/terminal-bench-2-1", result.stdout)
         self.assertIn("AGENT=claude-code", result.stdout)
-        self.assertIn("TB_AGENT=claude-code", result.stdout)
         self.assertIn("TOTAL_WORKERS=3", result.stdout)
-        self.assertIn("TB_N_CONCURRENT=3", result.stdout)
+        self.assertIn("HARBOR_N_CONCURRENT=3", result.stdout)
         self.assertIn("RUN_ID=\n", result.stdout)
 
     def test_explicit_local_taskset_maps_only_path_inputs(self):
@@ -143,7 +138,6 @@ exit "${STUB_EXIT:-0}"
         self.assertIn("runner=harbor", result.stdout)
         self.assertIn("DATASET_NAME=auto", result.stdout)
         self.assertIn(f"DATASET_PATH={self.root}/./tasks", result.stdout)
-        self.assertIn(f"TB_PATH={self.root}/./tasks", result.stdout)
 
     def test_qz_opencode_config_reaches_harbor_entrypoint(self):
         (self.repo / "config.local.env").write_text(
@@ -168,7 +162,6 @@ exit "${STUB_EXIT:-0}"
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("AGENT=opencode", result.stdout)
-        self.assertIn("TB_AGENT=opencode", result.stdout)
         self.assertIn("RL_ENVIRONMENT_TYPE=qz", result.stdout)
         self.assertIn("QZ_SANDBOX_TEMPLATE=current_template", result.stdout)
         self.assertIn("SBX_API_KEY_SET=1", result.stdout)
@@ -276,7 +269,6 @@ exit "${STUB_EXIT:-0}"
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("runner=harbor", result.stdout)
         self.assertIn("AGENT=opencode", result.stdout)
-        self.assertIn("TB_AGENT=\n", result.stdout)
 
     def test_downstream_exit_code_is_returned_unchanged(self):
         result = self.run_fleet(
@@ -366,7 +358,7 @@ exit "${STUB_EXIT:-0}"
                 "AUTH_TOKEN": "fake-caller-token",
                 "ANTHROPIC_BASE_URL": "https://alias-gateway.example.invalid",
                 "ANTHROPIC_AUTH_TOKEN": "fake-alias-token",
-                "TB_MODEL": "alias-model",
+                "HARBOR_MODEL": "alias-model",
                 "TRACE_TO_OPIK": "false",
             },
         )

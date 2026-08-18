@@ -55,7 +55,7 @@ class QzPi(Pi):
         self._node_dist_url = (
             node_dist_url
             or os.environ.get("QZ_NODE_DIST_URL", "")
-            or os.environ.get("TB_CC_NODE_DIST_URL", "")
+            or os.environ.get("HARBOR_CC_NODE_DIST_URL", "")
             or DEFAULT_NODE_DIST_URL
         ).strip()
         self._npm_registry = (

@@ -24,9 +24,9 @@ bash Agents/utils/common/Harbor/model-fusion/mimo-code/run_tb21.sh smoke fix-git
 
 # Run the complete Terminal-Bench 2.1 list with five trials per task.
 N_ATTEMPTS=5 \
-TB_RUNS=5 \
+HARBOR_RUNS=5 \
 TOTAL_WORKERS=20 \
-TB_N_CONCURRENT=20 \
+HARBOR_N_CONCURRENT=20 \
 bash Agents/utils/common/Harbor/model-fusion/mimo-code/run_tb21.sh full
 ```
 
@@ -39,7 +39,7 @@ Important overrides:
 - `TASK_SOURCE_FILE`: optional task-list override; `full` defaults to
   `Tasks/Terminal-bench-2/harbor_terminalbench21_tasks.txt`.
 - `MODEL`: main Claude model and the target behind the `sonnet` aliases.
-- `TB_AGENT_TIMEOUT_MULTIPLIER`: defaults to `20`.
+- `HARBOR_AGENT_TIMEOUT_MULTIPLIER`: defaults to `20`.
 - `DETACH`: defaults to `1`.
 
 The derived config sets `routing.max_fusions=-1` and selects `sonnet` for the

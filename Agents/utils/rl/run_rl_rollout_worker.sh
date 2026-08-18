@@ -213,8 +213,8 @@ finalize_timeout_trace() {
     return 0
   fi
   local project_name="${2:-${OPIK_PROJECT_NAME:-}}"
-  local run_id="${3:-${TB_RUN_ID:-}}"
-  local task_id="${4:-${TB_TASK_ID:-}}"
+  local run_id="${3:-${HARBOR_RUN_ID:-}}"
+  local task_id="${4:-${HARBOR_TASK_ID:-}}"
   local logs_dir py normalized_opik_url
   logs_dir="$(find_trial_logs_dir "$result_file" || true)"
   [[ -n "${logs_dir:-}" && -d "$logs_dir" ]] || return 0
@@ -230,8 +230,8 @@ finalize_timeout_trace() {
     export OPIK_URL="$normalized_opik_url"
   fi
   export OPIK_PROJECT_NAME="$project_name"
-  export TB_RUN_ID="$run_id"
-  export TB_TASK_ID="$task_id"
+  export HARBOR_RUN_ID="$run_id"
+  export HARBOR_TASK_ID="$task_id"
   if [[ "$RL_AGENT" == "opencode" ]]; then
     "$py" "$HARBOR_OPENCODE_DIR/finalize_opencode_sessions.py" \
       --status timeout --logs-dir "$logs_dir" >> "$WORKER_LOG" 2>&1 || true
@@ -322,20 +322,18 @@ while true; do
     fi
   fi
 
-  if [[ "${TB_DRY_RUN:-0}" != "1" ]]; then
+  if [[ "${HARBOR_DRY_RUN:-0}" != "1" ]]; then
     start_agent_log_stream "$task_jobs_root"
   fi
 
   set +e
   (
     export DATASET_PATH="$dataset_root"
-    export TB_PATH="$dataset_root"
     export AGENT="$RL_AGENT"
-    export TB_AGENT="$RL_AGENT"
     export MODEL="$model_name"
-    export TB_MODEL="$model_name"
+    export HARBOR_MODEL="$model_name"
     export RL_MODEL_NAME="$model_name"
-    export TB_RUN_ID="$ray_submission_id"
+    export HARBOR_RUN_ID="$ray_submission_id"
     export OPIK_PROJECT_NAME="$opik_project_name"
     if ! request_headers_json="$(
       MODEL_REQUEST_SESSION_ID="$session_id" \
@@ -347,46 +345,46 @@ while true; do
     if [[ "$RL_AGENT" == "claude-code" ]]; then
       # env.sh derives these aliases when the listener starts. Override every
       # alias per request so a later rollout model cannot inherit that default.
-      export TB_ANTHROPIC_MODEL="$model_name"
-      export TB_ANTHROPIC_DEFAULT_OPUS_MODEL="$model_name"
-      export TB_ANTHROPIC_DEFAULT_SONNET_MODEL="$model_name"
-      export TB_ANTHROPIC_DEFAULT_HAIKU_MODEL="$model_name"
-      export TB_CLAUDE_CODE_SUBAGENT_MODEL="$model_name"
+      export HARBOR_ANTHROPIC_MODEL="$model_name"
+      export HARBOR_ANTHROPIC_DEFAULT_OPUS_MODEL="$model_name"
+      export HARBOR_ANTHROPIC_DEFAULT_SONNET_MODEL="$model_name"
+      export HARBOR_ANTHROPIC_DEFAULT_HAIKU_MODEL="$model_name"
+      export HARBOR_CLAUDE_CODE_SUBAGENT_MODEL="$model_name"
     elif [[ "$RL_AGENT" == "opencode" ]]; then
       # Force env.sh to rebuild the custom-provider JSON from this request's
       # model, endpoint, and key instead of reusing the listener-time snapshot.
       export OPENCODE_CONFIG_CONTENT=""
     fi
-    export TB_ENVIRONMENT_TYPE="$environment_type"
-    if [[ "$environment_type" == "e2b" && -n "${TB_E2B_PREBUILT_TEMPLATE:-}" ]]; then
-      export TB_ENVIRONMENT_SPEC="$HARBOR_E2B_PREBUILT_ENVIRONMENT_SPEC"
+    export HARBOR_ENVIRONMENT_TYPE="$environment_type"
+    if [[ "$environment_type" == "e2b" && -n "${HARBOR_E2B_PREBUILT_TEMPLATE:-}" ]]; then
+      export HARBOR_ENVIRONMENT_SPEC="$HARBOR_E2B_PREBUILT_ENVIRONMENT_SPEC"
     elif [[ "$environment_type" == "opensandbox" ]]; then
-      export TB_ENVIRONMENT_SPEC="yicloud_opensandbox:YiCloudOpenSandboxEnvironment"
+      export HARBOR_ENVIRONMENT_SPEC="yicloud_opensandbox:YiCloudOpenSandboxEnvironment"
     elif [[ "$environment_type" == "qz" ]]; then
-      export TB_ENVIRONMENT_SPEC="qz_e2b_sandbox:QzSandboxEnvironment"
+      export HARBOR_ENVIRONMENT_SPEC="qz_e2b_sandbox:QzSandboxEnvironment"
     elif [[ "$environment_type" != "${RL_ENVIRONMENT_TYPE:-docker}" ]]; then
       # A per-request backend override must not inherit the listener's default
       # environment import path.
-      export TB_ENVIRONMENT_SPEC="$environment_type"
+      export HARBOR_ENVIRONMENT_SPEC="$environment_type"
     fi
-    export TB_E2B_SANDBOX_TIMEOUT_SEC="${RL_E2B_SANDBOX_TIMEOUT_SEC:-${TB_E2B_SANDBOX_TIMEOUT_SEC:-}}"
+    export HARBOR_E2B_SANDBOX_TIMEOUT_SEC="${RL_E2B_SANDBOX_TIMEOUT_SEC:-${HARBOR_E2B_SANDBOX_TIMEOUT_SEC:-}}"
     # Rollout may target Polar gateways with smaller context windows than the
     # normal benchmark defaults. Apply RL_* budgets to the Harbor/Claude args.
-    export TB_MAX_NEW_TOKENS="${max_new_tokens:-${RL_MAX_NEW_TOKENS:-${TB_MAX_NEW_TOKENS:-}}}"
-    export TB_MODEL_INFO="${model_info:-${RL_MODEL_INFO:-${TB_MODEL_INFO:-}}}"
-    export TB_CLAUDE_CODE_MAX_OUTPUT_TOKENS="${claude_max_output_tokens:-${RL_CLAUDE_CODE_MAX_OUTPUT_TOKENS:-${TB_CLAUDE_CODE_MAX_OUTPUT_TOKENS:-}}}"
-    export TB_AK_MAX_TURNS="${max_turns:-${RL_MAX_TURNS:-${TB_AK_MAX_TURNS:-}}}"
-    export TB_AGENT_TIMEOUT_MULTIPLIER="${agent_timeout_multiplier:-${RL_AGENT_TIMEOUT_MULTIPLIER:-${TB_AGENT_TIMEOUT_MULTIPLIER:-}}}"
+    export HARBOR_MAX_NEW_TOKENS="${max_new_tokens:-${RL_MAX_NEW_TOKENS:-${HARBOR_MAX_NEW_TOKENS:-}}}"
+    export HARBOR_MODEL_INFO="${model_info:-${RL_MODEL_INFO:-${HARBOR_MODEL_INFO:-}}}"
+    export HARBOR_CLAUDE_CODE_MAX_OUTPUT_TOKENS="${claude_max_output_tokens:-${RL_CLAUDE_CODE_MAX_OUTPUT_TOKENS:-${HARBOR_CLAUDE_CODE_MAX_OUTPUT_TOKENS:-}}}"
+    export HARBOR_AK_MAX_TURNS="${max_turns:-${RL_MAX_TURNS:-${HARBOR_AK_MAX_TURNS:-}}}"
+    export HARBOR_AGENT_TIMEOUT_MULTIPLIER="${agent_timeout_multiplier:-${RL_AGENT_TIMEOUT_MULTIPLIER:-${HARBOR_AGENT_TIMEOUT_MULTIPLIER:-}}}"
     if [[ "$RL_AGENT" == "claude-code" ]]; then
-      export TB_AK_COLLECT_ROLLOUT_DETAILS="${collect_rollout_details:-${RL_COLLECT_ROLLOUT_DETAILS:-${TB_AK_COLLECT_ROLLOUT_DETAILS:-}}}"
-      export TB_AK_ENABLE_SUMMARIZE="${enable_summarize:-${RL_ENABLE_SUMMARIZE:-${TB_AK_ENABLE_SUMMARIZE:-}}}"
+      export HARBOR_AK_COLLECT_ROLLOUT_DETAILS="${collect_rollout_details:-${RL_COLLECT_ROLLOUT_DETAILS:-${HARBOR_AK_COLLECT_ROLLOUT_DETAILS:-}}}"
+      export HARBOR_AK_ENABLE_SUMMARIZE="${enable_summarize:-${RL_ENABLE_SUMMARIZE:-${HARBOR_AK_ENABLE_SUMMARIZE:-}}}"
     fi
     if [[ "$request_headers_json" != "{}" ]]; then
       # Claude Code does not read Harbor's llm_kwargs.extra_headers. Apply the
       # same effective request headers through its supported client setting.
-      export TB_ANTHROPIC_CUSTOM_HEADERS="$(
+      export HARBOR_ANTHROPIC_CUSTOM_HEADERS="$(
         MODEL_REQUEST_HEADERS_JSON="$request_headers_json" \
-        TB_ANTHROPIC_CUSTOM_HEADERS="${TB_ANTHROPIC_CUSTOM_HEADERS:-}" \
+        HARBOR_ANTHROPIC_CUSTOM_HEADERS="${HARBOR_ANTHROPIC_CUSTOM_HEADERS:-}" \
           python3 "$RL_SCRIPT_DIR/rollout_worker_utils.py" render-header-lines
       )"
     fi
@@ -395,17 +393,17 @@ while true; do
       api_root="${api_root%/chat/completions}"
       api_root="${api_root%/v1}"
       export BASE_URL="$api_root"
-      export TB_API_BASE="${api_root}/v1/chat/completions"
-      # The inherited TB_ANTHROPIC_BASE_URL is initialized from the listener's
+      export HARBOR_API_BASE="${api_root}/v1/chat/completions"
+      # The inherited HARBOR_ANTHROPIC_BASE_URL is initialized from the listener's
       # default BASE_URL. A request-specific api_base must replace that stale
       # value unless the host explicitly configured a separate Anthropic API.
-      export TB_ANTHROPIC_BASE_URL="${ANTHROPIC_BASE_URL:-$api_root}"
+      export HARBOR_ANTHROPIC_BASE_URL="${ANTHROPIC_BASE_URL:-$api_root}"
     fi
     if [[ -n "$api_key" ]]; then
       export API_KEY="$api_key"
-      export TB_ANTHROPIC_AUTH_TOKEN="$api_key"
+      export HARBOR_ANTHROPIC_AUTH_TOKEN="$api_key"
     fi
-    export TB_LLM_KWARGS="$(
+    export HARBOR_LLM_KWARGS="$(
       MODEL_REQUEST_HEADERS_JSON="$request_headers_json" \
         python3 - "${temperature:-${RL_TEMPERATURE:-}}" \
         "${top_p:-${RL_TOP_P:-}}" \
@@ -441,16 +439,16 @@ if headers:
 print(json.dumps(payload, separators=(",", ":")))
 PY
     )"
-    export TB_TASK_ID="$task_name"
-    export TB_INCLUDE_TASKS="$task_name"
+    export HARBOR_TASK_ID="$task_name"
+    export HARBOR_INCLUDE_TASKS="$task_name"
     export INCLUDE_TASKS="$task_name"
-    export TB_LIMIT=""
-    export TB_RUNS=1
-    export TB_N_CONCURRENT=1
+    export HARBOR_LIMIT=""
+    export HARBOR_RUNS=1
+    export HARBOR_N_CONCURRENT=1
     export JOBS_ROOT="$task_jobs_root"
-    case "${force_build:-${RL_FORCE_BUILD:-${TB_FORCE_BUILD:-0}}}" in
-      1|true|TRUE|True|yes|YES|Yes|on|ON|On) export TB_FORCE_BUILD=1 ;;
-      *) export TB_FORCE_BUILD=0 ;;
+    case "${force_build:-${RL_FORCE_BUILD:-${HARBOR_FORCE_BUILD:-0}}}" in
+      1|true|TRUE|True|yes|YES|Yes|on|ON|On) export HARBOR_FORCE_BUILD=1 ;;
+      *) export HARBOR_FORCE_BUILD=0 ;;
     esac
     bash "$HARBOR_SCRIPT_DIR/harboropik.sh"
   ) 2>&1 | tee "$task_console_log"

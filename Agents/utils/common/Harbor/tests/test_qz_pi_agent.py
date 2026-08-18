@@ -137,7 +137,7 @@ class QzPiInstallTest(unittest.TestCase):
             os.environ,
             {
                 "QZ_NODE_DIST_URL": "",
-                "TB_CC_NODE_DIST_URL": "",
+                "HARBOR_CC_NODE_DIST_URL": "",
                 "NPM_CONFIG_REGISTRY": "",
             },
         ):
@@ -159,7 +159,7 @@ class QzPiInstallTest(unittest.TestCase):
             os.environ,
             {
                 "QZ_NODE_DIST_URL": "",
-                "TB_CC_NODE_DIST_URL": node_dist_url,
+                "HARBOR_CC_NODE_DIST_URL": node_dist_url,
                 "NPM_CONFIG_REGISTRY": npm_registry,
             },
         ):
@@ -175,7 +175,7 @@ class QzPiInstallTest(unittest.TestCase):
             os.environ,
             {
                 "QZ_NODE_DIST_URL": "https://qz.example/node.tgz",
-                "TB_CC_NODE_DIST_URL": "https://generic.example/node.tgz",
+                "HARBOR_CC_NODE_DIST_URL": "https://generic.example/node.tgz",
                 "NPM_CONFIG_REGISTRY": "https://generic.example/npm",
             },
         ):

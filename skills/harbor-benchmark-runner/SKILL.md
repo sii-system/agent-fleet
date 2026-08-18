@@ -28,7 +28,7 @@ orchestration ownership in `Agents/utils/common/Harbor/`.
 4. Validate that `DATASET_PATH` contains the selected task IDs before launch.
    A Harbor error like `No tasks matched ... There are 0 tasks available` is a
    dataset/task-resolution failure, not an agent or model failure.
-5. Keep `TOTAL_WORKERS` and `TB_N_CONCURRENT` aligned unless there is a
+5. Keep `TOTAL_WORKERS` and `HARBOR_N_CONCURRENT` aligned unless there is a
    specific reason to decouple zellij panes from Harbor concurrency.
 6. Launch from `Agents/utils/common/Harbor/` with `bash start.sh --detach` for
    detached operation or `bash start.sh` for an interactive zellij session.
@@ -57,9 +57,9 @@ orchestration ownership in `Agents/utils/common/Harbor/`.
   `claude-code-<version>.tgz` plus npm cache over downloading from the public
   Claude installer during each task.
 - Harbor mounts the Claude Code tgz and wheel/cache independently of the Opik
-  hook. Point `TB_CC_CLAUDE_TGZ_SOURCE` at the local tgz and
-  `TB_CC_PY_WHEEL_DIR_SOURCE` at the cache directory that contains
-  `npm-cache/`; enable `TB_CC_OPIK_ENABLE_HOOK=1` only for traced runs.
+  hook. Point `HARBOR_CC_CLAUDE_TGZ_SOURCE` at the local tgz and
+  `HARBOR_CC_PY_WHEEL_DIR_SOURCE` at the cache directory that contains
+  `npm-cache/`; enable `HARBOR_CC_OPIK_ENABLE_HOOK=1` only for traced runs.
 - After a mounted-tgz run starts, confirm task `config.json`, `lock.json`, or
   `trial.log` includes `/opt/tb-opik/claude-code.tgz` and
   `/opt/tb-opik/python-wheels/npm-cache`. If the task still attempts
@@ -82,10 +82,10 @@ orchestration ownership in `Agents/utils/common/Harbor/`.
   Harbor job log before changing scripts.
 - For dependency-cache problems, inspect `prepare_local_deps.sh`,
   `LOCAL_WHEEL_DIR`, `LOCAL_WHEEL_PORT`, and
-  `TB_REMOTE_WHEEL_SERVER_URLS`.
-- For mounted Claude Code tgz problems, inspect `TB_CC_CLAUDE_TGZ_SOURCE`,
-  `TB_CC_PY_WHEEL_DIR_SOURCE`, `TB_CC_CLAUDE_TGZ_MOUNT_PATH`, and
-  `TB_CC_NPM_CACHE_MOUNT_PATH`, then grep task logs for public installer URLs.
+  `HARBOR_REMOTE_WHEEL_SERVER_URLS`.
+- For mounted Claude Code tgz problems, inspect `HARBOR_CC_CLAUDE_TGZ_SOURCE`,
+  `HARBOR_CC_PY_WHEEL_DIR_SOURCE`, `HARBOR_CC_CLAUDE_TGZ_MOUNT_PATH`, and
+  `HARBOR_CC_NPM_CACHE_MOUNT_PATH`, then grep task logs for public installer URLs.
 - For tracing problems, verify `third_party/agent-opik-plugin` and the agent
   integration file listed in `Agents/utils/common/Harbor/STRUCT.md`.
 
@@ -94,7 +94,7 @@ orchestration ownership in `Agents/utils/common/Harbor/`.
 When reporting a Harbor run or fix, include:
 
 - selected `AGENT`, `DATASET_NAME`, `DATASET_PATH` or `TASK_SOURCE_FILE`
-- `RUN_ID`, `OUTPUT_PATH`, `TOTAL_WORKERS`, and `TB_N_CONCURRENT`
+- `RUN_ID`, `OUTPUT_PATH`, `TOTAL_WORKERS`, and `HARBOR_N_CONCURRENT`
 - exact launch command and whether it was detached
 - strongest failure signal or current run state
 - whether Claude Code was installed from mounted tgz/cache or from network

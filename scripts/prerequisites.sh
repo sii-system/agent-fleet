@@ -335,9 +335,9 @@ agent_fleet_docker_required() {
     0|false|no) return 1 ;;
     1|true|yes) return 0 ;;
   esac
-  # TB_ENVIRONMENT_TYPE is the effective per-run override used by env.sh;
+  # HARBOR_ENVIRONMENT_TYPE is the effective per-run override used by env.sh;
   # RL_ENVIRONMENT_TYPE is its fallback.
-  case "${TB_ENVIRONMENT_TYPE:-${RL_ENVIRONMENT_TYPE:-docker}}" in
+  case "${HARBOR_ENVIRONMENT_TYPE:-${RL_ENVIRONMENT_TYPE:-docker}}" in
     qz|e2b) return 1 ;;
   esac
   return 0

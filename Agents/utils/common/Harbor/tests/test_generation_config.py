@@ -62,10 +62,10 @@ import json
 import os
 
 print(json.dumps({
-    "llm_kwargs": json.loads(os.environ["TB_LLM_KWARGS"]),
-    "max_new_tokens": os.environ["TB_MAX_NEW_TOKENS"],
-    "model_info": json.loads(os.environ["TB_MODEL_INFO"]),
-    "claude_max_output_tokens": os.environ["TB_CLAUDE_CODE_MAX_OUTPUT_TOKENS"],
+    "llm_kwargs": json.loads(os.environ["HARBOR_LLM_KWARGS"]),
+    "max_new_tokens": os.environ["HARBOR_MAX_NEW_TOKENS"],
+    "model_info": json.loads(os.environ["HARBOR_MODEL_INFO"]),
+    "claude_max_output_tokens": os.environ["HARBOR_CLAUDE_CODE_MAX_OUTPUT_TOKENS"],
     "opencode_config": (
         json.loads(os.environ["OPENCODE_CONFIG_CONTENT"])
         if os.environ["OPENCODE_CONFIG_CONTENT"]
@@ -208,9 +208,9 @@ PY
         config = self._load_config(
             "claude-code",
             HARBOR_MAX_TOKENS="8192",
-            TB_MAX_NEW_TOKENS="4096",
-            TB_CLAUDE_CODE_MAX_OUTPUT_TOKENS="2048",
-            TB_MODEL_INFO='{"max_input_tokens":1000,"max_output_tokens":512}',
+            HARBOR_MAX_NEW_TOKENS="4096",
+            HARBOR_CLAUDE_CODE_MAX_OUTPUT_TOKENS="2048",
+            HARBOR_MODEL_INFO='{"max_input_tokens":1000,"max_output_tokens":512}',
         )
 
         self.assertEqual(config["max_new_tokens"], "4096")
@@ -220,7 +220,7 @@ PY
         result = self._run_validation(
             "claude-code",
             HARBOR_MAX_TOKENS="not-an-int",
-            TB_MODEL_INFO='{"max_input_tokens":1000,"max_output_tokens":512}',
+            HARBOR_MODEL_INFO='{"max_input_tokens":1000,"max_output_tokens":512}',
         )
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("HARBOR_MAX_TOKENS must be a positive integer", result.stderr)
@@ -250,7 +250,7 @@ PY
             "opencode",
             MODEL="hosted_vllm/test-model",
             ROLLOUT="1",
-            TB_LLM_KWARGS=(
+            HARBOR_LLM_KWARGS=(
                 '{"extra_headers":{"X-Route-Key":"deployment-a"}}'
             ),
         )

@@ -321,15 +321,15 @@ run_harboropik() {
     TRACE_TO_OPIK="$trace" \
     MIN_TEST="$min_test" \
     MIN_TEST_INCLUDE_TASK="fix-git" \
-    TB_CC_OPIK_ENABLE_HOOK="$hook_flag" \
-    TB_CC_PY_WHEEL_DIR_SOURCE="$wheel_dir" \
+    HARBOR_CC_OPIK_ENABLE_HOOK="$hook_flag" \
+    HARBOR_CC_PY_WHEEL_DIR_SOURCE="$wheel_dir" \
     TRACE_PLUGIN_SOURCE_DIR="$trace_dir" \
-    TB_SKIP_DOCKERHUB_PREFLIGHT="1" \
-    TB_RUNS="$runs" \
+    HARBOR_SKIP_DOCKERHUB_PREFLIGHT="1" \
+    HARBOR_RUNS="$runs" \
     N_ATTEMPTS="1" \
-    TB_N_CONCURRENT="$n_concurrent" \
+    HARBOR_N_CONCURRENT="$n_concurrent" \
     TOTAL_WORKERS="1" \
-    TB_MAX_RETRIES="0" \
+    HARBOR_MAX_RETRIES="0" \
     HARBOR_CAPTURE_FILE="$capture_file" \
     HARBOR_CAPTURE_RESULT="1" \
     HARBOR_OPIK_BIN="$capture_bin" \
@@ -404,13 +404,14 @@ main() {
     "codepde@1.0"
   assert_extra_compose_arg "$claude_capture" "$default_overlay"
   assert_arg_pair "$claude_capture" "--dataset" "codepde@1.0"
+  assert_arg_pair "$claude_capture" "--ae" "HARBOR_DATASET=codepde@1.0"
   assert_file_content \
     "${claude_capture}.verifier-tools" \
     "curl,env,uv,uvx"
   assert_arg_pair \
     "$claude_capture" \
     "--ve" \
-    "TB_VERIFIER_UV_BIN_DIR=/opt/tb-uv-backup/bin"
+    "HARBOR_VERIFIER_UV_BIN_DIR=/opt/tb-uv-backup/bin"
 
   registry_capture="$tmp/claude-registry.args"
   run_harboropik \
@@ -426,6 +427,10 @@ main() {
     "terminalbench21" "fix-git"
   assert_extra_compose_arg "$opencode_capture" "$default_overlay"
   assert_arg_pair "$opencode_capture" "--dataset" "terminal-bench/terminal-bench-2-1"
+  assert_arg_pair \
+    "$opencode_capture" \
+    "--ae" \
+    "HARBOR_DATASET=terminal-bench/terminal-bench-2-1"
   assert_arg_pair "$opencode_capture" "-i" "terminal-bench/fix-git"
   assert_structured_mount_arg \
     "$opencode_capture" \
@@ -437,7 +442,7 @@ main() {
   assert_arg_pair \
     "$opencode_capture" \
     "--ve" \
-    "TB_VERIFIER_UV_BIN_DIR=/opt/tb-uv-backup/bin"
+    "HARBOR_VERIFIER_UV_BIN_DIR=/opt/tb-uv-backup/bin"
 
   opencode_registry_capture="$tmp/opencode-registry.args"
   run_harboropik \

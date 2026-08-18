@@ -117,7 +117,7 @@ Typical dataset paths:
 | `TASK_SOURCE_FILE` | Explicit task list path |
 | `FLEET_TASKS` | Internal normalized exact task selection from `run_fleet.sh`; unsupported with `ROLLOUT=1` |
 | `TOTAL_WORKERS` | Number of zellij workers |
-| `TB_N_CONCURRENT` | Harbor concurrency, normally the same as `TOTAL_WORKERS` |
+| `HARBOR_N_CONCURRENT` | Harbor concurrency, normally the same as `TOTAL_WORKERS` |
 | `RUN_ID` | Run name |
 | `OUTPUT_ROOT` | Parent directory for runs; defaults to `<repo>/runs` |
 | `OUTPUT_PATH` | Full output directory |
@@ -135,12 +135,12 @@ Typical dataset paths:
 | `LOCAL_WHEEL_DIR` | Local dependency cache directory |
 | `LOCAL_WHEEL_PORT` | Preferred local dependency HTTP server port |
 | `LOCAL_WHEEL_PORT_ATTEMPTS` | Number of local port attempts |
-| `TB_REMOTE_WHEEL_SERVER_URLS` | Comma-separated fallback dependency cache URLs |
-| `TB_SKIP_DOCKERHUB_PREFLIGHT` | Skip Docker Hub preflight connectivity check |
-| `TB_FORCE_BUILD` | Build task images locally instead of using prebuilt images |
-| `TB_TIMEOUT_MULTIPLIER` | General Harbor timeout multiplier |
-| `TB_AGENT_TIMEOUT_MULTIPLIER` | Agent execution timeout override |
-| `TB_AGENT_SETUP_TIMEOUT_MULTIPLIER` | Agent setup timeout multiplier |
+| `HARBOR_REMOTE_WHEEL_SERVER_URLS` | Comma-separated fallback dependency cache URLs |
+| `HARBOR_SKIP_DOCKERHUB_PREFLIGHT` | Skip Docker Hub preflight connectivity check |
+| `HARBOR_FORCE_BUILD` | Build task images locally instead of using prebuilt images |
+| `HARBOR_TIMEOUT_MULTIPLIER` | General Harbor timeout multiplier |
+| `HARBOR_AGENT_TIMEOUT_MULTIPLIER` | Agent execution timeout override |
+| `HARBOR_AGENT_SETUP_TIMEOUT_MULTIPLIER` | Agent setup timeout multiplier |
 | `YICLOUD_SANDBOX_CPU` | OpenSandbox request CPU flavor, default `2` to match the current prewarm pool |
 | `YICLOUD_SANDBOX_MEMORY` | OpenSandbox request memory flavor, default `8Gi` to match the current prewarm pool |
 | `YICLOUD_SANDBOX_LIFECYCLE_MINUTES` | Maximum OpenSandbox lifetime, default `120`; normal trials still delete on completion unless retention is enabled |
@@ -201,7 +201,7 @@ zellij run.  `env.sh` then sources `Agents/utils/rl/RL-env.sh` through
 | `MODEL_REQUEST_CONFIG_JSON` | Trusted, versioned host-side model-request customization; version 1 supports `headers.set` and cannot be overridden by `/run_trial` |
 | `RL_MODEL_INFO` / `RL_MAX_NEW_TOKENS` | Harbor model/token budgets applied to rollout tasks |
 | `RL_MAX_TURNS` | Mapped to Harbor `max_turns` for claude-code rollout tasks |
-| `RL_FORCE_BUILD` | Mapped to `TB_FORCE_BUILD`; request `force_build` can override it |
+| `RL_FORCE_BUILD` | Mapped to `HARBOR_FORCE_BUILD`; request `force_build` can override it |
 | `RL_AGENT_TIMEOUT_MULTIPLIER` | Mapped to Harbor's agent timeout multiplier |
 | `RL_LLM_TIMEOUT` / `RL_LLM_MAX_RETRIES` | Mapped into `llm_kwargs.timeout` and `llm_kwargs.max_retries` |
 | `RL_TEMPERATURE` / `RL_TOP_P` / `RL_TOP_K` / `RL_MIN_P` | Mapped into rollout `llm_kwargs` sampling fields |
@@ -218,16 +218,16 @@ zellij run.  `env.sh` then sources `Agents/utils/rl/RL-env.sh` through
 Claude Code specific defaults:
 
 - `CLAUDE_CODE_VERSION`
-- `TB_ANTHROPIC_BASE_URL`
-- `TB_ANTHROPIC_AUTH_TOKEN`
-- `TB_ANTHROPIC_MODEL`
-- `TB_ANTHROPIC_DEFAULT_OPUS_MODEL`
-- `TB_ANTHROPIC_DEFAULT_SONNET_MODEL`
-- `TB_ANTHROPIC_DEFAULT_HAIKU_MODEL`
-- `TB_CLAUDE_CODE_SUBAGENT_MODEL`
-- `TB_CLAUDE_CODE_EFFORT_LEVEL`
-- `TB_CLAUDE_CODE_MAX_OUTPUT_TOKENS`
-- `TB_CC_HOOK_SOURCE`
+- `HARBOR_ANTHROPIC_BASE_URL`
+- `HARBOR_ANTHROPIC_AUTH_TOKEN`
+- `HARBOR_ANTHROPIC_MODEL`
+- `HARBOR_ANTHROPIC_DEFAULT_OPUS_MODEL`
+- `HARBOR_ANTHROPIC_DEFAULT_SONNET_MODEL`
+- `HARBOR_ANTHROPIC_DEFAULT_HAIKU_MODEL`
+- `HARBOR_CLAUDE_CODE_SUBAGENT_MODEL`
+- `HARBOR_CLAUDE_CODE_EFFORT_LEVEL`
+- `HARBOR_CLAUDE_CODE_MAX_OUTPUT_TOKENS`
+- `HARBOR_CC_HOOK_SOURCE`
 
 OpenCode specific defaults:
 

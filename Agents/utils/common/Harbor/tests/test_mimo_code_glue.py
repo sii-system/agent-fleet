@@ -40,7 +40,7 @@ class MimoCodeProxyTest(unittest.TestCase):
                 "MIMO_ROUTER_VERSION": "0.2.0",
                 "MIMO_ROUTER_WHEEL_MOUNT_PATH": "/opt/router.whl",
                 "MIMO_ROUTER_CONFIG_MOUNT_PATH": "/opt/router.json",
-                "TB_ANTHROPIC_BASE_URL": "https://gateway.internal",
+                "HARBOR_ANTHROPIC_BASE_URL": "https://gateway.internal",
             }
         )
 
@@ -168,7 +168,7 @@ class MimoCodeClaudeOverlayTest(unittest.TestCase):
             "MIMO_ROUTER_PIPELINE": "mimo_max",
             "MIMO_ROUTER_WHEEL_PATH": "/opt/router.whl",
             "MIMO_ROUTER_CONFIG_PATH": "/opt/router.json",
-            "TB_TASK_ID": "fixture-task",
+            "HARBOR_TASK_ID": "fixture-task",
         }
         wrapped = module._wrap_claude_command(
             command, "fixture prompt", extra_env, "/workspace/task repo"

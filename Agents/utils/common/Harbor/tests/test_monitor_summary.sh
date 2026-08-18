@@ -37,7 +37,7 @@ start_monitor() {
     TOTAL_WORKERS="2" \
     LOCAL_WHEEL_DIR="$TEST_TMP_DIR/no-local-wheels" \
     CLAUDE_CODE_TGZ_BASENAME="claude-code-test.tgz" \
-    TB_REMOTE_WHEEL_SERVER_URLS="http://127.0.0.1:$WHEEL_PORT" \
+    HARBOR_REMOTE_WHEEL_SERVER_URLS="http://127.0.0.1:$WHEEL_PORT" \
     HARBOR_RUNNER_PREPARE="0" \
     HARBOR_ONLINE_ANALYSIS="$online_analysis" \
     HARBOR_ZELLIJ_CLOSE_ON_COMPLETE="$close_on_complete" \

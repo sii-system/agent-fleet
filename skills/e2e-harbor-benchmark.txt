@@ -13,9 +13,9 @@ Requirements:
    API_KEY, and MODEL are available.
 2. Prefer the configured mounted Claude Code tgz/cache over public
    download/install paths. If CLAUDE_CODE_VERSION, CLAUDE_CODE_TGZ_BASENAME, or
-   TB_CC_* cache variables are set, use them deliberately.
+   HARBOR_CC_* cache variables are set, use them deliberately.
 3. Run 3 SETA tasks and 3 Terminal-Bench-2 tasks with TOTAL_WORKERS=3 and
-   TB_N_CONCURRENT=3.
+   HARBOR_N_CONCURRENT=3.
 4. Use isolated RUN_ID and OUTPUT_PATH values for each dataset.
 5. If a dataset path or task selection is unavailable, prepare dataset from Harbor hub.
 6. Record result directories, task rewards, exceptions, online-analysis output,

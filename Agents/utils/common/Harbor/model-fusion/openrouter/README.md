@@ -23,7 +23,7 @@ bash Agents/utils/common/Harbor/model-fusion/openrouter/run_tb21.sh dry-run conf
 bash Agents/utils/common/Harbor/model-fusion/openrouter/run_tb21.sh smoke configure-git-webserver
 
 # Run the complete Terminal-Bench 2.1 list five times.
-N_ATTEMPTS=5 TB_RUNS=5 TOTAL_WORKERS=20 TB_N_CONCURRENT=20 \
+N_ATTEMPTS=5 HARBOR_RUNS=5 TOTAL_WORKERS=20 HARBOR_N_CONCURRENT=20 \
 bash Agents/utils/common/Harbor/model-fusion/openrouter/run_tb21.sh full
 ```
 
@@ -37,7 +37,7 @@ Important overrides:
   `Tasks/Terminal-bench-2/harbor_terminalbench21_tasks.txt`.
 - `OPENROUTER_MAX_FUSIONS`: defaults to `-1`; set a nonnegative limit if needed.
 - `MODEL`: gateway model used for every Router role.
-- `TB_AGENT_TIMEOUT_MULTIPLIER`: defaults to `20`.
+- `HARBOR_AGENT_TIMEOUT_MULTIPLIER`: defaults to `20`.
 - `DETACH`: defaults to `1`.
 
 Artifacts are written under each trial's `/logs/agent/router/`; the per-run

@@ -252,7 +252,7 @@ class WrapperInitializationOrderTest(unittest.TestCase):
                 self.assertIn("rev-parse --is-inside-work-tree", script)
                 self.assertNotIn('[[ -d "$FUSION_ROUTER_DIR/.git" ]]', script)
                 self.assertIn("harbor_terminalbench21_tasks.txt", script)
-                self.assertIn('TB_INCLUDE_TASKS="$INCLUDE_TASKS"', script)
+                self.assertIn('HARBOR_INCLUDE_TASKS="$INCLUDE_TASKS"', script)
                 self.assertIn("MODEL_FUSION_PROXY_RENDER_ONLY=1", script)
 
 

@@ -282,7 +282,7 @@ class EnableTrackHarborTests(unittest.TestCase):
                 os.environ,
                 {
                     "TRACE_TO_OPIK": trace,
-                    "TB_ENVIRONMENT_TYPE": environment_type,
+                    "HARBOR_ENVIRONMENT_TYPE": environment_type,
                 },
                 clear=True,
             ),
@@ -292,7 +292,7 @@ class EnableTrackHarborTests(unittest.TestCase):
             mock.patch.object(self.module, "_install_track_harbor") as install_tracking,
             mock.patch.object(
                 self.module,
-                "_patch_trial_decorator_with_tb_tags",
+                "_patch_trial_decorator_with_harbor_tags",
             ) as patch_tags,
         ):
             self.module.main()

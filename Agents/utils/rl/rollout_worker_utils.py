@@ -111,7 +111,7 @@ def main() -> int:
         headers = json.loads(os.environ.get("MODEL_REQUEST_HEADERS_JSON", "{}"))
         print(
             render_header_lines(
-                os.environ.get("TB_ANTHROPIC_CUSTOM_HEADERS", ""), headers
+                os.environ.get("HARBOR_ANTHROPIC_CUSTOM_HEADERS", ""), headers
             )
         )
         return 0

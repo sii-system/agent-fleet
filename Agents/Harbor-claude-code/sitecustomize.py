@@ -235,7 +235,7 @@ def _patch_claude_code_realtime_hooks() -> None:
             claude_tgz_path = shlex.quote(
                 (extra_env or {}).get("CC_OPIK_CLAUDE_TGZ_PATH", "/opt/tb-opik/claude-code.tgz")
             )
-            claude_tgz_url = shlex.quote((extra_env or {}).get("TB_LOCAL_CLAUDE_TGZ_URL", ""))
+            claude_tgz_url = shlex.quote((extra_env or {}).get("HARBOR_LOCAL_CLAUDE_TGZ_URL", ""))
             node_runtime_path = shlex.quote(
                 (extra_env or {}).get("CC_OPIK_PY_WHEEL_DIR", "/opt/tb-opik/python-wheels")
                 + "/node-runtime.tar.xz"
@@ -460,7 +460,7 @@ def _patch_claude_code_realtime_hooks() -> None:
                 "exit 0; "
                 "fi; "
                 f"wheel_dir={shlex.quote((extra_env or {}).get('CC_OPIK_PY_WHEEL_DIR', '/opt/tb-opik/python-wheels'))}; "
-                f"wheel_url={shlex.quote((extra_env or {}).get('TB_LOCAL_WHEEL_SERVER_URL', ''))}; "
+                f"wheel_url={shlex.quote((extra_env or {}).get('HARBOR_LOCAL_WHEEL_SERVER_URL', ''))}; "
                 "missing=$(\"$py_bin\" - <<'PY'\n"
                 "import importlib.util\n"
                 "mods = ('opik', 'uuid6', 'socksio')\n"

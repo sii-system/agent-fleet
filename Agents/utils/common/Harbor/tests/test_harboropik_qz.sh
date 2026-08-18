@@ -35,10 +35,10 @@ run_dry() {
   local qz_node_dist_url="${9:-}"
   env -i \
     AGENT="$agent" \
-    TB_FORCE_BUILD="$force_build" \
+    HARBOR_FORCE_BUILD="$force_build" \
     QZ_SANDBOX_TIMEOUT_SEC="$qz_timeout" \
-    TB_ANTHROPIC_BASE_URL=http://fake-gw \
-    TB_ANTHROPIC_AUTH_TOKEN=fake_token \
+    HARBOR_ANTHROPIC_BASE_URL=http://fake-gw \
+    HARBOR_ANTHROPIC_AUTH_TOKEN=fake_token \
     TRACE_TO_OPIK=false \
     PATH="$tmp/bin:/usr/bin:/bin" \
     HOME="$tmp/home" \
@@ -48,13 +48,13 @@ run_dry() {
     OUTPUT_PATH="$tmp/output" \
     QUEUE_DIR="$tmp/queue" \
     RUNTIME_DIR="$tmp/runtime" \
-    TB_DRY_RUN="$dry_run" \
-    TB_N_CONCURRENT=1 \
-    TB_MAX_RETRIES=0 \
+    HARBOR_DRY_RUN="$dry_run" \
+    HARBOR_N_CONCURRENT=1 \
+    HARBOR_MAX_RETRIES=0 \
     HARBOR_RUNNER_PREPARE=0 \
     HARBOR_OPIK_BIN="$tmp/bin/opik" \
     HARBOR_CLI_BIN="$tmp/bin/harbor" \
-    TB_ENVIRONMENT_TYPE=qz \
+    HARBOR_ENVIRONMENT_TYPE=qz \
     SBX_API_KEY="$sbx_api_key" \
     E2B_API_KEY="$e2b_api_key" \
     QZ_SANDBOX_TEMPLATE="$qz_template" \
@@ -139,7 +139,7 @@ if grep -F -- '--mounts-json' <<< "$cc_run" >/dev/null; then
   echo 'qz claude-code command unexpectedly contains host bind mounts' >&2
   exit 1
 fi
-grep -F -- 'TB_VERIFIER_UV_BIN_DIR=/opt/tb-uv-backup/bin' <<< "$cc_run" >/dev/null
+grep -F -- 'HARBOR_VERIFIER_UV_BIN_DIR=/opt/tb-uv-backup/bin' <<< "$cc_run" >/dev/null
 grep -F -- "$verifier_path" <<< "$cc_run" >/dev/null
 
 # opencode uses the same runtime-source defaults and must not depend on
@@ -157,11 +157,11 @@ if grep -F -- '--mounts-json' <<< "$oc_run" >/dev/null; then
   echo 'qz opencode command unexpectedly contains host bind mounts' >&2
   exit 1
 fi
-if grep -F -- 'TB_LOCAL_OPENCODE_TGZ_URL=http' <<< "$oc_run" >/dev/null; then
+if grep -F -- 'HARBOR_LOCAL_OPENCODE_TGZ_URL=http' <<< "$oc_run" >/dev/null; then
   echo 'qz opencode command unexpectedly uses a runner-local package URL' >&2
   exit 1
 fi
-grep -F -- 'TB_VERIFIER_UV_BIN_DIR=/opt/tb-uv-backup/bin' <<< "$oc_run" >/dev/null
+grep -F -- 'HARBOR_VERIFIER_UV_BIN_DIR=/opt/tb-uv-backup/bin' <<< "$oc_run" >/dev/null
 grep -F -- "$verifier_path" <<< "$oc_run" >/dev/null
 
 # Public upstream sources remain an explicit supported choice; npmmirror is a
@@ -183,7 +183,7 @@ non_qz_registry="$(
     HOME="$tmp/home" \
     AGENT_FLEET_PATHS_FILE="$tmp/no-paths" \
     AGENT_FLEET_RUNTIME_DIR="$tmp/prerequisite-runtime" \
-    TB_ENVIRONMENT_TYPE=docker \
+    HARBOR_ENVIRONMENT_TYPE=docker \
     NPM_CONFIG_REGISTRY= \
     bash -c 'source "$1"; printf "%s" "$NPM_CONFIG_REGISTRY"' \
     _ "$HARBOR_DIR/env.sh"
@@ -196,10 +196,10 @@ fi
 # force_build has no meaning for platform-registered templates.
 for force_build in 1 true; do
   if fb_run="$(run_dry sbx_fake_key fake_template '' oracle "$force_build")"; then
-    echo "qz launch unexpectedly succeeded with TB_FORCE_BUILD=$force_build" >&2
+    echo "qz launch unexpectedly succeeded with HARBOR_FORCE_BUILD=$force_build" >&2
     exit 1
   else
-    grep -F -- 'TB_FORCE_BUILD is not supported on qz' <<< "$fb_run" >/dev/null
+    grep -F -- 'HARBOR_FORCE_BUILD is not supported on qz' <<< "$fb_run" >/dev/null
   fi
 done
 

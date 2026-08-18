@@ -49,14 +49,14 @@ class ModelFusionHarborOpikTest(unittest.TestCase):
             {
                 "CAPTURE_FILE": str(self.capture_file),
                 "MODEL_FUSION_REAL_HARBOR_OPIK_BIN": str(self.real_opik),
-                "TB_FUSION_ROUND_ROUTER_DIR": str(self.router_dir),
-                "TB_FUSION_ROUND_ROUTER_MOUNT_PATH": "/opt/fusion-router",
-                "TB_FUSION_TASK_FILE_SOURCE": str(self.task_file),
-                "TB_FUSION_TASK_FILE": "/opt/fusion-task/task.md",
-                "TB_CLAUDE_CODE_AGENTS_JSON": '{"reviewer": {}}',
-                "TB_FUSION_ROUND_GATE": "1",
-                "TB_FUSION_ROUND_GATE_PATH": "/opt/fusion-router/gate.py",
-                "TB_FUSION_ROUND_GATE_MODE": "mid-turn-fusion",
+                "HARBOR_FUSION_ROUND_ROUTER_DIR": str(self.router_dir),
+                "HARBOR_FUSION_ROUND_ROUTER_MOUNT_PATH": "/opt/fusion-router",
+                "HARBOR_FUSION_TASK_FILE_SOURCE": str(self.task_file),
+                "HARBOR_FUSION_TASK_FILE": "/opt/fusion-task/task.md",
+                "HARBOR_CLAUDE_CODE_AGENTS_JSON": '{"reviewer": {}}',
+                "HARBOR_FUSION_ROUND_GATE": "1",
+                "HARBOR_FUSION_ROUND_GATE_PATH": "/opt/fusion-router/gate.py",
+                "HARBOR_FUSION_ROUND_GATE_MODE": "mid-turn-fusion",
                 "SPAN_FORCE_MODE": "mid-turn-fusion",
                 "SPAN_FORCE_FUSION": "1",
                 "SPAN_GATE_STATE_PATH": "/logs/agent/gate-state.json",
@@ -64,9 +64,9 @@ class ModelFusionHarborOpikTest(unittest.TestCase):
                 "SPAN_HOOK_REASON_MAX_BYTES": "4321",
                 "SPAN_PANEL_MODELS": "panel-a,panel-b",
                 "SPAN_PANEL_COUNT": "2",
-                "TB_FUSION_MAX_FUSIONS_PER_TASK": "3",
-                "TB_FUSION_PANEL_CALL_BUDGET": "4",
-                "TB_ANTHROPIC_BASE_URL": "https://gateway.internal",
+                "HARBOR_FUSION_MAX_FUSIONS_PER_TASK": "3",
+                "HARBOR_FUSION_PANEL_CALL_BUDGET": "4",
+                "HARBOR_ANTHROPIC_BASE_URL": "https://gateway.internal",
             }
         )
 
@@ -140,11 +140,11 @@ class ModelFusionHarborOpikTest(unittest.TestCase):
             if arg == "--ae"
         }
         expected_ae = {
-            'TB_CLAUDE_CODE_AGENTS_JSON={"reviewer": {}}',
-            "TB_FUSION_ROUND_GATE=1",
-            "TB_FUSION_ROUND_GATE_PATH=/opt/fusion-router/gate.py",
-            "TB_FUSION_ROUND_GATE_MODE=mid-turn-fusion",
-            "TB_FUSION_TASK_FILE=/opt/fusion-task/task.md",
+            'HARBOR_CLAUDE_CODE_AGENTS_JSON={"reviewer": {}}',
+            "HARBOR_FUSION_ROUND_GATE=1",
+            "HARBOR_FUSION_ROUND_GATE_PATH=/opt/fusion-router/gate.py",
+            "HARBOR_FUSION_ROUND_GATE_MODE=mid-turn-fusion",
+            "HARBOR_FUSION_TASK_FILE=/opt/fusion-task/task.md",
             "FUSION_TASK_FILE=/opt/fusion-task/task.md",
             "SPAN_FORCE_MODE=mid-turn-fusion",
             "SPAN_FORCE_FUSION=1",

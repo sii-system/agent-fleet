@@ -29,7 +29,7 @@ AGENT="claude-code"        # claude-code or opencode
 DATASET_NAME="seta"        # seta, smith, terminalbench21, or sweverify
 DATASET_PATH="/workspace/seta-env/Harbor-Dataset"
 TOTAL_WORKERS="80"         # zellij worker panes
-TB_N_CONCURRENT="80"       # Harbor concurrency, normally = TOTAL_WORKERS
+HARBOR_N_CONCURRENT="80"       # Harbor concurrency, normally = TOTAL_WORKERS
 ```
 
 Outputs land in `OUTPUT_PATH` (default `<repo>/runs/<RUN_ID>`).

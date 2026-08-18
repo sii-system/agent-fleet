@@ -76,7 +76,7 @@ def _wrap_claude_command(
     )
     pipeline = _value(extra_env, "MIMO_ROUTER_PIPELINE", "mimo_max")
     version = _value(extra_env, "MIMO_ROUTER_VERSION")
-    task_id = _value(extra_env, "TB_TASK_ID", "harbor-task")
+    task_id = _value(extra_env, "HARBOR_TASK_ID", "harbor-task")
     artifact_root = _value(
         extra_env, "MIMO_ROUTER_ARTIFACT_ROOT", "/logs/agent/router"
     )

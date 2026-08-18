@@ -28,17 +28,17 @@ if [[ "$inject_fusion" != "1" ]]; then
   exec "$REAL_OPIK_BIN" "$@"
 fi
 
-: "${TB_FUSION_ROUND_ROUTER_DIR:?missing Router Claude frontend path}"
-: "${TB_FUSION_ROUND_ROUTER_MOUNT_PATH:?missing Router mount target}"
-: "${TB_FUSION_TASK_FILE_SOURCE:?missing task contract source}"
-: "${TB_FUSION_TASK_FILE:?missing task contract mount target}"
+: "${HARBOR_FUSION_ROUND_ROUTER_DIR:?missing Router Claude frontend path}"
+: "${HARBOR_FUSION_ROUND_ROUTER_MOUNT_PATH:?missing Router mount target}"
+: "${HARBOR_FUSION_TASK_FILE_SOURCE:?missing task contract source}"
+: "${HARBOR_FUSION_TASK_FILE:?missing task contract mount target}"
 
-if [[ ! -f "$TB_FUSION_ROUND_ROUTER_DIR/subagent_barrier_gate.py" || ! -d "$TB_FUSION_ROUND_ROUTER_DIR/templates" ]]; then
-  echo "[ERROR] Router Claude frontend is incomplete: $TB_FUSION_ROUND_ROUTER_DIR" >&2
+if [[ ! -f "$HARBOR_FUSION_ROUND_ROUTER_DIR/subagent_barrier_gate.py" || ! -d "$HARBOR_FUSION_ROUND_ROUTER_DIR/templates" ]]; then
+  echo "[ERROR] Router Claude frontend is incomplete: $HARBOR_FUSION_ROUND_ROUTER_DIR" >&2
   exit 2
 fi
-if [[ ! -f "$TB_FUSION_TASK_FILE_SOURCE" ]]; then
-  echo "[ERROR] task contract source not found: $TB_FUSION_TASK_FILE_SOURCE" >&2
+if [[ ! -f "$HARBOR_FUSION_TASK_FILE_SOURCE" ]]; then
+  echo "[ERROR] task contract source not found: $HARBOR_FUSION_TASK_FILE_SOURCE" >&2
   exit 2
 fi
 
@@ -49,7 +49,7 @@ args=("$@")
 # command already carries NO_PROXY for Opik and wheel hosts; retain that value
 # and add the model gateway host for this scoped integration.
 gateway_host="$(
-  python3 - "${TB_ANTHROPIC_BASE_URL:-${BASE_URL:-}}" <<'PY'
+  python3 - "${HARBOR_ANTHROPIC_BASE_URL:-${BASE_URL:-}}" <<'PY'
 from urllib.parse import urlparse
 import sys
 
@@ -99,8 +99,8 @@ fi
 mounts_json="$(
   python3 "$MODEL_FUSION_DIR/harbor_worker_utils.py" \
     append-readonly-mounts "$mounts_json" \
-    --mount "$TB_FUSION_ROUND_ROUTER_DIR" "$TB_FUSION_ROUND_ROUTER_MOUNT_PATH" \
-    --mount "$TB_FUSION_TASK_FILE_SOURCE" "$TB_FUSION_TASK_FILE"
+    --mount "$HARBOR_FUSION_ROUND_ROUTER_DIR" "$HARBOR_FUSION_ROUND_ROUTER_MOUNT_PATH" \
+    --mount "$HARBOR_FUSION_TASK_FILE_SOURCE" "$HARBOR_FUSION_TASK_FILE"
 )"
 if ((mount_value_index >= 0)); then
   args[$mount_value_index]="$mounts_json"
@@ -109,12 +109,12 @@ else
 fi
 
 args+=(
-  --ae "TB_CLAUDE_CODE_AGENTS_JSON=${TB_CLAUDE_CODE_AGENTS_JSON:-}"
-  --ae "TB_FUSION_ROUND_GATE=${TB_FUSION_ROUND_GATE:-0}"
-  --ae "TB_FUSION_ROUND_GATE_PATH=${TB_FUSION_ROUND_GATE_PATH:-}"
-  --ae "TB_FUSION_ROUND_GATE_MODE=${TB_FUSION_ROUND_GATE_MODE:-mid-turn-fusion}"
-  --ae "TB_FUSION_TASK_FILE=$TB_FUSION_TASK_FILE"
-  --ae "FUSION_TASK_FILE=$TB_FUSION_TASK_FILE"
+  --ae "HARBOR_CLAUDE_CODE_AGENTS_JSON=${HARBOR_CLAUDE_CODE_AGENTS_JSON:-}"
+  --ae "HARBOR_FUSION_ROUND_GATE=${HARBOR_FUSION_ROUND_GATE:-0}"
+  --ae "HARBOR_FUSION_ROUND_GATE_PATH=${HARBOR_FUSION_ROUND_GATE_PATH:-}"
+  --ae "HARBOR_FUSION_ROUND_GATE_MODE=${HARBOR_FUSION_ROUND_GATE_MODE:-mid-turn-fusion}"
+  --ae "HARBOR_FUSION_TASK_FILE=$HARBOR_FUSION_TASK_FILE"
+  --ae "FUSION_TASK_FILE=$HARBOR_FUSION_TASK_FILE"
   --ae "SPAN_FORCE_MODE=${SPAN_FORCE_MODE:-mid-turn-fusion}"
   --ae "SPAN_FORCE_FUSION=${SPAN_FORCE_FUSION:-1}"
   --ae "SPAN_GATE_STATE_PATH=${SPAN_GATE_STATE_PATH:-}"
@@ -122,8 +122,8 @@ args+=(
   --ae "SPAN_HOOK_REASON_MAX_BYTES=${SPAN_HOOK_REASON_MAX_BYTES:-7000}"
   --ae "SPAN_PANEL_MODELS=${SPAN_PANEL_MODELS:-}"
   --ae "SPAN_PANEL_COUNT=${SPAN_PANEL_COUNT:-}"
-  --ae "SPAN_MID_TURN_MAX_FUSIONS_PER_TASK=${TB_FUSION_MAX_FUSIONS_PER_TASK:-1}"
-  --ae "SPAN_MID_TURN_PANEL_CALL_BUDGET=${TB_FUSION_PANEL_CALL_BUDGET:-}"
+  --ae "SPAN_MID_TURN_MAX_FUSIONS_PER_TASK=${HARBOR_FUSION_MAX_FUSIONS_PER_TASK:-1}"
+  --ae "SPAN_MID_TURN_PANEL_CALL_BUDGET=${HARBOR_FUSION_PANEL_CALL_BUDGET:-}"
 )
 
 exec "$REAL_OPIK_BIN" "${args[@]}"
