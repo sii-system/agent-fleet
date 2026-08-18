@@ -54,7 +54,7 @@ class HarborControllerFixerTest(FixerTestCase):
             encoding="utf-8",
         )
         (self.run_dir / "summary.txt").write_text(
-            "DATASET_NAME: smith\nDATASET: /datasets/swesmith\n",
+            "DATASET_NAME: smith\nDATASET: /datasets/swesmith\nMODEL: source-model\n",
             encoding="utf-8",
         )
         fixture_pi = write_fixture_pi(self.root / "fixture-pi")
@@ -65,6 +65,7 @@ class HarborControllerFixerTest(FixerTestCase):
                 "HARBOR_FIXER_MODEL": "fixture-model",
                 "HARBOR_FIXER_BASE_URL": "https://example.test/v1",
                 "HARBOR_FIXER_API_KEY": "fixture",
+                "HARBOR_FIXER_RERUN_TIMEOUT": "900",
             },
         )
         self.env.start()
@@ -138,6 +139,8 @@ class HarborControllerFixerTest(FixerTestCase):
             self.verify_mock.call_args.kwargs["dataset_path"],
             "/datasets/swesmith",
         )
+        self.assertEqual(self.verify_mock.call_args.kwargs["model"], "source-model")
+        self.assertEqual(self.verify_mock.call_args.kwargs["rerun_timeout"], 900)
         self.write_report_mock.assert_called_once()
         self.update_summary_mock.assert_called_once_with(
             self.run_dir / "analyzer" / "benchmark-summary.md",

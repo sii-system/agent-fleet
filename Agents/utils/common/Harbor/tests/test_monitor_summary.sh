@@ -31,6 +31,7 @@ start_monitor() {
     TERM=dumb \
     RUN_ID="monitor-summary-test" \
     AGENT="claude-code" \
+    MODEL="summary-model" \
     DATASET_NAME="auto" \
     DATASET_PATH="$TEST_TMP_DIR/dataset" \
     OUTPUT_PATH="$out" \
@@ -156,6 +157,7 @@ main() {
   local pattern
   for pattern in \
     '^finished_at: ' \
+    '^MODEL: +summary-model$' \
     '^total: +3$' \
     '^done: +2$' \
     '^failed: +1$' \

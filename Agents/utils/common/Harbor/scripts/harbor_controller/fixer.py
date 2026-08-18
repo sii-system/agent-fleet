@@ -201,7 +201,7 @@ def _runtime_config(
     workspace_root: Path,
     policy_rules_path: Path | None,
     policy_write_roots: list[Path],
-    dataset_config: dict[str, str],
+    benchmark_config: dict[str, str],
 ) -> dict[str, Any]:
     if not workspace_root.is_dir():
         raise ValueError(f"workspace root is not a directory: {workspace_root}")
@@ -214,8 +214,9 @@ def _runtime_config(
         "policy_write_roots": [
             str(path.resolve()) for path in dict.fromkeys(policy_write_roots)
         ],
-        "dataset_name": dataset_config["dataset_name"],
-        "dataset_path": dataset_config.get("dataset_path", ""),
+        "dataset_name": benchmark_config["dataset_name"],
+        "dataset_path": benchmark_config.get("dataset_path", ""),
+        "benchmark_model": benchmark_config["model"],
         "pi_bin": os.environ.get("HARBOR_FIXER_PI_BIN", "pi"),
         "pi_provider": os.environ.get("HARBOR_FIXER_PI_PROVIDER", "harbor-fixer"),
         "pi_model": os.environ.get("HARBOR_FIXER_MODEL") or os.environ.get("MODEL", ""),
@@ -224,6 +225,7 @@ def _runtime_config(
         "pi_api_key_env": "HARBOR_FIXER_API_KEY",
         "agent_timeout": _positive_env_int("HARBOR_FIXER_AGENT_TIMEOUT", 900),
         "execution_timeout": _positive_env_int("HARBOR_FIXER_EXECUTION_TIMEOUT", 300),
+        "rerun_timeout": _positive_env_int("HARBOR_FIXER_RERUN_TIMEOUT", 600),
         "summary_limit": _positive_env_int(
             "HARBOR_FIXER_SUMMARY_LIMIT",
             4000,
@@ -260,7 +262,7 @@ def _notification(run_dir: Path) -> dict[str, Any]:
     return read_json(run_dir / "monitor" / "user-notify-latest.json")
 
 
-def _benchmark_dataset_config(run_dir: Path) -> dict[str, str]:
+def _benchmark_run_config(run_dir: Path) -> dict[str, str]:
     summary_path = run_dir / "summary.txt"
     try:
         lines = summary_path.read_text(encoding="utf-8").splitlines()
@@ -271,11 +273,14 @@ def _benchmark_dataset_config(run_dir: Path) -> dict[str, str]:
         for key, prefix in (
             ("dataset_name", "DATASET_NAME:"),
             ("dataset_path", "DATASET:"),
+            ("model", "MODEL:"),
         ):
             if line.startswith(prefix):
                 values[key] = line.removeprefix(prefix).strip()
     if not values.get("dataset_name"):
         raise ValueError(f"benchmark summary does not identify the dataset: {summary_path}")
+    if not values.get("model"):
+        raise ValueError(f"benchmark summary does not identify the model: {summary_path}")
     return values
 
 
@@ -580,7 +585,7 @@ def start_fixer(
             workspace_root=workspace_root.resolve(),
             policy_rules_path=policy_rules_path,
             policy_write_roots=policy_write_roots or [],
-            dataset_config=_benchmark_dataset_config(run_dir),
+            benchmark_config=_benchmark_run_config(run_dir),
         )
         current = _load_optional_json(_state_path(run_dir))
         process_is_live = _active_process_is_live(run_dir)
@@ -760,6 +765,8 @@ def _finish_execution(
                 ),
                 dataset_name=str(config["dataset_name"]),
                 dataset_path=str(config["dataset_path"]),
+                model=str(config["benchmark_model"]),
+                rerun_timeout=int(config["rerun_timeout"]),
             )
         finally:
             process_record.unlink(missing_ok=True)

@@ -162,6 +162,7 @@ def run_command(
     timeout_seconds: float,
     dataset_name: str = "",
     dataset_path: str = "",
+    model: str = "",
 ) -> dict[str, Any]:
     skipped_reason = "" if should_run else "no_sampled_tasks"
     if not command or not should_run:
@@ -232,6 +233,8 @@ def run_command(
         env["DATASET_NAME"] = dataset_name
     if dataset_path:
         env["DATASET_PATH"] = dataset_path
+    if model:
+        env["HARBOR_MODEL"] = model
     started_at = _utc_now()
     started = time.monotonic()
     timed_out = False

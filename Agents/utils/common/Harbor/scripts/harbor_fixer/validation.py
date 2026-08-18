@@ -658,7 +658,7 @@ def validate_verification_input(payload: dict[str, Any]) -> None:
         "output_dir",
     ):
         require_string(payload.get(key), key)
-    for key in ("dataset_name", "dataset_path"):
+    for key in ("dataset_name", "dataset_path", "model"):
         if key in payload:
             require_string(payload.get(key), key, allow_empty=True)
     require_enum(payload.get("monitor_policy"), "monitor_policy", MONITOR_POLICIES)

@@ -172,6 +172,7 @@ render_report() {
   echo "AGENT:       $AGENT"
   echo "DATASET_NAME: $(harbor_dataset_kind)"
   echo "DATASET:     $DATASET_PATH"
+  echo "MODEL:       $HARBOR_MODEL"
   echo "OUTPUT_PATH: $OUTPUT_PATH"
   echo "TASK_FILE:   $TASK_FILE"
   echo "QUEUE_DIR:   $QUEUE_DIR"
@@ -186,7 +187,6 @@ render_report() {
     echo "LOCAL_WHEEL_LOG: $LOCAL_DEPS_LOG_FILE"
   else
     echo "OPENCODE_VERSION: $OPENCODE_VERSION"
-    echo "MODEL:       $HARBOR_MODEL"
     prep_status="unknown"
     [[ -f "$HARBOR_RUNNER_PREPARE_STATUS_FILE" ]] && prep_status="$(cat "$HARBOR_RUNNER_PREPARE_STATUS_FILE" 2>/dev/null || true)"
     echo "RUNNER_CLI_PREP: $prep_status"

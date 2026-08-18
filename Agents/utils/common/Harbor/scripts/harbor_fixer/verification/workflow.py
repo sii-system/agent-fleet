@@ -58,6 +58,7 @@ def build_verification_input(
     verification_task_limit_per_plan: int = 2,
     dataset_name: str = "",
     dataset_path: str = "",
+    model: str = "",
 ) -> dict[str, Any]:
     fix_plan = read_json(fix_plan_path)
     exec_result = read_json(exec_result_path)
@@ -88,6 +89,7 @@ def build_verification_input(
         "verification_task_limit_per_plan": verification_task_limit_per_plan,
         "dataset_name": dataset_name,
         "dataset_path": dataset_path,
+        "model": model,
         "fix_plan": fix_plan,
         "exec_result": exec_result,
     }
@@ -125,6 +127,7 @@ def run_verification(
         should_run=bool(selected),
         dataset_name=str(verification_input.get("dataset_name") or ""),
         dataset_path=str(verification_input.get("dataset_path") or ""),
+        model=str(verification_input.get("model") or ""),
         timeout_seconds=int(
             verification_input.get(
                 "rerun_timeout", DEFAULT_RERUN_TIMEOUT_SECONDS
@@ -340,6 +343,7 @@ def run_verification_from_paths(
     verification_task_limit_per_plan: int = 2,
     dataset_name: str = "",
     dataset_path: str = "",
+    model: str = "",
 ) -> dict[str, Any]:
     _prepare_verification_output(output_dir)
     payload = build_verification_input(
@@ -356,5 +360,6 @@ def run_verification_from_paths(
         verification_task_limit_per_plan=verification_task_limit_per_plan,
         dataset_name=dataset_name,
         dataset_path=dataset_path,
+        model=model,
     )
     return run_verification(payload, output_dir)

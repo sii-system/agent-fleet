@@ -349,6 +349,7 @@ assert_registry_summary() {
   for pattern in \
     '^status: +complete$' \
     '^DATASET_NAME: codepde@1\.0$' \
+    '^MODEL: +fake-model$' \
     '^harbor_exit_code: 0$' \
     '^total: +2$' \
     '^completed: +2$' \

@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 import tempfile
 import uuid
 from pathlib import Path
@@ -18,6 +19,31 @@ from harbor_controller.fixer import (
     reset_fixer_control,
     start_fixer,
 )
+
+
+def _exec_with_repository_config() -> None:
+    repo_root = Path(__file__).resolve().parents[5]
+    if os.environ.get("AGENT_FLEET_CONFIG_LOADED_ROOT") == str(repo_root):
+        return
+    loader = repo_root / "scripts" / "config_loader.sh"
+    command = (
+        'set -euo pipefail; source "$1"; agent_fleet_load_config "$2"; '
+        'python_bin="$3"; shift 3; exec "$python_bin" "$@"'
+    )
+    os.execvp(
+        "bash",
+        [
+            "bash",
+            "-c",
+            command,
+            "controller-config",
+            str(loader),
+            str(repo_root),
+            sys.executable,
+            str(Path(__file__).resolve()),
+            *sys.argv[1:],
+        ],
+    )
 
 
 def _load_json(path: Path) -> dict[str, Any]:
@@ -189,4 +215,5 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    _exec_with_repository_config()
     raise SystemExit(main())
