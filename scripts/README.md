@@ -384,7 +384,7 @@ when a taskset is missing or ambiguous—including when only task names are
 provided—or the prompt contains requirements that FleetSpec v1 cannot
 represent.
 
-Prompt mode supports `claude-code` and `opencode` for Harbor tasksets and
+Prompt mode supports `claude-code`, `opencode`, and `pi` for Harbor tasksets and
 `openclaw` for `pinchbench` or `clawbio`. It reports other requested agents as
 unsupported instead of producing a spec that would fail after Harbor starts. A
 Prompt batch may contain at most one OpenClaw run because those runners share
@@ -485,7 +485,7 @@ interfaces:
 - Each requested run in a Prompt must identify one unambiguous taskset;
   distinct runs may use distinct tasksets. A Prompt may request at most 16
   runs.
-- Prompt mode supports `claude-code` and `opencode` for Harbor tasksets and
+- Prompt mode supports `claude-code`, `opencode`, and `pi` for Harbor tasksets and
   `openclaw` for `pinchbench` or `clawbio`. Other agents, including
   Terminus-2, are rejected.
 - `pinchbench` and `clawbio` always use OpenClaw. Prompt mode rejects a
@@ -595,8 +595,9 @@ When invoked inside a container, the launcher warns and delegates directly to
   globally as root, then transfers the controller home directory to that user.
   The wrapper maps that user's UID/GID to the calling host user so it can write
   result files to the mounted checkout without changing host file ownership.
-  Nested Harbor task containers continue to install and run Claude Code when
-  `agent=claude-code` is selected.
+  Nested Harbor task containers install and run the selected agent. Pi uses
+  the same pinned fork as the controller and installs from the mounted local
+  dependency cache when `agent=pi` is selected.
 - The default image uses the pinned Debian 12 slim base and bakes in Docker
   Engine plus the Harbor runner environment. Its fingerprint changes
   with the Dockerfile, entrypoint, dependency manifest, or build image references.
@@ -634,8 +635,8 @@ When invoked inside a container, the launcher warns and delegates directly to
 - **Intranet / offline hosts**: setup.sh installs Node.js via nvm and Pi via npm,
   both reaching the public internet. On a network without public access,
   install Node.js >= 22.19 and the pinned Pi package manually first. Benchmark
-  containers still pull Claude Code by default; provide a local Claude package
-  at setup time:
+  containers prepare the selected agent's package cache before a run. For
+  Claude Code, a local package can be provided at setup time:
   ```bash
   CLAUDE_TGZ_SOURCE=/path/to/claude-code.tgz \
   CLAUDE_WHEEL_DIR_SOURCE=/path/to/wheels/ \

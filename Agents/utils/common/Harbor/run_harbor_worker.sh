@@ -51,6 +51,10 @@ stream_opencode_log() {
   python3 "$SCRIPT_DIR/harbor_worker_utils.py" stream-opencode-log "$1"
 }
 
+stream_pi_log() {
+  python3 "$SCRIPT_DIR/harbor_worker_utils.py" stream-pi-log "$1"
+}
+
 seta_online_early_stop_enabled() {
   [[ "$HARBOR_ONLINE_ANALYSIS" == "1" ]] \
     && [[ "$HARBOR_EARLY_STOP" == "1" ]] \
@@ -133,11 +137,13 @@ finalize_timeout_trace() {
   if harbor_agent_is_opencode; then
     "$py" "$HARBOR_OPENCODE_DIR/finalize_opencode_sessions.py" \
       --status timeout --logs-dir "$logs_dir" >> "$WORKER_LOG" 2>&1 || true
-  else
+  elif harbor_agent_is_claude_code || harbor_agent_is_oracle; then
     python3 "$SCRIPT_DIR/harbor_worker_utils.py" prepare-claude-timeout-backup \
       "$logs_dir" --project-name "$OPIK_PROJECT_NAME" >> "$WORKER_LOG" 2>&1 || true
     "$py" "$TRACE_PLUGIN_CLAUDE_HOOK_SOURCE" \
       ReplayTimeout --logs-dir "$logs_dir" >> "$WORKER_LOG" 2>&1 || true
+  else
+    log_msg "timeout finalize skipped: Pi has no realtime Opik replay hook"
   fi
 }
 
@@ -162,6 +168,10 @@ run_claimed_task() {
 
     if harbor_agent_is_opencode; then
       export OPENCODE_VERSION OPENCODE_CONFIG_CONTENT
+    elif harbor_agent_is_pi; then
+      export PI_PROVIDER PI_VERSION PI_TGZ_BASENAME PI_NODE_RUNTIME_BASENAME PI_RUNTIME_BASENAME PI_THINKING_LEVEL
+      export PI_MODELS_CONFIG PI_SETTINGS_CONFIG LOCAL_WHEEL_DIR
+      export TB_LOCAL_WHEEL_SERVER_URL LOCAL_WHEEL_PORT
     else
       export CC_OPIK_DEBUG
       export CLAUDE_CODE_VERSION CLAUDE_CODE_TGZ_BASENAME LOCAL_WHEEL_DIR
@@ -219,6 +229,9 @@ while true; do
       AGENT_TAIL_PID="$!"
     elif [[ "$AGENT" == "opencode" ]]; then
       stream_opencode_log "$task_jobs_root" &
+      AGENT_TAIL_PID="$!"
+    elif [[ "$AGENT" == "pi" ]]; then
+      stream_pi_log "$task_jobs_root" &
       AGENT_TAIL_PID="$!"
     fi
   fi

@@ -18,6 +18,7 @@ class HarborOpikE2BSmokeTest(unittest.TestCase):
         environment_type: str,
         agent: str = "oracle",
         prebuilt_template: str = "",
+        extra_env: dict[str, str] | None = None,
     ) -> subprocess.CompletedProcess[str]:
         with tempfile.TemporaryDirectory() as root:
             root_path = Path(root)
@@ -54,6 +55,8 @@ class HarborOpikE2BSmokeTest(unittest.TestCase):
                     "PATH": f"{tools_path}:{env.get('PATH', '')}",
                 }
             )
+            if extra_env:
+                env.update(extra_env)
             completed = subprocess.run(
                 ["bash", str(SCRIPT)],
                 env=env,
@@ -93,6 +96,24 @@ class HarborOpikE2BSmokeTest(unittest.TestCase):
         self.assertEqual(completed.returncode, 0, completed.stdout)
         self.assertIn("[INFO] environment: e2b", completed.stdout)
         self.assertIn("skip unprivileged Docker Compose overlay", completed.stdout)
+
+    def test_pi_e2b_fails_cleanly_with_clear_message(self) -> None:
+        completed = self.run_dry_run(
+            "e2b", "pi", extra_env={"E2B_API_KEY": "fake-e2b-key"}
+        )
+
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn(
+            "AGENT=pi with TB_ENVIRONMENT_TYPE=e2b is not supported",
+            completed.stdout,
+        )
+        self.assertIn("use TB_ENVIRONMENT_TYPE=docker", completed.stdout)
+
+    def test_pi_docker_dry_run_still_builds_command(self) -> None:
+        completed = self.run_dry_run("docker", "pi")
+        self.assertEqual(completed.returncode, 0, completed.stdout)
+        self.assertIn("[INFO] pi version: 0.81.1 | thinking: high", completed.stdout)
+        self.assertIn("agent_import_path: pi_harbor:AgentFleetPi", completed.stdout)
         self.assertNotIn("--extra-docker-compose", completed.stdout)
 
     def test_oracle_startup_prepares_only_runner(self) -> None:

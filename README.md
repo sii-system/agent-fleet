@@ -81,7 +81,7 @@ for the full format.
 | --- | --- | --- |
 | `--taskset` | `-t` | Taskset to run ([available tasksets](./scripts/README.md#fleet-launch-modes)) |
 | `--task` | — | Exact task name(s), comma-separated or repeated |
-| `--agent` | `-a` | `claude-code`, `opencode`, or `openclaw` |
+| `--agent` | `-a` | `claude-code`, `opencode`, `pi`, or `openclaw` |
 | `--workers` | `-n` | Concurrency |
 | `--prompt` | `-p` | Natural-language run request (AI mode) |
 | `--spec` | `-s` | FleetSpec file(s) |

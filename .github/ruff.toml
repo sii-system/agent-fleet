@@ -7,3 +7,4 @@ external = ["E402", "N802"]
 # Tests use explicit line lists to keep multiline fixtures readable.
 "**/tests/*.py" = ["FLY002"]
 "Agents/Harbor-opencode/__init__.py" = ["N999"]
+"Agents/Harbor-pi/__init__.py" = ["N999"]

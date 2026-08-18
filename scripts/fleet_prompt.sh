@@ -92,7 +92,7 @@ agent unless the user explicitly requests openclaw. If another agent is
 requested for either taskset, return ready=false.
 
 Harbor tasksets include seta, smith, terminalbench21, sweverify, registry ids,
-and explicit local paths. Supported Harbor agents are claude-code and opencode.
+and explicit local paths. Supported Harbor agents are claude-code, opencode, and pi.
 If another Harbor agent, including Terminus-2, is requested, return ready=false.
 Preserve explicit registry ids and local paths exactly.
 Copy task names exactly as written. Join multiple explicit names with commas.
@@ -136,7 +136,7 @@ read -r -d '' OUTPUT_SCHEMA <<'JSON' || true
           "schema_version": {"const": 1},
           "taskset": {"type": "string"},
           "task": {"type": "string"},
-          "agent": {"enum": ["claude-code", "opencode", "openclaw"]},
+          "agent": {"enum": ["claude-code", "opencode", "pi", "openclaw"]},
           "workers": {"type": "integer", "minimum": 1, "maximum": 4096}
         }
       }
@@ -191,7 +191,7 @@ if ! specs="$(jq -ce -L "$SCRIPT_DIR" '
   def prompt_agent_supported:
     if .taskset == "pinchbench" or .taskset == "clawbio"
     then ((has("agent") | not) or .agent == "openclaw")
-    else ((has("agent") | not) or .agent == "claude-code" or .agent == "opencode")
+    else ((has("agent") | not) or .agent == "claude-code" or .agent == "opencode" or .agent == "pi")
     end;
   .specs | map(
     fleet_spec_v1 |

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -63,6 +64,26 @@ class HarborWorkerUtilsTest(unittest.TestCase):
             self.assertEqual(found.stdout.strip(), "OnlineAnalysisEarlyStop:docker-build-step-failed")
             self.assertNotEqual(missing.returncode, 0)
             self.assertEqual(missing.stdout, "")
+
+    def test_stream_pi_log_bounded_wait_reports_missing_log(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            env = os.environ.copy()
+            env["PI_STREAM_WAIT_SECONDS"] = "1"
+            env["PI_STREAM_MAX_WAIT_SECONDS"] = "2"
+            completed = subprocess.run(
+                [sys.executable, str(SCRIPT), "stream-pi-log", root],
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                env=env,
+                text=True,
+                timeout=10,
+            )
+
+            self.assertNotEqual(completed.returncode, 0)
+            self.assertIn("agent/pi.txt still not present", completed.stdout)
+            self.assertIn("pi setup truly failed", completed.stdout)
+            self.assertNotIn("pi install may have failed", completed.stdout)
 
 
 if __name__ == "__main__":

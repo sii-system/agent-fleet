@@ -1,6 +1,7 @@
 # Harbor Runner
 
-This directory contains the shared Harbor runner for Claude Code and OpenCode.
+This directory contains the shared Harbor runner for Claude Code, OpenCode,
+and Pi.
 
 For YiCloud OpenSandbox, start with the
 [OpenSandbox quick start](OPENSANDBOX_README.md). For qz (SII Inspire)
@@ -63,7 +64,7 @@ OPIK_PROJECT_NAME=your-project-name
 Then edit the run parameters in `env.sh`:
 
 ```bash
-AGENT="claude-code"        # claude-code or opencode
+AGENT="claude-code"        # claude-code, opencode, or pi
 DATASET_NAME="seta"        # built-in Harbor registry alias
 TOTAL_WORKERS="80"
 TB_N_CONCURRENT="80"
@@ -78,10 +79,12 @@ HARBOR_TOP_P=0.9
 HARBOR_MAX_TOKENS=8192
 ```
 
-`HARBOR_MAX_TOKENS` also applies to Claude Code. Claude Code does not expose
-temperature or top-p controls, so the runner rejects those two settings when
-`AGENT=claude-code` instead of silently ignoring them. Rollout mode keeps its
-separate `RL_TEMPERATURE`, `RL_TOP_P`, and `RL_MAX_NEW_TOKENS` interface.
+`HARBOR_MAX_TOKENS` also applies to Claude Code and Pi. Neither exposes
+temperature or top-p controls, so the runner rejects those two settings for
+`AGENT=claude-code` and `AGENT=pi` instead of silently ignoring them. The Pi
+provider derives from `BASE_URL` when `PI_PROVIDER` is unset. Rollout mode
+keeps its separate `RL_TEMPERATURE`, `RL_TOP_P`, and `RL_MAX_NEW_TOKENS`
+interface.
 
 When `TRACE_TO_OPIK=true` (the default), the Opik tracing plugin is loaded from
 the `third_party/agent-opik-plugin` submodule. Initialize it before a traced run:

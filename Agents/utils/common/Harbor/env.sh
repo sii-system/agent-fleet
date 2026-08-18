@@ -22,19 +22,21 @@ AGENTS_DIR="${AGENTS_DIR:-$REPO_ROOT/Agents}"
 TASKS_DIR="${TASKS_DIR:-$REPO_ROOT/Tasks}"
 HARBOR_CLAUDE_CODE_DIR="${HARBOR_CLAUDE_CODE_DIR:-$AGENTS_DIR/Harbor-claude-code}"
 HARBOR_OPENCODE_DIR="${HARBOR_OPENCODE_DIR:-$AGENTS_DIR/Harbor-opencode}"
+HARBOR_PI_DIR="${HARBOR_PI_DIR:-$AGENTS_DIR/Harbor-pi}"
 WORKSPACE_DIR="${WORKSPACE_DIR:-/workspace}"
 
 RUN_ID="${RUN_ID:-$(date +%Y-%m-%d-%H%M)-harbor-tui}"
 TOTAL_WORKERS="${TOTAL_WORKERS:-10}"
 N_ATTEMPTS="${N_ATTEMPTS:-1}"
 MAX_RETRIES="${MAX_RETRIES:-${TB_MAX_RETRIES:-2}}"
-# AGENT selects the runner: claude-code (default) or opencode.
+# AGENT selects the runner: claude-code (default), opencode, or pi.
 AGENT="${AGENT:-claude-code}"
 MODEL="${MODEL:-minimax2.7}"
 _HARBOR_EFFECTIVE_MODEL="${TB_MODEL:-$MODEL}"
 # OpenCode requires provider/model for custom providers. Keep MODEL shared with
 # claude-code, and only add this prefix when AGENT=opencode.
 OPENCODE_PROVIDER="${OPENCODE_PROVIDER:-custom}"
+PI_PROVIDER="${PI_PROVIDER:-}"
 
 HARBOR_ROOT="${HARBOR_ROOT:-/workspace/harbor}"
 # Dataset selection:
@@ -178,6 +180,11 @@ CC_OPIK_DEBUG="${CC_OPIK_DEBUG:-true}"
 
 CLAUDE_CODE_VERSION="${CLAUDE_CODE_VERSION:-${TB_AK_VERSION:-2.1.90}}"
 CLAUDE_CODE_TGZ_BASENAME="${CLAUDE_CODE_TGZ_BASENAME:-claude-code-${CLAUDE_CODE_VERSION}.tgz}"
+PI_VERSION="${PI_VERSION:-0.81.1}"
+PI_TGZ_BASENAME="${PI_TGZ_BASENAME:-pi-coding-agent-${PI_VERSION}.tgz}"
+PI_NODE_RUNTIME_BASENAME="${PI_NODE_RUNTIME_BASENAME:-pi-node-runtime.tar.gz}"
+PI_RUNTIME_BASENAME="${PI_RUNTIME_BASENAME:-pi-runtime-${PI_VERSION}.tar.gz}"
+PI_THINKING_LEVEL="${PI_THINKING_LEVEL:-high}"
 LOCAL_WHEEL_DIR="${LOCAL_WHEEL_DIR:-$AGENT_FLEET_CACHE_DIR/harbor-deps}"
 LOCAL_WHEEL_PORT="${LOCAL_WHEEL_PORT:-18765}"
 LOCAL_WHEEL_PORT_ATTEMPTS="${LOCAL_WHEEL_PORT_ATTEMPTS:-3}"
@@ -226,9 +233,26 @@ TB_LIMIT="${TB_LIMIT:-}"
 TB_RUNS="${TB_RUNS:-$N_ATTEMPTS}"
 TB_AGENT="${TB_AGENT:-$AGENT}"
 TB_AGENT_IMPORT_PATH="${TB_AGENT_IMPORT_PATH:-}"
+if [[ "$AGENT" == "pi" && -z "$TB_AGENT_IMPORT_PATH" ]]; then
+  TB_AGENT_IMPORT_PATH="pi_harbor:AgentFleetPi"
+fi
 TB_MODEL="${TB_MODEL:-$_HARBOR_EFFECTIVE_MODEL}"
+if [[ "$AGENT" == "pi" && -z "$PI_PROVIDER" && -n "$BASE_URL" ]]; then
+  # No placeholder name: derive the provider from the BASE_URL host,
+  # matching env.py's build_pi_models_config.
+  PI_PROVIDER="$(python3 - "$BASE_URL" <<'PY'
+from urllib.parse import urlparse
+import sys
+
+print((urlparse(sys.argv[1]).hostname or "").lower())
+PY
+)"
+fi
 if [[ "$AGENT" == "opencode" && "$TB_MODEL" != */* && -n "$OPENCODE_PROVIDER" ]]; then
   TB_MODEL="${OPENCODE_PROVIDER}/${TB_MODEL}"
+fi
+if [[ "$AGENT" == "pi" && "$TB_MODEL" != */* && -n "$PI_PROVIDER" ]]; then
+  TB_MODEL="${PI_PROVIDER}/${TB_MODEL}"
 fi
 INCLUDE_TASKS="${INCLUDE_TASKS:-${TB_INCLUDE_TASKS:-}}"
 TB_DRY_RUN="${TB_DRY_RUN:-0}"
@@ -252,6 +276,27 @@ if [[ "$ROLLOUT" == "1" ]]; then
   HARBOR_TEMPERATURE=""
   HARBOR_TOP_P=""
   HARBOR_MAX_TOKENS=""
+fi
+PI_MODELS_CONFIG="${PI_MODELS_CONFIG:-}"
+PI_SETTINGS_CONFIG="${PI_SETTINGS_CONFIG:-}"
+if [[ "$AGENT" == "pi" ]]; then
+  if [[ -z "$PI_MODELS_CONFIG" ]]; then
+    PI_MODELS_CONFIG="$(
+      PI_PROVIDER="$PI_PROVIDER" \
+      TB_MODEL="$TB_MODEL" \
+      BASE_URL="$BASE_URL" \
+      HARBOR_MAX_TOKENS="$HARBOR_MAX_TOKENS" \
+        python3 "$SCRIPT_DIR/env.py" pi-models-config
+    )"
+  fi
+  if [[ -z "$PI_SETTINGS_CONFIG" ]]; then
+    PI_SETTINGS_CONFIG="$(
+      PI_PROVIDER="$PI_PROVIDER" \
+      TB_MODEL="$TB_MODEL" \
+      PI_THINKING_LEVEL="$PI_THINKING_LEVEL" \
+        python3 "$SCRIPT_DIR/env.py" pi-settings-config
+    )"
+  fi
 fi
 if [[ -z "${TB_LLM_KWARGS:-}" ]]; then
   TB_LLM_KWARGS="$(
@@ -530,13 +575,14 @@ fi
 HARBOR_OPENSANDBOX_BUILD_USE_PROXY="${HARBOR_OPENSANDBOX_BUILD_USE_PROXY:-0}"
 HARBOR_OPENSANDBOX_IMAGE_MANAGER="${HARBOR_OPENSANDBOX_IMAGE_MANAGER:-$SCRIPT_DIR/opensandbox_image_manager.py}"
 
-export SCRIPT_DIR REPO_ROOT AGENTS_DIR TASKS_DIR HARBOR_CLAUDE_CODE_DIR HARBOR_OPENCODE_DIR WORKSPACE_DIR RUN_ID TOTAL_WORKERS N_ATTEMPTS MODEL AGENT MAX_RETRIES
+export SCRIPT_DIR REPO_ROOT AGENTS_DIR TASKS_DIR HARBOR_CLAUDE_CODE_DIR HARBOR_OPENCODE_DIR HARBOR_PI_DIR WORKSPACE_DIR RUN_ID TOTAL_WORKERS N_ATTEMPTS MODEL AGENT MAX_RETRIES
 export HARBOR_ROOT DATASET_PATH DATASET_NAME METRIC_MODE OUTPUT_ROOT OUTPUT_PATH TASK_SOURCE_FILE TASK_FILE FLEET_TASKS QUEUE_DIR RUNTIME_DIR LAYOUT_FILE JOBS_ROOT
 export HARBOR_ONLINE_ANALYSIS HARBOR_ONLINE_ANALYSIS_POLL_INTERVAL HARBOR_ONLINE_ANALYSIS_DIR HARBOR_ONLINE_ANALYSIS_PID_FILE HARBOR_ONLINE_ANALYSIS_LOG_FILE HARBOR_EARLY_STOP HARBOR_ZELLIJ_CLOSE_ON_COMPLETE HARBOR_ZELLIJ_KEEP_ON_FAILURE
 export HARBOR_MONITOR_ENABLED HARBOR_MONITOR_DIR HARBOR_MONITOR_PID_FILE HARBOR_MONITOR_LOG_FILE HARBOR_BENCHMARK_PID_FILE HARBOR_BENCHMARK_EXIT_FILE HARBOR_JOB_DIR_FILE HARBOR_MONITOR_RESTART_CMD HARBOR_MONITOR_STOP_CMD HARBOR_MONITOR_INTERVAL HARBOR_MONITOR_STARTUP_GRACE HARBOR_MONITOR_STALL_SECONDS HARBOR_MONITOR_MAX_RETRIES HARBOR_MONITOR_CONFIGURED_TIMEOUT
 export API_KEY BASE_URL HARBOR_ANALYZER_API_KEY HARBOR_ANALYZER_BASE_URL HARBOR_ANALYZER_MODEL HARBOR_ANALYZER_PI_PROVIDER HARBOR_ANALYZER_NO_PROXY HARBOR_ANALYZER_ENABLED HARBOR_ANALYZER_MODE HARBOR_ANALYZER_OUTPUT_DIR HARBOR_ANALYZER_PID_FILE HARBOR_ANALYZER_SUPERVISOR_PID_FILE HARBOR_ANALYZER_SUPERVISOR_ID_FILE HARBOR_ANALYZER_LOG_FILE HARBOR_ANALYZER_POLL_INTERVAL HARBOR_ANALYZER_TIMEOUT HARBOR_ANALYZER_MAX_CONCURRENCY HARBOR_FIXER_API_KEY HARBOR_FIXER_BASE_URL HARBOR_FIXER_MODEL HARBOR_FIXER_PI_BIN HARBOR_FIXER_PI_PROVIDER HARBOR_FIXER_NO_PROXY HARBOR_FIXER_AGENT_TIMEOUT HARBOR_FIXER_EXECUTION_TIMEOUT HARBOR_FIXER_SUMMARY_LIMIT HARBOR_FIXER_MAX_CONCURRENCY HARBOR_FIXER_MAX_TASK_SUMMARY_CHARS HARBOR_FIXER_MAX_TASK_SUMMARIES_CHARS TRACE_TO_OPIK OPIK_URL OPIK_URL_OVERRIDE OPIK_BASE OPIK_MODE OPIK_PROJECT_NAME OPIK_API_KEY OPIK_WORKSPACE CC_OPIK_DEBUG
 export HARBOR_RUN_TIMESTAMP HARBOR_SESSION_TIMESTAMP HARBOR_RUN_AGENT_NAME HARBOR_RUN_DATASET_NAME HARBOR_RUN_MODEL_NAME HARBOR_ZELLIJ_SESSION_NAME
 export CLAUDE_CODE_VERSION CLAUDE_CODE_TGZ_BASENAME LOCAL_WHEEL_DIR LOCAL_WHEEL_PORT LOCAL_WHEEL_PORT_ATTEMPTS LOCAL_WHEEL_HOST_IP
+export PI_PROVIDER PI_VERSION PI_TGZ_BASENAME PI_NODE_RUNTIME_BASENAME PI_RUNTIME_BASENAME PI_THINKING_LEVEL PI_MODELS_CONFIG PI_SETTINGS_CONFIG
 export TB_LOCAL_WHEEL_SERVER_URL TB_LOCAL_CLAUDE_TGZ_URL TB_REMOTE_WHEEL_SERVER_URLS EFFECTIVE_WHEEL_URL_FILE EFFECTIVE_CLAUDE_TGZ_URL_FILE LOCAL_DEPS_LOG_FILE HARBOR_RUNNER_PREPARE HARBOR_RUNNER_IMAGE_DIR HARBOR_RUNNER_HOST_DIR HARBOR_RUNNER_PYTHON_VERSION HARBOR_RUNNER_DIR HARBOR_OPIK_BIN HARBOR_CLI_BIN HARBOR_OPIK_PYTHON HARBOR_RUNNER_REQUIREMENTS HARBOR_RUNNER_PREPARE_STATUS_FILE HARBOR_RUNNER_PREPARE_LOG_FILE
 export TB_DATASET_GIT_URL TB_PATH TB_LIMIT TB_RUNS TB_AGENT TB_AGENT_IMPORT_PATH TB_MODEL INCLUDE_TASKS TB_DRY_RUN MIN_TEST MIN_TEST_INCLUDE_TASK
 export TB_ENVIRONMENT_TYPE TB_ENVIRONMENT_SPEC HARBOR_OPENSANDBOX_IMAGE_REF HARBOR_OPENSANDBOX_REGISTRY HARBOR_OPENSANDBOX_IMAGE_REPOSITORY HARBOR_OPENSANDBOX_SANDBOX_IMAGE_PREFIX HARBOR_OPENSANDBOX_DOCKER_CONFIG HARBOR_OPENSANDBOX_IMAGE_CACHE_ROOT HARBOR_OPENSANDBOX_IMAGE_PLATFORM HARBOR_OPENSANDBOX_IMAGE_TAG_PREFIX HARBOR_OPENSANDBOX_DOCKERHUB_MIRROR_PREFIX HARBOR_OPENSANDBOX_APT_MIRROR HARBOR_OPENSANDBOX_BUILD_ARGS_JSON HARBOR_OPENSANDBOX_BUILD_USE_PROXY HARBOR_OPENSANDBOX_IMAGE_MANAGER
@@ -574,15 +620,35 @@ harbor_agent_is_claude_code() {
   [[ "$AGENT" == "claude-code" ]]
 }
 
+harbor_agent_is_pi() {
+  [[ "$AGENT" == "pi" ]]
+}
+
+harbor_agent_tgz_basename() {
+  if harbor_agent_is_opencode; then
+    printf '%s\n' "$OPENCODE_TGZ_BASENAME"
+  elif harbor_agent_is_pi; then
+    printf '%s\n' "$PI_RUNTIME_BASENAME"
+  else
+    printf '%s\n' "$CLAUDE_CODE_TGZ_BASENAME"
+  fi
+}
+
 harbor_validate_generation_controls() {
   if [[ -n "$HARBOR_MAX_TOKENS" && ! "$HARBOR_MAX_TOKENS" =~ ^[1-9][0-9]*$ ]]; then
     echo "[ERROR] HARBOR_MAX_TOKENS must be a positive integer." >&2
     return 1
   fi
   if [[ "$ROLLOUT" != "1" ]] \
-    && harbor_agent_is_claude_code \
+    && { harbor_agent_is_claude_code || harbor_agent_is_pi; } \
     && [[ -n "$HARBOR_TEMPERATURE" || -n "$HARBOR_TOP_P" ]]; then
-    echo "[ERROR] Claude Code does not expose temperature or top_p controls." >&2
+    local agent_display="$AGENT"
+    if harbor_agent_is_claude_code; then
+      agent_display="Claude Code"
+    elif harbor_agent_is_pi; then
+      agent_display="Pi"
+    fi
+    echo "[ERROR] $agent_display does not expose temperature or top_p controls." >&2
     echo "[ERROR] Use AGENT=opencode for these settings, or leave them unset." >&2
     return 1
   fi
@@ -658,9 +724,9 @@ harbor_agent_is_oracle() {
 
 harbor_validate_agent() {
   case "$AGENT" in
-    claude-code|opencode|oracle) ;;
+    claude-code|opencode|pi|oracle) ;;
     *)
-      echo "[ERROR] AGENT must be claude-code, opencode, or oracle, got: $AGENT" >&2
+      echo "[ERROR] AGENT must be claude-code, opencode, pi, or oracle, got: $AGENT" >&2
       exit 1
       ;;
   esac
@@ -670,6 +736,15 @@ harbor_validate_agent() {
       echo "[WARN] AGENT=opencode but OPENCODE_CONFIG_CONTENT is empty;" >&2
       echo "[WARN] opencode will fall back to ANTHROPIC_* env if provided." >&2
     fi
+  fi
+  if harbor_agent_is_pi; then
+    case "$PI_THINKING_LEVEL" in
+      off|minimal|low|medium|high|xhigh) ;;
+      *)
+        echo "[ERROR] PI_THINKING_LEVEL must be off, minimal, low, medium, high, or xhigh." >&2
+        exit 1
+        ;;
+    esac
   fi
 }
 
@@ -1102,15 +1177,15 @@ harbor_ensure_local_wheels_server() {
   for port in $(seq "$LOCAL_WHEEL_PORT" "$last_port"); do
     export TB_LOCAL_WHEEL_SERVER_URL="http://${LOCAL_WHEEL_HOST_IP}:${port}"
     export TB_LOCAL_CLAUDE_TGZ_URL="${TB_LOCAL_WHEEL_SERVER_URL%/}/${CLAUDE_CODE_TGZ_BASENAME}"
-    local agent_tgz="$CLAUDE_CODE_TGZ_BASENAME"
-    if harbor_agent_is_opencode; then
-      agent_tgz="$OPENCODE_TGZ_BASENAME"
-    fi
+    local agent_tgz
+    agent_tgz="$(harbor_agent_tgz_basename)"
 
     # Treat wheel servers without the selected agent tgz as incomplete.
     local urls=("${TB_LOCAL_WHEEL_SERVER_URL%/}/manifest.txt" "${TB_LOCAL_WHEEL_SERVER_URL%/}/${agent_tgz}")
     if harbor_agent_is_opencode; then
       urls+=("${TB_LOCAL_WHEEL_SERVER_URL%/}/${OPENCODE_LINUX_X64_TGZ_BASENAME}")
+    elif harbor_agent_is_pi; then
+      urls+=("${TB_LOCAL_WHEEL_SERVER_URL%/}/${PI_NODE_RUNTIME_BASENAME}")
     else
       urls+=("${TB_LOCAL_WHEEL_SERVER_URL%/}/npm-cache-ready")
     fi
@@ -1165,7 +1240,8 @@ harbor_url_is_reachable() {
 
 harbor_manifest_url_ready() {
   local url="$1"
-  python3 "$SCRIPT_DIR/env.py" manifest-url-ready "$url"
+  local required_line="${2:-}"
+  python3 "$SCRIPT_DIR/env.py" manifest-url-ready "$url" "$required_line"
 }
 
 harbor_gzip_file_ready() {
@@ -1189,6 +1265,11 @@ harbor_local_cache_ready() {
       if harbor_agent_is_opencode; then
         harbor_gzip_file_ready "$LOCAL_WHEEL_DIR/${OPENCODE_TGZ_BASENAME}" \
           && harbor_gzip_file_ready "$LOCAL_WHEEL_DIR/${OPENCODE_LINUX_X64_TGZ_BASENAME}"
+      elif harbor_agent_is_pi; then
+        harbor_gzip_file_ready "$LOCAL_WHEEL_DIR/${PI_TGZ_BASENAME}" \
+          && harbor_tar_file_ready "$LOCAL_WHEEL_DIR/${PI_NODE_RUNTIME_BASENAME}" \
+          && harbor_tar_file_ready "$LOCAL_WHEEL_DIR/${PI_RUNTIME_BASENAME}" \
+          && grep -qx "pi_runtime_version=${PI_VERSION}" "$LOCAL_WHEEL_DIR/manifest.txt"
       else
         [[ -f "$LOCAL_WHEEL_DIR/${CLAUDE_CODE_TGZ_BASENAME}" ]] \
           && [[ -d "$LOCAL_WHEEL_DIR/npm-cache/_cacache" ]] \
@@ -1199,6 +1280,12 @@ harbor_local_cache_ready() {
 }
 
 harbor_pick_remote_wheel_url() {
+  # Pi extracts its runtime from the local read-only dependency mount. A plain
+  # remote HTTP origin is not materialized into that mount, so prepare the
+  # runtime locally instead of selecting a source task setup cannot access.
+  if harbor_agent_is_pi; then
+    return 1
+  fi
   local candidates=()
   local candidate
   if [[ -n "${TB_REMOTE_WHEEL_SERVER_URLS:-}" ]]; then
@@ -1211,10 +1298,8 @@ harbor_pick_remote_wheel_url() {
     candidate="${candidate%% }"
     candidate="${candidate## }"
     [[ -n "${candidate:-}" ]] || continue
-    local agent_tgz="$CLAUDE_CODE_TGZ_BASENAME"
-    if harbor_agent_is_opencode; then
-      agent_tgz="$OPENCODE_TGZ_BASENAME"
-    fi
+    local agent_tgz
+    agent_tgz="$(harbor_agent_tgz_basename)"
     local urls=("${candidate%/}/${agent_tgz}")
     if harbor_agent_is_opencode; then
       urls+=("${candidate%/}/${OPENCODE_LINUX_X64_TGZ_BASENAME}")
@@ -1223,7 +1308,11 @@ harbor_pick_remote_wheel_url() {
     fi
     local ready=1
     local url
-    if ! harbor_manifest_url_ready "${candidate%/}/manifest.txt"; then
+    local manifest_requirement=""
+    if harbor_agent_is_pi; then
+      manifest_requirement="pi_runtime_version=${PI_VERSION}"
+    fi
+    if ! harbor_manifest_url_ready "${candidate%/}/manifest.txt" "$manifest_requirement"; then
       ready=0
     fi
     for url in "${urls[@]}"; do
@@ -1337,10 +1426,13 @@ harbor_prepare_or_select_wheels() {
   echo "preparing" > "$status_file"
   echo "local cache missing; downloading dependency cache..."
   local prepare_opencode_cache=0
+  local prepare_pi_cache=0
   if harbor_agent_is_opencode; then
     prepare_opencode_cache=1
+  elif harbor_agent_is_pi; then
+    prepare_pi_cache=1
   fi
-  if (cd "$SCRIPT_DIR" && WHEEL_DIR="$LOCAL_WHEEL_DIR" CACHE_SCHEMA=3 CLAUDE_CODE_VERSION="$CLAUDE_CODE_VERSION" CLAUDE_CODE_TGZ_BASENAME="$CLAUDE_CODE_TGZ_BASENAME" PREPARE_OPENCODE_CACHE="$prepare_opencode_cache" OPENCODE_VERSION="$OPENCODE_VERSION" OPENCODE_TGZ_BASENAME="$OPENCODE_TGZ_BASENAME" OPENCODE_LINUX_X64_TGZ_BASENAME="$OPENCODE_LINUX_X64_TGZ_BASENAME" ./prepare_local_deps.sh 2>&1 | tee -a "$LOCAL_DEPS_LOG_FILE"); then
+  if (cd "$SCRIPT_DIR" && WHEEL_DIR="$LOCAL_WHEEL_DIR" CACHE_SCHEMA=3 CLAUDE_CODE_VERSION="$CLAUDE_CODE_VERSION" CLAUDE_CODE_TGZ_BASENAME="$CLAUDE_CODE_TGZ_BASENAME" PREPARE_OPENCODE_CACHE="$prepare_opencode_cache" OPENCODE_VERSION="$OPENCODE_VERSION" OPENCODE_TGZ_BASENAME="$OPENCODE_TGZ_BASENAME" OPENCODE_LINUX_X64_TGZ_BASENAME="$OPENCODE_LINUX_X64_TGZ_BASENAME" PREPARE_PI_CACHE="$prepare_pi_cache" PI_VERSION="$PI_VERSION" PI_TGZ_BASENAME="$PI_TGZ_BASENAME" PI_NODE_RUNTIME_BASENAME="$PI_NODE_RUNTIME_BASENAME" PI_RUNTIME_BASENAME="$PI_RUNTIME_BASENAME" ./prepare_local_deps.sh 2>&1 | tee -a "$LOCAL_DEPS_LOG_FILE"); then
     harbor_ensure_local_wheels_server
     harbor_write_effective_wheel_source "$TB_LOCAL_WHEEL_SERVER_URL"
     harbor_prewarm_s3_upload_cache || {

@@ -3,17 +3,25 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WHEEL_DIR="${WHEEL_DIR:-${SCRIPT_DIR}/python-wheels}"
-PYTHON_BIN="${PYTHON_BIN:-python3.12}"
+PYTHON_BIN="${PYTHON_BIN:-${HARBOR_OPIK_PYTHON:-python3.12}}"
 CLAUDE_CODE_VERSION="${CLAUDE_CODE_VERSION:-latest}"
 OPENCODE_VERSION="${OPENCODE_VERSION:-latest}"
 PREPARE_OPENCODE_CACHE="${PREPARE_OPENCODE_CACHE:-0}"
+PI_VERSION="${PI_VERSION:-0.81.1}"
+PREPARE_PI_CACHE="${PREPARE_PI_CACHE:-0}"
 NPM_REGISTRY_URL="${NPM_REGISTRY_URL:-${NPM_CONFIG_REGISTRY:-https://registry.npmjs.org}}"
 CLAUDE_CODE_NPM_SPEC="@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"
 CLAUDE_CODE_TGZ_BASENAME="${CLAUDE_CODE_TGZ_BASENAME:-claude-code-${CLAUDE_CODE_VERSION}.tgz}"
 OPENCODE_TGZ_BASENAME="${OPENCODE_TGZ_BASENAME:-opencode-ai-${OPENCODE_VERSION}.tgz}"
 OPENCODE_LINUX_X64_TGZ_BASENAME="${OPENCODE_LINUX_X64_TGZ_BASENAME:-opencode-linux-x64-${OPENCODE_VERSION}.tgz}"
+PI_NPM_SPEC="@earendil-works/pi-coding-agent@${PI_VERSION}"
+PI_TGZ_BASENAME="${PI_TGZ_BASENAME:-pi-coding-agent-${PI_VERSION}.tgz}"
+PI_NODE_RUNTIME_BASENAME="${PI_NODE_RUNTIME_BASENAME:-pi-node-runtime.tar.gz}"
+PI_RUNTIME_BASENAME="${PI_RUNTIME_BASENAME:-pi-runtime-${PI_VERSION}.tar.gz}"
 PY312_RUNTIME_TARBALL="${PY312_RUNTIME_TARBALL:-${WHEEL_DIR}/python3.12-runtime.tar.gz}"
 NODE_RUNTIME_TARBALL="${NODE_RUNTIME_TARBALL:-${WHEEL_DIR}/node-runtime.tar.xz}"
+PI_NODE_RUNTIME_TARBALL="${PI_NODE_RUNTIME_TARBALL:-${WHEEL_DIR}/${PI_NODE_RUNTIME_BASENAME}}"
+PI_RUNTIME_TARBALL="${PI_RUNTIME_TARBALL:-${WHEEL_DIR}/${PI_RUNTIME_BASENAME}}"
 CLAUDE_NPM_CACHE_DIR="${CLAUDE_NPM_CACHE_DIR:-${WHEEL_DIR}/npm-cache}"
 CACHE_SCHEMA="${CACHE_SCHEMA:-3}"
 
@@ -203,6 +211,23 @@ PY2
 
 prepare_node_runtime_tarball
 
+prepare_pi_node_runtime_tarball() {
+  if [[ "$PREPARE_PI_CACHE" != "1" ]]; then
+    echo "[prepare] skip Pi portable node tar (PREPARE_PI_CACHE=0)"
+    return 0
+  fi
+  if tarball_ready "$PI_NODE_RUNTIME_TARBALL"; then
+    echo "[prepare] skip Pi portable node tar (cached)"
+    return 0
+  fi
+  rm -f "$PI_NODE_RUNTIME_TARBALL"
+  "$PYTHON_BIN" "$SCRIPT_DIR/env.py" portable-tar \
+    "$NODE_RUNTIME_TARBALL" "$PI_NODE_RUNTIME_TARBALL"
+  echo "[prepare] built Pi portable node tarball: $PI_NODE_RUNTIME_TARBALL"
+}
+
+prepare_pi_node_runtime_tarball
+
 ensure_prepare_npm() {
   if command -v npm >/dev/null 2>&1; then
     return 0
@@ -380,6 +405,9 @@ opencode_meta_url="$(
     printf '%s\n' "${NPM_REGISTRY_URL%/}/opencode-ai/${OPENCODE_VERSION}"
   fi
 )"
+pi_meta_url="$(
+  printf '%s\n' "${NPM_REGISTRY_URL%/}/@earendil-works/pi-coding-agent/${PI_VERSION}"
+)"
 pack_npm_to_cache "$CLAUDE_CODE_NPM_SPEC" "$CLAUDE_CODE_TGZ_BASENAME" "$claude_meta_url" "anthropic-ai-claude-code-*.tgz"
 
 prepare_claude_npm_cache() {
@@ -417,6 +445,46 @@ prepare_claude_npm_cache() {
 prepare_claude_npm_cache
 printf '%s\n' "$CLAUDE_CODE_VERSION" > "$WHEEL_DIR/npm-cache-ready"
 
+prepare_pi_runtime_tarball() {
+  if [[ "$PREPARE_PI_CACHE" != "1" ]]; then
+    echo "[prepare] skip Pi runtime tar (PREPARE_PI_CACHE=0)"
+    return 0
+  fi
+  pack_npm_to_cache "$PI_NPM_SPEC" "$PI_TGZ_BASENAME" "$pi_meta_url" \
+    "earendil-works-pi-coding-agent-*.tgz"
+  if tarball_ready "$PI_RUNTIME_TARBALL" \
+    && grep -qx "pi_runtime_version=${PI_VERSION}" "$WHEEL_DIR/manifest.txt" 2>/dev/null; then
+    echo "[prepare] skip Pi runtime tar (cached)"
+    return 0
+  fi
+  ensure_prepare_npm
+  local tmp_dir runtime_prefix runtime_tar_tmp runtime_version
+  tmp_dir="$(mktemp -d /tmp/tb-prepare-pi-XXXXXX)"
+  runtime_prefix="$tmp_dir/pi-runtime"
+  runtime_tar_tmp="$(mktemp "${WHEEL_DIR}/.${PI_RUNTIME_BASENAME}.XXXXXX")"
+  npm install --global \
+    --prefix "$runtime_prefix" \
+    --registry "$NPM_REGISTRY_URL" \
+    --cache "$CLAUDE_NPM_CACHE_DIR" \
+    --ignore-scripts \
+    --no-audit \
+    --fund=false \
+    "$WHEEL_DIR/$PI_TGZ_BASENAME"
+  runtime_version="$("$runtime_prefix/bin/pi" --version)"
+  if [[ "$runtime_version" != "$PI_VERSION" ]]; then
+    echo "prepared Pi runtime version mismatch: expected $PI_VERSION, got $runtime_version" >&2
+    rm -rf "$tmp_dir"
+    rm -f "$runtime_tar_tmp"
+    return 1
+  fi
+  tar -C "$runtime_prefix" -czf "$runtime_tar_tmp" .
+  mv -f "$runtime_tar_tmp" "$PI_RUNTIME_TARBALL"
+  rm -rf "$tmp_dir"
+  echo "[prepare] built Pi runtime tarball: $PI_RUNTIME_TARBALL"
+}
+
+prepare_pi_runtime_tarball
+
 if [[ "$PREPARE_OPENCODE_CACHE" == "1" ]]; then
   # OpenCode packages are plain npm tarballs. Download them from registry
   # metadata instead of npm pack so monitor-side cache preparation does not
@@ -446,6 +514,9 @@ manifest_packages="opik,uuid6,socksio,pip,setuptools,wheel,get-pip.py,python3.12
 if [[ "$PREPARE_OPENCODE_CACHE" == "1" ]]; then
   manifest_packages="${manifest_packages},opencode-ai@${OPENCODE_VERSION},opencode-linux-x64@${OPENCODE_VERSION}"
 fi
+if [[ "$PREPARE_PI_CACHE" == "1" ]]; then
+  manifest_packages="${manifest_packages},${PI_NODE_RUNTIME_BASENAME},${PI_RUNTIME_BASENAME},@earendil-works/pi-coding-agent@${PI_VERSION}"
+fi
 
 cat > "$WHEEL_DIR/manifest.txt" <<EOF
 generated_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -454,6 +525,9 @@ python_bin=$PYTHON_BIN
 claude_code_version=$CLAUDE_CODE_VERSION
 opencode_version=$OPENCODE_VERSION
 prepare_opencode_cache=$PREPARE_OPENCODE_CACHE
+pi_version=$PI_VERSION
+prepare_pi_cache=$PREPARE_PI_CACHE
+pi_runtime_version=$(if [[ "$PREPARE_PI_CACHE" == "1" ]]; then printf '%s' "$PI_VERSION"; fi)
 claude_npm_cache_version=$CLAUDE_CODE_VERSION
 local_deps_minimal=false
 packages=$manifest_packages

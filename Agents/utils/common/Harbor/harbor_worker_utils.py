@@ -5,9 +5,23 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
+import sys
 import time
 from pathlib import Path
+
+
+def _float_env(name: str, default: float) -> float:
+    """Read a positive float env var, falling back to a default."""
+    raw = os.environ.get(name, "")
+    try:
+        if not raw:
+            return default
+        value = float(raw)
+    except ValueError:
+        return default
+    return value if value >= 0 else default
 
 
 def latest_result(root: Path) -> int:
@@ -147,6 +161,88 @@ def stream_opencode_log(task_root: Path) -> int:
                     print(f"[result] {_clean(value)}", flush=True)
 
 
+def stream_pi_log(task_root: Path) -> int:
+    log = None
+    wait_seconds = _float_env("PI_STREAM_WAIT_SECONDS", 1200.0)
+    hard_seconds = _float_env("PI_STREAM_MAX_WAIT_SECONDS", 12 * 60 * 60.0)
+    if wait_seconds < 1:
+        wait_seconds = 1.0
+    hard_seconds = max(hard_seconds, wait_seconds)
+    warn_deadline = time.monotonic() + wait_seconds
+    hard_deadline = time.monotonic() + hard_seconds
+    warned = False
+    last_scan = 0.0
+    while log is None:
+        direct = task_root / "agent" / "pi.txt"
+        if direct.is_file():
+            log = direct
+            break
+        # The common case is the directly-mounted agent/pi.txt. Only walk
+        # the whole task tree periodically as a fallback for nested trial
+        # roots, so big job dirs are not re-scanned every second.
+        now = time.monotonic()
+        if now - last_scan >= 30.0:
+            matches = sorted(
+                task_root.rglob("agent/pi.txt"), key=lambda p: p.stat().st_mtime
+            )
+            if matches:
+                log = matches[-1]
+                break
+            last_scan = now
+        if not warned and now >= warn_deadline:
+            print(
+                "[WARN] agent/pi.txt still not present after "
+                f"{wait_seconds:g}s (PI_STREAM_WAIT_SECONDS); pi install "
+                "may just be slow extracting the bundled Node/runtime "
+                "archives, keeping the tailer alive",
+                file=sys.stderr,
+            )
+            warned = True
+        if now >= hard_deadline:
+            print(
+                "[ERROR] agent/pi.txt never appeared under "
+                f"{task_root} within {hard_seconds:g}s "
+                "(PI_STREAM_MAX_WAIT_SECONDS); pi setup truly failed",
+                file=sys.stderr,
+            )
+            return 1
+        time.sleep(1)
+
+    with log.open("r", encoding="utf-8", errors="replace") as handle:
+        while True:
+            line = handle.readline()
+            if not line:
+                time.sleep(0.5)
+                continue
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+
+            event_type = event.get("type")
+            message = event.get("message")
+            if event_type == "message_end" and isinstance(message, dict):
+                if message.get("role") != "assistant":
+                    continue
+                content = message.get("content")
+                if isinstance(content, str) and content:
+                    print(f"[llm] {_clean(content)}", flush=True)
+                elif isinstance(content, list):
+                    for block in content:
+                        if not isinstance(block, dict):
+                            continue
+                        if block.get("type") in {"text", "output_text"} and block.get("text"):
+                            print(f"[llm] {_clean(block['text'])}", flush=True)
+            elif event_type == "tool_execution_start":
+                name = event.get("toolName") or event.get("name") or "tool"
+                args = event.get("args") or event.get("input") or {}
+                print(f"[tool] {name}: {_clean(args)}", flush=True)
+            elif event_type == "tool_execution_end":
+                result = event.get("result") or event.get("output")
+                if result:
+                    print(f"[tool_result] {_clean(result)}", flush=True)
+
+
 def prepare_claude_timeout_backup(logs_dir: Path, project_name: str) -> int:
     backup_state = logs_dir / "opik-runtime-state.json"
     backup_transcript = logs_dir / "opik-runtime-transcript.jsonl"
@@ -212,6 +308,7 @@ def main() -> int:
             "summarize-result",
             "stream-claude-log",
             "stream-opencode-log",
+            "stream-pi-log",
             "prepare-claude-timeout-backup",
             "online-early-stop-reason",
         ),
@@ -230,6 +327,8 @@ def main() -> int:
         return prepare_claude_timeout_backup(path, args.project_name)
     if args.command == "stream-opencode-log":
         return stream_opencode_log(path)
+    if args.command == "stream-pi-log":
+        return stream_pi_log(path)
     if args.command == "online-early-stop-reason":
         if args.task_id is None:
             parser.error("--task-id is required for online-early-stop-reason")

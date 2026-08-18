@@ -223,7 +223,14 @@ append_harbor_unprivileged_docker_compose() {
 
 validate_environment_backend() {
   case "$TB_ENVIRONMENT_TYPE" in
-    docker|e2b)
+    docker)
+      ;;
+    e2b)
+      if harbor_agent_is_pi; then
+        echo "[ERROR] AGENT=pi with TB_ENVIRONMENT_TYPE=e2b is not supported: the pi Node and runtime archives are delivered as bind mounts from the host wheel cache, which e2b sandboxes cannot receive" >&2
+        echo '[ERROR] use TB_ENVIRONMENT_TYPE=docker (or opensandbox) for AGENT=pi runs' >&2
+        exit 1
+      fi
       ;;
     opensandbox)
       local name
@@ -398,8 +405,7 @@ ensure_trace_plugin_source_if_needed() {
     if [[ "$trace_enabled" == "true" || "$trace_enabled" == "1" ]]; then
       required=("$TRACE_PLUGIN_OPENCODE_PLUGIN_SOURCE" "$TRACE_PLUGIN_OPENCODE_HOOK_SOURCE")
     fi
-  elif harbor_trace_to_opik_enabled &&
-    [[ "$AGENT" == "claude-code" ]] &&
+  elif harbor_agent_is_claude_code && harbor_trace_to_opik_enabled &&
     [[ "$TB_ENVIRONMENT_TYPE" == "docker" ]] &&
     [[ "$trace_enabled" == "true" || "$trace_enabled" == "1" || "$TB_CC_OPIK_ENABLE_HOOK" == "1" ]]; then
     # With tracing off the realtime hook is forced off at command
@@ -982,33 +988,8 @@ PY
     --max-retries "$TB_MAX_RETRIES"
     -o "$out_dir"
     -k "$TB_RUNS"
-    --ak "version=$CLAUDE_CODE_VERSION"
-    --ak "disallowed_tools=$TB_DISALLOWED_TOOLS"
-    --ak "append_system_prompt=$TB_APPEND_SYSTEM_PROMPT"
-    --ak "api_base=$TB_API_BASE"
-    --ak "llm_kwargs=$normalized_llm_kwargs"
-    --ak "max_new_tokens=$TB_MAX_NEW_TOKENS"
-    --ak "model_info=$TB_MODEL_INFO"
-    --ae "ANTHROPIC_BASE_URL=$TB_ANTHROPIC_BASE_URL"
-    --ae "ANTHROPIC_AUTH_TOKEN=$TB_ANTHROPIC_AUTH_TOKEN"
-    --ae "ANTHROPIC_CUSTOM_HEADERS=$TB_ANTHROPIC_CUSTOM_HEADERS"
-    --ae "ANTHROPIC_MODEL=$TB_ANTHROPIC_MODEL"
-    --ae "ANTHROPIC_DEFAULT_OPUS_MODEL=$TB_ANTHROPIC_DEFAULT_OPUS_MODEL"
-    --ae "ANTHROPIC_DEFAULT_SONNET_MODEL=$TB_ANTHROPIC_DEFAULT_SONNET_MODEL"
-    --ae "ANTHROPIC_DEFAULT_HAIKU_MODEL=$TB_ANTHROPIC_DEFAULT_HAIKU_MODEL"
-    --ae "CLAUDE_CODE_SUBAGENT_MODEL=$TB_CLAUDE_CODE_SUBAGENT_MODEL"
-    --ae "CLAUDE_CODE_EFFORT_LEVEL=$TB_CLAUDE_CODE_EFFORT_LEVEL"
-    --ae "CLAUDE_CODE_MAX_OUTPUT_TOKENS=$TB_CLAUDE_CODE_MAX_OUTPUT_TOKENS"
-    --ae "CLAUDE_CODE_DISABLE_AUTOUPDATER=$TB_CLAUDE_CODE_DISABLE_AUTOUPDATER"
     --ae "TRACE_TO_OPIK=$TRACE_TO_OPIK"
-    --ae "CC_OPIK_DEBUG=$TB_CC_OPIK_DEBUG"
-    --ae "CC_OPIK_INSTALL_DEPS=$TB_CC_OPIK_INSTALL_DEPS"
-    --ae "CC_OPIK_HOOK_MOUNT_PATH=$TB_CC_HOOK_MOUNT_PATH"
-    --ae "CC_OPIK_CLAUDE_TGZ_PATH=$TB_CC_CLAUDE_TGZ_MOUNT_PATH"
-    --ae "CC_OPIK_PY_WHEEL_DIR=$TB_CC_PY_WHEEL_DIR_MOUNT_PATH"
-    --ae "CC_OPIK_NPM_CACHE_DIR=$TB_CC_NPM_CACHE_MOUNT_PATH"
     --ae "TB_LOCAL_WHEEL_SERVER_URL=${TB_LOCAL_WHEEL_SERVER_URL:-}"
-    --ae "TB_LOCAL_CLAUDE_TGZ_URL=${TB_LOCAL_CLAUDE_TGZ_URL:-}"
     --ae "TB_LOCAL_WHEEL_PORT=$LOCAL_WHEEL_PORT"
     --ae "PIP_DEFAULT_TIMEOUT=$TB_PIP_DEFAULT_TIMEOUT"
     --ae "PIP_RETRIES=$TB_PIP_RETRIES"
@@ -1020,6 +1001,49 @@ PY
     --timeout-multiplier "$TB_TIMEOUT_MULTIPLIER"
     --agent-setup-timeout-multiplier "$TB_AGENT_SETUP_TIMEOUT_MULTIPLIER"
   )
+  if harbor_agent_is_pi; then
+    # Reasoning strength follows opencode's model: it is carried by the
+    # generated settings.json (PI_SETTINGS_CONFIG) that pi reads at startup,
+    # not by an --ak override here. PI_THINKING_LEVEL only feeds that config.
+    cmd+=(
+      --ak "version=$PI_VERSION"
+      --ae "AGENT_FLEET_API_KEY=$TB_ANTHROPIC_AUTH_TOKEN"
+      --ae "PI_OFFLINE=1"
+      --ae "PI_CACHE_DIR=$TB_CC_PY_WHEEL_DIR_MOUNT_PATH"
+      --ae "PI_NODE_RUNTIME_PATH=$TB_CC_PY_WHEEL_DIR_MOUNT_PATH/$PI_NODE_RUNTIME_BASENAME"
+      --ae "PI_RUNTIME_TAR_PATH=$TB_CC_PY_WHEEL_DIR_MOUNT_PATH/$PI_RUNTIME_BASENAME"
+      --ae "PI_MODELS_CONFIG=$PI_MODELS_CONFIG"
+      --ae "PI_SETTINGS_CONFIG=$PI_SETTINGS_CONFIG"
+    )
+  else
+    cmd+=(
+      --ak "version=$CLAUDE_CODE_VERSION"
+      --ak "disallowed_tools=$TB_DISALLOWED_TOOLS"
+      --ak "append_system_prompt=$TB_APPEND_SYSTEM_PROMPT"
+      --ak "api_base=$TB_API_BASE"
+      --ak "llm_kwargs=$normalized_llm_kwargs"
+      --ak "max_new_tokens=$TB_MAX_NEW_TOKENS"
+      --ak "model_info=$TB_MODEL_INFO"
+      --ae "ANTHROPIC_BASE_URL=$TB_ANTHROPIC_BASE_URL"
+      --ae "ANTHROPIC_AUTH_TOKEN=$TB_ANTHROPIC_AUTH_TOKEN"
+      --ae "ANTHROPIC_CUSTOM_HEADERS=$TB_ANTHROPIC_CUSTOM_HEADERS"
+      --ae "ANTHROPIC_MODEL=$TB_ANTHROPIC_MODEL"
+      --ae "ANTHROPIC_DEFAULT_OPUS_MODEL=$TB_ANTHROPIC_DEFAULT_OPUS_MODEL"
+      --ae "ANTHROPIC_DEFAULT_SONNET_MODEL=$TB_ANTHROPIC_DEFAULT_SONNET_MODEL"
+      --ae "ANTHROPIC_DEFAULT_HAIKU_MODEL=$TB_ANTHROPIC_DEFAULT_HAIKU_MODEL"
+      --ae "CLAUDE_CODE_SUBAGENT_MODEL=$TB_CLAUDE_CODE_SUBAGENT_MODEL"
+      --ae "CLAUDE_CODE_EFFORT_LEVEL=$TB_CLAUDE_CODE_EFFORT_LEVEL"
+      --ae "CLAUDE_CODE_MAX_OUTPUT_TOKENS=$TB_CLAUDE_CODE_MAX_OUTPUT_TOKENS"
+      --ae "CLAUDE_CODE_DISABLE_AUTOUPDATER=$TB_CLAUDE_CODE_DISABLE_AUTOUPDATER"
+      --ae "CC_OPIK_DEBUG=$TB_CC_OPIK_DEBUG"
+      --ae "CC_OPIK_INSTALL_DEPS=$TB_CC_OPIK_INSTALL_DEPS"
+      --ae "CC_OPIK_HOOK_MOUNT_PATH=$TB_CC_HOOK_MOUNT_PATH"
+      --ae "CC_OPIK_CLAUDE_TGZ_PATH=$TB_CC_CLAUDE_TGZ_MOUNT_PATH"
+      --ae "CC_OPIK_PY_WHEEL_DIR=$TB_CC_PY_WHEEL_DIR_MOUNT_PATH"
+      --ae "CC_OPIK_NPM_CACHE_DIR=$TB_CC_NPM_CACHE_MOUNT_PATH"
+      --ae "TB_LOCAL_CLAUDE_TGZ_URL=${TB_LOCAL_CLAUDE_TGZ_URL:-}"
+    )
+  fi
   # Task code can read its own environment. With tracing disabled nothing in
   # the container consumes the Opik connection fields, so do not expose the
   # endpoint or credentials there.
@@ -1049,17 +1073,19 @@ PY
     cmd+=( --agent-timeout-multiplier "$TB_AGENT_TIMEOUT_MULTIPLIER" )
   fi
 
-  if [[ -n "$TB_AK_MAX_TURNS" ]]; then
-    cmd+=( --ak "max_turns=$TB_AK_MAX_TURNS" )
-  fi
-  if [[ -n "$TB_AK_COLLECT_ROLLOUT_DETAILS" ]]; then
-    cmd+=( --ak "collect_rollout_details=$TB_AK_COLLECT_ROLLOUT_DETAILS" )
-  fi
-  if [[ -n "$TB_AK_ENABLE_SUMMARIZE" ]]; then
-    cmd+=( --ak "enable_summarize=$TB_AK_ENABLE_SUMMARIZE" )
+  if harbor_agent_is_claude_code; then
+    if [[ -n "$TB_AK_MAX_TURNS" ]]; then
+      cmd+=( --ak "max_turns=$TB_AK_MAX_TURNS" )
+    fi
+    if [[ -n "$TB_AK_COLLECT_ROLLOUT_DETAILS" ]]; then
+      cmd+=( --ak "collect_rollout_details=$TB_AK_COLLECT_ROLLOUT_DETAILS" )
+    fi
+    if [[ -n "$TB_AK_ENABLE_SUMMARIZE" ]]; then
+      cmd+=( --ak "enable_summarize=$TB_AK_ENABLE_SUMMARIZE" )
+    fi
   fi
 
-  local opik_host wheel_host no_proxy_value
+  local opik_host wheel_host model_host no_proxy_value
   opik_host="$(
     python3 - "$OPIK_URL_OVERRIDE" <<'PY'
 from urllib.parse import urlparse
@@ -1078,6 +1104,15 @@ u = urlparse(sys.argv[1] if len(sys.argv) > 1 else "")
 print(u.hostname or "")
 PY
   )"
+  model_host="$(
+    python3 - "$TB_ANTHROPIC_BASE_URL" <<'PY'
+from urllib.parse import urlparse
+import sys
+
+u = urlparse(sys.argv[1])
+print(u.hostname or "")
+PY
+  )"
   no_proxy_value="127.0.0.1,localhost,host.docker.internal"
   if [[ -n "$opik_host" ]]; then
     no_proxy_value="$no_proxy_value,$opik_host"
@@ -1085,14 +1120,23 @@ PY
   if [[ -n "$wheel_host" ]]; then
     no_proxy_value="$no_proxy_value,$wheel_host"
   fi
+  # The model gateway is added to NO_PROXY only for pi, whose offline
+  # runtime talks straight to the OpenAI-compatible endpoint; claude-code
+  # and opencode may legitimately need the configured forward proxy to
+  # reach the gateway.
+  if harbor_agent_is_pi && [[ -n "$model_host" ]]; then
+    no_proxy_value="$no_proxy_value,$model_host"
+  fi
   cmd+=( --ae "NO_PROXY=$no_proxy_value" --ae "no_proxy=$no_proxy_value" )
 
   local hook_mount_enabled=0
   # The hook has no Opik server to talk to when tracing is off, so an
   # exported TB_CC_OPIK_ENABLE_HOOK=1 (e.g. persisted by setup.sh) must not
   # re-enable it.
-  if [[ "$TB_CC_OPIK_ENABLE_HOOK" == "1" && "$TB_ENVIRONMENT_TYPE" == "docker" ]] &&
-    harbor_trace_to_opik_enabled; then
+  if harbor_agent_is_claude_code \
+    && [[ "$TB_CC_OPIK_ENABLE_HOOK" == "1" ]] \
+    && [[ "$TB_ENVIRONMENT_TYPE" == "docker" ]] \
+    && harbor_trace_to_opik_enabled; then
     if [[ -f "$TB_CC_HOOK_SOURCE" ]]; then
       hook_mount_enabled=1
       cmd+=( --ae "CC_OPIK_ENABLE_HOOK=true" )
@@ -1107,10 +1151,15 @@ PY
     cmd+=( --ae "CC_OPIK_ENABLE_HOOK=false" )
   fi
 
-  local mounts_json="[]"
+  local mounts_json agent_package_source
+  agent_package_source="$TB_CC_CLAUDE_TGZ_SOURCE"
+  if harbor_agent_is_pi; then
+    agent_package_source=""
+  fi
+  mounts_json="[]"
   if [[ "$TB_ENVIRONMENT_TYPE" == "docker" || "$TB_ENVIRONMENT_TYPE" == "opensandbox" ]]; then
     mounts_json="$(
-    python3 - "$hook_mount_enabled" "$TB_CC_HOOK_SOURCE" "$TB_CC_HOOK_MOUNT_PATH" "$TB_CC_CLAUDE_TGZ_SOURCE" "$TB_CC_CLAUDE_TGZ_MOUNT_PATH" "$TB_CC_PY_WHEEL_DIR_SOURCE" "$TB_CC_PY_WHEEL_DIR_MOUNT_PATH" "$VERIFIER_UV_BIN_DIR_SOURCE" "$TB_VERIFIER_UV_BIN_DIR_MOUNT_PATH" <<'PY'
+    python3 - "$hook_mount_enabled" "$TB_CC_HOOK_SOURCE" "$TB_CC_HOOK_MOUNT_PATH" "$agent_package_source" "$TB_CC_CLAUDE_TGZ_MOUNT_PATH" "$TB_CC_PY_WHEEL_DIR_SOURCE" "$TB_CC_PY_WHEEL_DIR_MOUNT_PATH" "$VERIFIER_UV_BIN_DIR_SOURCE" "$TB_VERIFIER_UV_BIN_DIR_MOUNT_PATH" <<'PY'
 import json
 import os
 import sys
@@ -1201,12 +1250,15 @@ PY
     cmd+=( --debug )
   fi
 
-  if [[ -n "$TB_AGENT" ]]; then
-    cmd+=( -a "$TB_AGENT" )
-  fi
-
-  if [[ -n "$TB_AGENT_IMPORT_PATH" ]]; then
+  if harbor_agent_is_pi; then
     cmd+=( --agent-import-path "$TB_AGENT_IMPORT_PATH" )
+  else
+    if [[ -n "$TB_AGENT" ]]; then
+      cmd+=( -a "$TB_AGENT" )
+    fi
+    if [[ -n "$TB_AGENT_IMPORT_PATH" ]]; then
+      cmd+=( --agent-import-path "$TB_AGENT_IMPORT_PATH" )
+    fi
   fi
 
   if [[ -n "$TB_MODEL" ]]; then
@@ -1276,16 +1328,24 @@ PY
   fi
   echo "[INFO] model: $TB_MODEL"
   echo "[INFO] environment: $TB_ENVIRONMENT_TYPE"
-  echo "[INFO] claude max_turns: ${TB_AK_MAX_TURNS:-<default>}"
+  if harbor_agent_is_pi; then
+    echo "[INFO] pi version: $PI_VERSION | thinking: $PI_THINKING_LEVEL"
+  else
+    echo "[INFO] claude max_turns: ${TB_AK_MAX_TURNS:-<default>}"
+  fi
   echo "[INFO] n_concurrent: $TB_N_CONCURRENT | max_retries: $TB_MAX_RETRIES"
   echo "[INFO] retry_include_exceptions: ${TB_RETRY_INCLUDE_EXCEPTIONS:-<all-except-excludes>}"
   echo "[INFO] retry_exclude_exceptions: ${TB_RETRY_EXCLUDE_EXCEPTIONS:-<none>}"
-  echo "[INFO] realtime_hook_enabled: $TB_CC_OPIK_ENABLE_HOOK | hook_source: $TB_CC_HOOK_SOURCE"
+  if harbor_agent_is_claude_code; then
+    echo "[INFO] realtime_hook_enabled: $TB_CC_OPIK_ENABLE_HOOK | hook_source: $TB_CC_HOOK_SOURCE"
+  fi
   echo "[INFO] pip_index_url: ${PIP_INDEX_URL:-<default>} | pip_timeout: $TB_PIP_DEFAULT_TIMEOUT | pip_retries: $TB_PIP_RETRIES"
   echo "[INFO] api_base: ${TB_API_BASE:-<empty>}"
   echo "[INFO] timeout_multiplier: $TB_TIMEOUT_MULTIPLIER | agent_setup_timeout_multiplier: $TB_AGENT_SETUP_TIMEOUT_MULTIPLIER"
-  echo "[INFO] disallowed_tools: $TB_DISALLOWED_TOOLS"
-  echo "[INFO] append_system_prompt configured: yes"
+  if harbor_agent_is_claude_code; then
+    echo "[INFO] disallowed_tools: $TB_DISALLOWED_TOOLS"
+    echo "[INFO] append_system_prompt configured: yes"
+  fi
   if [[ "$normalized_llm_kwargs" == *'"api_key":"="'* || "$normalized_llm_kwargs" == *'"api_key": "="'* ]]; then
     echo "[WARN] llm_kwargs is using placeholder api_key='='; this often yields all-zero scores"
   fi
@@ -1296,7 +1356,11 @@ PY
     return 0
   fi
 
-  export PYTHONPATH="$HARBOR_CLAUDE_CODE_DIR:$SCRIPT_DIR${PYTHONPATH:+:$PYTHONPATH}"
+  if harbor_agent_is_pi; then
+    export PYTHONPATH="$HARBOR_PI_DIR:$SCRIPT_DIR${PYTHONPATH:+:$PYTHONPATH}"
+  else
+    export PYTHONPATH="$HARBOR_CLAUDE_CODE_DIR:$SCRIPT_DIR${PYTHONPATH:+:$PYTHONPATH}"
+  fi
   "${cmd[@]}"
 
   echo "[INFO] completed"

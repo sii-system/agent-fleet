@@ -6,7 +6,7 @@ Repo-wide setup and config rules: [root AGENTS.md](../AGENTS.md).
 
 ## Harbor Benchmark Runner (`utils/common/Harbor/`)
 
-Runs Claude Code or OpenCode against Harbor datasets in parallel zellij
+Runs Claude Code, OpenCode, or Pi against Harbor datasets in parallel zellij
 workers.
 
 Prereq: model gateway values set in `config.local.env`. For traced runs only,
@@ -25,7 +25,7 @@ zellij attach <session-name>
 Main `env.sh` parameters:
 
 ```bash
-AGENT="claude-code"        # claude-code or opencode
+AGENT="claude-code"        # claude-code, opencode, or pi
 DATASET_NAME="seta"        # seta, smith, terminalbench21, or sweverify
 DATASET_PATH="/workspace/seta-env/Harbor-Dataset"
 TOTAL_WORKERS="80"         # zellij worker panes
@@ -73,7 +73,8 @@ additionally stops a worker's current task when a matching
 
 Full variable table: [utils/common/Harbor/STRUCT.md](utils/common/Harbor/STRUCT.md).
 Agent integration internals: [Harbor-claude-code/STRUCT.md](Harbor-claude-code/STRUCT.md),
-[Harbor-opencode/STRUCT.md](Harbor-opencode/STRUCT.md).
+[Harbor-opencode/STRUCT.md](Harbor-opencode/STRUCT.md),
+[Harbor-pi/STRUCT.md](Harbor-pi/STRUCT.md).
 
 ## OpenClaw Fleet (`Openclaw/`)
 

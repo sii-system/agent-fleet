@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import os
 import subprocess
 import tarfile
 import tempfile
@@ -13,17 +15,33 @@ ENV_PY = HARBOR_DIR / "env.py"
 
 
 def run_env_helper(*args: str | Path) -> subprocess.CompletedProcess[str]:
+    return run_env_helper_env(*args)
+
+
+def run_env_helper_env(
+    *args: str | Path, extra_env: dict[str, str] | None = None
+) -> subprocess.CompletedProcess[str]:
+    env = os.environ.copy()
+    env["NO_PROXY"] = "127.0.0.1,localhost"
+    env["no_proxy"] = env["NO_PROXY"]
+    if extra_env:
+        env.update(extra_env)
     return subprocess.run(
         ["python3", str(ENV_PY), *(str(arg) for arg in args)],
         capture_output=True,
         text=True,
         check=False,
+        env=env,
     )
 
 
 class _CacheHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
-        body = b"cache_schema=3\n" if self.path == "/manifest.txt" else b"ready\n"
+        body = (
+            b"cache_schema=3\npi_runtime_version=0.81.1\n"
+            if self.path == "/manifest.txt"
+            else b"ready\n"
+        )
         self.send_response(200)
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
@@ -97,6 +115,25 @@ class HarborEnvHelperTests(unittest.TestCase):
             self.assertEqual(ready.returncode, 0, ready.stderr)
             self.assertNotEqual(not_ready.returncode, 0)
 
+    def test_portable_tar_removes_external_xz_runtime_requirement(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            payload = root / "node"
+            payload.write_text("fixture-node\n", encoding="utf-8")
+            compressed = root / "node-runtime.tar.xz"
+            portable = root / "pi-node-runtime.tar.gz"
+            with tarfile.open(compressed, "w:xz") as archive:
+                archive.add(payload, arcname="node-runtime/bin/node")
+
+            result = run_env_helper("portable-tar", compressed, portable)
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            with tarfile.open(portable, "r:gz") as archive:
+                member = archive.extractfile("node-runtime/bin/node")
+                self.assertIsNotNone(member)
+                assert member is not None
+                self.assertEqual(member.read(), b"fixture-node\n")
+
     def test_url_helpers_check_reachability_and_manifest_schema(self) -> None:
         server = ThreadingHTTPServer(("127.0.0.1", 0), _CacheHandler)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -110,6 +147,16 @@ class HarborEnvHelperTests(unittest.TestCase):
             invalid_manifest = run_env_helper(
                 "manifest-url-ready", f"{base_url}/agent.tgz"
             )
+            selected_version = run_env_helper(
+                "manifest-url-ready",
+                f"{base_url}/manifest.txt",
+                "pi_runtime_version=0.81.1",
+            )
+            missing_version = run_env_helper(
+                "manifest-url-ready",
+                f"{base_url}/manifest.txt",
+                "pi_runtime_version=0.82.0",
+            )
         finally:
             server.shutdown()
             server.server_close()
@@ -117,7 +164,178 @@ class HarborEnvHelperTests(unittest.TestCase):
 
         self.assertEqual(reachable.returncode, 0, reachable.stderr)
         self.assertEqual(manifest.returncode, 0, manifest.stderr)
+        self.assertEqual(selected_version.returncode, 0, selected_version.stderr)
         self.assertNotEqual(invalid_manifest.returncode, 0)
+        self.assertNotEqual(missing_version.returncode, 0)
+
+    def _pi_models_config(
+        self, base_url: str, max_tokens: str = ""
+    ) -> subprocess.CompletedProcess[str]:
+        extra = {
+            "PI_PROVIDER": "sii-gateway",
+            "TB_MODEL": "sii-gateway/fake-model",
+            "BASE_URL": base_url,
+        }
+        if max_tokens:
+            extra["HARBOR_MAX_TOKENS"] = max_tokens
+        return run_env_helper_env("pi-models-config", extra_env=extra)
+
+    def test_pi_models_config_appends_v1_to_bare_root(self) -> None:
+        result = self._pi_models_config("https://gateway.example:8443")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        payload = json.loads(result.stdout)
+        provider = payload["providers"]["sii-gateway"]
+        self.assertEqual(
+            provider["baseUrl"], "https://gateway.example:8443/v1"
+        )
+        self.assertEqual(provider["models"][0]["maxTokens"], 32768)
+
+    def test_pi_models_config_keeps_existing_v1_root(self) -> None:
+        result = self._pi_models_config("https://gateway.example:8443/v1")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual(
+            payload["providers"]["sii-gateway"]["baseUrl"],
+            "https://gateway.example:8443/v1",
+        )
+
+    def test_pi_models_config_applies_max_tokens(self) -> None:
+        result = self._pi_models_config(
+            "https://gateway.example:8443", max_tokens="16384"
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual(
+            payload["providers"]["sii-gateway"]["models"][0]["maxTokens"],
+            16384,
+        )
+
+    def test_pi_models_config_honors_context_window_override(self) -> None:
+        result = run_env_helper_env(
+            "pi-models-config",
+            extra_env={
+                "PI_PROVIDER": "sii-gateway",
+                "TB_MODEL": "sii-gateway/fake-model",
+                "BASE_URL": "https://gateway.example:8443",
+                "PI_CONTEXT_WINDOW": "65536",
+            },
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual(
+            payload["providers"]["sii-gateway"]["models"][0]["contextWindow"],
+            65536,
+        )
+
+    def test_pi_models_config_defaults_context_window(self) -> None:
+        result = self._pi_models_config("https://gateway.example:8443")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual(
+            payload["providers"]["sii-gateway"]["models"][0]["contextWindow"],
+            204800,
+        )
+
+    def test_pi_models_config_rejects_invalid_context_window(self) -> None:
+        result = self._pi_models_config("https://gateway.example:8443")
+        result = run_env_helper_env(
+            "pi-models-config",
+            extra_env={
+                "PI_PROVIDER": "sii-gateway",
+                "TB_MODEL": "sii-gateway/fake-model",
+                "BASE_URL": "https://gateway.example:8443",
+                "PI_CONTEXT_WINDOW": "big",
+            },
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("PI_CONTEXT_WINDOW must be a positive integer", result.stderr)
+
+    def test_pi_models_config_rejects_non_v1_path(self) -> None:
+        result = self._pi_models_config("https://gateway.example/regions/us-east")
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("/v1 API root", result.stderr)
+
+    def test_pi_models_config_rejects_relative_base_url(self) -> None:
+        result = self._pi_models_config("gateway.example:8443")
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("absolute URL", result.stderr)
+
+    def test_pi_models_config_uses_rollout_max_budget(self) -> None:
+        result = run_env_helper_env(
+            "pi-models-config",
+            extra_env={
+                "PI_PROVIDER": "sii-gateway",
+                "TB_MODEL": "sii-gateway/fake-model",
+                "BASE_URL": "https://gateway.example:8443",
+                "ROLLOUT": "1",
+                "RL_MAX_NEW_TOKENS": "2000",
+            },
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual(
+            payload["providers"]["sii-gateway"]["models"][0]["maxTokens"],
+            2000,
+        )
+
+    def test_pi_models_config_keeps_benchmark_default_with_tb_max_set(self) -> None:
+        result = run_env_helper_env(
+            "pi-models-config",
+            extra_env={
+                "PI_PROVIDER": "sii-gateway",
+                "TB_MODEL": "sii-gateway/fake-model",
+                "BASE_URL": "https://gateway.example:8443",
+                "TB_MAX_NEW_TOKENS": "65536",
+            },
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual(
+            payload["providers"]["sii-gateway"]["models"][0]["maxTokens"],
+            32768,
+        )
+
+    def test_pi_models_config_derives_provider_from_base_url(self) -> None:
+        result = run_env_helper_env(
+            "pi-models-config",
+            extra_env={
+                "TB_MODEL": "fake-model",
+                "BASE_URL": "https://gateway.example.com:8443/v1",
+            },
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertIn("gateway.example.com", payload["providers"])
+        self.assertEqual(
+            payload["providers"]["gateway.example.com"]["baseUrl"],
+            "https://gateway.example.com:8443/v1",
+        )
+
+    def test_pi_models_config_rejects_non_numeric_max_tokens(self) -> None:
+        result = self._pi_models_config(
+            "https://gateway.example", max_tokens="8192k"
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("positive integer", result.stderr)
+
+    def test_pi_models_config_rejects_non_positive_max_tokens(self) -> None:
+        result = self._pi_models_config(
+            "https://gateway.example", max_tokens="0"
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("positive integer", result.stderr)
 
 
 if __name__ == "__main__":

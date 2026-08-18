@@ -226,8 +226,16 @@ exit 0
                 "REPO_DIR": str(self.repo),
                 "HARBOR_RUNNER_SETUP": "0",
                 "SETUP_TEST_STATE": str(self.state),
+                "AGENT_FLEET_PATHS_FILE": str(
+                    self.home / ".config" / "agent-fleet" / "paths.env"
+                ),
                 "AGENT_FLEET_RUNTIME_DIR": str(self.root / "runtime"),
                 "AGENT_FLEET_BIN_DIR": str(self.home / ".local" / "bin"),
+                "AGENT_FLEET_CACHE_DIR": str(
+                    self.home / ".cache" / "agent-fleet"
+                ),
+                "AGENT_FLEET_NODE_BIN_DIR": str(self.bin_dir),
+                "AGENT_FLEET_NPM_BIN_DIR": "",
                 "AGENT_FLEET_PREREQUISITES_INSTALL_MANAGED": "0",
             }
         )

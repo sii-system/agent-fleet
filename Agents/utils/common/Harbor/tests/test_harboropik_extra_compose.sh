@@ -238,6 +238,20 @@ if any(needle in arg for arg in args):
 PY
 }
 
+assert_exact_arg_absent() {
+  local capture_file="$1"
+  local unexpected="$2"
+  python3 - "$capture_file" "$unexpected" <<'PY'
+import sys
+from pathlib import Path
+
+args = [part.decode() for part in Path(sys.argv[1]).read_bytes().split(b"\0") if part]
+unexpected = sys.argv[2]
+if unexpected in args:
+    raise SystemExit(f"unexpected exact argument {unexpected!r} in command: {args!r}")
+PY
+}
+
 assert_mount_source_absent() {
   local capture_file="$1"
   local needle="$2"
@@ -383,7 +397,7 @@ assert_registry_summary_requires_result() {
 }
 
 main() {
-  local tmp fake_bin default_overlay claude_capture opencode_capture capture_bin
+  local tmp fake_bin default_overlay claude_capture opencode_capture pi_capture capture_bin
   local seta_capture sweverify_capture registry_capture traceoff_capture traceoff_oc_capture
   local opencode_registry_capture opencode_local_capture
   local min_test_capture
@@ -438,6 +452,40 @@ main() {
     "$opencode_capture" \
     "--ve" \
     "TB_VERIFIER_UV_BIN_DIR=/opt/tb-uv-backup/bin"
+
+  pi_capture="$tmp/pi-default.args"
+  run_harboropik \
+    "pi" "$capture_bin" "$pi_capture" "$tmp/pi-default" \
+    "terminalbench21" "fix-git"
+  assert_extra_compose_arg "$pi_capture" "$default_overlay"
+  assert_arg_pair "$pi_capture" "--dataset" "terminal-bench/terminal-bench-2-1"
+  assert_arg_pair "$pi_capture" "-i" "terminal-bench/fix-git"
+  assert_arg_pair "$pi_capture" "--agent-import-path" "pi_harbor:AgentFleetPi"
+  assert_exact_arg_absent "$pi_capture" "-a"
+  assert_arg_pair "$pi_capture" "-m" "llm.example/fake-model"
+  assert_arg_pair "$pi_capture" "--ak" "version=0.81.1"
+  assert_exact_arg_absent "$pi_capture" "thinking=high"
+  assert_arg_pair "$pi_capture" "--ae" "AGENT_FLEET_API_KEY=fake-llm-key"
+  assert_arg_pair "$pi_capture" "--ae" "PI_OFFLINE=1"
+  assert_arg_pair \
+    "$pi_capture" \
+    "--ae" \
+    "PI_NODE_RUNTIME_PATH=/opt/tb-opik/python-wheels/pi-node-runtime.tar.gz"
+  assert_arg_pair \
+    "$pi_capture" \
+    "--ae" \
+    "PI_RUNTIME_TAR_PATH=/opt/tb-opik/python-wheels/pi-runtime-0.81.1.tar.gz"
+  assert_arg_absent "$pi_capture" "PI_TGZ_PATH="
+  assert_arg_pair \
+    "$pi_capture" \
+    "--ae" \
+    "NO_PROXY=127.0.0.1,localhost,host.docker.internal,opik.example,10.192.0.1,llm.example"
+  assert_arg_absent "$pi_capture" "disallowed_tools="
+  assert_arg_absent "$pi_capture" "max_turns="
+  assert_structured_mount_arg \
+    "$pi_capture" \
+    "$tmp/pi-default/wheels" \
+    "/opt/tb-opik/python-wheels"
 
   opencode_registry_capture="$tmp/opencode-registry.args"
   run_harboropik \

@@ -73,6 +73,7 @@ locations, and error compatibility remain in `harbor_analyzer/pi.py`.
 - `TASKS_DIR`: `REPO_ROOT/Tasks`
 - `HARBOR_CLAUDE_CODE_DIR`: Claude Code integration directory
 - `HARBOR_OPENCODE_DIR`: OpenCode integration directory
+- `HARBOR_PI_DIR`: Pi integration directory
 
 ## Task Resolution
 
@@ -103,13 +104,13 @@ Typical dataset paths:
 
 | Variable | Purpose |
 | --- | --- |
-| `AGENT` | `claude-code` or `opencode` |
+| `AGENT` | `claude-code`, `opencode`, or `pi` |
 | `MODEL` | Model name passed to Harbor |
 | `BASE_URL` | Model gateway base URL |
 | `API_KEY` | Model gateway API key |
 | `HARBOR_TEMPERATURE` | OpenCode sampling temperature for fixed benchmark runs; unset by default |
 | `HARBOR_TOP_P` | OpenCode nucleus-sampling value for fixed benchmark runs; unset by default |
-| `HARBOR_MAX_TOKENS` | Maximum output tokens for OpenCode or Claude Code fixed benchmark runs; defaults to existing agent limits when unset |
+| `HARBOR_MAX_TOKENS` | Maximum output tokens for OpenCode, Claude Code, or Pi fixed benchmark runs; defaults to existing agent limits when unset |
 | `DATASET_NAME` | Built-in local dataset selector, or Harbor registry dataset id |
 | `DATASET_PATH` | Local dataset directory |
 | `TASK_SOURCE_FILE` | Explicit task list path |
@@ -130,6 +131,7 @@ Typical dataset paths:
 | `TRACE_TO_OPIK` | Enables or disables trace upload |
 | `CLAUDE_CODE_VERSION` | Claude Code package version used by local dependency cache |
 | `OPENCODE_VERSION` | OpenCode package version used by local dependency cache |
+| `PI_VERSION` | Pi fork package version used by the local dependency cache, default `0.81.1` |
 | `LOCAL_WHEEL_DIR` | Local dependency cache directory |
 | `LOCAL_WHEEL_PORT` | Preferred local dependency HTTP server port |
 | `LOCAL_WHEEL_PORT_ATTEMPTS` | Number of local port attempts |
@@ -193,7 +195,7 @@ zellij run.  `env.sh` then sources `Agents/utils/rl/RL-env.sh` through
 | `RL_DATASET_NAME` | Default dataset name exposed to RL callers |
 | `RL_DATASET_ROOT` | Default dataset root used to resolve task ids |
 | `RL_DATASET_ROOTS` | Comma-separated `name=path` aliases for additional datasets |
-| `RL_AGENT` | Agent used by rollout workers, normally `claude-code` or `opencode` |
+| `RL_AGENT` | Agent used by rollout workers: `claude-code`, `opencode`, or `pi` |
 | `RL_MODEL_NAME` | Model name used when a request does not provide one |
 | `RL_API_BASE` / `RL_API_KEY` | Model gateway defaults for rollout requests |
 | `RL_MODEL_INFO` / `RL_MAX_NEW_TOKENS` | Harbor model/token budgets applied to rollout tasks |
@@ -234,6 +236,14 @@ OpenCode specific defaults:
 - `TRACE_PLUGIN_OPENCODE_PLUGIN_SOURCE`
 - `TRACE_PLUGIN_OPENCODE_HOOK_SOURCE`
 
+Pi specific defaults:
+
+- `PI_VERSION`
+- `PI_PROVIDER`
+- `PI_THINKING_LEVEL`
+- `PI_MODELS_CONFIG`
+- `PI_SETTINGS_CONFIG`
+
 ## Opik Plugin Submodule
 
 The tracing plugin is linked as a Git submodule at
@@ -261,7 +271,7 @@ OpenCode:
 2. `gen_harbor_zellij_layout.sh` writes a zellij layout with monitor and worker panes.
 3. Each worker pane runs `run_harbor_worker.sh`.
 4. Workers claim tasks from the shared queue and call `harboropik.sh`.
-5. `harboropik.sh` prepares Opik/tracing settings and invokes Harbor with either Claude Code or OpenCode.
+5. `harboropik.sh` prepares Opik/tracing settings and invokes Harbor with Claude Code, OpenCode, or Pi.
 6. When every task is done or failed, `monitor_harbor.sh` writes `$OUTPUT_PATH/summary.txt`, stops the online analyzer, and exits when `HARBOR_ZELLIJ_CLOSE_ON_COMPLETE=1` (the default). With `0`, the final monitor pane remains open for inspection.
 
 Native registry runs use the single-pane layout; `run_harbor_registry.sh`

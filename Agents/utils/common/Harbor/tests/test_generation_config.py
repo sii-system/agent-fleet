@@ -71,6 +71,18 @@ print(json.dumps({
         if os.environ["OPENCODE_CONFIG_CONTENT"]
         else None
     ),
+    "tb_model": os.environ["TB_MODEL"],
+    "agent_import_path": os.environ["TB_AGENT_IMPORT_PATH"],
+    "pi_models_config": (
+        json.loads(os.environ["PI_MODELS_CONFIG"])
+        if os.environ["PI_MODELS_CONFIG"]
+        else None
+    ),
+    "pi_settings_config": (
+        json.loads(os.environ["PI_SETTINGS_CONFIG"])
+        if os.environ["PI_SETTINGS_CONFIG"]
+        else None
+    ),
     "fixer": {
         name: os.environ[name]
         for name in (
@@ -255,6 +267,51 @@ PY
         self.assertNotEqual(result.returncode, 0)
         self.assertIn(
             "Claude Code does not expose temperature or top_p controls",
+            result.stderr,
+        )
+
+    def test_pi_builds_isolated_gateway_configuration(self) -> None:
+        config = self._load_config(
+            "pi",
+            MODEL="test-model",
+            BASE_URL="https://llm.example/v1/",
+            HARBOR_MAX_TOKENS="8192",
+            PI_THINKING_LEVEL="xhigh",
+        )
+
+        self.assertEqual(config["tb_model"], "llm.example/test-model")
+        self.assertEqual(config["agent_import_path"], "pi_harbor:AgentFleetPi")
+        provider = config["pi_models_config"]["providers"]["llm.example"]
+        self.assertEqual(provider["baseUrl"], "https://llm.example/v1")
+        self.assertEqual(provider["api"], "openai-completions")
+        self.assertEqual(provider["apiKey"], "$AGENT_FLEET_API_KEY")
+        self.assertTrue(provider["compat"]["sendSessionAffinityHeaders"])
+        self.assertEqual(
+            provider["compat"]["sessionAffinityFormat"],
+            "openai",
+        )
+        self.assertEqual(provider["models"][0]["id"], "test-model")
+        self.assertEqual(provider["models"][0]["maxTokens"], 8192)
+        self.assertEqual(
+            config["pi_settings_config"],
+            {
+                "defaultProvider": "llm.example",
+                "defaultModel": "test-model",
+                "defaultThinkingLevel": "xhigh",
+                "enableInstallTelemetry": False,
+            },
+        )
+        self.assertNotIn("fake-key", json.dumps(config["pi_models_config"]))
+
+    def test_pi_rejects_unsupported_sampling_settings(self) -> None:
+        result = self._run_validation(
+            "pi",
+            HARBOR_TEMPERATURE="0.2",
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            "Pi does not expose temperature or top_p controls",
             result.stderr,
         )
 

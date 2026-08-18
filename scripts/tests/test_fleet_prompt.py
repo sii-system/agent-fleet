@@ -166,6 +166,7 @@ exit "${STUB_EXIT:-0}"
             {
                 "PATH": f"{self.bin_dir}{os.pathsep}{env['PATH']}",
                 "REPO_DIR": str(self.repo),
+                "AGENT_FLEET_PATHS_FILE": str(self.root / "missing-paths.env"),
             }
         )
         (self.bin_dir / "pi-response.jsonl").write_text(
@@ -216,6 +217,25 @@ exit "${STUB_EXIT:-0}"
                 "workers": 2,
             },
         )
+
+    def test_prompt_routes_pi_to_harbor(self):
+        result = self.run_goal(
+            "--prompt",
+            "Run terminalbench21 with pi and 3 workers",
+            response=self.response(
+                spec={
+                    "schema_version": 1,
+                    "taskset": "terminalbench21",
+                    "agent": "pi",
+                    "workers": 3,
+                }
+            ),
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("runner=harbor", result.stdout)
+        self.assertIn("AGENT=pi", result.stdout)
+        self.assertIn("TOTAL_WORKERS=3", result.stdout)
 
     def test_prompt_preserves_and_normalizes_explicit_task_names(self):
         output = self.root / "fleet-spec.json"

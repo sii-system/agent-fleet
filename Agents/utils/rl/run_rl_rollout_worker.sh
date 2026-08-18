@@ -166,6 +166,8 @@ start_agent_log_stream() {
   local target="$1"
   if [[ "$RL_AGENT" == "opencode" ]]; then
     setsid python3 "$HARBOR_SCRIPT_DIR/harbor_worker_utils.py" stream-opencode-log "$target" &
+  elif [[ "$RL_AGENT" == "pi" ]]; then
+    setsid python3 "$HARBOR_SCRIPT_DIR/harbor_worker_utils.py" stream-pi-log "$target" &
   elif [[ "$RL_AGENT" == "claude-code" ]]; then
     setsid python3 "$HARBOR_SCRIPT_DIR/harbor_worker_utils.py" stream-claude-log "$target" &
   else
@@ -240,6 +242,8 @@ finalize_timeout_trace() {
       "$logs_dir" --project-name "$OPIK_PROJECT_NAME" >> "$WORKER_LOG" 2>&1 || true
     "$py" "$TRACE_PLUGIN_CLAUDE_HOOK_SOURCE" \
       ReplayTimeout --logs-dir "$logs_dir" >> "$WORKER_LOG" 2>&1 || true
+  else
+    log_msg "timeout finalize skipped: Pi has no realtime Opik replay hook"
   fi
 }
 
@@ -349,6 +353,11 @@ while true; do
       # Force env.sh to rebuild the custom-provider JSON from this request's
       # model, endpoint, and key instead of reusing the listener-time snapshot.
       export OPENCODE_CONFIG_CONTENT=""
+    elif [[ "$RL_AGENT" == "pi" ]]; then
+      # env.sh rebuilds both Pi config documents after applying this request's
+      # model and gateway values.
+      export PI_MODELS_CONFIG=""
+      export PI_SETTINGS_CONFIG=""
     fi
     export TB_ENVIRONMENT_TYPE="$environment_type"
     if [[ "$environment_type" == "e2b" && -n "${TB_E2B_PREBUILT_TEMPLATE:-}" ]]; then
