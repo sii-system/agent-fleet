@@ -528,6 +528,36 @@ def _render_fixer_markdown(fixer_report_path: Path, output_path: Path) -> str:
     return "\n".join(lines) + "\n"
 
 
+def update_fixer_results(output_path: Path, fixer_report_path: Path) -> None:
+    """Replace the existing Fixer Results section without regenerating the summary."""
+
+    lines = output_path.read_text(encoding="utf-8").splitlines()
+    starts = [
+        index
+        for index, line in enumerate(lines)
+        if line.strip().casefold() == "## fixer results"
+    ]
+    if len(starts) != 1:
+        raise ValueError("benchmark summary must contain exactly one Fixer Results section")
+    start = starts[0]
+    end = next(
+        (
+            index
+            for index in range(start + 1, len(lines))
+            if lines[index].startswith("## ")
+        ),
+        len(lines),
+    )
+    replacement = _render_fixer_markdown(fixer_report_path, output_path).splitlines()
+    updated = [*lines[:start], *replacement]
+    if end < len(lines):
+        updated.extend(["", *lines[end:]])
+    write_text_atomic(
+        output_path,
+        "\n".join(updated).rstrip() + "\n",
+    )
+
+
 def write_benchmark_summary(
     monitor_path: Path,
     manifest_path: Path,

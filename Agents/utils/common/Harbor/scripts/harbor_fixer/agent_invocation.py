@@ -74,44 +74,50 @@ class PiAgentInvoker:
         rendered_prompt = _compose_prompt(prompt, payload)
         prompt_path = self.output_dir / "pi-agent-prompts" / safe_label / f"{attempt_name}.txt"
         write_text_atomic(prompt_path, rendered_prompt)
-        result = run_pi_json_process(
-            prompt=rendered_prompt,
-            events_path=self.output_dir / "pi-agent-events" / safe_label / f"{attempt_name}.jsonl",
-            stderr_path=self.output_dir / "pi-agent-stderr" / safe_label / f"{attempt_name}.txt",
-            runtime_home=self.output_dir / ".pi-fixer-home" / call_id,
-            runtime_workdir=self.output_dir / ".pi-fixer-work" / call_id,
-            pi_bin=self.config.pi_bin,
-            provider=self.config.provider,
-            model=self.config.model,
-            base_url=self.config.base_url,
-            api_key_env=self.config.api_key_env,
-            agent_name="harbor_fixer_pi_agent",
-            display_name="Harbor Fixer",
-            timeout_seconds=self.config.timeout_seconds,
-            launch_mode="independent_pi_fixer_subprocess",
-            system_prompt=FIXER_SYSTEM_PROMPT,
-            provenance={
-                "attempt": attempt,
-                "label": label,
-                "prompt_path": str(prompt_path),
-                "tools_disabled": True,
-                "builtin_tools_disabled": True,
-                "tools_allowlist": [],
-                "extensions_disabled": True,
-                "skills_disabled": True,
-                "context_files_disabled": True,
-            },
-            no_proxy_env="HARBOR_FIXER_NO_PROXY",
-            prompt_in_stdin=True,
-            no_tools=True,
-            no_builtin_tools=True,
-            tools=None,
-            thinking_level=self.config.thinking_level,
-            disable_extensions=True,
-            disable_skills=True,
-            disable_prompt_templates=True,
-            disable_context_files=True,
-        )
+        process_record_path = self.output_dir / "active-agent-processes" / f"{call_id}.json"
+        write_text_atomic(process_record_path, '{"status":"launching"}\n')
+        try:
+            result = run_pi_json_process(
+                prompt=rendered_prompt,
+                events_path=self.output_dir / "pi-agent-events" / safe_label / f"{attempt_name}.jsonl",
+                stderr_path=self.output_dir / "pi-agent-stderr" / safe_label / f"{attempt_name}.txt",
+                runtime_home=self.output_dir / ".pi-fixer-home" / call_id,
+                runtime_workdir=self.output_dir / ".pi-fixer-work" / call_id,
+                pi_bin=self.config.pi_bin,
+                provider=self.config.provider,
+                model=self.config.model,
+                base_url=self.config.base_url,
+                api_key_env=self.config.api_key_env,
+                agent_name="harbor_fixer_pi_agent",
+                display_name="Harbor Fixer",
+                timeout_seconds=self.config.timeout_seconds,
+                launch_mode="independent_pi_fixer_subprocess",
+                system_prompt=FIXER_SYSTEM_PROMPT,
+                provenance={
+                    "attempt": attempt,
+                    "label": label,
+                    "prompt_path": str(prompt_path),
+                    "tools_disabled": True,
+                    "builtin_tools_disabled": True,
+                    "tools_allowlist": [],
+                    "extensions_disabled": True,
+                    "skills_disabled": True,
+                    "context_files_disabled": True,
+                },
+                no_proxy_env="HARBOR_FIXER_NO_PROXY",
+                prompt_in_stdin=True,
+                no_tools=True,
+                no_builtin_tools=True,
+                tools=None,
+                thinking_level=self.config.thinking_level,
+                disable_extensions=True,
+                disable_skills=True,
+                disable_prompt_templates=True,
+                disable_context_files=True,
+                process_record_path=process_record_path,
+            )
+        finally:
+            process_record_path.unlink(missing_ok=True)
         provenance_path = self.output_dir / "pi-agent-provenance" / safe_label / f"{attempt_name}.json"
         write_text_atomic(
             provenance_path,

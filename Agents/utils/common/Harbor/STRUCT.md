@@ -51,6 +51,7 @@ Agents/utils/common/Harbor/
     │   ├── planning_context/   # Runtime inventory and workspace evidence
     │   ├── policy/             # T1 rules, path routing, and T2/T3 Agent policy
     │   ├── prompts.py          # Task and plan agent contracts
+    │   ├── report.py           # Deterministic human-readable Fixer report
     │   ├── validation.py       # Plan, execution, and verification validation
     │   ├── verification/       # Selection, rerun, and Harbor-state details
     │   └── verifier.py         # Verification public entry points

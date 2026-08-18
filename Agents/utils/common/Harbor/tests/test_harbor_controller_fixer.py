@@ -47,6 +47,12 @@ class HarborControllerFixerTest(FixerTestCase):
                 "controller_status": "completed",
             },
         )
+        summary_path = self.run_dir / "analyzer" / "benchmark-summary.md"
+        summary_path.write_text(
+            "# Benchmark Summary\n\n## Fixer Results\n\n"
+            "No Fixer report has been generated for this benchmark run.\n",
+            encoding="utf-8",
+        )
         fixture_pi = write_fixture_pi(self.root / "fixture-pi")
         self.env = mock.patch.dict(
             os.environ,
@@ -59,6 +65,25 @@ class HarborControllerFixerTest(FixerTestCase):
         )
         self.env.start()
         self.addCleanup(self.env.stop)
+        self.verify = mock.patch(
+            "harbor_controller.fixer.run_verification_from_paths",
+            return_value={"status": "fixed"},
+        )
+        self.write_report = mock.patch(
+            "harbor_controller.fixer.write_fix_report",
+            side_effect=lambda *args: args[-1].write_text(
+                "# Harbor Fixer Report\n", encoding="utf-8"
+            ),
+        )
+        self.update_summary = mock.patch(
+            "harbor_controller.fixer.update_fixer_results"
+        )
+        self.verify_mock = self.verify.start()
+        self.write_report_mock = self.write_report.start()
+        self.update_summary_mock = self.update_summary.start()
+        self.addCleanup(self.verify.stop)
+        self.addCleanup(self.write_report.stop)
+        self.addCleanup(self.update_summary.stop)
 
     def _start(self) -> dict:
         return start_fixer(self.run_dir, workspace_root=self.workspace)
@@ -72,21 +97,110 @@ class HarborControllerFixerTest(FixerTestCase):
         self.assertEqual(status["available_actions"], ["approve", "cancel"])
         self.assertEqual(status["approval"]["plans"][0]["plan_id"], "fix-001")
         self.assertEqual(
+            status["approval"]["automatic_follow_up"],
+            [
+                "execute_approved_plan",
+                "run_smoke_verification",
+                "write_fix_report",
+                "update_benchmark_summary",
+            ],
+        )
+        self.assertEqual(
             status["approval"]["plans"][0]["actions"][0]["executable"],
             "printf",
         )
         self.assertEqual(status["verification_status"], "not_available")
         self.assertEqual(status["report_status"], "not_available")
+        self.assertEqual(
+            list((self.run_dir / "fixer" / "active-agent-processes").glob("*.json")),
+            [],
+        )
 
         completed = approve_fixer(self.run_dir, state["approval_request_id"])
 
         self.assertEqual(completed["status"], "completed")
+        self.assertEqual(completed["outcome"], "fixed")
+        self.assertEqual(completed["verification_status"], "fixed")
+        self.assertEqual(completed["report_status"], "available")
         self.assertEqual(completed["execution_counts"]["succeeded"], 1)
         self.assertEqual(
             completed["paths"]["exec_result"],
             str(self.run_dir / "fixer" / "exec-result-latest.json"),
         )
         self.assertTrue((self.run_dir / "fixer" / "exec-result-latest.json").is_file())
+        self.verify_mock.assert_called_once()
+        self.write_report_mock.assert_called_once()
+        self.update_summary_mock.assert_called_once_with(
+            self.run_dir / "analyzer" / "benchmark-summary.md",
+            self.run_dir / "fixer" / "fix-report-latest.md",
+        )
+
+    def test_approve_exposes_automatic_verification_and_reporting_states(self) -> None:
+        state = self._start()
+        observed: list[str] = []
+
+        def verify(*args: object, **kwargs: object) -> dict:
+            status = fixer_status(self.run_dir)
+            observed.append(str(status["status"]))
+            self.assertEqual(status["verification_status"], "running")
+            self.assertEqual(
+                len(
+                    list(
+                        (self.run_dir / "fixer" / "active-agent-processes").glob(
+                            "*-verification.json"
+                        )
+                    )
+                ),
+                1,
+            )
+            with self.assertRaisesRegex(ValueError, "after execution starts"):
+                cancel_fixer(self.run_dir, state["fixer_workflow_id"])
+            return {"status": "partially_fixed"}
+
+        def report(*args: object) -> None:
+            status = fixer_status(self.run_dir)
+            observed.append(str(status["status"]))
+            self.assertEqual(status["verification_status"], "partially_fixed")
+            self.assertEqual(status["report_status"], "running")
+            args[-1].write_text("# Harbor Fixer Report\n", encoding="utf-8")
+
+        self.verify_mock.side_effect = verify
+        self.write_report_mock.side_effect = report
+
+        completed = approve_fixer(self.run_dir, state["approval_request_id"])
+
+        self.assertEqual(observed, ["verifying", "reporting"])
+        self.assertEqual(completed["status"], "completed")
+        self.assertEqual(completed["outcome"], "partially_fixed")
+
+    def test_verification_failure_stops_before_reporting(self) -> None:
+        state = self._start()
+        self.verify_mock.side_effect = ValueError("invalid verification result")
+
+        with self.assertRaisesRegex(ValueError, "Fixer verification failed"):
+            approve_fixer(self.run_dir, state["approval_request_id"])
+
+        status = fixer_status(self.run_dir)
+        self.assertEqual(status["status"], "failed")
+        self.assertEqual(status["outcome"], "verification_failed")
+        self.assertEqual(status["verification_status"], "failed")
+        self.assertEqual(status["report_status"], "not_available")
+        self.write_report_mock.assert_not_called()
+        self.update_summary_mock.assert_not_called()
+
+    def test_reporting_failure_is_not_replaced_with_a_fallback(self) -> None:
+        state = self._start()
+        self.write_report_mock.side_effect = ValueError("invalid report input")
+
+        with self.assertRaisesRegex(ValueError, "Fixer reporting failed"):
+            approve_fixer(self.run_dir, state["approval_request_id"])
+
+        status = fixer_status(self.run_dir)
+        self.assertEqual(status["status"], "failed")
+        self.assertEqual(status["outcome"], "reporting_failed")
+        self.assertEqual(status["verification_status"], "fixed")
+        self.assertEqual(status["report_status"], "failed")
+        self.update_summary_mock.assert_not_called()
 
     def test_status_survives_corrupt_state_and_missing_approval(self) -> None:
         state_path = self.run_dir / "fixer" / "fixer-state.json"
@@ -125,6 +239,21 @@ class HarborControllerFixerTest(FixerTestCase):
         write_json(manifest, analyzer_payload)
         with self.assertRaisesRegex(ValueError, "run_id does not match"):
             self._start()
+
+    def test_start_requires_analyzer_handoffs_to_be_drained(self) -> None:
+        write_json(
+            self.run_dir / "monitor" / "analyzer-handover-latest.json",
+            {"handover_id": "final-handover", "tasks": []},
+        )
+
+        with self.assertRaisesRegex(ValueError, "Analyzer still has pending"):
+            self._start()
+
+        write_json(
+            self.analyzer_dir / ".analyzer_state.json",
+            {"attempted_handover_keys": ["final-handover"]},
+        )
+        self.assertEqual(self._start()["status"], "awaiting_approval")
 
     def test_second_active_workflow_is_rejected(self) -> None:
         first = self._start()
@@ -212,6 +341,31 @@ class HarborControllerFixerTest(FixerTestCase):
             reset_fixer_control(self.run_dir)
 
         self.assertTrue(state_path.exists())
+
+    def test_live_pi_process_blocks_dead_owner_recovery_and_reset(self) -> None:
+        write_json(
+            self.run_dir / "fixer" / "fixer-state.json",
+            {
+                "fixer_workflow_id": "fixer-dead-owner",
+                "status": "planning",
+                "owner": {"pid": 999999999, "start_ticks": 1},
+            },
+        )
+        start_ticks = int(
+            Path(f"/proc/{os.getpid()}/stat")
+            .read_text(encoding="utf-8")
+            .rsplit(")", 1)[1]
+            .split()[19]
+        )
+        write_json(
+            self.run_dir / "fixer" / "active-agent-processes" / "agent.json",
+            {"pid": os.getpid(), "start_ticks": start_ticks},
+        )
+
+        with self.assertRaisesRegex(ValueError, "another Fixer workflow is active"):
+            self._start()
+        with self.assertRaisesRegex(ValueError, "cannot reset while Fixer"):
+            reset_fixer_control(self.run_dir)
 
     def test_cancel_rejects_pending_plan(self) -> None:
         state = self._start()
@@ -335,6 +489,8 @@ class HarborControllerFixerTest(FixerTestCase):
         self.assertEqual(second["status"], "completed")
         self.assertEqual(second["outcome"], "no_actions")
         self.assertEqual(second["paths"]["exec_result"], "")
+        self.assertEqual(second["verification_status"], "not_required")
+        self.assertEqual(second["report_status"], "not_required")
 
     def test_policy_denial_blocks_before_approval(self) -> None:
         denied = {
@@ -356,6 +512,8 @@ class HarborControllerFixerTest(FixerTestCase):
 
         self.assertEqual(state["status"], "blocked")
         self.assertEqual(state["outcome"], "policy_denied")
+        self.assertEqual(state["verification_status"], "not_required")
+        self.assertEqual(state["report_status"], "not_required")
         self.assertFalse(
             (self.run_dir / "fixer" / "fixer-approval-request.json").exists()
         )

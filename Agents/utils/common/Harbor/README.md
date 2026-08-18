@@ -318,22 +318,27 @@ python3 Agents/utils/common/Harbor/scripts/controller.py \
 
 Use `fixer cancel --workflow-id "$FIXER_WORKFLOW_ID"` to reject a plan awaiting
 approval. A cancellation requested during planning or policy review takes
-effect at the next stage boundary. Execution is synchronous and cannot be
-safely cancelled after an action starts. Approval is bound to the run,
-workflow, approval request, and SHA-256 digest of the reviewed Fix Plan; a
-changed plan is blocked instead of executed.
+effect at the next stage boundary. Approval synchronously executes the exact
+plan, runs smoke verification, writes `fix-report-latest.md`, and updates the
+existing `benchmark-summary.md` Fixer section. These automatic follow-up steps
+do not require additional user decisions and cannot be safely cancelled after
+execution starts. Approval is bound to the run, workflow, approval request,
+and SHA-256 digest of the reviewed Fix Plan; a changed plan is blocked instead
+of executed.
 
 `RESET_RUN=1` also coordinates with this workflow: reset is refused while a
-planning, policy, execution, or cancellation command is still running. If that
-Controller process exited unexpectedly, the next `fixer start` can recover the
-stale workflow state.
+planning, policy, execution, verification, reporting, or cancellation command
+is still running. If that Controller process exited unexpectedly, the next
+`fixer start` can recover the stale workflow state only when no tracked Fixer
+process remains.
 
-This Controller path currently covers Fixer Stages 1–3 only. Verification and
-the human-readable Fix Report are reported as `not_available`; it does not
-claim that either later stage ran. Workflow control state is written below
-`$RUN_DIR/fixer` as `fixer-state.json`, `fixer-control-request.json`,
-`fixer-approval-request.json`, and `fixer-user-decision.json` alongside the
-existing Fixer artifacts.
+The Controller uses the repository `start.sh` directly for the isolated smoke
+rerun; no restart, stop, or verification command configuration is required.
+`controller.py ... status` exposes `verifying` and `reporting` while they run,
+then reports the verification outcome and report path. Workflow control state
+is written below `$RUN_DIR/fixer` as `fixer-state.json`,
+`fixer-control-request.json`, `fixer-approval-request.json`, and
+`fixer-user-decision.json` alongside the existing Fixer artifacts.
 
 ### Stage 1: Planning Context and Plan Generation
 
@@ -422,6 +427,15 @@ Verification writes
 `verification-smoke-selection.json`, `verification-smoke-tasks.txt`, and
 `verification-result-latest.json`. If the Fix Plan was generated without a
 local monitor, select `claude-code`, `opencode`, or `oracle` with `--agent`.
+
+### Human-readable Fixer result
+
+After Controller-approved execution and verification, Fixer writes a
+deterministic `fix-report-latest.md` from the validated Fix Plan, execution
+result, and verification result. The report contains the summary, successfully
+applied changes, and remaining issues. Controller then replaces only the
+existing `## Fixer Results` section in `benchmark-summary.md`; it does not
+regenerate the Monitor or Analyzer summary.
 
 ## More Details
 

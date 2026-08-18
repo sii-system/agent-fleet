@@ -6,6 +6,7 @@ import copy
 import json
 import os
 import sys
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -189,6 +190,27 @@ class HarborFixerExecTest(FixerTestCase):
 
         self.assertEqual(result["status"], "success")
         self.assertFalse(active_path.exists())
+
+    def test_background_action_process_is_stopped_before_completion(self) -> None:
+        marker = self.workspace / "background-mutation"
+        child_script = (
+            "import pathlib, time; "
+            "time.sleep(0.5); "
+            f"pathlib.Path({str(marker)!r}).write_text('unexpected')"
+        )
+        parent_script = (
+            "import subprocess, sys; "
+            f"subprocess.Popen([sys.executable, '-c', {child_script!r}])"
+        )
+
+        result = self._run(
+            [_command("background", parent_script)],
+            "background",
+        )
+        time.sleep(0.7)
+
+        self.assertEqual(result["status"], "success")
+        self.assertFalse(marker.exists())
 
     def test_exec_input_publish_does_not_follow_existing_symlink(self) -> None:
         output_dir = self.root / "exec-input-symlink"

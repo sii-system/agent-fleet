@@ -6,6 +6,8 @@ import fcntl
 import hashlib
 import json
 import os
+import shlex
+import time
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -14,8 +16,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from analyzer_subagent import _load_follow_state, _pending_handovers
 from harbor_fixer.agent_invocation import PiAgentInvoker, PiInvocationConfig
-from harbor_fixer.artifact_io import read_json, write_json_atomic
+from harbor_fixer.artifact_io import read_json, write_json_atomic, write_text_atomic
 from harbor_fixer.executor import (
     MAX_SUMMARY_LIMIT,
     build_exec_input_from_plan,
@@ -27,12 +30,17 @@ from harbor_fixer.plan_generation import (
     run_plan_generation,
 )
 from harbor_fixer.policy import run_policy_preflight
+from harbor_fixer.report import write_fix_report
+from harbor_fixer.verifier import run_verification_from_paths
+from write_benchmark_summary import update_fixer_results
 
 ACTIVE_STATUSES = {
     "planning",
     "policy_review",
     "awaiting_approval",
     "executing",
+    "verifying",
+    "reporting",
     "cancelling",
 }
 OWNER_STATUSES = ACTIVE_STATUSES - {"awaiting_approval"}
@@ -64,6 +72,10 @@ def _decision_path(run_dir: Path) -> Path:
 
 def _active_action_path(run_dir: Path) -> Path:
     return _fixer_dir(run_dir) / "active-action.json"
+
+
+def _active_agent_process_dir(run_dir: Path) -> Path:
+    return _fixer_dir(run_dir) / "active-agent-processes"
 
 
 def _control_paths(run_dir: Path) -> tuple[Path, ...]:
@@ -142,19 +154,19 @@ def _owner_is_live(state: dict[str, Any]) -> bool:
     return pid > 0 and _process_start_ticks(pid) == start_ticks
 
 
-def _active_action_is_live(run_dir: Path) -> bool:
-    action = _load_optional_json(_active_action_path(run_dir))
-    if action is None:
+def _process_record_is_live(path: Path) -> bool:
+    process = _load_optional_json(path)
+    if process is None:
         return False
-    if action.get("status") == "launching":
+    if process.get("status") == "launching":
         return True
     try:
-        pid = int(action["pid"])
-        start_ticks = int(action["start_ticks"])
+        pid = int(process["pid"])
+        start_ticks = int(process["start_ticks"])
     except (KeyError, TypeError, ValueError) as exc:
-        raise ValueError("invalid active Fixer action record") from exc
+        raise ValueError(f"invalid active Fixer process record: {path}") from exc
     if pid <= 0:
-        raise ValueError("invalid active Fixer action pid")
+        raise ValueError("invalid active Fixer process pid")
     if _process_start_ticks(pid) == start_ticks:
         return True
     try:
@@ -164,6 +176,12 @@ def _active_action_is_live(run_dir: Path) -> bool:
     except PermissionError:
         return True
     return True
+
+
+def _active_process_is_live(run_dir: Path) -> bool:
+    paths = [_active_action_path(run_dir)]
+    paths.extend(sorted(_active_agent_process_dir(run_dir).glob("*.json")))
+    return any(_process_record_is_live(path) for path in paths)
 
 
 def _positive_env_int(name: str, default: int, *, maximum: int | None = None) -> int:
@@ -250,6 +268,18 @@ def _validate_start_inputs(run_dir: Path, analyzer_output: Path) -> str:
     manifest = read_json(analyzer_output / "analyzer-artifacts-latest.json")
     if manifest.get("run_id") != run_id:
         raise ValueError("Analyzer output run_id does not match the current benchmark")
+    latest_handover = run_dir / "monitor" / "analyzer-handover-latest.json"
+    handoff_dir = run_dir / "monitor" / "analyzer-handoffs"
+    processed, failed = _load_follow_state(analyzer_output / ".analyzer_state.json")
+    if _pending_handovers(
+        latest_path=latest_handover,
+        handoff_dir=handoff_dir,
+        processed=processed,
+        failed=failed,
+        now=time.time(),
+        include_deferred_retries=True,
+    ):
+        raise ValueError("Analyzer still has pending benchmark handoffs")
     return run_id
 
 
@@ -417,7 +447,13 @@ def _finish_empty_plan(run_dir: Path, workflow_id: str) -> dict[str, Any]:
                 owner=None,
             )
         elif state.get("status") == "planning":
-            state.update(status="completed", outcome="no_actions", owner=None)
+            state.update(
+                status="completed",
+                outcome="no_actions",
+                verification_status="not_required",
+                report_status="not_required",
+                owner=None,
+            )
         else:
             raise ValueError(f"Fixer cannot finish from status {state.get('status')}")
         state.update(finished_at=_utc_now(), available_actions=["start"])
@@ -455,6 +491,8 @@ def _finish_policy_review(
                 finished_at=_utc_now(),
                 policy_status="denied",
                 policy_denials=_policy_denials(policy),
+                verification_status="not_required",
+                report_status="not_required",
                 available_actions=["start"],
                 owner=None,
             )
@@ -474,6 +512,12 @@ def _finish_policy_review(
             "fix_plan_sha256": fix_plan_sha256,
             "policy_status": "allowed",
             "created_at": _utc_now(),
+            "automatic_follow_up": [
+                "execute_approved_plan",
+                "run_smoke_verification",
+                "write_fix_report",
+                "update_benchmark_summary",
+            ],
             "plans": _approval_plans(fix_plan),
         }
         write_json_atomic(_approval_request_path(run_dir), approval)
@@ -514,13 +558,13 @@ def start_fixer(
             policy_write_roots=policy_write_roots or [],
         )
         current = _load_optional_json(_state_path(run_dir))
-        action_is_live = _active_action_is_live(run_dir)
+        process_is_live = _active_process_is_live(run_dir)
         workflow_is_live = bool(
             current
             and current.get("status") in ACTIVE_STATUSES
             and (current.get("status") == "awaiting_approval" or _owner_is_live(current))
         )
-        if action_is_live or workflow_is_live:
+        if process_is_live or workflow_is_live:
             raise ValueError(
                 "another Fixer workflow is active: "
                 f"{current.get('fixer_workflow_id') if current else '<unknown>'} "
@@ -553,8 +597,10 @@ def start_fixer(
                 "fix_plan": str(output_dir / "fix-plan-latest.json"),
                 "policy_decision": str(output_dir / "execution-policy-decision.json"),
                 "exec_result": "",
-                "verification_result": "",
-                "fix_report": "",
+                "verification_result": str(
+                    output_dir / "verification-result-latest.json"
+                ),
+                "fix_report": str(output_dir / "fix-report-latest.md"),
                 "benchmark_summary": str(run_dir / "analyzer" / "benchmark-summary.md"),
             },
             "available_actions": ["cancel"],
@@ -641,6 +687,124 @@ def _execution_counts(result: dict[str, Any]) -> dict[str, int]:
     return counts
 
 
+def _finish_execution(
+    run_dir: Path,
+    state: dict[str, Any],
+    fix_plan: dict[str, Any],
+    result: dict[str, Any],
+) -> dict[str, Any]:
+    output_dir = _fixer_dir(run_dir)
+    workflow_id = str(state["fixer_workflow_id"])
+    exec_result_path = output_dir / "exec-result-latest.json"
+    verification_result_path = output_dir / "verification-result-latest.json"
+    report_path = output_dir / "fix-report-latest.md"
+    summary_path = run_dir / "analyzer" / "benchmark-summary.md"
+    paths = {
+        **state["paths"],
+        "exec_result": str(exec_result_path),
+        "verification_result": str(verification_result_path),
+        "fix_report": str(report_path),
+        "benchmark_summary": str(summary_path),
+    }
+    _transition(
+        run_dir,
+        workflow_id,
+        "verifying",
+        policy_status=str(result["policy_status"]),
+        execution_counts=_execution_counts(result),
+        verification_status="running",
+        report_status="not_available",
+        available_actions=[],
+        paths=paths,
+    )
+
+    process_record = (
+        _active_agent_process_dir(run_dir) / f"{workflow_id}-verification.json"
+    )
+    try:
+        write_text_atomic(process_record, '{"status":"launching"}\n')
+        try:
+            verification = run_verification_from_paths(
+                Path(paths["fix_plan"]),
+                exec_result_path,
+                output_dir / "verification-run",
+                output_dir,
+                rerun_command=shlex.quote(
+                    str(Path(__file__).resolve().parents[2] / "start.sh")
+                ),
+            )
+        finally:
+            process_record.unlink(missing_ok=True)
+    except Exception as exc:
+        _transition(
+            run_dir,
+            workflow_id,
+            "failed",
+            outcome="verification_failed",
+            finished_at=_utc_now(),
+            verification_status="failed",
+            report_status="not_available",
+            available_actions=["start"],
+            error={"stage": "verifying", "message": str(exc)},
+            paths=paths,
+        )
+        raise ValueError(f"Fixer verification failed: {exc}") from exc
+
+    _transition(
+        run_dir,
+        workflow_id,
+        "reporting",
+        verification_status=str(verification["status"]),
+        report_status="running",
+        available_actions=[],
+        paths=paths,
+    )
+    try:
+        write_fix_report(
+            str(state["run_id"]),
+            fix_plan,
+            result,
+            verification,
+            report_path,
+        )
+        update_fixer_results(summary_path, report_path)
+    except Exception as exc:
+        _transition(
+            run_dir,
+            workflow_id,
+            "failed",
+            outcome="reporting_failed",
+            finished_at=_utc_now(),
+            verification_status=str(verification["status"]),
+            report_status="failed",
+            available_actions=["start"],
+            error={"stage": "reporting", "message": str(exc)},
+            paths=paths,
+        )
+        raise ValueError(f"Fixer reporting failed: {exc}") from exc
+
+    if result["policy_status"] == "denied":
+        status = "blocked"
+        outcome = "policy_denied_at_execution"
+    elif result["status"] != "success":
+        status = "failed"
+        outcome = "execution_failed"
+    else:
+        status = "completed"
+        outcome = str(verification["status"])
+    return _transition(
+        run_dir,
+        workflow_id,
+        status,
+        outcome=outcome,
+        finished_at=_utc_now(),
+        verification_status=str(verification["status"]),
+        report_status="available",
+        available_actions=["start"],
+        paths=paths,
+    )
+
+
 def approve_fixer(run_dir: Path, approval_request_id: str) -> dict[str, Any]:
     """Execute the exact currently approved plan."""
 
@@ -708,38 +872,6 @@ def approve_fixer(run_dir: Path, approval_request_id: str) -> dict[str, Any]:
             execution_timeout_seconds=int(config["execution_timeout"]),
             summary_limit=int(config["summary_limit"]),
         )
-        if result.get("policy_status") == "denied":
-            paths = {
-                **state["paths"],
-                "exec_result": str(_fixer_dir(run_dir) / "exec-result-latest.json"),
-            }
-            return _transition(
-                run_dir,
-                state["fixer_workflow_id"],
-                "blocked",
-                outcome="policy_denied_at_execution",
-                finished_at=_utc_now(),
-                policy_status="denied",
-                execution_counts=_execution_counts(result),
-                available_actions=["start"],
-                paths=paths,
-            )
-        workflow_status = "completed" if result.get("status") == "success" else "failed"
-        paths = {
-            **state["paths"],
-            "exec_result": str(_fixer_dir(run_dir) / "exec-result-latest.json"),
-        }
-        return _transition(
-            run_dir,
-            state["fixer_workflow_id"],
-            workflow_status,
-            outcome=str(result.get("status") or "failed"),
-            finished_at=_utc_now(),
-            policy_status=str(result.get("policy_status") or ""),
-            execution_counts=_execution_counts(result),
-            available_actions=["start"],
-            paths=paths,
-        )
     except Exception as exc:
         _transition(
             run_dir,
@@ -751,6 +883,7 @@ def approve_fixer(run_dir: Path, approval_request_id: str) -> dict[str, Any]:
             error={"stage": "executing", "message": str(exc)},
         )
         raise ValueError(f"Fixer execution failed: {exc}") from exc
+    return _finish_execution(run_dir, state, fix_plan, result)
 
 
 def cancel_fixer(run_dir: Path, workflow_id: str) -> dict[str, Any]:
@@ -760,9 +893,9 @@ def cancel_fixer(run_dir: Path, workflow_id: str) -> dict[str, Any]:
     with _state_lock(run_dir):
         state = _state_for_workflow(run_dir, workflow_id)
         status = str(state.get("status") or "")
-        if status == "executing":
+        if status in {"executing", "verifying", "reporting"}:
             raise ValueError(
-                "Fixer execution cannot be safely cancelled mid-action; wait for the current execution result"
+                "Fixer cannot be safely cancelled after execution starts; wait for the current workflow result"
             )
         if status not in {"planning", "policy_review", "awaiting_approval"}:
             raise ValueError(f"Fixer cannot be cancelled from status {status}")
@@ -876,13 +1009,13 @@ def reset_fixer_control(
     run_dir = run_dir.resolve()
     with _state_lock(run_dir, inherited_lock_fd):
         state = _load_optional_json(_state_path(run_dir))
-        action_is_live = _active_action_is_live(run_dir)
+        process_is_live = _active_process_is_live(run_dir)
         workflow_is_live = bool(
             state
             and state.get("status") in OWNER_STATUSES
             and _owner_is_live(state)
         )
-        if action_is_live or workflow_is_live:
+        if process_is_live or workflow_is_live:
             owner = state.get("owner", {}) if state else {}
             raise ValueError(
                 "cannot reset while Fixer workflow is active: "
@@ -895,4 +1028,7 @@ def reset_fixer_control(
             if path.exists():
                 path.unlink()
                 removed.append(str(path))
+        for path in _active_agent_process_dir(run_dir).glob("*.json"):
+            path.unlink()
+            removed.append(str(path))
     return {"status": "reset", "removed": removed}

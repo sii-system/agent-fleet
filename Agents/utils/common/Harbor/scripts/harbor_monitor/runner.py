@@ -472,7 +472,6 @@ def run_loop(
         if output_path:
             output_path.parent.mkdir(parents=True, exist_ok=True)
             output_path.write_text(output_json + "\n", encoding="utf-8")
-        write_json(user_report_output, output["user_notify"])
         analyzer_handover = output["analyzer_handover"]
         dispatch_analyzer_handover(
             analyzer_handover,
@@ -480,6 +479,7 @@ def run_loop(
             state=state,
             write_json=write_json,
         )
+        write_json(user_report_output, output["user_notify"])
         write_json(runner_action_output, output["runner_action"])
         print(output_json)
         save_state(state_path, state)

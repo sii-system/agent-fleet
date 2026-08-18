@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import stat
 import sys
@@ -138,6 +139,17 @@ class HarborPiRuntimeTest(unittest.TestCase):
             "message_update",
             (self.root / "events.jsonl").read_text(encoding="utf-8"),
         )
+
+    def test_process_record_identifies_the_pi_process(self) -> None:
+        process_record = self.root / "active-process.json"
+
+        result = self.run_runtime("fixture", process_record_path=process_record)
+
+        record = json.loads(process_record.read_text(encoding="utf-8"))
+        self.assertIsNone(result.block_reason)
+        self.assertEqual(record["status"], "running")
+        self.assertGreater(record["pid"], 0)
+        self.assertGreater(record["start_ticks"], 0)
 
     def test_rejects_streaming_stdin_combination(self) -> None:
         result = self.run_runtime(

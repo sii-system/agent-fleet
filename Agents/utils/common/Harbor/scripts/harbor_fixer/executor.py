@@ -288,6 +288,24 @@ def _terminate_process_group(process: subprocess.Popen[str]) -> int:
     return process.wait()
 
 
+def _terminate_remaining_process_group(pgid: int) -> None:
+    try:
+        os.killpg(pgid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    deadline = time.monotonic() + PROCESS_TERMINATION_GRACE_SECONDS
+    while time.monotonic() < deadline:
+        try:
+            os.killpg(pgid, 0)
+        except ProcessLookupError:
+            return
+        time.sleep(0.05)
+    try:
+        os.killpg(pgid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+
+
 def _run_command_action(
     output_dir: Path,
     plan_id: str,
@@ -350,6 +368,7 @@ def _run_command_action(
             ) as stderr_handle,
         ):
             write_json_atomic(active_action_path, {"status": "launching"})
+            process: subprocess.Popen[str] | None = None
             try:
                 process = subprocess.Popen(
                     [resolved_executable, *action["arguments"]],
@@ -386,6 +405,8 @@ def _run_command_action(
                         f"command timed out after {timeout_seconds:g} seconds\n"
                     )
             finally:
+                if process is not None:
+                    _terminate_remaining_process_group(process.pid)
                 active_action_path.unlink(missing_ok=True)
     except OSError as exc:
         duration_ms = int((time.monotonic() - start) * 1000)
