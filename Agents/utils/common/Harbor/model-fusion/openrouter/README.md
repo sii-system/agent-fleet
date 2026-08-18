@@ -22,9 +22,8 @@ bash Agents/utils/common/Harbor/model-fusion/openrouter/run_tb21.sh dry-run conf
 # Run one task once, detached by default.
 bash Agents/utils/common/Harbor/model-fusion/openrouter/run_tb21.sh smoke configure-git-webserver
 
-# Run the 11-task list five times.
-TASK_SOURCE_FILE="$PWD/Tasks/Terminal-bench-2/harbor_terminalbench21_mimocode_11_tasks.txt" \
-N_ATTEMPTS=5 TB_RUNS=5 TOTAL_WORKERS=11 TB_N_CONCURRENT=11 \
+# Run the complete Terminal-Bench 2.1 list five times.
+N_ATTEMPTS=5 TB_RUNS=5 TOTAL_WORKERS=20 TB_N_CONCURRENT=20 \
 bash Agents/utils/common/Harbor/model-fusion/openrouter/run_tb21.sh full
 ```
 
@@ -32,7 +31,10 @@ Important overrides:
 
 - `FUSION_ROUTER_DIR`: Router checkout.
 - `OPENROUTER_SOURCE_CONFIG`: source Router JSON.
-- `OPENROUTER_DIST_DIR`: wheel and derived-config cache.
+- `OPENROUTER_DIST_DIR`: wheel and derived-config cache root; relative paths
+  are canonicalized before Harbor changes directories.
+- `TASK_SOURCE_FILE`: optional task-list override; `full` defaults to
+  `Tasks/Terminal-bench-2/harbor_terminalbench21_tasks.txt`.
 - `OPENROUTER_MAX_FUSIONS`: defaults to `-1`; set a nonnegative limit if needed.
 - `MODEL`: gateway model used for every Router role.
 - `TB_AGENT_TIMEOUT_MULTIPLIER`: defaults to `20`.

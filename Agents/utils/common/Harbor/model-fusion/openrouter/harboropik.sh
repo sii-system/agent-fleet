@@ -84,4 +84,10 @@ args+=(
   --ae "OPENROUTER_ARTIFACT_ROOT=${OPENROUTER_ARTIFACT_ROOT:-/logs/agent/router}"
   --ae "OPENROUTER_SUMMARY_PATH=${OPENROUTER_SUMMARY_PATH:-/logs/agent/router-run-summary.json}"
 )
+if [[ "${MODEL_FUSION_PROXY_RENDER_ONLY:-0}" == "1" ]]; then
+  printf '[openrouter] proxy command:'
+  printf ' %q' "$REAL_OPIK_BIN" "${args[@]}"
+  printf '\n'
+  exit 0
+fi
 exec "$REAL_OPIK_BIN" "${args[@]}"

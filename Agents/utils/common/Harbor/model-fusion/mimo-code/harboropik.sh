@@ -107,4 +107,11 @@ args+=(
   --ae "MIMO_ROUTER_SUMMARY_PATH=${MIMO_ROUTER_SUMMARY_PATH:-/logs/agent/router-run-summary.json}"
 )
 
+if [[ "${MODEL_FUSION_PROXY_RENDER_ONLY:-0}" == "1" ]]; then
+  printf '[mimo-code] proxy command:'
+  printf ' %q' "$REAL_OPIK_BIN" "${args[@]}"
+  printf '\n'
+  exit 0
+fi
+
 exec "$REAL_OPIK_BIN" "${args[@]}"

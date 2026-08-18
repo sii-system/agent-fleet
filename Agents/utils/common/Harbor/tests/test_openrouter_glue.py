@@ -111,6 +111,30 @@ class OpenRouterProxyTest(unittest.TestCase):
             ["harbor", "run", "--help"],
         )
 
+    def test_render_only_validates_contract_without_executing_real_cli(self) -> None:
+        env = {**self.env, "MODEL_FUSION_PROXY_RENDER_ONLY": "1"}
+        result = subprocess.run(
+            [
+                "bash",
+                str(OPENROUTER_DIR / "harboropik.sh"),
+                "harbor",
+                "run",
+                "--dataset",
+                "terminal-bench/terminal-bench-2-1",
+                "-i",
+                "terminal-bench/fix-git",
+            ],
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(self.capture.exists())
+        self.assertIn("OPENROUTER_ENABLED=1", result.stdout)
+        self.assertIn("terminal-bench/fix-git", result.stdout)
+        self.assertIn("--mounts-json", result.stdout)
+
 
 class OpenRouterClaudeOverlayTest(unittest.TestCase):
     def test_wraps_only_enabled_claude_stream_commands(self) -> None:
@@ -135,6 +159,10 @@ class OpenRouterClaudeOverlayTest(unittest.TestCase):
         self.assertIn("--pipeline openrouter_fusion", wrapped)
         self.assertIn("--task-id fixture-task", wrapped)
         self.assertEqual(module._wrap_claude_command(command, "prompt", {}), command)
+        with self.assertRaisesRegex(RuntimeError, "command shape is unsupported"):
+            module._wrap_claude_command(
+                "claude --print -- task", "fixture prompt", extra_env
+            )
 
 
 if __name__ == "__main__":

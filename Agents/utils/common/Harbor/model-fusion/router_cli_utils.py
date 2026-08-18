@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
 import hashlib
 import json
 import os
 import stat
 import subprocess
+import sys
+import tempfile
 from pathlib import Path
 
 
@@ -48,6 +51,130 @@ def source_fingerprint(repo: Path) -> str:
     return digest.hexdigest()
 
 
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _fsync_directory(directory: Path) -> None:
+    descriptor = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _atomic_publish_bytes(target: Path, content: bytes, mode: int) -> None:
+    """Publish immutable content only after the complete file is durable."""
+    target.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{target.name}.", dir=target.parent
+    )
+    temporary = Path(temporary_name)
+    try:
+        os.fchmod(descriptor, mode)
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        try:
+            os.link(temporary, target)
+            _fsync_directory(target.parent)
+        except FileExistsError:
+            if target.read_bytes() != content:
+                raise RuntimeError(
+                    f"content-addressed artifact mismatch: {target}"
+                ) from None
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def build_wheel(repo: Path, cache_root: Path, version: str) -> dict[str, str]:
+    """Build and atomically cache a wheel for a stable source fingerprint."""
+    repo = repo.resolve(strict=True)
+    cache_root.mkdir(parents=True, exist_ok=True)
+    cache_root = cache_root.resolve(strict=True)
+
+    for _ in range(3):
+        fingerprint = source_fingerprint(repo)
+        cache_dir = cache_root / f"{version}-{fingerprint[:12]}"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        lock_path = cache_root / f".{fingerprint}.lock"
+        with lock_path.open("a+b") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            if source_fingerprint(repo) != fingerprint:
+                continue
+
+            checksum_files = list(cache_dir.glob("*.whl.sha256"))
+            wheels = list(cache_dir.glob("*.whl"))
+            if len(wheels) == 1 and len(checksum_files) == 1:
+                wheel = wheels[0]
+                expected = checksum_files[0].read_text(encoding="ascii").strip()
+                actual = _sha256(wheel)
+                if (
+                    checksum_files[0]
+                    == wheel.with_suffix(wheel.suffix + ".sha256")
+                    and expected == actual
+                ):
+                    return {
+                        "cache_dir": str(cache_dir),
+                        "source_hash": fingerprint,
+                        "wheel": str(wheel),
+                        "wheel_sha256": actual,
+                    }
+
+            for stale in (*wheels, *checksum_files):
+                stale.unlink(missing_ok=True)
+
+            with tempfile.TemporaryDirectory(
+                prefix=".router-build-", dir=cache_root
+            ) as temporary_name:
+                temporary = Path(temporary_name)
+                subprocess.run(
+                    [
+                        "uv",
+                        "build",
+                        "--wheel",
+                        "--out-dir",
+                        str(temporary),
+                        str(repo),
+                    ],
+                    check=True,
+                    stdout=sys.stderr,
+                )
+                built_wheels = list(temporary.glob("*.whl"))
+                if len(built_wheels) != 1:
+                    raise RuntimeError(
+                        f"expected one Router wheel, found {len(built_wheels)}"
+                    )
+                if source_fingerprint(repo) != fingerprint:
+                    continue
+
+                built = built_wheels[0]
+                wheel = cache_dir / built.name
+                checksum = _sha256(built)
+                os.replace(built, wheel)
+                with wheel.open("rb") as handle:
+                    os.fsync(handle.fileno())
+                _atomic_publish_bytes(
+                    wheel.with_suffix(wheel.suffix + ".sha256"),
+                    f"{checksum}\n".encode("ascii"),
+                    0o444,
+                )
+                _fsync_directory(cache_dir)
+                return {
+                    "cache_dir": str(cache_dir),
+                    "source_hash": fingerprint,
+                    "wheel": str(wheel),
+                    "wheel_sha256": checksum,
+                }
+
+    raise RuntimeError("Router source changed during three consecutive wheel builds")
+
+
 def derive_config(
     source: Path, output_dir: Path, pipeline: str, max_fusions: int
 ) -> Path:
@@ -80,14 +207,7 @@ def derive_config(
     fingerprint = hashlib.sha256(content).hexdigest()[:16]
     output_dir.mkdir(parents=True, exist_ok=True)
     target = output_dir / f"router-config-{pipeline}-{fingerprint}.json"
-    try:
-        descriptor = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o444)
-    except FileExistsError:
-        if target.read_bytes() != content:
-            raise RuntimeError(f"content-addressed config mismatch: {target}") from None
-    else:
-        with os.fdopen(descriptor, "wb") as handle:
-            handle.write(content)
+    _atomic_publish_bytes(target, content, 0o444)
     return target
 
 
@@ -96,6 +216,10 @@ def main() -> int:
     subparsers = parser.add_subparsers(dest="command", required=True)
     fingerprint_parser = subparsers.add_parser("source-fingerprint")
     fingerprint_parser.add_argument("repo", type=Path)
+    wheel_parser = subparsers.add_parser("build-wheel")
+    wheel_parser.add_argument("--repo", required=True, type=Path)
+    wheel_parser.add_argument("--cache-root", required=True, type=Path)
+    wheel_parser.add_argument("--version", required=True)
     config_parser = subparsers.add_parser("derive-config")
     config_parser.add_argument("--source", required=True, type=Path)
     config_parser.add_argument("--output-dir", required=True, type=Path)
@@ -106,6 +230,8 @@ def main() -> int:
     args = parser.parse_args()
     if args.command == "source-fingerprint":
         print(source_fingerprint(args.repo))
+    elif args.command == "build-wheel":
+        print(json.dumps(build_wheel(args.repo, args.cache_root, args.version)))
     else:
         print(
             derive_config(

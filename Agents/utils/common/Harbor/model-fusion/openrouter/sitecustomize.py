@@ -34,11 +34,17 @@ def _wrap_claude_command(
     if not extra_env or extra_env.get("OPENROUTER_ENABLED") != "1":
         return command
     marker = "claude --verbose --output-format=stream-json"
-    start = command.find(marker)
     redirect = " 2>&1 </dev/null | tee "
+    if command.count(marker) != 1 or command.count(redirect) != 1:
+        raise RuntimeError(
+            "OpenRouter is enabled but the Claude command shape is unsupported"
+        )
+    start = command.find(marker)
     end = command.find(redirect, start)
-    if start < 0 or end < 0:
-        return command
+    if end <= start:
+        raise RuntimeError(
+            "OpenRouter is enabled but the Claude redirect precedes its command"
+        )
 
     wheel = _value(extra_env, "OPENROUTER_WHEEL_PATH", "/opt/sii-fusion-router/router.whl")
     config = _value(extra_env, "OPENROUTER_CONFIG_PATH", "/opt/sii-fusion-router/router-config.json")

@@ -4,7 +4,6 @@ Terminal-Bench task lists.
 
 ```text
 harbor_terminalbench21_tasks.txt
-harbor_terminalbench21_mimocode_11_tasks.txt
 tb_tasks.txt
 ```
 
@@ -12,10 +11,6 @@ tb_tasks.txt
 Use it through `Agents/utils/common/Harbor/start.sh` by setting
 `DATASET_NAME=terminalbench21` and `DATASET_PATH` in
 `Agents/utils/common/Harbor/env.sh`.
-
-`harbor_terminalbench21_mimocode_11_tasks.txt` is the fixed 11-task subset
-used for Mimo Max comparisons. Select it explicitly with `TASK_SOURCE_FILE`;
-it is not a new `DATASET_NAME` alias.
 
 Optional online analysis:
 

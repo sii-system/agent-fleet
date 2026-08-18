@@ -22,12 +22,11 @@ bash Agents/utils/common/Harbor/model-fusion/mimo-code/run_tb21.sh dry-run fix-g
 # Run one task once.
 bash Agents/utils/common/Harbor/model-fusion/mimo-code/run_tb21.sh smoke fix-git
 
-# Run a configured task list, for example 11 tasks with five trials each.
-TASK_SOURCE_FILE="$PWD/Tasks/Terminal-bench-2/harbor_terminalbench21_mimocode_11_tasks.txt" \
+# Run the complete Terminal-Bench 2.1 list with five trials per task.
 N_ATTEMPTS=5 \
 TB_RUNS=5 \
-TOTAL_WORKERS=11 \
-TB_N_CONCURRENT=11 \
+TOTAL_WORKERS=20 \
+TB_N_CONCURRENT=20 \
 bash Agents/utils/common/Harbor/model-fusion/mimo-code/run_tb21.sh full
 ```
 
@@ -35,7 +34,10 @@ Important overrides:
 
 - `FUSION_ROUTER_DIR`: Router checkout.
 - `MIMO_ROUTER_SOURCE_CONFIG`: source Router JSON config.
-- `MIMO_ROUTER_DIST_DIR`: wheel and derived-config cache.
+- `MIMO_ROUTER_DIST_DIR`: wheel and derived-config cache root; relative paths
+  are canonicalized before Harbor changes directories.
+- `TASK_SOURCE_FILE`: optional task-list override; `full` defaults to
+  `Tasks/Terminal-bench-2/harbor_terminalbench21_tasks.txt`.
 - `MODEL`: main Claude model and the target behind the `sonnet` aliases.
 - `TB_AGENT_TIMEOUT_MULTIPLIER`: defaults to `20`.
 - `DETACH`: defaults to `1`.

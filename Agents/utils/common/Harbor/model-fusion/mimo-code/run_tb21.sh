@@ -20,7 +20,7 @@ Usage:
   run_tb21.sh full
 
 The caller or config.local.env owns API_KEY, BASE_URL, Opik, dataset, model,
-task-list, worker, and trial settings. Full mode requires TASK_SOURCE_FILE.
+worker, and trial settings. Full mode defaults to the complete TB 2.1 task list.
 EOF
 }
 
@@ -40,7 +40,8 @@ case "$MODE" in
 esac
 
 FUSION_ROUTER_DIR="${FUSION_ROUTER_DIR:-$(cd "$REPO_ROOT/.." && pwd)/sii-fusion-router}"
-[[ -d "$FUSION_ROUTER_DIR/.git" ]] || die "Router checkout not found: $FUSION_ROUTER_DIR"
+[[ "$(git -C "$FUSION_ROUTER_DIR" rev-parse --is-inside-work-tree 2>/dev/null || true)" == "true" ]] \
+  || die "Router git checkout not found: $FUSION_ROUTER_DIR"
 command -v python3 >/dev/null 2>&1 || die "python3 is required"
 command -v uv >/dev/null 2>&1 || die "uv is required to build the Router wheel"
 
@@ -59,19 +60,28 @@ router_version="$(
 )"
 router_commit="$(git -C "$FUSION_ROUTER_DIR" rev-parse HEAD)"
 router_short="${router_commit:0:12}"
-router_source_hash="$(
-  python3 "$MIMO_CODE_DIR/../router_cli_utils.py" \
-    source-fingerprint "$FUSION_ROUTER_DIR"
+wheel_metadata="$(
+  python3 "$MIMO_CODE_DIR/../router_cli_utils.py" build-wheel \
+    --repo "$FUSION_ROUTER_DIR" \
+    --cache-root "${MIMO_ROUTER_DIST_DIR:-${OUTPUT_ROOT}/.mimo-router}" \
+    --version "$router_version"
 )"
-router_source_short="${router_source_hash:0:12}"
-dist_dir="${MIMO_ROUTER_DIST_DIR:-${OUTPUT_ROOT}/.mimo-router/$router_version-$router_source_short}"
-mkdir -p "$dist_dir"
+mapfile -t wheel_values < <(
+  python3 - "$wheel_metadata" <<'PY'
+import json
+import sys
 
-MIMO_ROUTER_WHEEL="$dist_dir/sii_fusion_router-${router_version}-py3-none-any.whl"
-if [[ ! -f "$MIMO_ROUTER_WHEEL" ]]; then
-  uv build --wheel --out-dir "$dist_dir" "$FUSION_ROUTER_DIR"
-fi
-[[ -f "$MIMO_ROUTER_WHEEL" ]] || die "Router wheel was not produced"
+payload = json.loads(sys.argv[1])
+for key in ("cache_dir", "source_hash", "wheel", "wheel_sha256"):
+    print(payload[key])
+PY
+)
+[[ "${#wheel_values[@]}" -eq 4 ]] || die "invalid Router wheel metadata"
+dist_dir="${wheel_values[0]}"
+router_source_hash="${wheel_values[1]}"
+MIMO_ROUTER_WHEEL="${wheel_values[2]}"
+router_wheel_sha256="${wheel_values[3]}"
+router_source_short="${router_source_hash:0:12}"
 
 runtime_dir="$(mktemp -d "${TMPDIR:-/tmp}/mimo-router-runtime.XXXXXX")"
 task_file=""
@@ -117,13 +127,15 @@ printf '[mimo-code] wheel=%s\n' "$MIMO_ROUTER_WHEEL"
 printf '[mimo-code] config=%s\n' "$MIMO_ROUTER_CONFIG"
 printf '[mimo-code] router=%s@%s source=%s\n' \
   "$router_version" "$router_short" "$router_source_short"
+printf '[mimo-code] wheel_sha256=%s\n' "$router_wheel_sha256"
 if [[ "$MODE" == "build" || "$MODE" == "doctor" ]]; then
   exit 0
 fi
 
 [[ -n "${BASE_URL:-}" ]] || die "BASE_URL is required"
 [[ -n "${API_KEY:-}" && "${API_KEY:-}" != "xxx" ]] || die "API_KEY is required"
-[[ -d "$DATASET_PATH" ]] || die "DATASET_PATH not found: $DATASET_PATH"
+harbor_uses_registry_dataset || [[ -d "$DATASET_PATH" ]] \
+  || die "DATASET_PATH not found: $DATASET_PATH"
 
 export MIMO_CODE_DIR FUSION_ROUTER_DIR
 export MIMO_ROUTER_WHEEL MIMO_ROUTER_VERSION="$router_version" MIMO_ROUTER_CONFIG
@@ -136,7 +148,6 @@ HARBOR_OPIK_BIN="$MIMO_CODE_DIR/harboropik.sh"
 HARBOR_CLAUDE_CODE_DIR="$MIMO_CODE_DIR"
 export MIMO_CODE_REAL_HARBOR_OPIK_BIN HARBOR_OPIK_BIN HARBOR_CLAUDE_CODE_DIR
 
-export DATASET_NAME="${DATASET_NAME:-auto}"
 export TB_AGENT_TIMEOUT_MULTIPLIER="${TB_AGENT_TIMEOUT_MULTIPLIER:-20}"
 export TB_ANTHROPIC_MODEL="${TB_ANTHROPIC_MODEL:-$MODEL}"
 export TB_ANTHROPIC_DEFAULT_OPUS_MODEL="${TB_ANTHROPIC_DEFAULT_OPUS_MODEL:-$MODEL}"
@@ -145,24 +156,45 @@ export TB_ANTHROPIC_DEFAULT_HAIKU_MODEL="${TB_ANTHROPIC_DEFAULT_HAIKU_MODEL:-$MO
 export TB_CLAUDE_CODE_SUBAGENT_MODEL="${TB_CLAUDE_CODE_SUBAGENT_MODEL:-$MODEL}"
 
 if [[ "$MODE" == "dry-run" ]]; then
-  export TB_DRY_RUN=1 TB_MIN_TEST=1
-  export TB_MIN_TEST_INCLUDE_TASK="$TASK_ID"
+  export TB_DRY_RUN=1 MIN_TEST=1
+  export MIN_TEST_INCLUDE_TASK="$TASK_ID"
   export INCLUDE_TASKS="$TASK_ID" TB_INCLUDE_TASKS="$TASK_ID"
-  (cd "$HARBOR_DIR" && bash harboropik.sh)
+  mkdir -p "$OUTPUT_PATH" "$RUNTIME_DIR"
+  proxy_args=(harbor run)
+  if harbor_uses_registry_dataset; then
+    proxy_args+=(--dataset "$(harbor_registry_dataset_name)")
+  else
+    proxy_args+=(--path "$DATASET_PATH")
+  fi
+  proxy_args+=(-i "$(harbor_registry_task_name "$TASK_ID")")
+  MODEL_FUSION_PROXY_RENDER_ONLY=1 "$HARBOR_OPIK_BIN" "${proxy_args[@]}"
   exit 0
 fi
 
-export TB_DRY_RUN=0 TB_MIN_TEST=0
+export TB_DRY_RUN=0 MIN_TEST=0
 
 if [[ "$MODE" == "smoke" ]]; then
   task_file="$(mktemp "${TMPDIR:-/tmp}/mimo-code-task.XXXXXX")"
   printf '%s\n' "$TASK_ID" > "$task_file"
   export TASK_SOURCE_FILE="$task_file"
+  export INCLUDE_TASKS="$TASK_ID" TB_INCLUDE_TASKS="$TASK_ID"
   export TOTAL_WORKERS=1 TB_N_CONCURRENT=1
   export N_ATTEMPTS=1 TB_RUNS=1 MAX_RETRIES=0 TB_MAX_RETRIES=0
 else
-  [[ -n "${TASK_SOURCE_FILE:-}" && -f "$TASK_SOURCE_FILE" ]] \
-    || die "full mode requires TASK_SOURCE_FILE"
+  TASK_SOURCE_FILE="${TASK_SOURCE_FILE:-$REPO_ROOT/Tasks/Terminal-bench-2/harbor_terminalbench21_tasks.txt}"
+  [[ -s "$TASK_SOURCE_FILE" ]] || die "task list not found or empty: $TASK_SOURCE_FILE"
+  INCLUDE_TASKS="$(python3 - "$TASK_SOURCE_FILE" <<'PY'
+import sys
+from pathlib import Path
+
+tasks = [line.strip() for line in Path(sys.argv[1]).read_text().splitlines()]
+tasks = [task for task in tasks if task and not task.startswith("#")]
+if not tasks or any("," in task for task in tasks):
+    raise SystemExit("task list must contain nonempty task IDs without commas")
+print(",".join(tasks))
+PY
+)"
+  export TASK_SOURCE_FILE INCLUDE_TASKS TB_INCLUDE_TASKS="$INCLUDE_TASKS"
   export TB_RUNS="${TB_RUNS:-${N_ATTEMPTS:-1}}"
   export TB_MAX_RETRIES="${TB_MAX_RETRIES:-${MAX_RETRIES:-0}}"
 fi

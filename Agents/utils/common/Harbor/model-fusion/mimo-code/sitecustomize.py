@@ -44,13 +44,17 @@ def _wrap_claude_command(
     if not _enabled(extra_env):
         return command
     marker = "claude --verbose --output-format=stream-json"
-    start = command.find(marker)
-    if start < 0:
-        return command
     redirect = " 2>&1 </dev/null | tee "
+    if command.count(marker) != 1 or command.count(redirect) != 1:
+        raise RuntimeError(
+            "Mimo Router is enabled but the Claude command shape is unsupported"
+        )
+    start = command.find(marker)
     end = command.find(redirect, start)
-    if end < 0:
-        return command
+    if end <= start:
+        raise RuntimeError(
+            "Mimo Router is enabled but the Claude redirect precedes its command"
+        )
 
     wheel = _value(
         extra_env, "MIMO_ROUTER_WHEEL_PATH", "/opt/sii-fusion-router/router.whl"
