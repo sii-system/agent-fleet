@@ -201,6 +201,7 @@ def _runtime_config(
     workspace_root: Path,
     policy_rules_path: Path | None,
     policy_write_roots: list[Path],
+    dataset_config: dict[str, str],
 ) -> dict[str, Any]:
     if not workspace_root.is_dir():
         raise ValueError(f"workspace root is not a directory: {workspace_root}")
@@ -213,6 +214,8 @@ def _runtime_config(
         "policy_write_roots": [
             str(path.resolve()) for path in dict.fromkeys(policy_write_roots)
         ],
+        "dataset_name": dataset_config["dataset_name"],
+        "dataset_path": dataset_config.get("dataset_path", ""),
         "pi_bin": os.environ.get("HARBOR_FIXER_PI_BIN", "pi"),
         "pi_provider": os.environ.get("HARBOR_FIXER_PI_PROVIDER", "harbor-fixer"),
         "pi_model": os.environ.get("HARBOR_FIXER_MODEL") or os.environ.get("MODEL", ""),
@@ -257,6 +260,25 @@ def _notification(run_dir: Path) -> dict[str, Any]:
     return read_json(run_dir / "monitor" / "user-notify-latest.json")
 
 
+def _benchmark_dataset_config(run_dir: Path) -> dict[str, str]:
+    summary_path = run_dir / "summary.txt"
+    try:
+        lines = summary_path.read_text(encoding="utf-8").splitlines()
+    except OSError as exc:
+        raise ValueError(f"cannot read benchmark summary: {summary_path}: {exc}") from exc
+    values = {}
+    for line in lines:
+        for key, prefix in (
+            ("dataset_name", "DATASET_NAME:"),
+            ("dataset_path", "DATASET:"),
+        ):
+            if line.startswith(prefix):
+                values[key] = line.removeprefix(prefix).strip()
+    if not values.get("dataset_name"):
+        raise ValueError(f"benchmark summary does not identify the dataset: {summary_path}")
+    return values
+
+
 def _validate_start_inputs(run_dir: Path, analyzer_output: Path) -> str:
     notification = _notification(run_dir)
     benchmark_status = str(notification.get("benchmark_status") or "")
@@ -280,6 +302,8 @@ def _validate_start_inputs(run_dir: Path, analyzer_output: Path) -> str:
         include_deferred_retries=True,
     ):
         raise ValueError("Analyzer still has pending benchmark handoffs")
+    if not (analyzer_output / "benchmark-summary.md").is_file():
+        raise ValueError("Analyzer has not published benchmark-summary.md")
     return run_id
 
 
@@ -556,6 +580,7 @@ def start_fixer(
             workspace_root=workspace_root.resolve(),
             policy_rules_path=policy_rules_path,
             policy_write_roots=policy_write_roots or [],
+            dataset_config=_benchmark_dataset_config(run_dir),
         )
         current = _load_optional_json(_state_path(run_dir))
         process_is_live = _active_process_is_live(run_dir)
@@ -601,7 +626,7 @@ def start_fixer(
                     output_dir / "verification-result-latest.json"
                 ),
                 "fix_report": str(output_dir / "fix-report-latest.md"),
-                "benchmark_summary": str(run_dir / "analyzer" / "benchmark-summary.md"),
+                "benchmark_summary": str(analyzer_output / "benchmark-summary.md"),
             },
             "available_actions": ["cancel"],
             "error": None,
@@ -698,7 +723,8 @@ def _finish_execution(
     exec_result_path = output_dir / "exec-result-latest.json"
     verification_result_path = output_dir / "verification-result-latest.json"
     report_path = output_dir / "fix-report-latest.md"
-    summary_path = run_dir / "analyzer" / "benchmark-summary.md"
+    config = state["config"]
+    summary_path = Path(config["analyzer_output"]) / "benchmark-summary.md"
     paths = {
         **state["paths"],
         "exec_result": str(exec_result_path),
@@ -732,6 +758,8 @@ def _finish_execution(
                 rerun_command=shlex.quote(
                     str(Path(__file__).resolve().parents[2] / "start.sh")
                 ),
+                dataset_name=str(config["dataset_name"]),
+                dataset_path=str(config["dataset_path"]),
             )
         finally:
             process_record.unlink(missing_ok=True)

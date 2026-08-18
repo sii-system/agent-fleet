@@ -160,6 +160,8 @@ def run_command(
     selection_path: str,
     should_run: bool,
     timeout_seconds: float,
+    dataset_name: str = "",
+    dataset_path: str = "",
 ) -> dict[str, Any]:
     skipped_reason = "" if should_run else "no_sampled_tasks"
     if not command or not should_run:
@@ -226,6 +228,10 @@ def run_command(
             "HARBOR_FIXER_SMOKE_SELECTION": str(Path(selection_path).resolve()),
         }
     )
+    if dataset_name:
+        env["DATASET_NAME"] = dataset_name
+    if dataset_path:
+        env["DATASET_PATH"] = dataset_path
     started_at = _utc_now()
     started = time.monotonic()
     timed_out = False

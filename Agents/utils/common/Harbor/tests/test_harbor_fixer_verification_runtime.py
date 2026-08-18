@@ -175,6 +175,8 @@ class HarborFixerVerificationRuntimeTest(FixerTestCase):
                 selection_path=str(self.root / "selection.json"),
                 should_run=True,
                 timeout_seconds=9,
+                dataset_name="smith",
+                dataset_path="/datasets/swesmith",
             )
 
         self.assertEqual(result["exit_code"], 0)
@@ -191,6 +193,8 @@ class HarborFixerVerificationRuntimeTest(FixerTestCase):
         self.assertEqual(env["FLEET_TASKS"], "task-b,task-a")
         self.assertEqual(env["INCLUDE_TASKS"], "task-b,task-a")
         self.assertEqual(env["HARBOR_LIMIT"], "")
+        self.assertEqual(env["DATASET_NAME"], "smith")
+        self.assertEqual(env["DATASET_PATH"], "/datasets/swesmith")
         self.assertEqual(env["HARBOR_RUNS"], "1")
         self.assertEqual(env["N_ATTEMPTS"], "1")
         self.assertEqual(env["MIN_TEST"], "0")

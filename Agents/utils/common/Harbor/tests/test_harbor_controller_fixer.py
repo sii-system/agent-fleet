@@ -53,6 +53,10 @@ class HarborControllerFixerTest(FixerTestCase):
             "No Fixer report has been generated for this benchmark run.\n",
             encoding="utf-8",
         )
+        (self.run_dir / "summary.txt").write_text(
+            "DATASET_NAME: smith\nDATASET: /datasets/swesmith\n",
+            encoding="utf-8",
+        )
         fixture_pi = write_fixture_pi(self.root / "fixture-pi")
         self.env = mock.patch.dict(
             os.environ,
@@ -129,6 +133,11 @@ class HarborControllerFixerTest(FixerTestCase):
         )
         self.assertTrue((self.run_dir / "fixer" / "exec-result-latest.json").is_file())
         self.verify_mock.assert_called_once()
+        self.assertEqual(self.verify_mock.call_args.kwargs["dataset_name"], "smith")
+        self.assertEqual(
+            self.verify_mock.call_args.kwargs["dataset_path"],
+            "/datasets/swesmith",
+        )
         self.write_report_mock.assert_called_once()
         self.update_summary_mock.assert_called_once_with(
             self.run_dir / "analyzer" / "benchmark-summary.md",
@@ -254,6 +263,33 @@ class HarborControllerFixerTest(FixerTestCase):
             {"attempted_handover_keys": ["final-handover"]},
         )
         self.assertEqual(self._start()["status"], "awaiting_approval")
+
+    def test_start_requires_published_benchmark_summary(self) -> None:
+        (self.analyzer_dir / "benchmark-summary.md").unlink()
+
+        with self.assertRaisesRegex(ValueError, "has not published"):
+            self._start()
+
+    def test_custom_analyzer_output_owns_the_updated_summary(self) -> None:
+        custom_root = self.root / "custom"
+        custom_analyzer = write_analyzer_fixture(custom_root)
+        custom_summary = custom_analyzer / "benchmark-summary.md"
+        custom_summary.write_text(
+            "# Benchmark Summary\n\n## Fixer Results\n\nNo Fixer report.\n",
+            encoding="utf-8",
+        )
+
+        state = start_fixer(
+            self.run_dir,
+            workspace_root=self.workspace,
+            analyzer_output=custom_analyzer,
+        )
+        approve_fixer(self.run_dir, state["approval_request_id"])
+
+        self.update_summary_mock.assert_called_once_with(
+            custom_summary,
+            self.run_dir / "fixer" / "fix-report-latest.md",
+        )
 
     def test_second_active_workflow_is_rejected(self) -> None:
         first = self._start()
