@@ -2,6 +2,7 @@ import json
 import os
 import subprocess
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -241,6 +242,42 @@ class HarborTaskSelectionTest(unittest.TestCase):
             self.assertIn("refusing to reset run state", result.stderr)
             self.assertTrue(state_path.exists())
             self.assertTrue(monitor_marker.exists())
+
+    def test_reset_holds_fixer_lock_until_cleanup_finishes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output, common = self.local_fixture(Path(tmp), "task-a")
+            marker = output / "reset-entered"
+            env = os.environ.copy()
+            env.pop("RESET_RUN", None)
+            env.update(common)
+            command = (
+                '. "$1"; mkdir -p "$QUEUE_DIR"; '
+                "harbor_stop_analyzer_supervisor() { "
+                ': > "$OUTPUT_PATH/reset-entered"; sleep 1; }; '
+                "harbor_reset_run_state"
+            )
+            process = subprocess.Popen(
+                ["bash", "-c", command, "bash", str(ENV_SH)],
+                env=env,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            self.addCleanup(lambda: process.poll() is None and process.kill())
+            for _ in range(100):
+                if marker.exists():
+                    break
+                time.sleep(0.02)
+            self.assertTrue(marker.exists())
+
+            probe = subprocess.run(
+                ["flock", "-n", str(output / "fixer" / ".fixer-control.lock"), "true"],
+                check=False,
+            )
+            stdout, stderr = process.communicate(timeout=5)
+
+            self.assertEqual(probe.returncode, 1)
+            self.assertEqual(process.returncode, 0, stderr or stdout)
 
     def test_start_passes_run_id_to_analyzer(self) -> None:
         self.assertIn('--run-id "$RUN_ID"', START_SH.read_text(encoding="utf-8"))

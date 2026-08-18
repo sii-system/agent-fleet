@@ -177,6 +177,19 @@ class HarborFixerExecTest(FixerTestCase):
             self._run([_command("stale", "pass")], "stale")
         self.assertFalse(latest.exists())
 
+    def test_active_action_record_is_present_only_while_command_runs(self) -> None:
+        active_path = self.root / "active-record" / "active-action.json"
+        script = (
+            "import pathlib, time; "
+            "time.sleep(0.1); "
+            f"assert pathlib.Path({str(active_path)!r}).is_file()"
+        )
+
+        result = self._run([_command("active-record", script)], "active-record")
+
+        self.assertEqual(result["status"], "success")
+        self.assertFalse(active_path.exists())
+
     def test_exec_input_publish_does_not_follow_existing_symlink(self) -> None:
         output_dir = self.root / "exec-input-symlink"
         plan = make_fix_plan()

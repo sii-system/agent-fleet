@@ -185,6 +185,34 @@ class HarborControllerFixerTest(FixerTestCase):
         self.assertEqual(reset["status"], "reset")
         self.assertFalse(state_path.exists())
 
+    def test_live_action_blocks_dead_owner_recovery_and_reset(self) -> None:
+        state_path = self.run_dir / "fixer" / "fixer-state.json"
+        write_json(
+            state_path,
+            {
+                "fixer_workflow_id": "fixer-dead-owner",
+                "status": "executing",
+                "owner": {"pid": 999999999, "start_ticks": 1},
+            },
+        )
+        start_ticks = int(
+            Path(f"/proc/{os.getpid()}/stat")
+            .read_text(encoding="utf-8")
+            .rsplit(")", 1)[1]
+            .split()[19]
+        )
+        write_json(
+            self.run_dir / "fixer" / "active-action.json",
+            {"pid": os.getpid(), "start_ticks": start_ticks},
+        )
+
+        with self.assertRaisesRegex(ValueError, "another Fixer workflow is active"):
+            self._start()
+        with self.assertRaisesRegex(ValueError, "cannot reset while Fixer"):
+            reset_fixer_control(self.run_dir)
+
+        self.assertTrue(state_path.exists())
+
     def test_cancel_rejects_pending_plan(self) -> None:
         state = self._start()
 
@@ -278,6 +306,20 @@ class HarborControllerFixerTest(FixerTestCase):
 
         self.assertEqual(completed["status"], "completed")
         self.assertEqual(observed["fix_plan"], reviewed)
+
+    def test_tampered_approval_plans_are_not_displayed_or_executed(self) -> None:
+        state = self._start()
+        approval_path = self.run_dir / "fixer" / "fixer-approval-request.json"
+        approval = json.loads(approval_path.read_text(encoding="utf-8"))
+        approval["plans"][0]["actions"][0]["arguments"] = ["hidden-change"]
+        write_json(approval_path, approval)
+
+        status = fixer_status(self.run_dir)
+
+        self.assertNotIn("approval", status)
+        self.assertIn("approval plans do not match", status["approval_error"])
+        with self.assertRaisesRegex(ValueError, "approval plans do not match"):
+            approve_fixer(self.run_dir, state["approval_request_id"])
 
     def test_new_no_action_workflow_does_not_expose_previous_exec_result(self) -> None:
         first = self._start()

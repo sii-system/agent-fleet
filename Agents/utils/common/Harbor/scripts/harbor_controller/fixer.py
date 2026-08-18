@@ -62,12 +62,17 @@ def _decision_path(run_dir: Path) -> Path:
     return _fixer_dir(run_dir) / "fixer-user-decision.json"
 
 
+def _active_action_path(run_dir: Path) -> Path:
+    return _fixer_dir(run_dir) / "active-action.json"
+
+
 def _control_paths(run_dir: Path) -> tuple[Path, ...]:
     return (
         _state_path(run_dir),
         _control_request_path(run_dir),
         _approval_request_path(run_dir),
         _decision_path(run_dir),
+        _active_action_path(run_dir),
     )
 
 
@@ -78,9 +83,17 @@ def _load_optional_json(path: Path) -> dict[str, Any] | None:
 
 
 @contextmanager
-def _state_lock(run_dir: Path) -> Iterator[None]:
+def _state_lock(run_dir: Path, inherited_fd: int | None = None) -> Iterator[None]:
     path = _fixer_dir(run_dir) / ".fixer-control.lock"
     path.parent.mkdir(parents=True, exist_ok=True)
+    if inherited_fd is not None:
+        path_stat = path.stat()
+        fd_stat = os.fstat(inherited_fd)
+        if (path_stat.st_dev, path_stat.st_ino) != (fd_stat.st_dev, fd_stat.st_ino):
+            raise ValueError("inherited Fixer lock does not match the run directory")
+        fcntl.flock(inherited_fd, fcntl.LOCK_EX)
+        yield
+        return
     with path.open("a+", encoding="utf-8") as handle:
         fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
         try:
@@ -127,6 +140,30 @@ def _owner_is_live(state: dict[str, Any]) -> bool:
     except (KeyError, TypeError, ValueError):
         return False
     return pid > 0 and _process_start_ticks(pid) == start_ticks
+
+
+def _active_action_is_live(run_dir: Path) -> bool:
+    action = _load_optional_json(_active_action_path(run_dir))
+    if action is None:
+        return False
+    if action.get("status") == "launching":
+        return True
+    try:
+        pid = int(action["pid"])
+        start_ticks = int(action["start_ticks"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("invalid active Fixer action record") from exc
+    if pid <= 0:
+        raise ValueError("invalid active Fixer action pid")
+    if _process_start_ticks(pid) == start_ticks:
+        return True
+    try:
+        os.killpg(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
 
 
 def _positive_env_int(name: str, default: int, *, maximum: int | None = None) -> int:
@@ -467,27 +504,27 @@ def start_fixer(
     run_dir = run_dir.resolve()
     analyzer_output = (analyzer_output or run_dir / "analyzer").resolve()
     output_dir = _fixer_dir(run_dir)
-    run_id = _validate_start_inputs(run_dir, analyzer_output)
-    config = _runtime_config(
-        analyzer_output=analyzer_output,
-        workspace_root=workspace_root.resolve(),
-        policy_rules_path=policy_rules_path,
-        policy_write_roots=policy_write_roots or [],
-    )
     workflow_id = f"fixer-{uuid.uuid4()}"
     with _state_lock(run_dir):
+        run_id = _validate_start_inputs(run_dir, analyzer_output)
+        config = _runtime_config(
+            analyzer_output=analyzer_output,
+            workspace_root=workspace_root.resolve(),
+            policy_rules_path=policy_rules_path,
+            policy_write_roots=policy_write_roots or [],
+        )
         current = _load_optional_json(_state_path(run_dir))
-        if (
+        action_is_live = _active_action_is_live(run_dir)
+        workflow_is_live = bool(
             current
             and current.get("status") in ACTIVE_STATUSES
-            and (
-                current.get("status") == "awaiting_approval"
-                or _owner_is_live(current)
-            )
-        ):
+            and (current.get("status") == "awaiting_approval" or _owner_is_live(current))
+        )
+        if action_is_live or workflow_is_live:
             raise ValueError(
                 "another Fixer workflow is active: "
-                f"{current.get('fixer_workflow_id')} ({current.get('status')})"
+                f"{current.get('fixer_workflow_id') if current else '<unknown>'} "
+                f"({current.get('status') if current else 'executing'})"
             )
         request = _write_control_request(
             run_dir,
@@ -633,6 +670,8 @@ def approve_fixer(run_dir: Path, approval_request_id: str) -> dict[str, Any]:
             )
             _write_state(run_dir, state)
             raise ValueError("Fix Plan changed after the approval request was created")
+        if approval.get("plans") != _approval_plans(fix_plan):
+            raise ValueError("approval plans do not match the reviewed Fix Plan")
         request = _write_control_request(
             run_dir,
             run_id=str(state["run_id"]),
@@ -815,28 +854,41 @@ def fixer_status(run_dir: Path) -> dict[str, Any]:
     }
     if state.get("status") == "awaiting_approval":
         try:
-            visible["approval"] = read_json(_approval_request_path(run_dir))
+            approval = read_json(_approval_request_path(run_dir))
+            fix_plan = read_json(Path(state["paths"]["fix_plan"]))
+            if _json_sha256(fix_plan) != approval.get("fix_plan_sha256"):
+                raise ValueError("Fix Plan does not match the approval request")
+            if approval.get("plans") != _approval_plans(fix_plan):
+                raise ValueError("approval plans do not match the reviewed Fix Plan")
+            visible["approval"] = approval
         except (OSError, ValueError) as exc:
             visible["approval_error"] = str(exc)
     return visible
 
 
-def reset_fixer_control(run_dir: Path) -> dict[str, Any]:
+def reset_fixer_control(
+    run_dir: Path,
+    *,
+    inherited_lock_fd: int | None = None,
+) -> dict[str, Any]:
     """Clear Controller-owned Fixer state unless its synchronous owner is live."""
 
     run_dir = run_dir.resolve()
-    with _state_lock(run_dir):
+    with _state_lock(run_dir, inherited_lock_fd):
         state = _load_optional_json(_state_path(run_dir))
-        if (
+        action_is_live = _active_action_is_live(run_dir)
+        workflow_is_live = bool(
             state
             and state.get("status") in OWNER_STATUSES
             and _owner_is_live(state)
-        ):
-            owner = state["owner"]
+        )
+        if action_is_live or workflow_is_live:
+            owner = state.get("owner", {}) if state else {}
             raise ValueError(
                 "cannot reset while Fixer workflow is active: "
-                f"{state.get('fixer_workflow_id')} ({state.get('status')}), "
-                f"owner pid={owner.get('pid')}"
+                f"{state.get('fixer_workflow_id') if state else '<unknown>'} "
+                f"({state.get('status') if state else 'executing'}), "
+                f"owner pid={owner.get('pid', '<unknown>')}"
             )
         removed = []
         for path in _control_paths(run_dir):
