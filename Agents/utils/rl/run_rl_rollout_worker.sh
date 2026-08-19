@@ -39,119 +39,15 @@ rename_pane() {
 }
 
 json_get() {
-  python3 - "$1" "$2" <<'PY'
-import json
-import sys
-from pathlib import Path
-
-data = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
-value = data
-for part in sys.argv[2].split("."):
-    if not part:
-        continue
-    if not isinstance(value, dict):
-        value = ""
-        break
-    value = value.get(part, "")
-print("" if value is None else value)
-PY
+  python3 "$RL_SCRIPT_DIR/rollout_worker_utils.py" json-get "$1" "$2"
 }
 
 json_get_first() {
-  python3 - "$@" <<'PY'
-import json
-import sys
-from pathlib import Path
-
-data = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
-
-def get_path(obj, path):
-    value = obj
-    for part in path.split("."):
-        if not part:
-            continue
-        if not isinstance(value, dict):
-            return None
-        value = value.get(part)
-    return value
-
-def format_value(value):
-    if value is None or value == "":
-        return ""
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    if isinstance(value, (dict, list)):
-        return json.dumps(value, separators=(",", ":"))
-    return str(value)
-
-for path in sys.argv[2:]:
-    formatted = format_value(get_path(data, path))
-    if formatted:
-        print(formatted)
-        break
-PY
+  python3 "$RL_SCRIPT_DIR/rollout_worker_utils.py" json-get-first "$@"
 }
 
 json_build_result() {
-  python3 - "$@" <<'PY'
-import json
-import os
-import sys
-from pathlib import Path
-
-(
-    request_file,
-    result_file,
-    console_log,
-    reward,
-    exception_type,
-    exit_code,
-    result_out,
-    status,
-) = sys.argv[1:9]
-request = json.loads(Path(request_file).read_text(encoding="utf-8"))
-result_data = {}
-if result_file:
-    try:
-        result_data = json.loads(Path(result_file).read_text(encoding="utf-8"))
-    except Exception:
-        result_data = {}
-agent_result = result_data.get("agent_result") if isinstance(result_data, dict) else None
-verifier_result = result_data.get("verifier_result") if isinstance(result_data, dict) else None
-exception_info = result_data.get("exception_info") if isinstance(result_data, dict) else None
-if not isinstance(exception_info, dict) and exception_type:
-    exception_info = {"exception_type": exception_type}
-payload = {
-    "ok": status == "completed" and not exception_type,
-    "task_id": request.get("task_id"),
-    "task_path": request.get("task_path"),
-    "ray_submission_id": request.get("ray_submission_id"),
-    "polar_task_id": request.get("polar_task_id"),
-    "display_name": request.get("display_name"),
-    "environment_type": request.get("environment_type"),
-    "trial_name": Path(result_file).parent.name if result_file else "",
-    "trial_uri": str(Path(result_file).parent) if result_file else "",
-    "reward": float(reward) if str(reward).strip() not in {"", "None"} else None,
-    "rollout_details": agent_result.get("rollout_details") if isinstance(agent_result, dict) else None,
-    "num_turns": (agent_result.get("metadata") or {}).get("n_episodes") if isinstance(agent_result, dict) else None,
-    "agent_result": agent_result,
-    "verifier_result": verifier_result,
-    "exception_info": exception_info,
-    "metadata": {
-        "request_id": request.get("request_id"),
-        "session_id": request.get("session_id"),
-        "ray_submission_id": request.get("ray_submission_id"),
-        "polar_task_id": request.get("polar_task_id"),
-        "display_name": request.get("display_name"),
-        "console_log": console_log,
-        "exit_code": int(exit_code),
-    },
-}
-result_path = Path(result_out)
-tmp_path = result_path.with_name(f".{result_path.name}.{os.getpid()}.tmp")
-tmp_path.write_text(json.dumps(payload, ensure_ascii=True, indent=2, sort_keys=True), encoding="utf-8")
-tmp_path.replace(result_path)
-PY
+  python3 "$RL_SCRIPT_DIR/rollout_worker_utils.py" build-result "$@"
 }
 
 find_latest_trial_result() {
@@ -405,39 +301,13 @@ while true; do
     fi
     export HARBOR_LLM_KWARGS="$(
       MODEL_REQUEST_HEADERS_JSON="$request_headers_json" \
-        python3 - "${temperature:-${RL_TEMPERATURE:-}}" \
+        python3 "$RL_SCRIPT_DIR/rollout_worker_utils.py" build-llm-kwargs \
+        "${temperature:-${RL_TEMPERATURE:-}}" \
         "${top_p:-${RL_TOP_P:-}}" \
         "${top_k:-${RL_TOP_K:-}}" \
         "${min_p:-${RL_MIN_P:-}}" \
         "${llm_timeout:-${RL_LLM_TIMEOUT:-}}" \
-        "${llm_max_retries:-${RL_LLM_MAX_RETRIES:-}}" <<'PY'
-import json
-import os
-import sys
-
-temperature, top_p, top_k, min_p, timeout, max_retries = sys.argv[1:7]
-payload = {}
-
-def add_number(name, value, cast=float):
-    value = str(value).strip()
-    if value == "":
-        return
-    try:
-        payload[name] = cast(value)
-    except ValueError:
-        payload[name] = value
-
-add_number("temperature", temperature)
-add_number("top_p", top_p)
-add_number("top_k", top_k, int)
-add_number("min_p", min_p)
-add_number("timeout", timeout)
-add_number("max_retries", max_retries, int)
-headers = json.loads(os.environ["MODEL_REQUEST_HEADERS_JSON"])
-if headers:
-    payload["extra_headers"] = headers
-print(json.dumps(payload, separators=(",", ":")))
-PY
+        "${llm_max_retries:-${RL_LLM_MAX_RETRIES:-}}"
     )"
     export HARBOR_TASK_ID="$task_name"
     export HARBOR_INCLUDE_TASKS="$task_name"
