@@ -26,11 +26,8 @@ fi
 
 args=("$@")
 gateway_host="$(
-  python3 - "${HARBOR_ANTHROPIC_BASE_URL:-${BASE_URL:-}}" <<'PY'
-from urllib.parse import urlparse
-import sys
-print(urlparse(sys.argv[1]).hostname or "")
-PY
+  python3 "$OPENROUTER_DIR/../../harbor_shell_utils.py" url-hostname \
+    "${HARBOR_ANTHROPIC_BASE_URL:-${BASE_URL:-}}"
 )"
 if [[ -n "$gateway_host" ]]; then
   found_upper=0

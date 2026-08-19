@@ -121,25 +121,8 @@ online_env_event() {
     printf '%s\n' '[ONLINE_ENV] {"schema":1,"task_id":null,"task_name":"","phase":"preflight","component":"host_prerequisite","event":"command_unavailable","severity":"critical","fatal":true,"scope":"task","message":"python3 is unavailable; structured event details could not be serialized"}'
     return 0
   fi
-  python3 - "$phase" "$component" "$event" "$severity" "$fatal" "$message" <<'PY'
-import json
-import os
-import sys
-
-phase, component, event, severity, fatal, message = sys.argv[1:]
-print("[ONLINE_ENV] " + json.dumps({
-    "schema": 1,
-    "task_id": int(os.environ["HARBOR_TASK_INDEX"]) if os.environ.get("HARBOR_TASK_INDEX", "").isdigit() else None,
-    "task_name": os.environ.get("HARBOR_TASK_ID", ""),
-    "phase": phase,
-    "component": component,
-    "event": event,
-    "severity": severity,
-    "fatal": fatal == "true",
-    "scope": "task",
-    "message": message,
-}, separators=(",", ":")))
-PY
+  python3 "$SCRIPT_DIR/harbor_shell_utils.py" online-event \
+    "$phase" "$component" "$event" "$severity" "$fatal" "$message"
 }
 
 # harbor_trace_to_opik_enabled comes from env.sh so the worker shares it.
@@ -710,19 +693,7 @@ docker_hub_preflight_check() {
 
 normalize_json_or_fail() {
   local raw="$1"
-  python3 - "$raw" <<'PY'
-import json
-import os
-import sys
-
-raw = sys.argv[1]
-try:
-    obj = json.loads(raw)
-except Exception as exc:
-    print(f"INVALID_JSON::{exc}", file=sys.stderr)
-    sys.exit(1)
-print(json.dumps(obj, separators=(",", ":")))
-PY
+  python3 "$SCRIPT_DIR/harbor_shell_utils.py" normalize-json "$raw"
 }
 
 apply_min_test_defaults() {
@@ -795,17 +766,9 @@ run_oracle_task() {
     && verifier_uv_bin_ready; then
     local verifier_mounts_json verifier_uv_path_prefix
     verifier_mounts_json="$(
-      python3 - "$VERIFIER_UV_BIN_DIR_SOURCE" "$HARBOR_VERIFIER_UV_BIN_DIR_MOUNT_PATH" <<'PY'
-import json
-import sys
-
-print(json.dumps([{
-    "type": "bind",
-    "source": sys.argv[1],
-    "target": sys.argv[2],
-    "read_only": True,
-}]))
-PY
+      python3 "$SCRIPT_DIR/harbor_shell_utils.py" readonly-mounts \
+        --mount "$VERIFIER_UV_BIN_DIR_SOURCE" \
+        "$HARBOR_VERIFIER_UV_BIN_DIR_MOUNT_PATH" always
     )"
     verifier_uv_path_prefix="/root/.local/bin:/home/oai/.local/bin:/home/agent/.local/bin:/home/ubuntu/.local/bin"
     if [[ -n "${HARBOR_VERIFIER_UV_HOME:-}" ]]; then
@@ -964,16 +927,8 @@ run_harbor() {
   if [[ -z "$HARBOR_ANTHROPIC_AUTH_TOKEN" ]]; then
     local inferred_api_key
     inferred_api_key="$(
-      python3 - "$normalized_llm_kwargs" <<'PY'
-import json
-import os
-import sys
-
-obj = json.loads(sys.argv[1])
-api_key = obj.get("api_key", "")
-if isinstance(api_key, str):
-    print(api_key)
-PY
+      python3 "$SCRIPT_DIR/harbor_shell_utils.py" json-string-field \
+        "$normalized_llm_kwargs" api_key
     )"
     if [[ -n "$inferred_api_key" ]]; then
       HARBOR_ANTHROPIC_AUTH_TOKEN="$inferred_api_key"
@@ -1075,22 +1030,11 @@ PY
 
   local opik_host wheel_host no_proxy_value
   opik_host="$(
-    python3 - "$OPIK_URL_OVERRIDE" <<'PY'
-from urllib.parse import urlparse
-import sys
-
-u = urlparse(sys.argv[1])
-print(u.hostname or "")
-PY
+    python3 "$SCRIPT_DIR/harbor_shell_utils.py" url-hostname "$OPIK_URL_OVERRIDE"
   )"
   wheel_host="$(
-    python3 - "${HARBOR_LOCAL_WHEEL_SERVER_URL:-}" <<'PY'
-from urllib.parse import urlparse
-import sys
-
-u = urlparse(sys.argv[1] if len(sys.argv) > 1 else "")
-print(u.hostname or "")
-PY
+    python3 "$SCRIPT_DIR/harbor_shell_utils.py" url-hostname \
+      "${HARBOR_LOCAL_WHEEL_SERVER_URL:-}"
   )"
   no_proxy_value="127.0.0.1,localhost,host.docker.internal"
   if [[ -n "$opik_host" ]]; then
@@ -1123,44 +1067,22 @@ PY
 
   local mounts_json="[]"
   if [[ "$HARBOR_ENVIRONMENT_TYPE" == "docker" || "$HARBOR_ENVIRONMENT_TYPE" == "opensandbox" ]]; then
+    local -a mount_args=()
+    if [[ "$hook_mount_enabled" == "1" ]]; then
+      mount_args+=( --mount "$HARBOR_CC_HOOK_SOURCE" "$HARBOR_CC_HOOK_MOUNT_PATH" always )
+    fi
+    if [[ -n "$HARBOR_CC_CLAUDE_TGZ_SOURCE" ]]; then
+      mount_args+=( --mount "$HARBOR_CC_CLAUDE_TGZ_SOURCE" "$HARBOR_CC_CLAUDE_TGZ_MOUNT_PATH" exists )
+    fi
+    if [[ -n "$HARBOR_CC_PY_WHEEL_DIR_SOURCE" ]]; then
+      mount_args+=( --mount "$HARBOR_CC_PY_WHEEL_DIR_SOURCE" "$HARBOR_CC_PY_WHEEL_DIR_MOUNT_PATH" exists )
+    fi
+    if [[ -n "$VERIFIER_UV_BIN_DIR_SOURCE" ]]; then
+      mount_args+=( --mount "$VERIFIER_UV_BIN_DIR_SOURCE" "$HARBOR_VERIFIER_UV_BIN_DIR_MOUNT_PATH" uv-bin )
+    fi
     mounts_json="$(
-    python3 - "$hook_mount_enabled" "$HARBOR_CC_HOOK_SOURCE" "$HARBOR_CC_HOOK_MOUNT_PATH" "$HARBOR_CC_CLAUDE_TGZ_SOURCE" "$HARBOR_CC_CLAUDE_TGZ_MOUNT_PATH" "$HARBOR_CC_PY_WHEEL_DIR_SOURCE" "$HARBOR_CC_PY_WHEEL_DIR_MOUNT_PATH" "$VERIFIER_UV_BIN_DIR_SOURCE" "$HARBOR_VERIFIER_UV_BIN_DIR_MOUNT_PATH" <<'PY'
-import json
-import os
-import sys
-
-hook_enabled = sys.argv[1] == "1"
-src = sys.argv[2]
-dst = sys.argv[3]
-claude_src = sys.argv[4]
-claude_dst = sys.argv[5]
-wheel_src = sys.argv[6]
-wheel_dst = sys.argv[7]
-uv_src = sys.argv[8]
-uv_dst = sys.argv[9]
-mounts = []
-def bind_mount(src, dst):
-    return {"type": "bind", "source": src, "target": dst, "read_only": True}
-# Only the hook source follows the hook switch. The Claude package and
-# wheel/runtime caches serve the offline agent install and must stay
-# mounted with tracing disabled, for benchmark and rollout workers alike.
-# NOTE: no single quotes in this heredoc; bash 3.2 mis-parses them inside
-# command substitution.
-if hook_enabled:
-    mounts.append(bind_mount(src, dst))
-if claude_src and os.path.exists(claude_src):
-    mounts.append(bind_mount(claude_src, claude_dst))
-if wheel_src and os.path.exists(wheel_src):
-    mounts.append(bind_mount(wheel_src, wheel_dst))
-if (
-    uv_src
-    and os.path.isdir(uv_src)
-    and os.path.exists(os.path.join(uv_src, "uv"))
-    and os.path.exists(os.path.join(uv_src, "uvx"))
-):
-    mounts.append(bind_mount(uv_src, uv_dst))
-print(json.dumps(mounts, ensure_ascii=True))
-PY
+      python3 "$SCRIPT_DIR/harbor_shell_utils.py" readonly-mounts \
+        "${mount_args[@]}"
     )"
   elif [[ "$HARBOR_ENVIRONMENT_TYPE" == "e2b" ]]; then
     echo "[INFO] E2B environment does not support host bind mounts; skip hook, dependency, and verifier uv mounts"
@@ -1372,11 +1294,7 @@ run_opencode_task() {
 
   local opik_host no_proxy_value
   opik_host="$(
-    python3 - "$OPIK_URL_OVERRIDE" <<'PY'
-from urllib.parse import urlparse
-import sys
-print(urlparse(sys.argv[1]).hostname or "")
-PY
+    python3 "$SCRIPT_DIR/harbor_shell_utils.py" url-hostname "$OPIK_URL_OVERRIDE"
   )"
   no_proxy_value="127.0.0.1,localhost,host.docker.internal"
   if [[ -n "$opik_host" ]]; then
@@ -1466,38 +1384,16 @@ PY
 
     local mounts_json="[]"
     if [[ "$HARBOR_ENVIRONMENT_TYPE" == "docker" || "$HARBOR_ENVIRONMENT_TYPE" == "opensandbox" ]]; then
+      local -a mount_args=()
+      if [[ -n "$HARBOR_CC_PY_WHEEL_DIR_SOURCE" ]]; then
+        mount_args+=( --mount "$HARBOR_CC_PY_WHEEL_DIR_SOURCE" "$HARBOR_CC_PY_WHEEL_DIR_MOUNT_PATH" exists )
+      fi
+      if [[ -n "$VERIFIER_UV_BIN_DIR_SOURCE" ]]; then
+        mount_args+=( --mount "$VERIFIER_UV_BIN_DIR_SOURCE" "$HARBOR_VERIFIER_UV_BIN_DIR_MOUNT_PATH" uv-bin )
+      fi
       mounts_json="$(
-      python3 - "$HARBOR_CC_PY_WHEEL_DIR_SOURCE" "$HARBOR_CC_PY_WHEEL_DIR_MOUNT_PATH" "$VERIFIER_UV_BIN_DIR_SOURCE" "$HARBOR_VERIFIER_UV_BIN_DIR_MOUNT_PATH" <<'PY'
-import json
-import os
-import sys
-
-src = sys.argv[1]
-dst = sys.argv[2]
-uv_src = sys.argv[3]
-uv_dst = sys.argv[4]
-mounts = []
-if src and os.path.exists(src):
-    mounts.append({
-        "type": "bind",
-        "source": src,
-        "target": dst,
-        "read_only": True,
-    })
-if (
-    uv_src
-    and os.path.isdir(uv_src)
-    and os.path.exists(os.path.join(uv_src, "uv"))
-    and os.path.exists(os.path.join(uv_src, "uvx"))
-):
-    mounts.append({
-        "type": "bind",
-        "source": uv_src,
-        "target": uv_dst,
-        "read_only": True,
-    })
-print(json.dumps(mounts, ensure_ascii=True))
-PY
+        python3 "$SCRIPT_DIR/harbor_shell_utils.py" readonly-mounts \
+          "${mount_args[@]}"
       )"
     fi
     if [[ "$mounts_json" != "[]" ]]; then

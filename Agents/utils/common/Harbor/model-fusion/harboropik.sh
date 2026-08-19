@@ -49,12 +49,8 @@ args=("$@")
 # command already carries NO_PROXY for Opik and wheel hosts; retain that value
 # and add the model gateway host for this scoped integration.
 gateway_host="$(
-  python3 - "${HARBOR_ANTHROPIC_BASE_URL:-${BASE_URL:-}}" <<'PY'
-from urllib.parse import urlparse
-import sys
-
-print(urlparse(sys.argv[1]).hostname or "")
-PY
+  python3 "$MODEL_FUSION_DIR/../harbor_shell_utils.py" url-hostname \
+    "${HARBOR_ANTHROPIC_BASE_URL:-${BASE_URL:-}}"
 )"
 if [[ -n "$gateway_host" ]]; then
   found_upper=0
