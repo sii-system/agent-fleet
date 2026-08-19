@@ -32,10 +32,11 @@ agent-fleet/
 
 `Tasks/` owns benchmark and task inputs. Harbor and OpenClaw runners read task lists from here instead of duplicating task files inside agent directories.
 
-Shell files remain the operator entry points and own process orchestration,
-environment setup, and external command execution. Focused Python modules own
-structured parsing, file updates, archive handling, and summary rendering;
-shell entry points invoke those modules rather than embedding Python programs.
+Shell files remain the operator entry points and own top-level workflow
+orchestration and environment setup. Focused Python modules own delegated
+workflows such as structured parsing, file updates, archive handling, summary
+rendering, and any commands those workflows require; shell entry points invoke
+those modules rather than embedding Python programs.
 
 ## Cross-Directory Calls
 

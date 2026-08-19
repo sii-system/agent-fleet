@@ -75,9 +75,9 @@ locations, and error compatibility remain in `harbor_analyzer/pi.py`.
 
 ## Shell and Python Boundaries
 
-Shell entry points own environment composition, process lifecycle, and calls
-to external tools. Their Python helpers own structured parsing and data
-transformation:
+Shell entry points own environment composition and top-level process
+lifecycle. Their Python helpers own delegated parsing and data workflows,
+including external commands required to complete them:
 
 | Shell caller | Python helper | Delegated responsibility |
 | --- | --- | --- |
