@@ -55,14 +55,8 @@ wheel_metadata="$(
     --version "$router_version"
 )"
 mapfile -t wheel_values < <(
-  python3 - "$wheel_metadata" <<'PY'
-import json
-import sys
-
-payload = json.loads(sys.argv[1])
-for key in ("cache_dir", "source_hash", "wheel", "wheel_sha256"):
-    print(payload[key])
-PY
+  python3 "$OPENROUTER_DIR/../router_cli_utils.py" \
+    wheel-metadata-values "$wheel_metadata"
 )
 [[ "${#wheel_values[@]}" -eq 4 ]] || die "invalid Router wheel metadata"
 dist_dir="${wheel_values[0]}"
@@ -78,7 +72,7 @@ cleanup() {
   [[ -z "$task_file" || ! -f "$task_file" ]] || rm -f -- "$task_file"
 }
 trap cleanup EXIT INT TERM
-python3 -c 'import sys,zipfile; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])' \
+python3 "$OPENROUTER_DIR/../router_cli_utils.py" extract-wheel \
   "$OPENROUTER_WHEEL" "$runtime_dir"
 actual_version="$(PYTHONPATH="$runtime_dir" python3 -m sii_fusion_router.cli --version)"
 [[ "$actual_version" == "$router_version" ]] || die "wheel/source version mismatch"
@@ -98,12 +92,8 @@ doctor_json="$(
     PYTHONPATH="$runtime_dir" python3 -m sii_fusion_router.cli doctor \
       --pipeline openrouter_fusion --config "$OPENROUTER_CONFIG" --claude-bin true
 )"
-python3 - "$doctor_json" <<'PY'
-import json, sys
-d = json.loads(sys.argv[1])
-if d.get("status") != "ok" or d.get("pipeline") != "openrouter_fusion":
-    raise SystemExit(f"Router doctor failed: {d}")
-PY
+python3 "$OPENROUTER_DIR/../router_cli_utils.py" validate-doctor \
+  "$doctor_json" openrouter_fusion
 
 printf '[openrouter] wheel=%s\n' "$OPENROUTER_WHEEL"
 printf '[openrouter] config=%s\n' "$OPENROUTER_CONFIG"
@@ -159,17 +149,9 @@ if [[ "$MODE" == "smoke" ]]; then
 else
   TASK_SOURCE_FILE="${TASK_SOURCE_FILE:-$REPO_ROOT/Tasks/Terminal-bench-2/harbor_terminalbench21_tasks.txt}"
   [[ -s "$TASK_SOURCE_FILE" ]] || die "task list not found or empty: $TASK_SOURCE_FILE"
-  INCLUDE_TASKS="$(python3 - "$TASK_SOURCE_FILE" <<'PY'
-import sys
-from pathlib import Path
-
-tasks = [line.strip() for line in Path(sys.argv[1]).read_text().splitlines()]
-tasks = [task for task in tasks if task and not task.startswith("#")]
-if not tasks or any("," in task for task in tasks):
-    raise SystemExit("task list must contain nonempty task IDs without commas")
-print(",".join(tasks))
-PY
-)"
+  INCLUDE_TASKS="$(
+    python3 "$OPENROUTER_DIR/../router_cli_utils.py" task-list-csv "$TASK_SOURCE_FILE"
+  )"
   export TASK_SOURCE_FILE INCLUDE_TASKS HARBOR_INCLUDE_TASKS="$INCLUDE_TASKS"
   export HARBOR_RUNS="${HARBOR_RUNS:-${N_ATTEMPTS:-1}}"
   export HARBOR_MAX_RETRIES="${HARBOR_MAX_RETRIES:-${MAX_RETRIES:-0}}"

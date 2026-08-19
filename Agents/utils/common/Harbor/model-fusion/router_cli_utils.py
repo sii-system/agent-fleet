@@ -11,8 +11,35 @@ import stat
 import subprocess
 import sys
 import tempfile
+import zipfile
 from pathlib import Path
 from typing import Protocol
+
+WHEEL_METADATA_KEYS = ("cache_dir", "source_hash", "wheel", "wheel_sha256")
+
+
+def wheel_metadata_values(raw: str) -> list[str]:
+    payload = json.loads(raw)
+    return [str(payload[key]) for key in WHEEL_METADATA_KEYS]
+
+
+def extract_wheel(wheel: Path, destination: Path) -> None:
+    with zipfile.ZipFile(wheel) as archive:
+        archive.extractall(destination)
+
+
+def validate_doctor(raw: str, pipeline: str) -> None:
+    payload = json.loads(raw)
+    if payload.get("status") != "ok" or payload.get("pipeline") != pipeline:
+        raise RuntimeError(f"Router doctor failed: {payload}")
+
+
+def task_list_csv(path: Path) -> str:
+    tasks = [line.strip() for line in path.read_text(encoding="utf-8").splitlines()]
+    tasks = [task for task in tasks if task and not task.startswith("#")]
+    if not tasks or any("," in task for task in tasks):
+        raise ValueError("task list must contain nonempty task IDs without commas")
+    return ",".join(tasks)
 
 
 class _Digest(Protocol):
@@ -275,17 +302,35 @@ def main() -> int:
         "--pipeline", required=True, choices=("mimo_max", "openrouter_fusion")
     )
     config_parser.add_argument("--max-fusions", required=True, type=int)
+    metadata_parser = subparsers.add_parser("wheel-metadata-values")
+    metadata_parser.add_argument("metadata")
+    extract_parser = subparsers.add_parser("extract-wheel")
+    extract_parser.add_argument("wheel", type=Path)
+    extract_parser.add_argument("destination", type=Path)
+    doctor_parser = subparsers.add_parser("validate-doctor")
+    doctor_parser.add_argument("payload")
+    doctor_parser.add_argument("pipeline")
+    tasks_parser = subparsers.add_parser("task-list-csv")
+    tasks_parser.add_argument("path", type=Path)
     args = parser.parse_args()
     if args.command == "source-fingerprint":
         print(source_fingerprint(args.repo))
     elif args.command == "build-wheel":
         print(json.dumps(build_wheel(args.repo, args.cache_root, args.version)))
-    else:
+    elif args.command == "derive-config":
         print(
             derive_config(
                 args.source, args.output_dir, args.pipeline, args.max_fusions
             )
         )
+    elif args.command == "wheel-metadata-values":
+        print("\n".join(wheel_metadata_values(args.metadata)))
+    elif args.command == "extract-wheel":
+        extract_wheel(args.wheel, args.destination)
+    elif args.command == "validate-doctor":
+        validate_doctor(args.payload, args.pipeline)
+    else:
+        print(task_list_csv(args.path))
     return 0
 
 

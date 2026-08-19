@@ -7,6 +7,7 @@ import os
 import subprocess
 import tempfile
 import unittest
+import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest import mock
@@ -22,6 +23,29 @@ spec.loader.exec_module(utils)
 
 
 class RouterSourceFingerprintTest(unittest.TestCase):
+    def test_shell_boundary_helpers(self) -> None:
+        metadata = '{"cache_dir":"/cache","source_hash":"abc","wheel":"/cache/router.whl","wheel_sha256":"def"}'
+        self.assertEqual(
+            utils.wheel_metadata_values(metadata),
+            ["/cache", "abc", "/cache/router.whl", "def"],
+        )
+        utils.validate_doctor('{"status":"ok","pipeline":"mimo_max"}', "mimo_max")
+        with self.assertRaisesRegex(RuntimeError, "Router doctor failed"):
+            utils.validate_doctor('{"status":"error"}', "mimo_max")
+
+    def test_extract_wheel_and_task_list(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            wheel = root / "router.whl"
+            with zipfile.ZipFile(wheel, "w") as archive:
+                archive.writestr("router/module.py", "value = 1\n")
+            target = root / "runtime"
+            utils.extract_wheel(wheel, target)
+            self.assertTrue((target / "router/module.py").is_file())
+            tasks = root / "tasks.txt"
+            tasks.write_text("# comment\ntask-a\ntask-b\n", encoding="utf-8")
+            self.assertEqual(utils.task_list_csv(tasks), "task-a,task-b")
+
     def test_fingerprint_tracks_dirty_and_untracked_source_content(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
