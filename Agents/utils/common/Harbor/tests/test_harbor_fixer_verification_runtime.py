@@ -154,6 +154,11 @@ class HarborFixerVerificationRuntimeTest(FixerTestCase):
             "HARBOR_AGENT_IMPORT_PATH": "/stale/agent.py",
             "HARBOR_N_CONCURRENT": "1",
             "HARBOR_TASK_ID": "old-task",
+            "HARBOR_ANTHROPIC_MODEL": "stale-main-model",
+            "HARBOR_ANTHROPIC_DEFAULT_OPUS_MODEL": "stale-opus-model",
+            "HARBOR_ANTHROPIC_DEFAULT_SONNET_MODEL": "stale-sonnet-model",
+            "HARBOR_ANTHROPIC_DEFAULT_HAIKU_MODEL": "stale-haiku-model",
+            "HARBOR_CLAUDE_CODE_SUBAGENT_MODEL": "stale-subagent-model",
             "HARBOR_ANALYZER_OUTPUT_DIR": "/stale/analyzer",
             "HARBOR_QUEUE_WORKER": "1",
             "HARBOR_ZELLIJ_SESSION_NAME": "original-run",
@@ -191,6 +196,11 @@ class HarborFixerVerificationRuntimeTest(FixerTestCase):
         self.assertEqual(env["HARBOR_QUEUE_WORKER"], "0")
         self.assertNotIn("HARBOR_N_CONCURRENT", env)
         self.assertNotIn("HARBOR_TASK_ID", env)
+        self.assertNotIn("HARBOR_ANTHROPIC_MODEL", env)
+        self.assertNotIn("HARBOR_ANTHROPIC_DEFAULT_OPUS_MODEL", env)
+        self.assertNotIn("HARBOR_ANTHROPIC_DEFAULT_SONNET_MODEL", env)
+        self.assertNotIn("HARBOR_ANTHROPIC_DEFAULT_HAIKU_MODEL", env)
+        self.assertNotIn("HARBOR_CLAUDE_CODE_SUBAGENT_MODEL", env)
         self.assertEqual(env["FLEET_TASKS"], "task-b,task-a")
         self.assertEqual(env["INCLUDE_TASKS"], "task-b,task-a")
         self.assertEqual(env["HARBOR_LIMIT"], "")
