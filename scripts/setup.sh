@@ -107,7 +107,8 @@ info "Prerequisite downloads: $AGENT_FLEET_CACHE_DIR/downloads"
 # ---- 2. Gather config (caller env, existing local config, then prompts) ----
 
 normalize_trace_to_opik() {
-  local value="${1,,}"
+  local value
+  value="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
   case "$value" in
     1|true|yes|y|on)
       TRACE_TO_OPIK=true
@@ -227,42 +228,7 @@ load_legacy_managed_claude_package_config() {
         fi
         ;;
     esac
-  done < <(python3 - "$bashrc" <<'PY'
-import shlex
-import sys
-from pathlib import Path
-
-begin = "# >>> agent-fleet env >>>"
-end = "# <<< agent-fleet env <<<"
-legacy_prefix = "T" + "B_CC_"
-names = {
-    legacy_prefix + "OPIK_ENABLE_HOOK": "HARBOR_CC_OPIK_ENABLE_HOOK",
-    legacy_prefix + "CLAUDE_TGZ_SOURCE": "HARBOR_CC_CLAUDE_TGZ_SOURCE",
-    legacy_prefix + "PY_WHEEL_DIR_SOURCE": "HARBOR_CC_PY_WHEEL_DIR_SOURCE",
-}
-in_block = False
-for line in Path(sys.argv[1]).read_text(encoding="utf-8").splitlines():
-    stripped = line.strip()
-    if stripped == begin:
-        in_block = True
-        continue
-    if stripped == end:
-        in_block = False
-        continue
-    if not in_block:
-        continue
-    try:
-        fields = shlex.split(stripped, comments=True, posix=True)
-    except ValueError:
-        continue
-    if len(fields) != 2 or fields[0] != "export" or "=" not in fields[1]:
-        continue
-    key, value = fields[1].split("=", 1)
-    replacement = names.get(key)
-    if replacement:
-        print(f"{replacement}\t{value}")
-PY
-)
+  done < <(python3 "$SCRIPT_DIR/setup_config.py" legacy-claude-config "$bashrc")
 
   if (( found )); then
     warn "Migrating legacy TerminalBench Claude package settings from ~/.bashrc."
@@ -399,58 +365,11 @@ PI_SETTINGS="$PI_AGENT_DIR/settings.json"
 PI_MODELS="$PI_AGENT_DIR/models.json"
 cp -f "$PI_SETTINGS" "$PI_SETTINGS.bak.agent-fleet" 2>/dev/null || true
 cp -f "$PI_MODELS" "$PI_MODELS.bak.agent-fleet" 2>/dev/null || true
-python3 - "$PI_SETTINGS" "$PI_MODELS" "$BASE_URL" "$MODEL" "$SCRIPT_DIR" <<'PY'
-import json, sys
-settings_path, models_path, base_url, model, script_dir = sys.argv[1:]
-sys.path.insert(0, script_dir)
-from pi_prompt import PromptFailure, models_config, normalized_base_url
-
-def load_object(path):
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            value = json.load(f)
-        if isinstance(value, dict):
-            return value
-    except FileNotFoundError:
-        pass
-    except json.JSONDecodeError:
-        print(
-            f"\033[1;33m[WARN]\033[0m existing {path} could not be parsed; "
-            f"backed up at {path}.bak.agent-fleet, writing fresh",
-            file=sys.stderr,
-        )
-    return {}
-
-settings = load_object(settings_path)
-settings["defaultProvider"] = "sii-gateway"
-settings["defaultModel"] = model
-settings.setdefault("defaultThinkingLevel", "high")
-settings.setdefault("theme", "dark")
-settings.setdefault("enableInstallTelemetry", False)
-
-models = load_object(models_path)
-providers = models.get("providers")
-if not isinstance(providers, dict):
-    providers = {}
-    models["providers"] = providers
-try:
-    normalized_url = normalized_base_url(base_url)
-except PromptFailure as exc:
-    print(f"\033[1;31m[FAIL]\033[0m {exc}", file=sys.stderr)
-    raise SystemExit(1) from exc
-providers["sii-gateway"] = models_config(
-    normalized_url, model, display_name="Agent Fleet"
-)["providers"]["sii-gateway"]
-
-for path, value in ((settings_path, settings), (models_path, models)):
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(value, f, indent=2)
-        f.write("\n")
-PY
+python3 "$SCRIPT_DIR/setup_config.py" merge-pi-config \
+  "$PI_SETTINGS" "$PI_MODELS" "$BASE_URL" "$MODEL"
 ok "Pi configuration merged (provider=sii-gateway, model=${MODEL})"
 
 # ---- 6. Write env vars + nvm init to ~/.bashrc (idempotent) ----
-# Uses Python to replace the managed block portably (GNU/BSD sed differ).
 info "Writing env vars to ~/.bashrc..."
 BASHRC="$HOME/.bashrc"
 cp -f "$BASHRC" "$BASHRC.bak.agent-fleet" 2>/dev/null || true
@@ -459,59 +378,7 @@ CLAUDE_TGZ_SOURCE="$CLAUDE_TGZ_SOURCE" \
 CLAUDE_WHEEL_DIR_SOURCE="$CLAUDE_WHEEL_DIR_SOURCE" \
 AGENT_FLEET_PATHS_FILE="$AGENT_FLEET_PATHS_FILE" \
 BASHRC="$BASHRC" \
-  python3 - <<'PY'
-import os, shlex
-from pathlib import Path
-
-bashrc = Path(os.environ["BASHRC"])
-auth_token = os.environ["AUTH_TOKEN"]
-tgz = os.environ.get("CLAUDE_TGZ_SOURCE", "").strip()
-wheel = os.environ.get("CLAUDE_WHEEL_DIR_SOURCE", "").strip()
-paths_file = os.environ["AGENT_FLEET_PATHS_FILE"]
-
-BEGIN = "# >>> agent-fleet env >>>"
-END   = "# <<< agent-fleet env <<<"
-
-lines = []
-if bashrc.exists():
-    lines = bashrc.read_text(encoding="utf-8").splitlines()
-
-# Drop any existing managed block (idempotent).
-out = []
-in_block = False
-for ln in lines:
-    if ln.strip() == BEGIN:
-        in_block = True
-        continue
-    if ln.strip() == END:
-        in_block = False
-        continue
-    if not in_block:
-        out.append(ln)
-
-# Build new managed block with shell-escaped values.
-q = shlex.quote
-block = [
-    "",
-    BEGIN,
-    f"export AGENT_FLEET_PATHS_FILE={q(paths_file)}",
-    '[ -f "$AGENT_FLEET_PATHS_FILE" ] && . "$AGENT_FLEET_PATHS_FILE"',
-    'export NVM_DIR="$HOME/.nvm"',
-    '[ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"',
-    "export PI_OFFLINE=1",
-    f"export AGENT_FLEET_API_KEY={q(auth_token)}",
-]
-if tgz and wheel:
-    block += [
-        "export HARBOR_CC_OPIK_ENABLE_HOOK=1",
-        f"export HARBOR_CC_CLAUDE_TGZ_SOURCE={q(tgz)}",
-        f"export HARBOR_CC_PY_WHEEL_DIR_SOURCE={q(wheel)}",
-    ]
-block.append(END)
-
-out.extend(block)
-bashrc.write_text("\n".join(out) + "\n", encoding="utf-8")
-PY
+  python3 "$SCRIPT_DIR/setup_config.py" update-bashrc "$BASHRC"
 ok "Env vars written to ~/.bashrc (idempotent); backup at ${BASHRC}.bak.agent-fleet"
 
 export PI_OFFLINE=1
@@ -637,72 +504,7 @@ OPIK_API_KEY="${OPIK_API_KEY:-}" \
 OPIK_WORKSPACE="${OPIK_WORKSPACE:-}" \
 OPIK_PROJECT_NAME="${OPIK_PROJECT_NAME:-}" \
 CONFIG_LOCAL="$CONFIG_LOCAL" \
-  python3 - <<'PY'
-import os
-from pathlib import Path
-
-path = Path(os.environ["CONFIG_LOCAL"])
-base = os.environ["BASE_URL"].rstrip("/")
-token = os.environ["AUTH_TOKEN"]
-model = os.environ["MODEL"]
-
-# Managed keys: BASE_URL stored without /v1 (repo convention; runners append it).
-managed = {
-    "BASE_URL": base,
-    "API_KEY": token,
-    "MODEL": model,
-}
-trace_to_opik = os.environ.get("TRACE_TO_OPIK", "").strip()
-if trace_to_opik:
-    managed["TRACE_TO_OPIK"] = trace_to_opik
-opik_url = os.environ.get("OPIK_URL", "").strip()
-if opik_url:
-    managed["OPIK_URL"] = opik_url
-    managed["OPIK_API_KEY"] = os.environ.get("OPIK_API_KEY", "")
-    managed["OPIK_WORKSPACE"] = os.environ.get("OPIK_WORKSPACE") or "default"
-    managed["OPIK_PROJECT_NAME"] = os.environ.get("OPIK_PROJECT_NAME", "")
-
-# Read existing lines, keep non-managed keys as-is.
-existing = {}
-order = []
-if path.exists():
-    for line in path.read_text(encoding="utf-8").splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
-            order.append(("comment", line.rstrip("\n")))
-            continue
-        if "=" in stripped:
-            k, _, v = stripped.partition("=")
-            existing[k] = v
-            order.append(("kv", k))
-        else:
-            order.append(("raw", line.rstrip("\n")))
-
-existing.update(managed)
-
-# Emit: existing structure (comments/order preserved) + any new managed keys.
-# Values are plain (unquoted) to match config.env convention; the repo's
-# env-file readers (load_env_file) use partition("=") + strip() without
-# shell unquoting, so quoted values would be read back with the quotes
-# still embedded.
-def emit(k):
-    return f"{k}={existing[k]}"
-
-seen = set()
-out = []
-for kind, val in order:
-    if kind == "kv":
-        if val in existing and val not in seen:
-            out.append(emit(val))
-            seen.add(val)
-    else:
-        out.append(val)
-for k in managed:
-    if k not in seen:
-        out.append(emit(k))
-
-path.write_text("\n".join(out) + "\n", encoding="utf-8")
-PY
+  python3 "$SCRIPT_DIR/setup_config.py" merge-local-config "$CONFIG_LOCAL"
 chmod 0600 "$CONFIG_LOCAL"
 if [[ -n "$CONFIG_LOCAL_BACKUP" ]]; then
   ok "config.local.env merged; private backup at $CONFIG_LOCAL_BACKUP"
