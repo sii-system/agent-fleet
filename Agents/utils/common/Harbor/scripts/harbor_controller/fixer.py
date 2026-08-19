@@ -307,8 +307,17 @@ def _validate_start_inputs(run_dir: Path, analyzer_output: Path) -> str:
         include_deferred_retries=True,
     ):
         raise ValueError("Analyzer still has pending benchmark handoffs")
-    if not (analyzer_output / "benchmark-summary.md").is_file():
+    summary_path = analyzer_output / "benchmark-summary.md"
+    if not summary_path.is_file():
         raise ValueError("Analyzer has not published benchmark-summary.md")
+    fixer_sections = sum(
+        line.strip().casefold() == "## fixer results"
+        for line in summary_path.read_text(encoding="utf-8").splitlines()
+    )
+    if fixer_sections != 1:
+        raise ValueError(
+            "benchmark summary must contain exactly one Fixer Results section"
+        )
     return run_id
 
 

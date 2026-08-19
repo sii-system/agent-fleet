@@ -273,6 +273,14 @@ class HarborControllerFixerTest(FixerTestCase):
         with self.assertRaisesRegex(ValueError, "has not published"):
             self._start()
 
+    def test_start_requires_fixer_results_section(self) -> None:
+        (self.analyzer_dir / "benchmark-summary.md").write_text(
+            "# Benchmark Summary\n", encoding="utf-8"
+        )
+
+        with self.assertRaisesRegex(ValueError, "exactly one Fixer Results"):
+            self._start()
+
     def test_custom_analyzer_output_owns_the_updated_summary(self) -> None:
         custom_root = self.root / "custom"
         custom_analyzer = write_analyzer_fixture(custom_root)
