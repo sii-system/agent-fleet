@@ -121,12 +121,7 @@ DIND_MOUNTS="${DIND_MOUNTS:-}"
 DIND_DEFAULT_ADDRESS_POOLS="${DIND_DEFAULT_ADDRESS_POOLS:-}"
 
 url_hostname() {
-  python3 - "$1" <<'PY'
-from urllib.parse import urlparse
-import sys
-
-print(urlparse(sys.argv[1]).hostname or "")
-PY
+  python3 "$SCRIPT_DIR/script_utils.py" url-hostname "$1"
 }
 
 append_csv_unique() {

@@ -11,6 +11,7 @@ mkdir -p \
   "$PROJECT_DIR/Agents/utils/common/Harbor" \
   "$TMP_DIR/bin"
 cp "$REPO_ROOT/scripts/dind-run.sh" "$PROJECT_DIR/scripts/dind-run.sh"
+cp "$REPO_ROOT/scripts/script_utils.py" "$PROJECT_DIR/scripts/script_utils.py"
 if grep -q -- 'docker_exec_root_env' "$PROJECT_DIR/scripts/dind-run.sh"; then
   echo "dind-run.sh still defines or uses the root setup helper" >&2
   exit 1
