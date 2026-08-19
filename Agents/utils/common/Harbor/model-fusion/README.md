@@ -65,3 +65,8 @@ Harbor home, but it does not reuse or alter this mid-turn execution path.
 The `openrouter/` subdirectory contains the original `openrouter_fusion`
 pipeline using the same isolation rule. It is selected only through its own
 `run_tb21.sh` entry point and does not modify Mimo Max or mid-turn runs.
+
+The Mimo and OpenRouter launchers share `router_cli_utils.py` for Router source
+fingerprinting, wheel build/metadata/extraction, derived config publication,
+doctor validation, and task-list conversion. Their shell entry points still
+own environment selection and Harbor process orchestration.

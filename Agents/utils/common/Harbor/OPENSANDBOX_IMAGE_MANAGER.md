@@ -30,7 +30,7 @@ graph TD
 ```
 
 The integration entry point is
-[`prepare_opensandbox_image_ref`](harboropik.sh#L256-L307). The main workflow
+[`prepare_opensandbox_image_ref`](harboropik.sh). The main workflow
 is implemented by [`prepare`](opensandbox_image_manager.py#L664-L780).
 
 The OCI export explicitly disables Buildx provenance attestations. The

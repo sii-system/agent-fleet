@@ -12,15 +12,20 @@ Agents/utils/common/Harbor/
 ├── env.sh                      # Path resolution and runtime defaults
 ├── env.py                      # JSON and data/cache helpers invoked by env.sh
 ├── gen_harbor_zellij_layout.sh # zellij layout generator
-├── monitor_harbor.sh           # Run monitor pane
+├── monitor_harbor.sh           # Monitor pane orchestration
+├── harbor_monitor_utils.py     # Monitor summary calculations
 ├── run_harbor_worker.sh        # Worker loop for one zellij pane
 ├── run_harbor_registry.sh      # Registry runner with optional final-pane hold
-├── harboropik.sh               # Harbor CLI wrapper with Opik setup
-├── prepare_local_deps.sh       # Local package/cache preparation
+├── harboropik.sh               # Harbor CLI orchestration with Opik setup
+├── harbor_shell_utils.py       # Event, JSON, URL, and mount helpers
+├── prepare_local_deps.sh       # Thin Python launcher
+├── prepare_local_deps.py       # Package/cache preparation implementation
 ├── runner-requirements.txt     # Exact direct dependencies for the runner image
 ├── setup_runner_env.sh         # Explicit host setup / image validation
 ├── harbor_prepare_runner_cli.py # Startup validation for the configured CLI
 ├── harbor_worker_utils.py
+├── model-fusion/
+│   └── router_cli_utils.py     # Shared Router build/config/launcher helpers
 ├── OPENSANDBOX_IMAGE_MANAGER.md # OpenSandbox task image build/cache/publish flow
 ├── prebuild_opensandbox_dataset.sh # Batch prebuild/publish local dataset images
 └── scripts/
@@ -67,6 +72,23 @@ in the environment as `HARBOR_ANALYZER_*` variables.
 JSON-event validation, final JSON extraction, and provenance shared by Harbor
 Pi callers. Analyzer-specific tool access, path gating, prompts, artifact
 locations, and error compatibility remain in `harbor_analyzer/pi.py`.
+
+## Shell and Python Boundaries
+
+Shell entry points own environment composition, process lifecycle, and calls
+to external tools. Their Python helpers own structured parsing and data
+transformation:
+
+| Shell caller | Python helper | Delegated responsibility |
+| --- | --- | --- |
+| `prepare_local_deps.sh` | `prepare_local_deps.py` | Downloads, runtime archives, npm caches, and manifest generation |
+| `harboropik.sh` and model-fusion wrappers | `harbor_shell_utils.py` | Structured events, JSON normalization, URL parsing, and read-only mount JSON |
+| `monitor_harbor.sh` | `harbor_monitor_utils.py` | Reward, success, exception, and environment statistics |
+| `Agents/utils/rl/run_rl_rollout_server.sh`, `run_rl_rollout_worker.sh`, `monitor_rl_rollout.sh` | `Agents/utils/rl/rollout_worker_utils.py` | Request headers/JSON, LLM kwargs, result assembly, and monitor rendering |
+| Mimo/OpenRouter `run_tb21.sh` | `model-fusion/router_cli_utils.py` | Wheel metadata/extraction, doctor validation, and task-list conversion |
+
+The Python command surfaces are internal implementation boundaries; operators
+continue to use the shell entry points documented in the README files.
 
 ## Path Resolution
 
@@ -180,6 +202,7 @@ Agents/utils/rl/
 ├── gen_rl_rollout_zellij_layout.sh   # Per-submission zellij layout generator
 ├── monitor_rl_rollout.sh             # RL job monitor pane
 ├── run_rl_rollout_worker.sh          # Queue worker that reuses harboropik.sh
+├── rollout_worker_utils.py            # Request/result and monitor helpers
 └── rl_dataset_worklist.py            # Dataset-to-task-list helper
 ```
 
@@ -266,8 +289,14 @@ OpenCode:
 2. `gen_harbor_zellij_layout.sh` writes a zellij layout with monitor and worker panes.
 3. Each worker pane runs `run_harbor_worker.sh`.
 4. Workers claim tasks from the shared queue and call `harboropik.sh`.
-5. `harboropik.sh` prepares Opik/tracing settings and invokes Harbor with either Claude Code or OpenCode.
-6. When every task is done or failed, `monitor_harbor.sh` writes `$OUTPUT_PATH/summary.txt`, stops the online analyzer, and exits when `HARBOR_ZELLIJ_CLOSE_ON_COMPLETE=1` (the default). With `0`, the final monitor pane remains open for inspection.
+5. `harboropik.sh` composes the runtime and delegates structured event, JSON,
+   URL, and mount rendering to `harbor_shell_utils.py` before invoking Harbor
+   with either Claude Code or OpenCode.
+6. When every task is done or failed, `monitor_harbor.sh` uses
+   `harbor_monitor_utils.py` to render summary statistics, writes
+   `$OUTPUT_PATH/summary.txt`, stops the online analyzer, and exits when
+   `HARBOR_ZELLIJ_CLOSE_ON_COMPLETE=1` (the default). With `0`, the final
+   monitor pane remains open for inspection.
 
 Native registry runs use the single-pane layout; `run_harbor_registry.sh`
 wraps `harboropik.sh`, which writes the same summary path from Harbor's job
@@ -288,10 +317,12 @@ RL rollout flow:
 3. `ensure_rl_job_zellij.sh` creates a
    `harbor-rollout-<agent>-<dataset>-<ray_submission_id>` zellij session for
    that submission if one is not already running.
-4. `run_rl_rollout_worker.sh` claims queued requests and calls
+4. `run_rl_rollout_worker.sh` claims queued requests, uses
+   `rollout_worker_utils.py` for request parsing and LLM arguments, and calls
    `Agents/utils/common/Harbor/harboropik.sh`, preserving normal agent logs,
    local dependency cache behavior, Opik tracing, and timeout finalization.
-5. The worker writes the result JSON; the HTTP request returns that result.
+5. The worker uses `rollout_worker_utils.py` to assemble the result JSON; the
+   HTTP request returns that result.
 
 RL rollout sessions are not governed by `HARBOR_ZELLIJ_CLOSE_ON_COMPLETE`.
 Their monitor and worker panes are long-running because requests are queued

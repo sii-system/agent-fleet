@@ -67,9 +67,12 @@ additionally stops a worker's current task when a matching
 | `env.sh` | Path resolution and runtime defaults (sources repo `config.env` / `config.local.env`) |
 | `gen_harbor_zellij_layout.sh` | Writes the zellij layout (monitor + worker panes) |
 | `run_harbor_worker.sh` | Worker loop for one pane: claims tasks, calls `harboropik.sh` |
-| `harboropik.sh` | Harbor CLI wrapper with Opik/tracing setup |
-| `monitor_harbor.sh` | Run monitor pane |
-| `prepare_local_deps.sh` | Local package/cache preparation |
+| `harboropik.sh` | Harbor CLI orchestration wrapper with Opik/tracing setup |
+| `harbor_shell_utils.py` | Structured event, JSON, URL, and mount helpers called by Harbor shell wrappers |
+| `monitor_harbor.sh` | Run monitor pane and delegate summary calculations |
+| `harbor_monitor_utils.py` | Reward, success, exception, and environment summary calculations |
+| `prepare_local_deps.sh` | Thin interpreter-selection wrapper for local dependency preparation |
+| `prepare_local_deps.py` | Local package downloads, runtime archives, caches, and manifest generation |
 
 Full variable table: [utils/common/Harbor/STRUCT.md](utils/common/Harbor/STRUCT.md).
 Agent integration internals: [Harbor-claude-code/STRUCT.md](Harbor-claude-code/STRUCT.md),

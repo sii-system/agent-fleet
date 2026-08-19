@@ -3,11 +3,22 @@
 | Script | Purpose |
 | --- | --- |
 | `setup.sh` | One-shot control-plane bootstrap: installs Node, Pi, and the pinned host Harbor runner; writes config, installs Git hooks, and installs the Pi skills |
+| `prerequisites.sh` | Shared managed-tool discovery and bootstrap sourced by setup and launch scripts |
 | `install-git-hooks.sh` | Enable the repository's advisory Ruff pre-commit hook for an existing checkout |
 | `run_fleet.sh` | Routes tasksets to the existing Harbor or OpenClaw runner |
 | `fleet_spec.sh` | Internal dispatcher for validated single- and multi-run spec inputs |
 | `fleet_batch.sh` | Internal concurrent launcher for normalized multi-run inputs |
 | `dind-run.sh` | Start/reuse a Docker-in-Docker runner, bootstrap it, then invoke `run_fleet.sh` |
+
+Internal Python helpers keep structured data and file mutation out of the
+shell entry points:
+
+| Helper | Called by | Owns |
+| --- | --- | --- |
+| `setup_config.py` | `setup.sh` | Legacy config migration, Pi JSON merges, managed bashrc updates, and `config.local.env` updates |
+| `script_utils.py` | `dind-run.sh`, `prerequisites.sh` | URL hostname parsing and streaming SHA-256 verification |
+
+These helpers are implementation boundaries, not separate operator workflows.
 
 For the end-to-end quick start, see the [root README](../README.md#quick-start).
 

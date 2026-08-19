@@ -81,6 +81,7 @@ orchestration ownership in `Agents/utils/common/Harbor/`.
 - For worker failures, inspect the worker console log and the corresponding
   Harbor job log before changing scripts.
 - For dependency-cache problems, inspect `prepare_local_deps.sh`,
+  `prepare_local_deps.py`,
   `LOCAL_WHEEL_DIR`, `LOCAL_WHEEL_PORT`, and
   `HARBOR_REMOTE_WHEEL_SERVER_URLS`.
 - For mounted Claude Code tgz problems, inspect `HARBOR_CC_CLAUDE_TGZ_SOURCE`,

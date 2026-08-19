@@ -10,7 +10,13 @@ agent-fleet/
 │   ├── Harbor-claude-code/    # Claude Code tracing/integration code
 │   ├── Harbor-opencode/       # OpenCode tracing/integration code
 │   └── utils/
-│       └── common/Harbor/     # Shared Harbor runner, zellij layout, workers
+│       ├── common/Harbor/     # Shared Harbor runner, zellij layout, workers
+│       └── rl/                # Remote rollout listener, workers, and helpers
+├── scripts/
+│   ├── setup.sh               # Host setup orchestration entry point
+│   ├── setup_config.py        # Setup config parsing and managed-file updates
+│   ├── prerequisites.sh       # Shared managed-tool discovery/bootstrap
+│   └── script_utils.py        # URL and checksum helpers for shell callers
 ├── Tasks/
 │   ├── Pinchbench/            # PinchBench runner for OpenClaw
 │   ├── clawBio/               # ClawBio runner for OpenClaw
@@ -25,6 +31,11 @@ agent-fleet/
 `Agents/` owns execution. Agent-specific code stays under its own directory, while shared Harbor orchestration lives under `Agents/utils/common/Harbor/`.
 
 `Tasks/` owns benchmark and task inputs. Harbor and OpenClaw runners read task lists from here instead of duplicating task files inside agent directories.
+
+Shell files remain the operator entry points and own process orchestration,
+environment setup, and external command execution. Focused Python modules own
+structured parsing, file updates, archive handling, and summary rendering;
+shell entry points invoke those modules rather than embedding Python programs.
 
 ## Cross-Directory Calls
 
