@@ -517,11 +517,13 @@ class DependencyPreparer:
         os.close(file_descriptor)
         temporary = Path(temporary_name)
         try:
-            with tarfile.open(self.config.node_runtime_tarball) as source:
-                with tarfile.open(temporary, "w:gz") as destination:
-                    for member in source.getmembers():
-                        file_object = source.extractfile(member) if member.isfile() else None
-                        destination.addfile(member, file_object)
+            with (
+                tarfile.open(self.config.node_runtime_tarball) as source,
+                tarfile.open(temporary, "w:gz") as destination,
+            ):
+                for member in source.getmembers():
+                    file_object = source.extractfile(member) if member.isfile() else None
+                    destination.addfile(member, file_object)
             if not tarball_ready(temporary):
                 raise RuntimeError("generated Pi portable Node runtime is invalid")
             os.replace(temporary, target)
