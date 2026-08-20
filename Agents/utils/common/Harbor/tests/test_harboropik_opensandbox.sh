@@ -239,6 +239,8 @@ grep -F -- 'FAKE_HARBOR_ARG=OPENCODE_TGZ_PATH=' \
   <<< "$opencode_opensandbox" >/dev/null
 grep -F -- 'FAKE_HARBOR_ARG=HARBOR_VERIFIER_UV_BIN_DIR=/opt/tb-uv-backup/bin' \
   <<< "$opencode_opensandbox" >/dev/null
+grep -F -- 'FAKE_HARBOR_ARG=XDG_CONFIG_HOME=/root/.config' \
+  <<< "$opencode_opensandbox" >/dev/null
 
 mkdir -p "$tmp/pi-extensions"
 printf 'export default function () {}\n' > "$tmp/pi-extensions/smoke.ts"

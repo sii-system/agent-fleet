@@ -76,4 +76,19 @@ override_session="$(printf '%s\n' "$overrides" | sed -n '3p')"
 [[ "$override_project" == "existing-project" ]]
 [[ "$override_session" == "existing-session" ]]
 
+opensandbox_wheel_url="$(
+  env \
+    HOME="$TEST_ROOT/home" \
+    HARBOR_ENVIRONMENT_TYPE="opensandbox" \
+    HARBOR_LOCAL_WHEEL_SERVER_URL="http://runner-local:18765" \
+    AGENT_FLEET_PATHS_FILE="$TEST_ROOT/missing-paths.env" \
+    AGENT_FLEET_RUNTIME_DIR="$TEST_ROOT/runtime" \
+    bash -c '
+      source "$1"
+      harbor_apply_effective_wheel_source
+      printf "%s" "${HARBOR_LOCAL_WHEEL_SERVER_URL:-}"
+    ' bash "$HARBOR_DIR/env.sh"
+)"
+[[ -z "$opensandbox_wheel_url" ]]
+
 echo "host default tests passed"

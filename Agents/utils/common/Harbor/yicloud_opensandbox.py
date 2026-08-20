@@ -216,6 +216,20 @@ def _image_ref_of(data: Any) -> str:
     return str(getattr(getattr(data, "Image", None), "Ref", "") or "").strip()
 
 
+def _host_routable_proxy_url(proxy_url: str) -> str:
+    origin = os.environ.get("YICLOUD_SANDBOX_PROXY_ORIGIN", "").strip()
+    if not origin:
+        return proxy_url
+    source = urlsplit(proxy_url)
+    target = urlsplit(origin)
+    if target.scheme not in {"http", "https"} or not target.netloc:
+        raise ValueError(
+            "YICLOUD_SANDBOX_PROXY_ORIGIN must be an HTTP(S) origin"
+        )
+    path = f"{target.path.rstrip('/')}/{source.path.lstrip('/')}"
+    return urlunsplit((target.scheme, target.netloc, path, source.query, ""))
+
+
 def _environment_id_by_exact_name(
     sandbox: Any, project_name: str, environment_name: str
 ) -> str:
@@ -278,6 +292,7 @@ def _command_url_of(data: Any) -> str:
         proxy_url = str(getattr(endpoint, "ProxyUrl", "") or "")
         if not proxy_url.startswith(("http://", "https://")):
             continue
+        proxy_url = _host_routable_proxy_url(proxy_url)
         parsed = urlsplit(proxy_url)
         path = parsed.path.rstrip("/")
         path = path.removesuffix("/ping")

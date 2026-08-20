@@ -623,6 +623,32 @@ class YiCloudOpenSandboxTest(unittest.TestCase):
         self.assertTrue(image.Uri.startswith("harbor-sandbox.example/"))
         self.assertFalse(hasattr(image, "Ref"))
 
+    def test_proxy_origin_can_be_replaced_without_changing_instance_path(self) -> None:
+        proxy_url = (
+            "https://sandbox.yicloud.com.cn/v1/sandboxes/sbx-1/proxy/44772/ping"
+        )
+        with patch.dict(
+            "os.environ",
+            {
+                "YICLOUD_SANDBOX_PROXY_ORIGIN": (
+                    "https://gate.yicloud.com.cn/sandbox-connect"
+                )
+            },
+        ):
+            result = yicloud_opensandbox._host_routable_proxy_url(proxy_url)
+
+        self.assertEqual(
+            result,
+            "https://gate.yicloud.com.cn/sandbox-connect/v1/sandboxes/"
+            "sbx-1/proxy/44772/ping",
+        )
+
+    def test_proxy_url_is_unchanged_without_an_origin_override(self) -> None:
+        proxy_url = "https://sandbox.example/v1/sandboxes/sbx-1/ping"
+        with patch.dict("os.environ", {}, clear=True):
+            result = yicloud_opensandbox._host_routable_proxy_url(proxy_url)
+        self.assertEqual(result, proxy_url)
+
     def test_s3_download_url_is_passed_as_environment_not_command_text(self) -> None:
         instance = object.__new__(
             yicloud_opensandbox.YiCloudOpenSandboxEnvironment

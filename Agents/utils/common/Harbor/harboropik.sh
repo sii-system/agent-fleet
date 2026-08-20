@@ -1416,6 +1416,9 @@ run_opencode_task() {
       --timeout-multiplier "$HARBOR_TIMEOUT_MULTIPLIER"
       --agent-setup-timeout-multiplier "$HARBOR_AGENT_SETUP_TIMEOUT_MULTIPLIER"
     )
+    if [[ "$HARBOR_ENVIRONMENT_TYPE" == "opensandbox" ]]; then
+      cmd+=( --ae "XDG_CONFIG_HOME=/root/.config" )
+    fi
     # Same rule as the Claude builder: no Opik endpoint or credentials in
     # trace-off task environments.
     if harbor_trace_to_opik_enabled; then
