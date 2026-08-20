@@ -18,7 +18,7 @@ SH
 chmod +x "$tmp/offline/uv" "$tmp/offline/uvx"
 
 installer="$("$SHIM" -LsSf https://astral.sh/uv/0.7.13/install.sh)"
-HOME="$tmp/home" TB_VERIFIER_UV_BIN_DIR="$tmp/offline" sh -c "$installer"
+HOME="$tmp/home" HARBOR_VERIFIER_UV_BIN_DIR="$tmp/offline" sh -c "$installer"
 
 [[ -x "$tmp/home/.local/bin/uv" ]]
 [[ -x "$tmp/home/.local/bin/uvx" ]]

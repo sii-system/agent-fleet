@@ -1,0 +1,282 @@
+name: Harbor E2E Validation
+
+"on":
+  workflow_dispatch:
+    inputs:
+      tasks:
+        description: Comma-separated tb21 task names; empty runs the canary set
+        required: false
+        type: string
+      agent:
+        description: claude-code or opencode
+        required: false
+        default: claude-code
+        type: string
+      workers:
+        description: Concurrency; empty derives from host capacity
+        required: false
+        type: string
+  schedule:
+    - cron: "37 18 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: harbor-e2e-validation
+  cancel-in-progress: false
+
+jobs:
+  e2e:
+    name: Harbor terminalbench21 e2e
+    runs-on: [self-hosted, Linux, X64, bare-metal]
+    environment: self-hosted-env
+    timeout-minutes: 720
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Validate prerequisites
+        run: |
+          set -euo pipefail
+          export AGENT_FLEET_REQUIRE_DOCKER=1
+          # shellcheck source=scripts/prerequisites.sh
+          source scripts/prerequisites.sh
+          agent_fleet_bootstrap_setup_prerequisites
+
+      - name: Check host capacity
+        id: capacity
+        env:
+          REQUESTED_WORKERS: ${{ inputs.workers }}
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/e2e_worker_capacity.py --requested "${REQUESTED_WORKERS:-}"
+
+      - name: Check disk headroom
+        env:
+          MINIMUM_FREE_GB: "200"
+        run: |
+          set -euo pipefail
+          # No prune here. These hosts also run the code-review container
+          # runners, and `docker image prune` deletes every dangling image on
+          # the shared daemon -- including a concurrent build's untagged
+          # intermediates, which aborts that build. Report and fail instead;
+          # reclaiming shared disk is an operator decision.
+          root="$(docker info --format '{{.DockerRootDir}}')"
+          free_gb="$(df -BG --output=avail "$root" | tail -n 1 | tr -dc '0-9')"
+          printf 'docker root %s has %sGB free\n' "$root" "$free_gb"
+          if (( free_gb < MINIMUM_FREE_GB )); then
+            echo "::error::docker root $root has ${free_gb}GB free, need ${MINIMUM_FREE_GB}GB; reclaim space on the runner before rerunning" >&2
+            exit 1
+          fi
+
+      - name: Resolve run parameters
+        id: params
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_TASKS: ${{ inputs.tasks }}
+          INPUT_AGENT: ${{ inputs.agent }}
+          RUN_ID: e2e-${{ github.run_id }}-${{ github.run_attempt }}
+          CANARY_TASKS: fix-git,filter-js-from-html,sqlite-db-truncate,openssl-selfsigned-cert
+        run: |
+          set -euo pipefail
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            tasks="${INPUT_TASKS:-$CANARY_TASKS}"
+          else
+            tasks=""
+          fi
+          agent="${INPUT_AGENT:-claude-code}"
+          case "$agent" in
+            claude-code|opencode) ;;
+            *) echo "::error::unsupported agent: $agent" >&2; exit 1 ;;
+          esac
+          {
+            printf 'tasks=%s\n' "$tasks"
+            printf 'agent=%s\n' "$agent"
+            printf 'run_id=%s\n' "$RUN_ID"
+            printf 'output_path=runs/%s\n' "$RUN_ID"
+          } >> "$GITHUB_OUTPUT"
+
+          # The expected trial count guards against task selection silently not
+          # reaching Harbor: a truncated run whose trials all pass would
+          # otherwise satisfy the gate and report a healthy fleet.
+          # Harbor runs each task HARBOR_RUNS times (`harbor run -k`), so trials
+          # are tasks x attempts. N_ATTEMPTS defaults to 1.
+          attempts="${HARBOR_RUNS:-${N_ATTEMPTS:-1}}"
+          if [[ ! "$attempts" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::HARBOR_RUNS must be a positive integer, got: $attempts" >&2
+            exit 1
+          fi
+          if [[ -n "$tasks" ]]; then
+            task_count="$(printf '%s' "$tasks" | tr ',' '\n' | grep -c '[^[:space:]]')"
+          else
+            task_count="$(grep -c '[^[:space:]]' Tasks/Terminal-bench-2/harbor_terminalbench21_tasks.txt)"
+          fi
+          expected=$(( task_count * attempts ))
+          printf 'expected_trials=%s\n' "$expected" >> "$GITHUB_OUTPUT"
+          printf 'expecting %s trials (%s tasks x %s attempts)\n' "$expected" "$task_count" "$attempts"
+
+      - name: Validate task selection
+        if: ${{ steps.params.outputs.tasks != '' }}
+        env:
+          TASKS: ${{ steps.params.outputs.tasks }}
+          AGENT: ${{ steps.params.outputs.agent }}
+        run: |
+          set -euo pipefail
+          scripts/run_fleet.sh \
+            --taskset terminalbench21 \
+            --agent "$AGENT" \
+            --task "$TASKS" \
+            --validate-task-selection
+
+      - name: Run Harbor benchmark
+        id: harbor
+        env:
+          BASE_URL_RAW: ${{ vars.LLM_REVIEW_BASE_URL }}
+          API_KEY: ${{ secrets.LLM_REVIEW_API_KEY }}
+          MODEL: ${{ vars.LLM_REVIEW_MODEL }}
+          OPIK_URL: ${{ vars.OPIK_URL }}
+          OPIK_API_KEY: ${{ secrets.OPIK_API_KEY }}
+          OPIK_WORKSPACE: ${{ vars.OPIK_WORKSPACE }}
+          OPIK_PROJECT_NAME: harbor-e2e-validation
+          AGENT: ${{ steps.params.outputs.agent }}
+          TASKS: ${{ steps.params.outputs.tasks }}
+          WORKERS: ${{ steps.capacity.outputs.workers }}
+          RUN_ID: ${{ steps.params.outputs.run_id }}
+          OUTPUT_PATH: ${{ steps.params.outputs.output_path }}
+          ZELLIJ_SESSION_NAME: ${{ steps.params.outputs.run_id }}
+          HARBOR_TIMEOUT_MULTIPLIER: "1.0"
+          HARBOR_ONLINE_ANALYSIS: "1"
+          HARBOR_ZELLIJ_KEEP_ON_FAILURE: "0"
+        run: |
+          set -euo pipefail
+          if [[ -z "$API_KEY" ]]; then
+            echo "::error::LLM_REVIEW_API_KEY is empty; is the job missing the self-hosted-env environment?" >&2
+            exit 1
+          fi
+          export BASE_URL="${BASE_URL_RAW%/chat/completions}"
+          export TOTAL_WORKERS="$WORKERS"
+          export HARBOR_N_CONCURRENT="$WORKERS"
+          # Only enable tracing when a real Opik credential is present. env.sh
+          # substitutes the literal 'local-dev-key' for a missing OPIK_API_KEY,
+          # and harboropik.sh's preflight accepts 401/403, so tracing would
+          # appear healthy while no trace reached Opik. Fail loud or run
+          # untraced instead of silently pretending.
+          if [[ -n "${OPIK_API_KEY:-}" && -n "${OPIK_URL:-}" ]]; then
+            export TRACE_TO_OPIK=true
+            printf 'Opik tracing enabled for %s\n' "$OPIK_URL"
+          else
+            export TRACE_TO_OPIK=false
+            echo "::warning::OPIK_API_KEY or OPIK_URL is unset; running without tracing. Add OPIK_API_KEY to the self-hosted-env environment to enable it."
+          fi
+          # OUTPUT_PATH is exported, not left to env.sh's default. A runner-level
+          # OUTPUT_ROOT or OUTPUT_PATH would otherwise win (config_loader.sh gives
+          # runtime env top precedence) and Harbor would write its summary
+          # somewhere the gate and the artifact staging do not look, reporting a
+          # healthy run as a missing summary.txt.
+          export OUTPUT_PATH
+
+          command=(scripts/run_fleet.sh --taskset terminalbench21 --agent "$AGENT" --workers "$WORKERS")
+          if [[ -n "$TASKS" ]]; then
+            command+=(--task "$TASKS")
+          fi
+
+          status=0
+          script -e -q -c "$(printf '%q ' "${command[@]}")" /dev/null || status=$?
+          printf 'status=%s\n' "$status" >> "$GITHUB_OUTPUT"
+          printf 'Harbor exit status: %s\n' "$status"
+
+      - name: Evaluate pipeline health
+        if: ${{ !cancelled() && steps.harbor.outcome != 'skipped' }}
+        env:
+          HARBOR_STATUS: ${{ steps.harbor.outputs.status }}
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/e2e_harbor_gate.py \
+            --output-path "${{ steps.params.outputs.output_path }}" \
+            --harbor-status "${HARBOR_STATUS:-1}" \
+            --expected-trials "${{ steps.params.outputs.expected_trials }}" \
+            --max-harness-failure-ratio 0.10
+
+      - name: Stage and redact artifacts
+        if: ${{ !cancelled() && steps.harbor.outcome != 'skipped' }}
+        env:
+          API_KEY: ${{ secrets.LLM_REVIEW_API_KEY }}
+          OPIK_API_KEY: ${{ secrets.OPIK_API_KEY }}
+          OUTPUT_PATH: ${{ steps.params.outputs.output_path }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$API_KEY" ]]; then
+            # An empty needle would make replace() and grep -F match everything.
+            echo "::error::API_KEY is empty; refusing to stage artifacts unredacted" >&2
+            exit 1
+          fi
+          staged="${RUNNER_TEMP}/e2e-artifacts"
+          rm -rf "$staged"
+          mkdir -p "$staged"
+          cp -R "$OUTPUT_PATH/." "$staged/"
+          while IFS= read -r -d '' file; do
+            python3 - "$file" <<'PY'
+          import os
+          import sys
+
+          path = sys.argv[1]
+          # Redact every credential this job puts in the benchmark environment.
+          # Skip empties: an empty needle inserts the marker between every byte.
+          keys = [
+              value
+              for name in ("API_KEY", "OPIK_API_KEY")
+              for value in (os.environ.get(name, ""),)
+              if value
+          ]
+          with open(path, "rb") as handle:
+              data = handle.read()
+          replaced = data
+          for key in keys:
+              replaced = replaced.replace(key.encode(), b"***")
+          if replaced != data:
+              with open(path, "wb") as handle:
+                  handle.write(replaced)
+          PY
+          done < <(find "$staged" -type f -print0)
+          if grep -rqF -- "$API_KEY" "$staged"; then
+            echo "::error::API key still present in staged artifacts after redaction" >&2
+            exit 1
+          fi
+          if [[ -n "${OPIK_API_KEY:-}" ]] && grep -rqF -- "$OPIK_API_KEY" "$staged"; then
+            echo "::error::Opik key still present in staged artifacts after redaction" >&2
+            exit 1
+          fi
+          printf 'staged=%s\n' "$staged" >> "$GITHUB_ENV"
+
+      - name: Upload run artifacts
+        if: ${{ !cancelled() && steps.harbor.outcome != 'skipped' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: harbor-e2e-${{ steps.params.outputs.run_id }}
+          path: ${{ env.staged }}
+          retention-days: 14
+          if-no-files-found: warn
+
+      - name: Clean up
+        if: always()
+        env:
+          ZELLIJ_SESSION_NAME: ${{ steps.params.outputs.run_id }}
+        run: |
+          set -euo pipefail
+          # The run step pinned this name; Harbor's own default contains no RUN_ID.
+          zellij kill-session "$ZELLIJ_SESSION_NAME" >/dev/null 2>&1 || true
+          zellij delete-session "$ZELLIJ_SESSION_NAME" >/dev/null 2>&1 || true
+          # Deliberately no container pruning. `docker container prune` removes
+          # every stopped container on the shared daemon, which would delete
+          # containers the co-located code-review runners or an operator kept
+          # for restart or diagnosis. Harbor's trial containers are created by
+          # the harbor CLI rather than a compose project this workflow names, so
+          # there is no label to scope a targeted removal to. Harbor tears down
+          # its own trial containers; leftovers are an operator concern, not
+          # something this job should guess at on a shared host.
+          docker ps -a --format '{{.Names}}\t{{.Status}}' 2>/dev/null | head -20 || true

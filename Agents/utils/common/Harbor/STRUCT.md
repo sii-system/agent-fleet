@@ -12,20 +12,25 @@ Agents/utils/common/Harbor/
 ├── env.sh                      # Path resolution and runtime defaults
 ├── env.py                      # JSON and data/cache helpers invoked by env.sh
 ├── gen_harbor_zellij_layout.sh # zellij layout generator
-├── monitor_harbor.sh           # Run monitor pane
+├── monitor_harbor.sh           # Monitor pane orchestration
+├── harbor_monitor_utils.py     # Monitor summary calculations
 ├── run_harbor_worker.sh        # Worker loop for one zellij pane
 ├── run_harbor_registry.sh      # Registry runner with optional final-pane hold
-├── harboropik.sh               # Harbor CLI wrapper with Opik setup
-├── prepare_local_deps.sh       # Local package/cache preparation
+├── harboropik.sh               # Harbor CLI orchestration with Opik setup
+├── harbor_shell_utils.py       # Event, JSON, URL, and mount helpers
+├── prepare_local_deps.sh       # Thin Python launcher
+├── prepare_local_deps.py       # Package/cache preparation implementation
 ├── runner-requirements.txt     # Exact direct dependencies for the runner image
 ├── setup_runner_env.sh         # Explicit host setup / image validation
 ├── harbor_prepare_runner_cli.py # Startup validation for the configured CLI
 ├── harbor_worker_utils.py
+├── model-fusion/
+│   └── router_cli_utils.py     # Shared Router build/config/launcher helpers
 ├── OPENSANDBOX_IMAGE_MANAGER.md # OpenSandbox task image build/cache/publish flow
 ├── prebuild_opensandbox_dataset.sh # Batch prebuild/publish local dataset images
 └── scripts/
     ├── monitor.py              # Monitor CLI entrypoint and path resolution
-    ├── controller.py           # Inspect notifications and submit explicit user decisions
+    ├── controller.py           # Submit benchmark decisions and user-controlled Fixer actions
     ├── analyzer_subagent.py    # Analyzer entrypoint for Pi/GLM-5.2 root-cause analysis
     ├── harbor_analyzer/        # Analyzer policy, Pi adapter, contracts, and output validation
     ├── harbor_pi_runtime/      # Shared isolated Pi process and JSON-event helper
@@ -39,6 +44,7 @@ Agents/utils/common/Harbor/
     │   ├── policy.py           # Select wait/notify and state-safe user choices
     │   ├── decision.py         # Validate, deduplicate, and defer user decisions
     │   ├── executor.py         # Validate and execute user-approved run-local controls
+    │   ├── fixer.py            # Start, approve, cancel, and inspect run-local Fixer workflows
     │   └── analyzer_dispatch.py # Deduplicate and spool Analyzer handovers
     ├── fixer.py                # Fix Plan Generation CLI
     ├── harbor_fixer/
@@ -50,8 +56,10 @@ Agents/utils/common/Harbor/
     │   ├── planning_context/   # Runtime inventory and workspace evidence
     │   ├── policy/             # T1 rules, path routing, and T2/T3 Agent policy
     │   ├── prompts.py          # Task and plan agent contracts
-    │   ├── verification/       # Verification contracts and Harbor-state readers
-    │   └── validation.py       # Plan and execution artifact validation
+    │   ├── report/             # Summary runtime, JSON generation, and Markdown rendering
+    │   ├── validation.py       # Plan, execution, and verification validation
+    │   ├── verification/       # Selection, rerun, and Harbor-state details
+    │   └── verifier.py         # Verification public entry points
     ├── online_rule_analyzer.py # Optional console-only online analysis
     └── write_harbor_registry_summary.py # Native registry summary writer
 ```
@@ -64,6 +72,23 @@ in the environment as `HARBOR_ANALYZER_*` variables.
 JSON-event validation, final JSON extraction, and provenance shared by Harbor
 Pi callers. Analyzer-specific tool access, path gating, prompts, artifact
 locations, and error compatibility remain in `harbor_analyzer/pi.py`.
+
+## Shell and Python Boundaries
+
+Shell entry points own environment composition and top-level process
+lifecycle. Their Python helpers own delegated parsing and data workflows,
+including external commands required to complete them:
+
+| Shell caller | Python helper | Delegated responsibility |
+| --- | --- | --- |
+| `prepare_local_deps.sh` | `prepare_local_deps.py` | Downloads, runtime archives, npm caches, and manifest generation |
+| `harboropik.sh` and model-fusion wrappers | `harbor_shell_utils.py` | Structured events, JSON normalization, URL parsing, and read-only mount JSON |
+| `monitor_harbor.sh` | `harbor_monitor_utils.py` | Reward, success, exception, and environment statistics |
+| `Agents/utils/rl/run_rl_rollout_server.sh`, `run_rl_rollout_worker.sh`, `monitor_rl_rollout.sh` | `Agents/utils/rl/rollout_worker_utils.py` | Request headers/JSON, LLM kwargs, result assembly, and monitor rendering |
+| Mimo/OpenRouter `run_tb21.sh` | `model-fusion/router_cli_utils.py` | Wheel metadata/extraction, doctor validation, and task-list conversion |
+
+The Python command surfaces are internal implementation boundaries; operators
+continue to use the shell entry points documented in the README files.
 
 ## Path Resolution
 
@@ -117,7 +142,7 @@ Typical dataset paths:
 | `TASK_SOURCE_FILE` | Explicit task list path |
 | `FLEET_TASKS` | Internal normalized exact task selection from `run_fleet.sh`; unsupported with `ROLLOUT=1` |
 | `TOTAL_WORKERS` | Number of zellij workers |
-| `TB_N_CONCURRENT` | Harbor concurrency, normally the same as `TOTAL_WORKERS` |
+| `HARBOR_N_CONCURRENT` | Harbor concurrency, normally the same as `TOTAL_WORKERS` |
 | `RUN_ID` | Run name |
 | `OUTPUT_ROOT` | Parent directory for runs; defaults to `<repo>/runs` |
 | `OUTPUT_PATH` | Full output directory |
@@ -132,16 +157,16 @@ Typical dataset paths:
 | `TRACE_TO_OPIK` | Enables or disables trace upload |
 | `CLAUDE_CODE_VERSION` | Claude Code package version used by local dependency cache |
 | `OPENCODE_VERSION` | OpenCode package version used by local dependency cache |
-| `PI_VERSION` | Pi fork package version used by the local dependency cache, default `0.81.1` |
+| `PI_VERSION` | Pi fork package version used by the local dependency cache; defaults to `0.81.1` |
 | `LOCAL_WHEEL_DIR` | Local dependency cache directory |
 | `LOCAL_WHEEL_PORT` | Preferred local dependency HTTP server port |
 | `LOCAL_WHEEL_PORT_ATTEMPTS` | Number of local port attempts |
-| `TB_REMOTE_WHEEL_SERVER_URLS` | Comma-separated fallback dependency cache URLs |
-| `TB_SKIP_DOCKERHUB_PREFLIGHT` | Skip Docker Hub preflight connectivity check |
-| `TB_FORCE_BUILD` | Build task images locally instead of using prebuilt images |
-| `TB_TIMEOUT_MULTIPLIER` | General Harbor timeout multiplier |
-| `TB_AGENT_TIMEOUT_MULTIPLIER` | Agent execution timeout override |
-| `TB_AGENT_SETUP_TIMEOUT_MULTIPLIER` | Agent setup timeout multiplier |
+| `HARBOR_REMOTE_WHEEL_SERVER_URLS` | Comma-separated fallback dependency cache URLs |
+| `HARBOR_SKIP_DOCKERHUB_PREFLIGHT` | Skip Docker Hub preflight connectivity check |
+| `HARBOR_FORCE_BUILD` | Build task images locally instead of using prebuilt images |
+| `HARBOR_TIMEOUT_MULTIPLIER` | General Harbor timeout multiplier |
+| `HARBOR_AGENT_TIMEOUT_MULTIPLIER` | Agent execution timeout override |
+| `HARBOR_AGENT_SETUP_TIMEOUT_MULTIPLIER` | Agent setup timeout multiplier |
 | `YICLOUD_SANDBOX_CPU` | OpenSandbox request CPU flavor, default `2` to match the current prewarm pool |
 | `YICLOUD_SANDBOX_MEMORY` | OpenSandbox request memory flavor, default `8Gi` to match the current prewarm pool |
 | `YICLOUD_SANDBOX_LIFECYCLE_MINUTES` | Maximum OpenSandbox lifetime, default `120`; normal trials still delete on completion unless retention is enabled |
@@ -179,6 +204,7 @@ Agents/utils/rl/
 ├── gen_rl_rollout_zellij_layout.sh   # Per-submission zellij layout generator
 ├── monitor_rl_rollout.sh             # RL job monitor pane
 ├── run_rl_rollout_worker.sh          # Queue worker that reuses harboropik.sh
+├── rollout_worker_utils.py            # Request/result and monitor helpers
 └── rl_dataset_worklist.py            # Dataset-to-task-list helper
 ```
 
@@ -202,7 +228,7 @@ zellij run.  `env.sh` then sources `Agents/utils/rl/RL-env.sh` through
 | `MODEL_REQUEST_CONFIG_JSON` | Trusted, versioned host-side model-request customization; version 1 supports `headers.set` and cannot be overridden by `/run_trial` |
 | `RL_MODEL_INFO` / `RL_MAX_NEW_TOKENS` | Harbor model/token budgets applied to rollout tasks |
 | `RL_MAX_TURNS` | Mapped to Harbor `max_turns` for claude-code rollout tasks |
-| `RL_FORCE_BUILD` | Mapped to `TB_FORCE_BUILD`; request `force_build` can override it |
+| `RL_FORCE_BUILD` | Mapped to `HARBOR_FORCE_BUILD`; request `force_build` can override it |
 | `RL_AGENT_TIMEOUT_MULTIPLIER` | Mapped to Harbor's agent timeout multiplier |
 | `RL_LLM_TIMEOUT` / `RL_LLM_MAX_RETRIES` | Mapped into `llm_kwargs.timeout` and `llm_kwargs.max_retries` |
 | `RL_TEMPERATURE` / `RL_TOP_P` / `RL_TOP_K` / `RL_MIN_P` | Mapped into rollout `llm_kwargs` sampling fields |
@@ -219,16 +245,16 @@ zellij run.  `env.sh` then sources `Agents/utils/rl/RL-env.sh` through
 Claude Code specific defaults:
 
 - `CLAUDE_CODE_VERSION`
-- `TB_ANTHROPIC_BASE_URL`
-- `TB_ANTHROPIC_AUTH_TOKEN`
-- `TB_ANTHROPIC_MODEL`
-- `TB_ANTHROPIC_DEFAULT_OPUS_MODEL`
-- `TB_ANTHROPIC_DEFAULT_SONNET_MODEL`
-- `TB_ANTHROPIC_DEFAULT_HAIKU_MODEL`
-- `TB_CLAUDE_CODE_SUBAGENT_MODEL`
-- `TB_CLAUDE_CODE_EFFORT_LEVEL`
-- `TB_CLAUDE_CODE_MAX_OUTPUT_TOKENS`
-- `TB_CC_HOOK_SOURCE`
+- `HARBOR_ANTHROPIC_BASE_URL`
+- `HARBOR_ANTHROPIC_AUTH_TOKEN`
+- `HARBOR_ANTHROPIC_MODEL`
+- `HARBOR_ANTHROPIC_DEFAULT_OPUS_MODEL`
+- `HARBOR_ANTHROPIC_DEFAULT_SONNET_MODEL`
+- `HARBOR_ANTHROPIC_DEFAULT_HAIKU_MODEL`
+- `HARBOR_CLAUDE_CODE_SUBAGENT_MODEL`
+- `HARBOR_CLAUDE_CODE_EFFORT_LEVEL`
+- `HARBOR_CLAUDE_CODE_MAX_OUTPUT_TOKENS`
+- `HARBOR_CC_HOOK_SOURCE`
 
 OpenCode specific defaults:
 
@@ -249,8 +275,8 @@ Pi specific defaults:
 ## Opik Plugin Submodule
 
 The tracing plugin is linked as a Git submodule at
-`third_party/agent-opik-plugin`, pinned to tag `v0.1.0`. Initialize it before
-running:
+`third_party/agent-opik-plugin`, pinned by the repository gitlink. Initialize
+it before running:
 
 ```bash
 git submodule update --init --recursive
@@ -273,8 +299,14 @@ OpenCode:
 2. `gen_harbor_zellij_layout.sh` writes a zellij layout with monitor and worker panes.
 3. Each worker pane runs `run_harbor_worker.sh`.
 4. Workers claim tasks from the shared queue and call `harboropik.sh`.
-5. `harboropik.sh` prepares Opik/tracing settings and invokes Harbor with Claude Code, OpenCode, or Pi.
-6. When every task is done or failed, `monitor_harbor.sh` writes `$OUTPUT_PATH/summary.txt`, stops the online analyzer, and exits when `HARBOR_ZELLIJ_CLOSE_ON_COMPLETE=1` (the default). With `0`, the final monitor pane remains open for inspection.
+5. `harboropik.sh` composes the runtime and delegates structured event, JSON,
+URL, and mount rendering to `harbor_shell_utils.py` before invoking Harbor
+with Claude Code, OpenCode, or the cache-backed Pi adapter.
+6. When every task is done or failed, `monitor_harbor.sh` uses
+   `harbor_monitor_utils.py` to render summary statistics, writes
+   `$OUTPUT_PATH/summary.txt`, stops the online analyzer, and exits when
+   `HARBOR_ZELLIJ_CLOSE_ON_COMPLETE=1` (the default). With `0`, the final
+   monitor pane remains open for inspection.
 
 Native registry runs use the single-pane layout; `run_harbor_registry.sh`
 wraps `harboropik.sh`, which writes the same summary path from Harbor's job
@@ -295,10 +327,12 @@ RL rollout flow:
 3. `ensure_rl_job_zellij.sh` creates a
    `harbor-rollout-<agent>-<dataset>-<ray_submission_id>` zellij session for
    that submission if one is not already running.
-4. `run_rl_rollout_worker.sh` claims queued requests and calls
+4. `run_rl_rollout_worker.sh` claims queued requests, uses
+   `rollout_worker_utils.py` for request parsing and LLM arguments, and calls
    `Agents/utils/common/Harbor/harboropik.sh`, preserving normal agent logs,
    local dependency cache behavior, Opik tracing, and timeout finalization.
-5. The worker writes the result JSON; the HTTP request returns that result.
+5. The worker uses `rollout_worker_utils.py` to assemble the result JSON; the
+   HTTP request returns that result.
 
 RL rollout sessions are not governed by `HARBOR_ZELLIJ_CLOSE_ON_COMPLETE`.
 Their monitor and worker panes are long-running because requests are queued

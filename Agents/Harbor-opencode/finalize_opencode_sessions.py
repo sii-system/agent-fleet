@@ -83,7 +83,7 @@ def _fallback_timeout_trace(logs_dir: Path, status: str) -> int:
     project_name = os.environ.get("OPIK_PROJECT_NAME") or os.environ.get("OC_OPIK_PROJECT") or "opencode-realtime"
     trace_id = str(uuid7())
     task_root = logs_dir.parent if logs_dir.name == "agent" else logs_dir
-    task_name = os.environ.get("TB_TASK_ID") or task_root.name.split("__", 1)[0]
+    task_name = os.environ.get("HARBOR_TASK_ID") or task_root.name.split("__", 1)[0]
     now = datetime.now(timezone.utc)
     payload = {
         "id": trace_id,

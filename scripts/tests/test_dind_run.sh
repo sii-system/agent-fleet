@@ -11,6 +11,7 @@ mkdir -p \
   "$PROJECT_DIR/Agents/utils/common/Harbor" \
   "$TMP_DIR/bin"
 cp "$REPO_ROOT/scripts/dind-run.sh" "$PROJECT_DIR/scripts/dind-run.sh"
+cp "$REPO_ROOT/scripts/script_utils.py" "$PROJECT_DIR/scripts/script_utils.py"
 if grep -q -- 'docker_exec_root_env' "$PROJECT_DIR/scripts/dind-run.sh"; then
   echo "dind-run.sh still defines or uses the root setup helper" >&2
   exit 1
@@ -49,7 +50,7 @@ touch "$PROJECT_DIR/scripts/dind/Dockerfile"
 chmod +x "$PROJECT_DIR/scripts/setup.sh" "$PROJECT_DIR/scripts/run_fleet.sh"
 export DIND_TEST_ASSUME_HOST=1
 unset BASE_URL API_KEY MODEL
-unset ANTHROPIC_BASE_URL AUTH_TOKEN ANTHROPIC_AUTH_TOKEN TB_MODEL
+unset ANTHROPIC_BASE_URL AUTH_TOKEN ANTHROPIC_AUTH_TOKEN HARBOR_MODEL
 unset HARBOR_TEMPERATURE HARBOR_TOP_P HARBOR_MAX_TOKENS
 unset TRACE_TO_OPIK OPIK_URL OPIK_API_KEY OPIK_WORKSPACE OPIK_PROJECT_NAME
 unset HTTP_PROXY HTTPS_PROXY NO_PROXY http_proxy https_proxy no_proxy
@@ -323,7 +324,7 @@ ALIAS_LOG="$TMP_DIR/runtime-aliases.log"
 PATH="$TMP_DIR/bin:$PATH" \
 ANTHROPIC_BASE_URL=https://runtime-alias.example.com \
 AUTH_TOKEN=fake-runtime-alias-key \
-TB_MODEL=runtime-alias-model \
+HARBOR_MODEL=runtime-alias-model \
 TRACE_TO_OPIK=false \
 DIND_BOOTSTRAP=always \
 "$PROJECT_DIR/scripts/dind-run.sh" \
@@ -518,7 +519,7 @@ DIND_TEST_ASSUME_HOST=0 \
 "$PROJECT_DIR/scripts/dind-run.sh" --taskset terminalbench21 --agent claude-code --workers 1 --dry-run > "$FALLBACK_LOG" 2>&1
 
 grep -q -- '\[WARN\] dind-run.sh cannot start DinD inside a container; running scripts/run_fleet.sh directly' "$FALLBACK_LOG"
-grep -q -- 'Command: env DATASET_NAME=terminalbench21 AGENT=claude-code TB_AGENT=claude-code TOTAL_WORKERS=1 TB_N_CONCURRENT=1 FLEET_TASKS= bash' "$FALLBACK_LOG"
+grep -q -- 'Command: env DATASET_NAME=terminalbench21 AGENT=claude-code TOTAL_WORKERS=1 HARBOR_N_CONCURRENT=1 FLEET_TASKS= bash' "$FALLBACK_LOG"
 if grep -q '^docker' "$FALLBACK_LOG"; then
   echo "dind-run.sh invoked Docker after detecting a container" >&2
   exit 1

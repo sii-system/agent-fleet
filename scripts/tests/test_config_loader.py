@@ -14,10 +14,10 @@ CONFIG_NAMES = (
     "AUTH_TOKEN",
     "ANTHROPIC_BASE_URL",
     "ANTHROPIC_AUTH_TOKEN",
-    "TB_MODEL",
-    "TB_API_BASE",
-    "TB_ANTHROPIC_BASE_URL",
-    "TB_ANTHROPIC_AUTH_TOKEN",
+    "HARBOR_MODEL",
+    "HARBOR_API_BASE",
+    "HARBOR_ANTHROPIC_BASE_URL",
+    "HARBOR_ANTHROPIC_AUTH_TOKEN",
     "HARBOR_ANALYZER_BASE_URL",
     "HARBOR_ANALYZER_MODEL",
     "ROLLOUT",
@@ -117,7 +117,7 @@ class ConfigLoaderTest(unittest.TestCase):
                 "ANTHROPIC_BASE_URL": "https://alias.example.invalid",
                 "AUTH_TOKEN": "fake-auth-token",
                 "ANTHROPIC_AUTH_TOKEN": "fake-anthropic-token",
-                "TB_MODEL": "alias-model",
+                "HARBOR_MODEL": "alias-model",
             },
         )
 
@@ -138,7 +138,7 @@ class ConfigLoaderTest(unittest.TestCase):
                 "AGENT_FLEET_CONFIG_LOADED_ROOT": str(REPO_ROOT),
                 "ANTHROPIC_BASE_URL": "https://runtime.example.invalid/v1",
                 "ANTHROPIC_AUTH_TOKEN": "fake-runtime-key",
-                "TB_MODEL": "runtime-model",
+                "HARBOR_MODEL": "runtime-model",
                 "ROLLOUT": "1",
                 "TRACE_TO_OPIK": "false",
             }
@@ -150,8 +150,8 @@ class ConfigLoaderTest(unittest.TestCase):
                 (
                     'source "$1"; printf "%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s" '
                     '"$BASE_URL" "$API_KEY" "$MODEL" '
-                    '"$TB_ANTHROPIC_BASE_URL" "$TB_ANTHROPIC_AUTH_TOKEN" '
-                    '"$TB_MODEL" "$TB_API_BASE" '
+                    '"$HARBOR_ANTHROPIC_BASE_URL" "$HARBOR_ANTHROPIC_AUTH_TOKEN" '
+                    '"$HARBOR_MODEL" "$HARBOR_API_BASE" '
                     '"$HARBOR_ANALYZER_BASE_URL" "$HARBOR_ANALYZER_MODEL" '
                     '"$RL_API_BASE" "$RL_API_KEY" "$RL_MODEL_NAME"'
                 ),

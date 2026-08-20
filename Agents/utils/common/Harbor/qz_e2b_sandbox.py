@@ -35,12 +35,19 @@ from __future__ import annotations
 import os
 import re
 import shlex
+from pathlib import Path
 
 from harbor.environments.capabilities import (
     EnvironmentCapabilities,
     EnvironmentResourceCapabilities,
 )
 from harbor.environments.e2b import E2BEnvironment
+from qz_template_resolver import (
+    MAPPING_ENV_VAR,
+    QzTemplateResolutionError,
+    load_mapping,
+    resolve_task_template_from_environment,
+)
 
 try:
     import httpcore
@@ -223,22 +230,41 @@ class QzSandboxEnvironment(E2BEnvironment):
 
     Templates must be pre-registered on the platform (image + spec + key
     binding); qz does not mount the e2b remote build API. An explicit
-    ``template`` kwarg or ``QZ_SANDBOX_TEMPLATE`` intentionally selects one
-    fixed template for every trial in the run, so the operator must choose
-    tasks compatible with that image. Without an override, Harbor's
-    auto-generated per-task alias is folded onto qz's allowed name alphabet.
+    ``template`` kwarg or ``QZ_SANDBOX_TEMPLATE`` selects one fixed Template.
+    Alternatively, ``QZ_SANDBOX_TEMPLATE_MAP`` resolves each task through a
+    schema-v1 mapping and verifies that the selected Template is live and
+    ready. Without either mode, Harbor's auto-generated per-task alias is
+    folded onto qz's allowed name alphabet.
     """
 
     def __init__(self, *args, template: str | None = None, **kwargs) -> None:
         apply_qz_environment()
         patch_envd_host()
-        self._template_override = (
+        fixed_template = (
             template
             if template is not None
             else os.environ.get("QZ_SANDBOX_TEMPLATE", "")
         ).strip()
+        mapping_path = os.environ.get(MAPPING_ENV_VAR, "").strip()
+        if fixed_template and mapping_path:
+            raise ValueError(
+                f"set only one of QZ_SANDBOX_TEMPLATE or {MAPPING_ENV_VAR}, not both"
+            )
+        self._template_override = fixed_template
         super().__init__(*args, **kwargs)
         if self._template_override:
+            self._template_name = self._template_override
+        elif mapping_path:
+            try:
+                self._template_override = resolve_task_template_from_environment(
+                    Path(mapping_path),
+                    self.environment_name,
+                )
+            except (OSError, QzTemplateResolutionError) as exc:
+                raise RuntimeError(
+                    "failed to resolve QZ Template for task "
+                    f"{self.environment_name!r}: {exc}"
+                ) from exc
             self._template_name = self._template_override
         else:
             self._template_name = sanitize_template_name(self._template_name)
@@ -346,6 +372,19 @@ class QzSandboxEnvironment(E2BEnvironment):
                 "QZ_SANDBOX_API_KEY / an sbx_-prefixed E2B_API_KEY) before "
                 "starting the runner."
             )
+        fixed_template = os.environ.get("QZ_SANDBOX_TEMPLATE", "").strip()
+        mapping_path = os.environ.get(MAPPING_ENV_VAR, "").strip()
+        if fixed_template and mapping_path:
+            raise SystemExit(
+                f"set only one of QZ_SANDBOX_TEMPLATE or {MAPPING_ENV_VAR}, not both"
+            )
+        if mapping_path:
+            try:
+                load_mapping(Path(mapping_path))
+            except (OSError, QzTemplateResolutionError) as exc:
+                raise SystemExit(
+                    f"invalid {MAPPING_ENV_VAR} {mapping_path!r}: {exc}"
+                ) from exc
         try:
             qz_sandbox_timeout_sec()
         except ValueError as exc:

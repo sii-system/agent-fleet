@@ -36,7 +36,7 @@ current OpenClaw fleet and summarize pass/fail counts.
 
 ```text
 Use harbor-benchmark-runner to run 3 SETA Harbor tasks with AGENT=claude-code,
-TOTAL_WORKERS=3, TB_N_CONCURRENT=3, and inspect online-analysis results.
+TOTAL_WORKERS=3, HARBOR_N_CONCURRENT=3, and inspect online-analysis results.
 ```
 
 You can also combine skills for end-to-end validation:

@@ -59,7 +59,7 @@ if (( OPENCLAW_RUNS > 1 )); then
   err "batch supports at most one OpenClaw run (pinchbench or clawbio)"
   exit 2
 fi
-HARBOR_RUNS=$((TOTAL - OPENCLAW_RUNS))
+HARBOR_TASKSET_COUNT=$((TOTAL - OPENCLAW_RUNS))
 
 for ((i = 0; i < TOTAL; i++)); do
   jq -e 'has("task")' <<<"${SPECS[$i]}" >/dev/null || continue
@@ -134,7 +134,7 @@ child_env() {
   CHILD_ENV=(
     "RUN_ID=${RUN_IDS[$index]}"
     "ZELLIJ_SESSION_NAME=${RUN_IDS[$index]}"
-    "FLEET_BATCH_HARBOR_RUNS=$HARBOR_RUNS"
+    "FLEET_BATCH_HARBOR_RUNS=$HARBOR_TASKSET_COUNT"
   )
   if ! is_openclaw_taskset "${TASKSETS[$index]}"; then
     CHILD_ENV+=("${HARBOR_RUN_STATE_ENV[@]}")

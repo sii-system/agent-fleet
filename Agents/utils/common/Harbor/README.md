@@ -67,7 +67,7 @@ Then edit the run parameters in `env.sh`:
 AGENT="claude-code"        # claude-code, opencode, or pi
 DATASET_NAME="seta"        # built-in Harbor registry alias
 TOTAL_WORKERS="80"
-TB_N_CONCURRENT="80"
+HARBOR_N_CONCURRENT="80"
 ```
 
 For OpenCode fixed benchmark runs, optional generation controls can be set in
@@ -305,6 +305,44 @@ for a run, set `HARBOR_ANALYZER_ENABLED=0`.
 Harbor Fixer consumes Analyzer output, generates a Fix Plan, checks every
 action against execution policy, and executes an allowed plan.
 
+The Controller provides the minimal user-controlled workflow for a completed
+or explicitly stopped benchmark. `fixer start` runs planning and policy only;
+it does not modify the workspace. Review the returned `approval.plans` (also
+available under `controller.py ... status`) before approving the exact plan:
+
+```bash
+python3 Agents/utils/common/Harbor/scripts/controller.py \
+  --run-dir "$RUN_DIR" fixer start --workspace-root /path/to/workspace
+python3 Agents/utils/common/Harbor/scripts/controller.py \
+  --run-dir "$RUN_DIR" status
+python3 Agents/utils/common/Harbor/scripts/controller.py \
+  --run-dir "$RUN_DIR" fixer approve --request-id "$APPROVAL_REQUEST_ID"
+```
+
+Use `fixer cancel --workflow-id "$FIXER_WORKFLOW_ID"` to reject a plan awaiting
+approval. A cancellation requested during planning or policy review takes
+effect at the next stage boundary. Approval synchronously executes the exact
+plan, runs smoke verification, writes `fix-report-latest.md`, and updates the
+existing `benchmark-summary.md` Fixer section. These automatic follow-up steps
+do not require additional user decisions and cannot be safely cancelled after
+execution starts. Approval is bound to the run, workflow, approval request,
+and SHA-256 digest of the reviewed Fix Plan; a changed plan is blocked instead
+of executed.
+
+`RESET_RUN=1` also coordinates with this workflow: reset is refused while a
+planning, policy, execution, verification, reporting, or cancellation command
+is still running. If that Controller process exited unexpectedly, the next
+`fixer start` can recover the stale workflow state only when no tracked Fixer
+process remains.
+
+The Controller uses the repository `start.sh` directly for the isolated smoke
+rerun; no restart, stop, or verification command configuration is required.
+`controller.py ... status` exposes `verifying` and `reporting` while they run,
+then reports the verification outcome and report path. Workflow control state
+is written below `$RUN_DIR/fixer` as `fixer-state.json`,
+`fixer-control-request.json`, `fixer-approval-request.json`, and
+`fixer-user-decision.json` alongside the existing Fixer artifacts.
+
 ### Stage 1: Planning Context and Plan Generation
 
 Point `--analyzer-output` at an Analyzer output directory containing
@@ -368,6 +406,54 @@ Execution writes `exec-input.json`, `execution-policy-decision.json`,
 `exec-result-latest.json`, and action logs below `--output-dir`. A policy denial
 blocks the complete plan set. A failed action skips the remainder of its plan;
 later plans continue. `--execution-timeout` applies to each command action.
+
+### Verify an executed plan
+
+Verification is code-only and samples at most two successfully executed tasks
+per plan by default:
+
+```bash
+python3 Agents/utils/common/Harbor/scripts/fixer.py \
+  --verify-only \
+  --fix-plan /path/to/fixer-output/fix-plan-latest.json \
+  --exec-result /path/to/fixer-output/exec-result-latest.json \
+  --verification-run-dir /path/to/new-harbor-run \
+  --output-dir /path/to/fixer-output
+```
+
+Use `--rerun-command` to launch the smoke run. The wrapper receives an ordered
+`TASK_SOURCE_FILE` and `HARBOR_FIXER_SMOKE_SELECTION`; it must preserve their
+line-to-task mapping. `--rerun-timeout` limits that command to 600 seconds by
+default and can also be set with `HARBOR_FIXER_RERUN_TIMEOUT`. Task identities
+come directly from Fix Plan v2.
+Verification writes
+`verification-smoke-selection.json`, `verification-smoke-tasks.txt`, and
+`verification-result-latest.json`. If the Fix Plan was generated without a
+local monitor, select `claude-code`, `opencode`, or `oracle` with `--agent`.
+
+### Generate a report
+
+```bash
+python3 Agents/utils/common/Harbor/scripts/fixer.py \
+  --report-only \
+  --verification-result /path/to/fixer-output/verification-result-latest.json \
+  --analyzer-output /path/to/analyzer-output \
+  --output-dir /path/to/fixer-output \
+  --pi-model "$HARBOR_FIXER_MODEL" \
+  --pi-base-url "$BASE_URL" \
+  --baseline-run-dir /path/to/old-harbor-run
+```
+
+Reporter keeps task, execution, and verification observations code-owned. A
+no-tool Pi agent may generate only the bounded human-readable summary. The
+Markdown view presents observed results and unavailable data before attributed
+Analyzer findings and Fix Plan reasoning. Smoke-test outcomes remain scoped to
+sampled tasks. The machine contract is written to `fix-report-latest.json`; the
+deterministic, secret-redacted view is written to `fix-report-latest.md`.
+
+After Controller-approved execution and verification, Controller replaces only
+the existing `## Fixer Results` section in `benchmark-summary.md`; it does not
+regenerate the Monitor or Analyzer summary.
 
 ## More Details
 

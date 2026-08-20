@@ -3,8 +3,8 @@ set -euo pipefail
 
 RL_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HARBOR_SCRIPT_DIR="${HARBOR_SCRIPT_DIR:-$(cd "$RL_SCRIPT_DIR/../common/Harbor" && pwd)}"
-# The runtime cache and Harbor adapter must follow the rollout agent even when
-# this script is launched directly with RL_AGENT instead of through start.sh.
+# The cache and Harbor adapter must follow the rollout agent even when this
+# server is invoked directly rather than through the Harbor start wrapper.
 if [[ -n "${RL_AGENT:-}" ]]; then
   export AGENT="$RL_AGENT"
 fi
@@ -58,7 +58,7 @@ require_trace_plugin_source() {
 }
 
 validate_trace_plugin_source() {
-  local trace_enabled="${TRACE_TO_OPIK:-${TB_TRACE_TO_OPIK:-}}"
+  local trace_enabled="${TRACE_TO_OPIK:-}"
 
   if [[ "$RL_AGENT" == "opencode" ]]; then
     # The custom OpenCode runner always uploads both files during install,
@@ -66,7 +66,7 @@ validate_trace_plugin_source() {
     require_trace_plugin_source "$TRACE_PLUGIN_OPENCODE_PLUGIN_SOURCE" || return 1
     require_trace_plugin_source "$TRACE_PLUGIN_OPENCODE_HOOK_SOURCE" || return 1
   elif [[ "$RL_AGENT" == "claude-code" ]] \
-    && [[ "$trace_enabled" == "true" || "$trace_enabled" == "1" || "$TB_CC_OPIK_ENABLE_HOOK" == "1" ]]; then
+    && [[ "$trace_enabled" == "true" || "$trace_enabled" == "1" || "$HARBOR_CC_OPIK_ENABLE_HOOK" == "1" ]]; then
     require_trace_plugin_source "$TRACE_PLUGIN_CLAUDE_HOOK_SOURCE"
   fi
 }

@@ -208,13 +208,13 @@ case "$TASKSET" in
   /*|./*|../*|.|..|\~/*)
     taskset_path="${TASKSET/#\~/$HOME}"
     [[ "$taskset_path" == /* ]] || taskset_path="$PWD/$taskset_path"
-    harbor_env+=("DATASET_NAME=auto" "DATASET_PATH=$taskset_path" "TB_PATH=$taskset_path")
+    harbor_env+=("DATASET_NAME=auto" "DATASET_PATH=$taskset_path")
     ;;
   *) harbor_env+=("DATASET_NAME=$TASKSET") ;;
 esac
 
-[[ -z "$AGENT_ARG" ]] || harbor_env+=("AGENT=$AGENT_ARG" "TB_AGENT=$AGENT_ARG")
-[[ -z "$WORKERS" ]] || harbor_env+=("TOTAL_WORKERS=$WORKERS" "TB_N_CONCURRENT=$WORKERS")
+[[ -z "$AGENT_ARG" ]] || harbor_env+=("AGENT=$AGENT_ARG")
+[[ -z "$WORKERS" ]] || harbor_env+=("TOTAL_WORKERS=$WORKERS" "HARBOR_N_CONCURRENT=$WORKERS")
 # FLEET_TASKS is an internal handoff owned by this CLI. Always override an
 # inherited/configured value so omitting --task preserves full-taskset runs.
 harbor_env+=("FLEET_TASKS=$FLEET_TASK")

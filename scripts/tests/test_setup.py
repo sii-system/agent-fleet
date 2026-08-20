@@ -107,7 +107,7 @@ if [[ "${1:-}" == "clone" ]]; then
 fi
 """,
         )
-        for command in ("curl", "jq"):
+        for command in ("curl", "flock", "jq", "setsid"):
             self.write_executable(command, "#!/usr/bin/env bash\nexit 0\n")
         self.write_executable("uv", "#!/usr/bin/env bash\necho 'uv 0.11.28'\n")
         self.write_executable("uvx", "#!/usr/bin/env bash\necho 'uvx 0.11.28'\n")
@@ -121,6 +121,9 @@ fi
             "docker",
             """#!/usr/bin/env bash
 if [[ "${1:-}" == "compose" && "${2:-}" == "version" ]]; then
+  if [[ "${SETUP_TEST_DOCKER_COMPOSE_DENY:-0}" == "1" ]]; then
+    exit 1
+  fi
   echo "2.30.0"
 fi
 if [[ "${SETUP_TEST_DOCKER_DENY:-0}" == "1" && "${1:-}" == "ps" ]]; then
@@ -215,8 +218,12 @@ exit 0
             "OPIK_PROJECT_NAME",
             "CLAUDE_TGZ_SOURCE",
             "CLAUDE_WHEEL_DIR_SOURCE",
-            "TB_CC_CLAUDE_TGZ_SOURCE",
-            "TB_CC_PY_WHEEL_DIR_SOURCE",
+            "HARBOR_CC_CLAUDE_TGZ_SOURCE",
+            "HARBOR_CC_PY_WHEEL_DIR_SOURCE",
+            "HARBOR_CC_OPIK_ENABLE_HOOK",
+            "RL_ENVIRONMENT_TYPE",
+            "HARBOR_ENVIRONMENT_TYPE",
+            "AGENT_FLEET_REQUIRE_DOCKER",
         ):
             env.pop(name, None)
         env.update(
@@ -312,8 +319,8 @@ exit 0
         self.assertIn(
             f"export AGENT_FLEET_NPM_BIN_DIR={managed_npm / 'bin'}", paths
         )
-        self.assertIn(f"export TB_CC_CLAUDE_TGZ_SOURCE={self.claude_tgz}", bashrc)
-        self.assertIn(f"export TB_CC_PY_WHEEL_DIR_SOURCE={self.wheel_dir}", bashrc)
+        self.assertIn(f"export HARBOR_CC_CLAUDE_TGZ_SOURCE={self.claude_tgz}", bashrc)
+        self.assertIn(f"export HARBOR_CC_PY_WHEEL_DIR_SOURCE={self.wheel_dir}", bashrc)
         self.assertNotIn("ANTHROPIC_AUTH_TOKEN", bashrc)
 
         for skill in (
@@ -349,6 +356,146 @@ exit 0
         self.assertNotEqual(denied.returncode, 0)
         self.assertIn("cannot access the Docker daemon", denied.stderr)
         self.assertNotIn("Environment setup complete", denied.stdout)
+
+    def test_setup_migrates_legacy_managed_offline_package_config(self):
+        legacy_prefix = "T" + "B_CC_"
+        (self.repo / "config.local.env").write_text(
+            "# keep comment\nKEEP_SETTING=yes\n",
+            encoding="utf-8",
+        )
+        (self.home / ".bashrc").write_text(
+            "export KEEP_ME=yes\n"
+            "# >>> agent-fleet env >>>\n"
+            f"export {legacy_prefix}OPIK_ENABLE_HOOK=1\n"
+            f"export {legacy_prefix}CLAUDE_TGZ_SOURCE={self.claude_tgz}\n"
+            f"export {legacy_prefix}PY_WHEEL_DIR_SOURCE={self.wheel_dir}\n"
+            "# <<< agent-fleet env <<<\n",
+            encoding="utf-8",
+        )
+        env = self.setup_env()
+        env.update(
+            {
+                "BASE_URL": "https://gateway.example.invalid",
+                "API_KEY": "fake-setup-secret",
+                "MODEL": "test-model",
+            }
+        )
+
+        result = subprocess.run(
+            [str(SETUP)],
+            cwd=self.repo,
+            env=env,
+            input="",
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(
+            "Migrating legacy TerminalBench Claude package settings",
+            result.stdout,
+        )
+        bashrc = (self.home / ".bashrc").read_text(encoding="utf-8")
+        self.assertIn("export KEEP_ME=yes", bashrc)
+        self.assertIn("export HARBOR_CC_OPIK_ENABLE_HOOK=1", bashrc)
+        self.assertIn(
+            f"export HARBOR_CC_CLAUDE_TGZ_SOURCE={self.claude_tgz}", bashrc
+        )
+        self.assertIn(
+            f"export HARBOR_CC_PY_WHEEL_DIR_SOURCE={self.wheel_dir}", bashrc
+        )
+        self.assertNotIn(legacy_prefix, bashrc)
+
+    def test_setup_loads_saved_qz_backend_before_docker_prerequisites(self):
+        (self.repo / "config.local.env").write_text(
+            "BASE_URL=https://existing.example.invalid\n"
+            "API_KEY=fake-existing-secret\n"
+            "MODEL=existing-model\n"
+            "TRACE_TO_OPIK=false\n"
+            "RL_ENVIRONMENT_TYPE=qz\n",
+            encoding="utf-8",
+        )
+        env = self.setup_env()
+        env.update(
+            {
+                "SETUP_TEST_DOCKER_COMPOSE_DENY": "1",
+                "SETUP_TEST_DOCKER_DENY": "1",
+            }
+        )
+
+        result = subprocess.run(
+            [str(SETUP)],
+            cwd=self.repo,
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(
+            "configured sandbox backend does not need it",
+            result.stdout,
+        )
+        self.assertNotIn("Docker Compose v2 is required", result.stderr)
+
+    def test_setup_loads_saved_docker_override_before_prerequisites(self):
+        (self.repo / "config.local.env").write_text(
+            "BASE_URL=https://existing.example.invalid\n"
+            "API_KEY=fake-existing-secret\n"
+            "MODEL=existing-model\n"
+            "RL_ENVIRONMENT_TYPE=opensandbox\n"
+            "AGENT_FLEET_REQUIRE_DOCKER=0\n",
+            encoding="utf-8",
+        )
+        env = self.setup_env()
+        env.update(
+            {
+                "SETUP_TEST_DOCKER_COMPOSE_DENY": "1",
+                "SETUP_TEST_DOCKER_DENY": "1",
+            }
+        )
+
+        result = subprocess.run(
+            [str(SETUP)],
+            cwd=self.repo,
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(
+            "configured sandbox backend does not need it",
+            result.stdout,
+        )
+        self.assertNotIn("Docker Compose v2 is required", result.stderr)
+
+    def test_setup_saved_docker_override_can_force_prerequisite(self):
+        (self.repo / "config.local.env").write_text(
+            "BASE_URL=https://existing.example.invalid\n"
+            "API_KEY=fake-existing-secret\n"
+            "MODEL=existing-model\n"
+            "RL_ENVIRONMENT_TYPE=qz\n"
+            "AGENT_FLEET_REQUIRE_DOCKER=1\n",
+            encoding="utf-8",
+        )
+        env = self.setup_env()
+        env["SETUP_TEST_DOCKER_COMPOSE_DENY"] = "1"
+
+        result = subprocess.run(
+            [str(SETUP)],
+            cwd=self.repo,
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Docker Compose v2 is required", result.stderr)
 
     def test_setup_reuses_existing_config_and_defaults_opik_off(self):
         original = (

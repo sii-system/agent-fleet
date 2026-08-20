@@ -67,10 +67,10 @@ class HarborEnvHelperTests(unittest.TestCase):
         environment = os.environ.copy()
         environment.update(
             {
-                "TB_ANTHROPIC_BASE_URL": "http://model.example",
-                "TB_ANTHROPIC_AUTH_TOKEN": "test-key",
-                "TB_MODEL": "custom/test-model",
-                "TB_LLM_KWARGS": (
+                "HARBOR_ANTHROPIC_BASE_URL": "http://model.example",
+                "HARBOR_ANTHROPIC_AUTH_TOKEN": "test-key",
+                "HARBOR_MODEL": "custom/test-model",
+                "HARBOR_LLM_KWARGS": (
                     '{"extra_headers":{"X-Route-Key":"deployment-a"}}'
                 ),
             }
@@ -206,7 +206,7 @@ class HarborEnvHelperTests(unittest.TestCase):
     ) -> subprocess.CompletedProcess[str]:
         extra = {
             "PI_PROVIDER": "sii-gateway",
-            "TB_MODEL": "sii-gateway/fake-model",
+            "HARBOR_MODEL": "sii-gateway/fake-model",
             "BASE_URL": base_url,
         }
         if max_tokens:
@@ -251,7 +251,7 @@ class HarborEnvHelperTests(unittest.TestCase):
             "pi-models-config",
             extra_env={
                 "PI_PROVIDER": "sii-gateway",
-                "TB_MODEL": "sii-gateway/fake-model",
+                "HARBOR_MODEL": "sii-gateway/fake-model",
                 "BASE_URL": "https://gateway.example:8443",
                 "PI_CONTEXT_WINDOW": "65536",
             },
@@ -279,7 +279,7 @@ class HarborEnvHelperTests(unittest.TestCase):
             "pi-models-config",
             extra_env={
                 "PI_PROVIDER": "sii-gateway",
-                "TB_MODEL": "sii-gateway/fake-model",
+                "HARBOR_MODEL": "sii-gateway/fake-model",
                 "BASE_URL": "https://gateway.example:8443",
                 "PI_CONTEXT_WINDOW": "big",
             },
@@ -305,7 +305,7 @@ class HarborEnvHelperTests(unittest.TestCase):
             "pi-models-config",
             extra_env={
                 "PI_PROVIDER": "sii-gateway",
-                "TB_MODEL": "sii-gateway/fake-model",
+                "HARBOR_MODEL": "sii-gateway/fake-model",
                 "BASE_URL": "https://gateway.example:8443",
                 "ROLLOUT": "1",
                 "RL_MAX_NEW_TOKENS": "2000",
@@ -319,14 +319,14 @@ class HarborEnvHelperTests(unittest.TestCase):
             2000,
         )
 
-    def test_pi_models_config_keeps_benchmark_default_with_tb_max_set(self) -> None:
+    def test_pi_models_config_keeps_benchmark_default_with_harbor_max_set(self) -> None:
         result = run_env_helper_env(
             "pi-models-config",
             extra_env={
                 "PI_PROVIDER": "sii-gateway",
-                "TB_MODEL": "sii-gateway/fake-model",
+                "HARBOR_MODEL": "sii-gateway/fake-model",
                 "BASE_URL": "https://gateway.example:8443",
-                "TB_MAX_NEW_TOKENS": "65536",
+                "HARBOR_MAX_NEW_TOKENS": "65536",
             },
         )
 
@@ -341,7 +341,7 @@ class HarborEnvHelperTests(unittest.TestCase):
         result = run_env_helper_env(
             "pi-models-config",
             extra_env={
-                "TB_MODEL": "fake-model",
+                "HARBOR_MODEL": "fake-model",
                 "BASE_URL": "https://gateway.example.com:8443/v1",
             },
         )

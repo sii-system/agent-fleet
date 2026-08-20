@@ -97,6 +97,7 @@ def main() -> None:
         f"RUN_ID:      {os.environ.get('RUN_ID', '')}",
         f"AGENT:       {os.environ.get('AGENT', '')}",
         f"DATASET_NAME: {dataset}",
+        f"MODEL:       {os.environ.get('HARBOR_MODEL', '')}",
         f"OUTPUT_PATH: {summary.parent}",
         f"OPIK_PROJECT_NAME: {os.environ.get('OPIK_PROJECT_NAME', '')}",
         f"harbor_exit_code: {exit_code}",

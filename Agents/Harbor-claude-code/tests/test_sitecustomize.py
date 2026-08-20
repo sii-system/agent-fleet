@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import importlib.util
 import shlex
+import subprocess
 import sys
 import types
 import unittest
@@ -75,6 +76,108 @@ class ClaudeCommandPatchTest(unittest.TestCase):
         prompt_index = argv.index("--append-system-prompt")
         self.assertEqual(argv[prompt_index + 1], "Use English only for all reasoning.")
         self.assertEqual(argv[-1], "real task")
+
+
+class ClaudeInstallCommandTest(unittest.TestCase):
+    def _install_command(self, extra_env: dict[str, str]) -> str:
+        module = load_module()
+        captured: list[str] = []
+
+        class FakeClaudeCode:
+            async def install(self, environment):
+                return await self.exec_as_agent(
+                    environment,
+                    "curl -fsSL https://downloads.claude.ai/claude-code-releases/bootstrap.sh "
+                    "| bash -s -- 2.1.90",
+                )
+
+            async def run(self, instruction, environment, context):
+                return None
+
+            async def exec_as_root(
+                self, environment, command=None, env=None, cwd=None, timeout_sec=None
+            ):
+                return command
+
+            async def exec_as_agent(
+                self, environment, command=None, env=None, cwd=None, timeout_sec=None
+            ):
+                captured.append(command)
+                return command
+
+        claude_code = types.ModuleType("harbor.agents.installed.claude_code")
+        claude_code.ClaudeCode = FakeClaudeCode
+        fake_modules = {
+            name: types.ModuleType(name)
+            for name in ("harbor", "harbor.agents", "harbor.agents.installed")
+        }
+        fake_modules.update({
+            "harbor.agents.installed.claude_code": claude_code,
+        })
+
+        with mock.patch.dict(sys.modules, fake_modules):
+            module._patch_claude_code_realtime_hooks()
+            agent = FakeClaudeCode()
+            agent._extra_env = extra_env
+            asyncio.run(agent.install(object()))
+
+        self.assertEqual(len(captured), 1)
+        return captured[0]
+
+    def test_node_dist_url_bootstrap_included_when_configured(self) -> None:
+        url = "https://registry.npmmirror.com/-/binary/node/v22.14.0/node-v22.14.0-linux-x64.tar.gz"
+        command = self._install_command(
+            {"CC_OPIK_ENABLE_HOOK": "false", "CC_NODE_DIST_URL": url}
+        )
+        self.assertIn(url, command)
+        self.assertIn("@anthropic-ai/claude-code@2.1.90", command)
+        bash_check = subprocess.run(
+            ["bash", "-n"],
+            input=command,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(bash_check.returncode, 0, bash_check.stderr)
+
+    def test_node_dist_url_bootstrap_skipped_when_unset(self) -> None:
+        command = self._install_command({"CC_OPIK_ENABLE_HOOK": "false"})
+        self.assertIn("[ -n '' ]", command)
+        bash_check = subprocess.run(
+            ["bash", "-n"],
+            input=command,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(bash_check.returncode, 0, bash_check.stderr)
+
+    def test_node_dist_extraction_failure_can_reach_package_manager_fallback(self) -> None:
+        command = self._install_command(
+            {
+                "CC_OPIK_ENABLE_HOOK": "false",
+                "CC_NODE_DIST_URL": "https://example.com/node.tar.gz",
+            }
+        )
+
+        guarded_extract = (
+            'if python3 - <<\'PY\' "$node_dist_tgz" "$node_dir"'
+        )
+        package_manager_fallback = "if ! command -v npm >/dev/null 2>&1; then"
+        self.assertIn(guarded_extract, command)
+        self.assertLess(
+            command.index(guarded_extract),
+            command.index(package_manager_fallback, command.index(guarded_extract)),
+        )
+
+        bash_check = subprocess.run(
+            ["bash", "-n"],
+            input=command,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(bash_check.returncode, 0, bash_check.stderr)
 
 
 if __name__ == "__main__":

@@ -42,6 +42,13 @@ scripts/logs/
 
 # Local assistant artifacts
 .claude/
+.pi-subagents/
+
+# Local agent review and planning artifacts
+review-outputs/
+docs/superpowers/
+docs/CODE_REVIEW_*.md
+/*-review.md
 
 # Local analyzer validation artifacts
 .tmp-*/

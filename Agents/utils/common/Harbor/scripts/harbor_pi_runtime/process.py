@@ -395,6 +395,42 @@ def write_text_atomic(path: Path, content: str) -> None:
     temp_path.replace(path)
 
 
+def _process_start_ticks(pid: int) -> int | None:
+    try:
+        stat_fields = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8").rsplit(
+            ")", 1
+        )[1].split()
+        return int(stat_fields[19])
+    except (IndexError, OSError, ValueError):
+        return None
+
+
+def _write_process_record(path: Path, process: subprocess.Popen[Any]) -> None:
+    start_ticks = _process_start_ticks(process.pid)
+    if start_ticks is None:
+        raise OSError("cannot identify the Pi process")
+    write_text_atomic(
+        path,
+        json.dumps(
+            {"status": "running", "pid": process.pid, "start_ticks": start_ticks},
+            sort_keys=True,
+        )
+        + "\n",
+    )
+
+
+def _record_or_kill_process(path: Path, process: subprocess.Popen[Any]) -> None:
+    try:
+        _write_process_record(path, process)
+    except OSError:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except OSError:
+            process.kill()
+        process.wait()
+        raise
+
+
 def _read_event_stream(path: Path) -> tuple[list[dict[str, Any]], int]:
     raw = path.read_text(encoding="utf-8", errors="replace")
     return parse_jsonl(raw)
@@ -409,6 +445,7 @@ def _run_streaming_process(
     stderr_path: Path,
     prompt: str | None,
     timeout_seconds: int,
+    process_record_path: Path | None,
 ) -> tuple[int, bool, _StreamingEventState]:
     state = _StreamingEventState()
     timed_out = False
@@ -426,6 +463,8 @@ def _run_streaming_process(
             stderr=stderr_file,
             start_new_session=True,
         )
+        if process_record_path is not None:
+            _record_or_kill_process(process_record_path, process)
         assert process.stdout is not None
         reader = threading.Thread(
             target=_consume_compact_stream,
@@ -483,6 +522,7 @@ def run_pi_json_process(
     disable_context_files: bool = True,
     stream_compaction: bool = False,
     auth_header: bool | None = None,
+    process_record_path: Path | None = None,
 ) -> PiProcessResult:
     normalized_url = normalized_base_url(base_url)
     record: dict[str, Any] = {
@@ -605,6 +645,7 @@ def run_pi_json_process(
                 stderr_path=stderr_path,
                 prompt=prompt if prompt_in_stdin else None,
                 timeout_seconds=timeout_seconds,
+                process_record_path=process_record_path,
             )
         else:
             with raw_events_path.open("w", encoding="utf-8") as stdout_file, stderr_path.open(
@@ -622,6 +663,8 @@ def run_pi_json_process(
                     stderr=stderr_file,
                     start_new_session=True,
                 )
+                if process_record_path is not None:
+                    _record_or_kill_process(process_record_path, process)
                 try:
                     process.communicate(
                         input=prompt if prompt_in_stdin else None,

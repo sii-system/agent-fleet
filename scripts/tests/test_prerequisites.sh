@@ -212,4 +212,50 @@ fi
 AGENT_FLEET_RUNTIME_DIR="$saved_runtime_dir"
 XDG_RUNTIME_DIR="$saved_xdg_runtime_dir"
 
+# Docker stays required by default, for the docker backend, and for
+# opensandbox (task images build on the runner's local daemon); qz/e2b build
+# nothing locally and are exempt, with AGENT_FLEET_REQUIRE_DOCKER as the
+# explicit override in both directions.
+docker_required() {
+  env -u RL_ENVIRONMENT_TYPE -u HARBOR_ENVIRONMENT_TYPE -u AGENT_FLEET_REQUIRE_DOCKER \
+    "$@" bash -c 'source "$1"; agent_fleet_docker_required' _ "$PREREQUISITES"
+}
+docker_required
+docker_required RL_ENVIRONMENT_TYPE=docker
+docker_required RL_ENVIRONMENT_TYPE=qz AGENT_FLEET_REQUIRE_DOCKER=1
+if docker_required RL_ENVIRONMENT_TYPE=qz; then
+  echo "docker unexpectedly required for the qz backend" >&2
+  exit 1
+fi
+if docker_required HARBOR_ENVIRONMENT_TYPE=e2b; then
+  echo "docker unexpectedly required for the e2b backend" >&2
+  exit 1
+fi
+docker_required RL_ENVIRONMENT_TYPE=opensandbox
+# The per-run Harbor backend overrides the RL fallback, matching env.sh.
+docker_required RL_ENVIRONMENT_TYPE=qz HARBOR_ENVIRONMENT_TYPE=opensandbox
+if docker_required RL_ENVIRONMENT_TYPE=docker HARBOR_ENVIRONMENT_TYPE=qz; then
+  echo "docker unexpectedly required when Harbor overrides RL with qz" >&2
+  exit 1
+fi
+if docker_required AGENT_FLEET_REQUIRE_DOCKER=0; then
+  echo "docker unexpectedly required with AGENT_FLEET_REQUIRE_DOCKER=0" >&2
+  exit 1
+fi
+
+# An unused or incomplete docker CLI must not make a remote backend depend on
+# the Compose plugin.
+if ! env -u RL_ENVIRONMENT_TYPE -u HARBOR_ENVIRONMENT_TYPE \
+  -u AGENT_FLEET_REQUIRE_DOCKER RL_ENVIRONMENT_TYPE=qz \
+  bash -c '
+    source "$1"
+    agent_fleet_check_commands() { return 0; }
+    agent_fleet_python_version_ok() { return 0; }
+    docker() { return 1; }
+    agent_fleet_check_core
+  ' _ "$PREREQUISITES"; then
+  echo "qz prerequisites unexpectedly required a working Docker Compose" >&2
+  exit 1
+fi
+
 echo "prerequisite tests passed"

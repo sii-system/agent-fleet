@@ -33,19 +33,19 @@ _patch_http_sandbox_url_from_env()
 
 
 def _prebuilt_template() -> str:
-    template = os.environ.get("TB_E2B_PREBUILT_TEMPLATE", "").strip()
+    template = os.environ.get("HARBOR_E2B_PREBUILT_TEMPLATE", "").strip()
     if not template:
         template = os.environ.get("E2B_TEMPLATE", "").strip()
     if not template:
         raise RuntimeError(
-            "TB_E2B_PREBUILT_TEMPLATE is required for the prebuilt E2B environment"
+            "HARBOR_E2B_PREBUILT_TEMPLATE is required for the prebuilt E2B environment"
         )
     return template
 
 
 def _sandbox_timeout_sec() -> int:
     raw_timeout = (
-        os.environ.get("TB_E2B_SANDBOX_TIMEOUT_SEC", "").strip()
+        os.environ.get("HARBOR_E2B_SANDBOX_TIMEOUT_SEC", "").strip()
         or os.environ.get("E2B_SANDBOX_TIMEOUT_SEC", "").strip()
         or str(_HARBOR_E2B_DEFAULT_SANDBOX_TIMEOUT_SEC)
     )

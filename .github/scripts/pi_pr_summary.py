@@ -204,6 +204,13 @@ def validate_summary(payload: dict[str, Any]) -> Summary:
     return Summary(description, _validate_diagram(payload.get("diagram")), assessment)
 
 
+def _validate_summary_response(payload: dict[str, Any]) -> None:
+    try:
+        validate_summary(payload)
+    except PiSummaryError as exc:
+        raise _review.ModelResponseError(str(exc)) from exc
+
+
 def _safe_prose(value: str) -> str:
     escaped = value.replace("@", "@\u200b").translate(MARKDOWN_ESCAPE_TABLE)
     return html.escape(escaped)
@@ -325,7 +332,12 @@ def run_summary(
         "\n".join(chunks),
         truncated=truncated or bool(skipped),
     )
-    payload = pi_client.review(prompt, model_input)
+    payload = pi_client.review(
+        prompt,
+        model_input,
+        retry_malformed=True,
+        response_validator=_validate_summary_response,
+    )
     summary = validate_summary(payload)
     github.create_issue_comment(
         pull_number,

@@ -25,6 +25,14 @@ if [[ "${1:-}" == "--detach" ]]; then
   DETACH_MODE=true
   shift
 fi
+if [[ "${HARBOR_FIXER_VERIFICATION_RERUN:-0}" == "1" ]]; then
+  # Fixer verification owns monitoring and must not inherit or create a
+  # benchmark Zellij session. A bare start.sh invocation runs Harbor directly.
+  DETACH_MODE=false
+  if [[ $# -eq 0 ]]; then
+    set -- "$SCRIPT_DIR/harboropik.sh"
+  fi
+fi
 if [[ -z "$HARBOR_ZELLIJ_KEEP_ON_FAILURE" ]]; then
   if [[ "$DETACH_MODE" == "true" || ( -t 0 && -t 1 ) ]]; then
     HARBOR_ZELLIJ_KEEP_ON_FAILURE=1
@@ -495,7 +503,7 @@ if [[ "${RESET_RUN:-0}" == "1" ]]; then
   if [[ "$ROLLOUT" == "1" ]]; then
     "$RL_UTILS_DIR/run_rl_rollout_server.sh" --stop >/dev/null 2>&1 || true
     harbor_stop_rollout_zellij_sessions
-  else
+  elif [[ "${HARBOR_FIXER_VERIFICATION_RERUN:-0}" != "1" ]]; then
     zellij kill-session "$ZELLIJ_SESSION_NAME" >/dev/null 2>&1 || true
     zellij delete-session "$ZELLIJ_SESSION_NAME" >/dev/null 2>&1 || true
   fi

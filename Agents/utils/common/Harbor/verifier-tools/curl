@@ -17,7 +17,7 @@ done
 if [ -n "$uv_installer_url" ]; then
   cat <<'INSTALL'
 set -eu
-offline_uv_dir="${TB_VERIFIER_UV_BIN_DIR:-/opt/tb-uv-backup/bin}"
+offline_uv_dir="${HARBOR_VERIFIER_UV_BIN_DIR:-/opt/tb-uv-backup/bin}"
 if [ ! -x "$offline_uv_dir/uv" ] || [ ! -x "$offline_uv_dir/uvx" ]; then
   echo "[agent-fleet] preloaded verifier uv/uvx are missing from $offline_uv_dir" >&2
   exit 1

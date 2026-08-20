@@ -32,114 +32,22 @@ next_index() {
 }
 
 reward_stats() {
-  python3 - "$QUEUE_DIR/done.txt" <<'PY'
-import collections
-import sys
-
-path = sys.argv[1]
-counter = collections.Counter()
-total = 0
-try:
-    with open(path, encoding="utf-8") as handle:
-        for line in handle:
-            parts = line.rstrip("\n").split("\t")
-            if len(parts) < 3:
-                continue
-            reward = parts[2] if parts[2] else "none"
-            counter[reward] += 1
-            total += 1
-except FileNotFoundError:
-    pass
-
-if not total:
-    print("(none)")
-else:
-    for reward, count in sorted(counter.items(), key=lambda item: (item[0] != "1.0", item[0])):
-        print(f"reward={reward}: {count}")
-PY
+  python3 "$SCRIPT_DIR/harbor_monitor_utils.py" rewards "$QUEUE_DIR/done.txt"
 }
 
 success_stats() {
-  python3 - "$QUEUE_DIR/done.txt" "$QUEUE_DIR/failed.txt" <<'PY'
-import sys
-
-done_path, failed_path = sys.argv[1:3]
-done = 0
-success = 0
-try:
-    with open(done_path, encoding="utf-8") as handle:
-        for line in handle:
-            parts = line.rstrip("\n").split("\t")
-            if len(parts) < 3:
-                continue
-            done += 1
-            value = (parts[2] or "").strip().lower()
-            if value in {"1", "1.0", "true", "success", "resolved", "pass", "passed"}:
-                success += 1
-except FileNotFoundError:
-    pass
-
-failed = 0
-try:
-    with open(failed_path, encoding="utf-8") as handle:
-        failed = sum(1 for line in handle if line.strip())
-except FileNotFoundError:
-    pass
-
-finished = done + failed
-fail = finished - success
-rate = (success / finished * 100.0) if finished else 0.0
-print(f"success:      {success}")
-print(f"fail:         {fail}")
-print(f"success_rate: {rate:.2f}%")
-PY
+  python3 "$SCRIPT_DIR/harbor_monitor_utils.py" success \
+    "$QUEUE_DIR/done.txt" "$QUEUE_DIR/failed.txt"
 }
 
 exception_stats() {
-  python3 - "$QUEUE_DIR/done.txt" "$QUEUE_DIR/failed.txt" <<'PY'
-import collections
-import sys
-
-counter = collections.Counter()
-for path in sys.argv[1:]:
-    try:
-        with open(path, encoding="utf-8") as handle:
-            for line in handle:
-                parts = line.rstrip("\n").split("\t")
-                if len(parts) >= 4 and parts[3]:
-                    counter[parts[3]] += 1
-                elif path.endswith("failed.txt"):
-                    counter["missing_result"] += 1
-    except FileNotFoundError:
-        pass
-
-if not counter:
-    print("(none)")
-else:
-    for name, count in counter.most_common(10):
-        print(f"{name}: {count}")
-PY
+  python3 "$SCRIPT_DIR/harbor_monitor_utils.py" exceptions \
+    "$QUEUE_DIR/done.txt" "$QUEUE_DIR/failed.txt"
 }
 
 environment_signal_stats() {
-  python3 - "$HARBOR_ONLINE_ANALYSIS_DIR/environment-summary.json" <<'PY'
-import json
-import sys
-
-try:
-    with open(sys.argv[1], encoding="utf-8") as handle:
-        summary = json.load(handle)
-except (FileNotFoundError, json.JSONDecodeError):
-    print("(none)")
-    raise SystemExit(0)
-
-counter = summary.get("monitor_environment_events_by_type") or {}
-if not counter:
-    print("(none)")
-else:
-    for name, count in sorted(counter.items(), key=lambda item: (-item[1], item[0]))[:10]:
-        print(f"{name}: {count}")
-PY
+  python3 "$SCRIPT_DIR/harbor_monitor_utils.py" environment-signals \
+    "$HARBOR_ONLINE_ANALYSIS_DIR/environment-summary.json"
 }
 
 SUMMARY_FILE="$OUTPUT_PATH/summary.txt"
@@ -172,6 +80,7 @@ render_report() {
   echo "AGENT:       $AGENT"
   echo "DATASET_NAME: $(harbor_dataset_kind)"
   echo "DATASET:     $DATASET_PATH"
+  echo "MODEL:       $HARBOR_MODEL"
   echo "OUTPUT_PATH: $OUTPUT_PATH"
   echo "TASK_FILE:   $TASK_FILE"
   echo "QUEUE_DIR:   $QUEUE_DIR"
@@ -182,11 +91,11 @@ render_report() {
     prep_status="unknown"
     [[ -f "$RUNTIME_DIR/local-deps-prepare.status" ]] && prep_status="$(cat "$RUNTIME_DIR/local-deps-prepare.status" 2>/dev/null || true)"
     echo "LOCAL_DEPS_PREP: $prep_status"
-    echo "LOCAL_WHEEL_URL: ${TB_LOCAL_WHEEL_SERVER_URL:-<none>}"
+    echo "LOCAL_WHEEL_URL: ${HARBOR_LOCAL_WHEEL_SERVER_URL:-<none>}"
     echo "LOCAL_WHEEL_LOG: $LOCAL_DEPS_LOG_FILE"
   elif harbor_agent_is_opencode; then
     echo "OPENCODE_VERSION: $OPENCODE_VERSION"
-    echo "MODEL:       $TB_MODEL"
+    echo "MODEL:       $HARBOR_MODEL"
     prep_status="unknown"
     [[ -f "$HARBOR_RUNNER_PREPARE_STATUS_FILE" ]] && prep_status="$(cat "$HARBOR_RUNNER_PREPARE_STATUS_FILE" 2>/dev/null || true)"
     echo "RUNNER_CLI_PREP: $prep_status"
@@ -194,17 +103,16 @@ render_report() {
   elif harbor_agent_is_pi; then
     echo "PI_VERSION:   $PI_VERSION"
     echo "PI_THINKING:  $PI_THINKING_LEVEL"
-    echo "MODEL:        $TB_MODEL"
+    echo "MODEL:        $HARBOR_MODEL"
     prep_status="unknown"
     [[ -f "$RUNTIME_DIR/local-deps-prepare.status" ]] && prep_status="$(cat "$RUNTIME_DIR/local-deps-prepare.status" 2>/dev/null || true)"
     echo "LOCAL_DEPS_PREP: $prep_status"
-    echo "LOCAL_WHEEL_URL: ${TB_LOCAL_WHEEL_SERVER_URL:-<none>}"
+    echo "LOCAL_WHEEL_URL: ${HARBOR_LOCAL_WHEEL_SERVER_URL:-<none>}"
     echo "LOCAL_WHEEL_LOG: $LOCAL_DEPS_LOG_FILE"
   else
     # oracle and any non-pi agent keep the previous opencode-style summary:
     # the runner-CLI prep state and log are the only diagnostics available.
     echo "OPENCODE_VERSION: $OPENCODE_VERSION"
-    echo "MODEL:       $TB_MODEL"
     prep_status="unknown"
     [[ -f "$HARBOR_RUNNER_PREPARE_STATUS_FILE" ]] && prep_status="$(cat "$HARBOR_RUNNER_PREPARE_STATUS_FILE" 2>/dev/null || true)"
     echo "RUNNER_CLI_PREP: $prep_status"

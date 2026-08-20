@@ -5,7 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$SCRIPT_DIR/env.sh"
 
 set +e
-if [[ "${TB_DRY_RUN:-0}" == "1" ]]; then
+if [[ "${HARBOR_DRY_RUN:-0}" == "1" ]]; then
   "$SCRIPT_DIR/harboropik.sh"
   status="$?"
 elif harbor_prepare_agent_runtime; then

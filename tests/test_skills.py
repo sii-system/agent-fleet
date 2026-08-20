@@ -85,7 +85,7 @@ class SkillDocsTest(unittest.TestCase):
         self.assertIsNotNone(agent_row)
         self.assertEqual(
             set(re.findall(r"`([^`]+)`", agent_row.group(1))),
-            {"claude-code", "opencode", "openclaw"},
+            {"claude-code", "opencode", "pi", "openclaw"},
         )
         self.assertNotIn("Terminus-2", root_readme)
 
@@ -95,7 +95,7 @@ class SkillDocsTest(unittest.TestCase):
                 "config.local.env",
                 "skills/harbor-benchmark-runner",
                 "TOTAL_WORKERS=3",
-                "TB_N_CONCURRENT=3",
+                "HARBOR_N_CONCURRENT=3",
             ],
             "e2e-openclaw-benchmark.txt": [
                 "config.local.env",

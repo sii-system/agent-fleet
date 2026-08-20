@@ -25,67 +25,8 @@ dataset_task_count() {
 }
 
 result_stats() {
-  python3 - "$RL_QUEUE_DIR/results" <<'PY'
-import json
-import sys
-from collections import Counter
-from pathlib import Path
-
-results_dir = Path(sys.argv[1])
-finished = gen_trace_success = task_success = 0
-exceptions: Counter[str] = Counter()
-rewards: Counter[str] = Counter()
-
-
-def is_task_success(reward: object) -> bool:
-    value = str(reward or "").strip().lower()
-    return value in {"1", "1.0", "true", "success", "resolved", "pass", "passed"}
-
-
-if results_dir.exists():
-    for path in sorted(results_dir.glob("*.json")):
-        try:
-            item = json.loads(path.read_text(errors="ignore"))
-        except json.JSONDecodeError:
-            continue
-        finished += 1
-        status = str(item.get("status") or "").lower()
-        ok = bool(item.get("ok"))
-        if ok:
-            gen_trace_success += 1
-        reward = item.get("reward")
-        if is_task_success(reward):
-            task_success += 1
-        rewards["none" if reward is None else str(reward)] += 1
-        exception = item.get("exception_info") or {}
-        if isinstance(exception, dict):
-            name = exception.get("exception_type") or ""
-        else:
-            name = str(exception or "")
-        if name:
-            exceptions[name] += 1
-
-gen_trace_fail = finished - gen_trace_success
-task_success_rate = (task_success / finished * 100.0) if finished else 0.0
-print(f"finished:     {finished}")
-print(f"gen_trace_success: {gen_trace_success}")
-print(f"gen_trace_fail:    {gen_trace_fail}")
-print()
-print("reward stats:")
-print(f"task_success_rate: {task_success_rate:.2f}%")
-if rewards:
-    for reward, count in sorted(rewards.items(), key=lambda item: (item[0] != "1.0", item[0])):
-        print(f"reward={reward}: {count}")
-else:
-    print("(none)")
-print()
-print("exception stats:")
-if exceptions:
-    for name, count in exceptions.most_common(10):
-        print(f"{name}: {count}")
-else:
-    print("(none)")
-PY
+  python3 "$RL_SCRIPT_DIR/rollout_worker_utils.py" result-stats \
+    "$RL_QUEUE_DIR/results"
 }
 
 active_workers() {
@@ -122,36 +63,8 @@ active_workers() {
 }
 
 recent_results() {
-  python3 - "$RL_QUEUE_DIR/results" <<'PY'
-import json
-import sys
-from pathlib import Path
-
-results_dir = Path(sys.argv[1])
-items = []
-if results_dir.exists():
-    for path in sorted(results_dir.glob("*.json"), key=lambda p: p.stat().st_mtime)[-8:]:
-        try:
-            item = json.loads(path.read_text(errors="ignore"))
-        except json.JSONDecodeError:
-            continue
-        display = item.get("display_name") or item.get("task_id") or path.stem
-        status = item.get("status") or ("completed" if item.get("ok") else "failed")
-        reward = item.get("reward")
-        exception = item.get("exception_info") or {}
-        if isinstance(exception, dict):
-            exc = exception.get("exception_type") or "none"
-        else:
-            exc = str(exception or "none")
-        items.append((display, status, reward, exc))
-
-if not items:
-    print("(none)")
-else:
-    for display, status, reward, exc in items:
-        reward_text = "none" if reward is None else reward
-        print(f"- {display} status={status} reward={reward_text} exception={exc}")
-PY
+  python3 "$RL_SCRIPT_DIR/rollout_worker_utils.py" recent-results \
+    "$RL_QUEUE_DIR/results"
 }
 
 while true; do

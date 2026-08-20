@@ -18,6 +18,62 @@ SPEC.loader.exec_module(MODULE)
 
 
 class RolloutWorkerUtilsTest(unittest.TestCase):
+    def test_json_path_helpers(self) -> None:
+        payload = {"task": {"id": "task-a"}, "enabled": False, "items": [1, 2]}
+        self.assertEqual(MODULE.json_path(payload, "task.id"), "task-a")
+        self.assertEqual(MODULE.first_json_path(payload, ["missing", "enabled", "items"]), "false")
+
+    def test_build_llm_kwargs_preserves_numeric_and_header_values(self) -> None:
+        rendered = MODULE.build_llm_kwargs(
+            ["0.5", "", "12", "0.1", "30", "2"],
+            '{"X-Route-Key":"deployment-a"}',
+        )
+
+        self.assertEqual(
+            json.loads(rendered),
+            {
+                "temperature": 0.5,
+                "top_k": 12,
+                "min_p": 0.1,
+                "timeout": 30.0,
+                "max_retries": 2,
+                "extra_headers": {"X-Route-Key": "deployment-a"},
+            },
+        )
+
+    def test_build_result_merges_harbor_result_atomically(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            directory = Path(root)
+            request = directory / "request.json"
+            result = directory / "result.json"
+            output = directory / "output.json"
+            request.write_text(
+                '{"request_id":"request-1","task_id":"task-a"}',
+                encoding="utf-8",
+            )
+            result.write_text(
+                '{"agent_result":{"metadata":{"n_episodes":3}},'
+                '"verifier_result":{"reward":1}}',
+                encoding="utf-8",
+            )
+
+            MODULE.build_result(
+                request,
+                result,
+                "/tmp/console.log",
+                "1.0",
+                "",
+                0,
+                output,
+                "completed",
+            )
+
+            payload = json.loads(output.read_text(encoding="utf-8"))
+            self.assertTrue(payload["ok"])
+            self.assertEqual(payload["reward"], 1.0)
+            self.assertEqual(payload["num_turns"], 3)
+            self.assertEqual(payload["metadata"]["request_id"], "request-1")
+
     def test_build_request_headers_merges_deployment_and_session_headers(self) -> None:
         headers = MODULE.build_request_headers(
             '{"version":1,"headers":{"set":{"X-Route-Key":"deployment-a"}}}',

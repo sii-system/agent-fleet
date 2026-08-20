@@ -116,14 +116,14 @@ class E2BRuntimeTest(unittest.TestCase):
         fake_e2b = types.SimpleNamespace(AsyncSandbox=FakeAsyncSandbox)
         with patch.dict(sys.modules, {"e2b": fake_e2b}), patch.dict(
             os.environ,
-            {"TB_ENVIRONMENT_TYPE": "qz", "TB_E2B_SANDBOX_TIMEOUT_SEC": "3600"},
+            {"HARBOR_ENVIRONMENT_TYPE": "qz", "HARBOR_E2B_SANDBOX_TIMEOUT_SEC": "3600"},
         ):
             # The cap is E2B-specific; a qz worker inheriting the variable on
             # a mixed host must keep its own timeout handling.
             self.assertFalse(MODULE.patch_e2b_sandbox_timeout_from_env())
         with patch.dict(sys.modules, {"e2b": fake_e2b}), patch.dict(
             os.environ,
-            {"TB_ENVIRONMENT_TYPE": "e2b", "TB_E2B_SANDBOX_TIMEOUT_SEC": "3600"},
+            {"HARBOR_ENVIRONMENT_TYPE": "e2b", "HARBOR_E2B_SANDBOX_TIMEOUT_SEC": "3600"},
         ):
             self.assertTrue(MODULE.patch_e2b_sandbox_timeout_from_env())
             result = asyncio.run(FakeAsyncSandbox.create(timeout=86_400))
@@ -144,8 +144,8 @@ class E2BRuntimeTest(unittest.TestCase):
         with patch.dict(sys.modules, {"e2b": fake_e2b}), patch.dict(
             os.environ,
             {
-                "TB_ENVIRONMENT_TYPE": "opensandbox",
-                "TB_E2B_SANDBOX_TIMEOUT_SEC": "3600",
+                "HARBOR_ENVIRONMENT_TYPE": "opensandbox",
+                "HARBOR_E2B_SANDBOX_TIMEOUT_SEC": "3600",
             },
         ):
             self.assertFalse(MODULE.patch_e2b_sandbox_timeout_from_env())
@@ -168,10 +168,10 @@ class E2BRuntimeTest(unittest.TestCase):
         ), patch.dict(
             os.environ,
             {
-                "TB_ENVIRONMENT_TYPE": "e2b",
-                "TB_E2B_TEMPLATE_LOCK_DIR": temp_dir,
-                "TB_E2B_TEMPLATE_READY_TIMEOUT_SEC": "1",
-                "TB_E2B_TEMPLATE_POLL_INTERVAL_SEC": "0.01",
+                "HARBOR_ENVIRONMENT_TYPE": "e2b",
+                "HARBOR_E2B_TEMPLATE_LOCK_DIR": temp_dir,
+                "HARBOR_E2B_TEMPLATE_READY_TIMEOUT_SEC": "1",
+                "HARBOR_E2B_TEMPLATE_POLL_INTERVAL_SEC": "0.01",
             },
         ):
             self.assertTrue(MODULE.patch_e2b_template_coordination_from_env())
@@ -206,10 +206,10 @@ class E2BRuntimeTest(unittest.TestCase):
         ), patch.dict(
             os.environ,
             {
-                "TB_ENVIRONMENT_TYPE": "e2b",
-                "TB_E2B_TEMPLATE_LOCK_DIR": temp_dir,
-                "TB_E2B_TEMPLATE_READY_TIMEOUT_SEC": "1",
-                "TB_E2B_TEMPLATE_POLL_INTERVAL_SEC": "0.01",
+                "HARBOR_ENVIRONMENT_TYPE": "e2b",
+                "HARBOR_E2B_TEMPLATE_LOCK_DIR": temp_dir,
+                "HARBOR_E2B_TEMPLATE_READY_TIMEOUT_SEC": "1",
+                "HARBOR_E2B_TEMPLATE_POLL_INTERVAL_SEC": "0.01",
             },
         ):
             MODULE.patch_e2b_template_coordination_from_env()
@@ -240,10 +240,10 @@ class E2BRuntimeTest(unittest.TestCase):
         ), patch.dict(
             os.environ,
             {
-                "TB_ENVIRONMENT_TYPE": "e2b",
-                "TB_E2B_TEMPLATE_LOCK_DIR": temp_dir,
-                "TB_E2B_TEMPLATE_READY_TIMEOUT_SEC": "1",
-                "TB_E2B_TEMPLATE_POLL_INTERVAL_SEC": "0.01",
+                "HARBOR_ENVIRONMENT_TYPE": "e2b",
+                "HARBOR_E2B_TEMPLATE_LOCK_DIR": temp_dir,
+                "HARBOR_E2B_TEMPLATE_READY_TIMEOUT_SEC": "1",
+                "HARBOR_E2B_TEMPLATE_POLL_INTERVAL_SEC": "0.01",
             },
         ):
             MODULE.patch_e2b_template_coordination_from_env()
@@ -268,10 +268,10 @@ class E2BRuntimeTest(unittest.TestCase):
         ), patch.dict(
             os.environ,
             {
-                "TB_ENVIRONMENT_TYPE": "e2b",
-                "TB_E2B_TEMPLATE_LOCK_DIR": temp_dir,
-                "TB_E2B_TEMPLATE_READY_TIMEOUT_SEC": "1",
-                "TB_E2B_TEMPLATE_POLL_INTERVAL_SEC": "0.01",
+                "HARBOR_ENVIRONMENT_TYPE": "e2b",
+                "HARBOR_E2B_TEMPLATE_LOCK_DIR": temp_dir,
+                "HARBOR_E2B_TEMPLATE_READY_TIMEOUT_SEC": "1",
+                "HARBOR_E2B_TEMPLATE_POLL_INTERVAL_SEC": "0.01",
             },
         ):
             MODULE.patch_e2b_template_coordination_from_env()
@@ -305,9 +305,9 @@ class E2BRuntimeTest(unittest.TestCase):
             with patch.dict(sys.modules, modules), patch.dict(
                 os.environ,
                 {
-                    "TB_ENVIRONMENT_TYPE": "e2b",
-                    "TB_E2B_VERIFIER_UV_SOURCE": str(source),
-                    "TB_VERIFIER_UV_BIN_DIR_MOUNT_PATH": "/opt/test-uv/bin",
+                    "HARBOR_ENVIRONMENT_TYPE": "e2b",
+                    "HARBOR_E2B_VERIFIER_UV_SOURCE": str(source),
+                    "HARBOR_VERIFIER_UV_BIN_DIR_MOUNT_PATH": "/opt/test-uv/bin",
                 },
             ):
                 self.assertTrue(MODULE.patch_e2b_verifier_tools_from_env())
@@ -344,15 +344,15 @@ class E2BRuntimeTest(unittest.TestCase):
                 (source / name).write_text(name)
 
             common_env = {
-                "TB_E2B_VERIFIER_UV_SOURCE": str(source),
-                "TB_VERIFIER_UV_BIN_DIR_MOUNT_PATH": "/opt/test-uv/bin",
+                "HARBOR_E2B_VERIFIER_UV_SOURCE": str(source),
+                "HARBOR_VERIFIER_UV_BIN_DIR_MOUNT_PATH": "/opt/test-uv/bin",
             }
             with patch.dict(sys.modules, modules), patch.dict(
-                os.environ, {**common_env, "TB_ENVIRONMENT_TYPE": "qz"}
+                os.environ, {**common_env, "HARBOR_ENVIRONMENT_TYPE": "qz"}
             ):
                 self.assertTrue(MODULE.patch_e2b_verifier_tools_from_env())
             with patch.dict(
-                os.environ, {**common_env, "TB_ENVIRONMENT_TYPE": "docker"}
+                os.environ, {**common_env, "HARBOR_ENVIRONMENT_TYPE": "docker"}
             ):
                 self.assertFalse(MODULE.patch_e2b_verifier_tools_from_env())
 

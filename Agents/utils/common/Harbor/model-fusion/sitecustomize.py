@@ -65,7 +65,7 @@ def _extra_value(
 
 
 def _round_gate_enabled(extra_env: dict[str, str] | None) -> bool:
-    return _is_true(_extra_value(extra_env, "TB_FUSION_ROUND_GATE"))
+    return _is_true(_extra_value(extra_env, "HARBOR_FUSION_ROUND_GATE"))
 
 
 def _compose_hook_settings(
@@ -84,12 +84,12 @@ def _compose_hook_settings(
 
     gate_path = _extra_value(
         extra_env,
-        "TB_FUSION_ROUND_GATE_PATH",
+        "HARBOR_FUSION_ROUND_GATE_PATH",
         "/opt/tb-fusion-round/subagent_barrier_gate.py",
     )
     gate_mode = _extra_value(
         extra_env,
-        "TB_FUSION_ROUND_GATE_MODE",
+        "HARBOR_FUSION_ROUND_GATE_MODE",
         _extra_value(extra_env, "SPAN_FORCE_MODE", "mid-turn-fusion"),
     )
     hooks = payload.setdefault("hooks", {})
@@ -230,7 +230,7 @@ def _replace_instruction(command: str, instruction: str) -> str:
 
 
 def _inject_agents(command: str, extra_env: dict[str, str] | None) -> str:
-    agents_json = _extra_value(extra_env, "TB_CLAUDE_CODE_AGENTS_JSON").strip()
+    agents_json = _extra_value(extra_env, "HARBOR_CLAUDE_CODE_AGENTS_JSON").strip()
     prefix = "claude --verbose --output-format=stream-json"
     if not agents_json or " --agents " in command or prefix not in command:
         return command
@@ -282,7 +282,7 @@ def _patch_model_fusion_run() -> None:
         prompt_configured = append_prompt is not _MISSING
         gate_enabled = _round_gate_enabled(extra_env)
         agents_enabled = bool(
-            _extra_value(extra_env, "TB_CLAUDE_CODE_AGENTS_JSON").strip()
+            _extra_value(extra_env, "HARBOR_CLAUDE_CODE_AGENTS_JSON").strip()
         )
         if not prompt_configured and not gate_enabled and not agents_enabled:
             return await original_run(self, instruction, environment, context)

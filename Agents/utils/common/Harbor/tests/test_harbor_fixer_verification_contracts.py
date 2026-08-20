@@ -115,6 +115,24 @@ class HarborFixerVerificationContractsTest(FixerTestCase):
         }
         validate_verification_input(payload)
 
+        invalid_options = (
+            ("rerun_command", '"'),
+            ("rerun_command", "   "),
+            ("monitor_wait_timeout", 0),
+            ("monitor_poll_interval", 0),
+            ("monitor_poll_interval", float("inf")),
+            ("rerun_timeout", None),
+            ("monitor_wait_timeout", None),
+            ("monitor_poll_interval", None),
+        )
+        for field, value in invalid_options:
+            invalid = copy.deepcopy(payload)
+            invalid[field] = value
+            with self.subTest(field=field, value=value), self.assertRaisesRegex(
+                ValidationError, field
+            ):
+                validate_verification_input(invalid)
+
         wrong_agent = copy.deepcopy(payload)
         wrong_agent["agent"] = "opencode"
         with self.assertRaisesRegex(ValidationError, "does not match fix_plan source"):

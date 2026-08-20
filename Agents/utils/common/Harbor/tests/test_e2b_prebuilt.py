@@ -104,8 +104,8 @@ class PrebuiltE2BEnvironmentTest(unittest.TestCase):
         with patch.dict(
             os.environ,
             {
-                "TB_E2B_PREBUILT_TEMPLATE": "template-test",
-                "TB_E2B_SANDBOX_TIMEOUT_SEC": "900",
+                "HARBOR_E2B_PREBUILT_TEMPLATE": "template-test",
+                "HARBOR_E2B_SANDBOX_TIMEOUT_SEC": "900",
             },
             clear=True,
         ):
@@ -132,7 +132,7 @@ class PrebuiltE2BEnvironmentTest(unittest.TestCase):
         module = load_module()
         with patch.dict(
             os.environ,
-            {"TB_E2B_PREBUILT_TEMPLATE": "template-test"},
+            {"HARBOR_E2B_PREBUILT_TEMPLATE": "template-test"},
             clear=True,
         ):
             environment = module.PrebuiltE2BEnvironment()
@@ -152,7 +152,7 @@ class PrebuiltE2BEnvironmentTest(unittest.TestCase):
         }
         with patch.dict(
             os.environ,
-            {"TB_E2B_PREBUILT_TEMPLATE": "template-test"},
+            {"HARBOR_E2B_PREBUILT_TEMPLATE": "template-test"},
             clear=True,
         ):
             environment = module.PrebuiltE2BEnvironment()
@@ -169,7 +169,7 @@ class PrebuiltE2BEnvironmentTest(unittest.TestCase):
         module = load_module()
         with patch.dict(
             os.environ,
-            {"TB_E2B_PREBUILT_TEMPLATE": "template-test"},
+            {"HARBOR_E2B_PREBUILT_TEMPLATE": "template-test"},
             clear=True,
         ):
             environment = module.PrebuiltE2BEnvironment()
@@ -181,7 +181,7 @@ class PrebuiltE2BEnvironmentTest(unittest.TestCase):
         module = load_module()
         with patch.dict(
             os.environ,
-            {"TB_E2B_PREBUILT_TEMPLATE": "template-test"},
+            {"HARBOR_E2B_PREBUILT_TEMPLATE": "template-test"},
             clear=True,
         ):
             environment = module.PrebuiltE2BEnvironment()
@@ -194,7 +194,7 @@ class PrebuiltE2BEnvironmentTest(unittest.TestCase):
         module = load_module()
         with (
             patch.dict(os.environ, {}, clear=True),
-            self.assertRaisesRegex(RuntimeError, "TB_E2B_PREBUILT_TEMPLATE"),
+            self.assertRaisesRegex(RuntimeError, "HARBOR_E2B_PREBUILT_TEMPLATE"),
         ):
             module.PrebuiltE2BEnvironment()
 

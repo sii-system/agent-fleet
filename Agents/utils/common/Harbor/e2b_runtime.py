@@ -41,7 +41,7 @@ def _positive_float_from_env(name: str, default: float) -> float:
 
 
 def _template_lock_dir() -> Path:
-    configured = os.environ.get("TB_E2B_TEMPLATE_LOCK_DIR", "").strip()
+    configured = os.environ.get("HARBOR_E2B_TEMPLATE_LOCK_DIR", "").strip()
     if configured:
         return Path(configured)
 
@@ -150,20 +150,20 @@ def patch_e2b_sandbox_timeout_from_env() -> bool:
     """
 
     # The cap is E2B-specific: on a mixed rollout host, qz workers inherit
-    # TB_E2B_SANDBOX_TIMEOUT_SEC too, and the qz adapter manages its own
+    # HARBOR_E2B_SANDBOX_TIMEOUT_SEC too, and the qz adapter manages its own
     # QZ_SANDBOX_TIMEOUT_SEC against the platform's 4-hour maximum.
-    if os.environ.get("TB_ENVIRONMENT_TYPE", "docker").strip().lower() != "e2b":
+    if os.environ.get("HARBOR_ENVIRONMENT_TYPE", "docker").strip().lower() != "e2b":
         return False
 
-    raw_timeout = os.environ.get("TB_E2B_SANDBOX_TIMEOUT_SEC", "").strip()
+    raw_timeout = os.environ.get("HARBOR_E2B_SANDBOX_TIMEOUT_SEC", "").strip()
     if not raw_timeout:
         return False
     try:
         timeout = int(raw_timeout)
     except ValueError as exc:
-        raise RuntimeError("TB_E2B_SANDBOX_TIMEOUT_SEC must be a positive integer") from exc
+        raise RuntimeError("HARBOR_E2B_SANDBOX_TIMEOUT_SEC must be a positive integer") from exc
     if timeout <= 0:
-        raise RuntimeError("TB_E2B_SANDBOX_TIMEOUT_SEC must be a positive integer")
+        raise RuntimeError("HARBOR_E2B_SANDBOX_TIMEOUT_SEC must be a positive integer")
 
     from e2b import AsyncSandbox
 
@@ -200,15 +200,15 @@ def patch_e2b_template_coordination_from_env() -> bool:
     E2B template builds and tag publication itself.
     """
 
-    if os.environ.get("TB_ENVIRONMENT_TYPE", "docker").strip().lower() != "e2b":
+    if os.environ.get("HARBOR_ENVIRONMENT_TYPE", "docker").strip().lower() != "e2b":
         return False
-    if not _is_true(os.environ.get("TB_E2B_TEMPLATE_COORDINATION"), default=True):
+    if not _is_true(os.environ.get("HARBOR_E2B_TEMPLATE_COORDINATION"), default=True):
         return False
 
     ready_timeout_sec = _positive_float_from_env(
-        "TB_E2B_TEMPLATE_READY_TIMEOUT_SEC", 600.0
+        "HARBOR_E2B_TEMPLATE_READY_TIMEOUT_SEC", 600.0
     )
-    poll_sec = _positive_float_from_env("TB_E2B_TEMPLATE_POLL_INTERVAL_SEC", 1.0)
+    poll_sec = _positive_float_from_env("HARBOR_E2B_TEMPLATE_POLL_INTERVAL_SEC", 1.0)
 
     from e2b import AsyncTemplate
     from harbor.environments.e2b import E2BEnvironment
@@ -311,26 +311,26 @@ def patch_e2b_verifier_tools_from_env() -> bool:
     and E2B template construction unchanged.
     """
 
-    environment_type = os.environ.get("TB_ENVIRONMENT_TYPE", "docker").strip().lower()
+    environment_type = os.environ.get("HARBOR_ENVIRONMENT_TYPE", "docker").strip().lower()
     if environment_type not in {"e2b", "qz"}:
         return False
 
-    raw_source = os.environ.get("TB_E2B_VERIFIER_UV_SOURCE", "").strip()
+    raw_source = os.environ.get("HARBOR_E2B_VERIFIER_UV_SOURCE", "").strip()
     if not raw_source:
         return False
     source = Path(raw_source)
     missing = [name for name in _VERIFIER_TOOL_NAMES if not (source / name).is_file()]
     if missing:
         raise RuntimeError(
-            "TB_E2B_VERIFIER_UV_SOURCE is missing required files: "
+            "HARBOR_E2B_VERIFIER_UV_SOURCE is missing required files: "
             + ", ".join(missing)
         )
 
     target = os.environ.get(
-        "TB_VERIFIER_UV_BIN_DIR_MOUNT_PATH", "/opt/tb-uv-backup/bin"
+        "HARBOR_VERIFIER_UV_BIN_DIR_MOUNT_PATH", "/opt/tb-uv-backup/bin"
     ).strip()
     if not target.startswith("/"):
-        raise RuntimeError("TB_VERIFIER_UV_BIN_DIR_MOUNT_PATH must be absolute")
+        raise RuntimeError("HARBOR_VERIFIER_UV_BIN_DIR_MOUNT_PATH must be absolute")
 
     from harbor.environments.e2b import E2BEnvironment
 

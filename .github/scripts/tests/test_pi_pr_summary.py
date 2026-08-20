@@ -549,14 +549,28 @@ class FakeGitHub:
 class FakePi:
     def __init__(self) -> None:
         self.calls: list[tuple[str, str]] = []
+        self.retry_malformed: list[bool] = []
+        self.response_validators: list[object] = []
 
-    def review(self, prompt: str, model_input: str) -> dict[str, object]:
+    def review(
+        self,
+        prompt: str,
+        model_input: str,
+        *,
+        retry_malformed: bool = False,
+        response_validator: object = None,
+    ) -> dict[str, object]:
         self.calls.append((prompt, model_input))
-        return {
+        self.retry_malformed.append(retry_malformed)
+        self.response_validators.append(response_validator)
+        payload = {
             "description": ["Adds an initial PR summary."],
             "diagram": "flowchart TD\n  PR --> Pi --> Comment",
             "assessment": "The implementation is isolated to PR automation.",
         }
+        if callable(response_validator):
+            response_validator(payload)
+        return payload
 
 
 class SummaryOrchestrationTest(unittest.TestCase):
@@ -579,6 +593,23 @@ class SummaryOrchestrationTest(unittest.TestCase):
         self.assertIn("PR TITLE: Add one-time PR summary", model_input)
         self.assertIn("src/summary.py (modified, +12/-3)", model_input)
         self.assertIn("UNTRUSTED DIFF:", model_input)
+
+    def test_retries_malformed_or_schema_invalid_model_response(self) -> None:
+        pi = FakePi()
+
+        summary.run_summary(FakeGitHub(), pi, 17, "summary prompt")
+
+        self.assertEqual(pi.retry_malformed, [True])
+        validator = pi.response_validators[0]
+        self.assertTrue(callable(validator))
+        with self.assertRaises(summary._review.ModelResponseError):
+            validator(
+                {
+                    "description": [],
+                    "diagram": None,
+                    "assessment": "Assessment.",
+                }
+            )
 
     def test_large_diff_is_bounded_without_extra_pi_calls(self) -> None:
         github = FakeGitHub()

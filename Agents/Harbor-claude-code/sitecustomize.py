@@ -214,10 +214,10 @@ def _patch_claude_code_realtime_hooks() -> None:
         #   exec_as_root: keep the task image's apt sources intact and only
         #                 force IPv4. Rewriting http apt mirrors to https breaks
         #                 some task containers that do not have trusted CA roots.
-        #   exec_as_agent: the Claude Code install command (curl downloads.claude.ai/.../bootstrap.sh)
-        #                  is replaced with npm, because downloads.claude.ai is region-blocked
-        #                  on SII servers and returns an HTML page instead of a shell
-        #                  script, causing "syntax error near unexpected token '<'".
+        #   exec_as_agent: replace the bootstrap script with the configured npm
+        #                  registry path. This works with mounted caches and
+        #                  managed Sandboxes without requiring one particular
+        #                  public installer endpoint.
         import re as _re
 
         def _make_claude_install_command(command: str) -> str:
@@ -235,7 +235,7 @@ def _patch_claude_code_realtime_hooks() -> None:
             claude_tgz_path = shlex.quote(
                 (extra_env or {}).get("CC_OPIK_CLAUDE_TGZ_PATH", "/opt/tb-opik/claude-code.tgz")
             )
-            claude_tgz_url = shlex.quote((extra_env or {}).get("TB_LOCAL_CLAUDE_TGZ_URL", ""))
+            claude_tgz_url = shlex.quote((extra_env or {}).get("HARBOR_LOCAL_CLAUDE_TGZ_URL", ""))
             node_runtime_path = shlex.quote(
                 (extra_env or {}).get("CC_OPIK_PY_WHEEL_DIR", "/opt/tb-opik/python-wheels")
                 + "/node-runtime.tar.xz"
@@ -245,6 +245,7 @@ def _patch_claude_code_realtime_hooks() -> None:
                 or (extra_env or {}).get("CC_OPIK_PY_WHEEL_DIR", "/opt/tb-opik/python-wheels")
                 + "/npm-cache"
             )
+            node_dist_url = shlex.quote((extra_env or {}).get("CC_NODE_DIST_URL", ""))
             return (
                 "set -euo pipefail; "
                 f"if [ ! -f {claude_tgz_path} ] && [ -n {claude_tgz_url} ]; then "
@@ -279,6 +280,38 @@ def _patch_claude_code_realtime_hooks() -> None:
                 "    ln -sf \"$node_runtime_bin/npm\" \"$HOME/.local/bin/npm\" 2>/dev/null || true; "
                 "    ln -sf \"$node_runtime_bin/npx\" \"$HOME/.local/bin/npx\" 2>/dev/null || true; "
                 "    export PATH=\"$HOME/.local/bin:$node_runtime_bin:$PATH\"; "
+                "  fi; "
+                "fi; "
+                # Sandboxes without host mounts can get Node from an explicitly
+                # configured, Sandbox-reachable dist endpoint instead of
+                # depending on the task image's package manager.
+                "if ! command -v npm >/dev/null 2>&1 && [ -n "
+                f"{node_dist_url}"
+                " ] && command -v python3 >/dev/null 2>&1; then "
+                "  node_dist_tgz=\"$(mktemp /tmp/tb-node-dist-XXXXXX.tgz)\"; "
+                f"  python3 - <<'PY' {node_dist_url} \"$node_dist_tgz\" || true\n"
+                "import shutil, sys, urllib.request\n"
+                "with urllib.request.urlopen(sys.argv[1], timeout=180) as r, open(sys.argv[2], 'wb') as f:\n"
+                "    shutil.copyfileobj(r, f)\n"
+                "PY\n"
+                "  if [ -s \"$node_dist_tgz\" ]; then "
+                "    node_dir=\"$(mktemp -d /tmp/tb-node-XXXXXX)\"; "
+                "    if python3 - <<'PY' \"$node_dist_tgz\" \"$node_dir\"\n"
+                "import sys, tarfile\n"
+                "with tarfile.open(sys.argv[1]) as archive:\n"
+                "    archive.extractall(sys.argv[2])\n"
+                "PY\n"
+                "    then "
+                "      node_bin=\"$(find \"$node_dir\" -path '*/bin/npm' -print -quit 2>/dev/null)\"; "
+                "      if [ -n \"$node_bin\" ]; then "
+                "        node_runtime_bin=\"$(dirname \"$node_bin\")\"; "
+                "        mkdir -p \"$HOME/.local/bin\"; "
+                "        ln -sf \"$node_runtime_bin/node\" \"$HOME/.local/bin/node\" 2>/dev/null || true; "
+                "        ln -sf \"$node_runtime_bin/npm\" \"$HOME/.local/bin/npm\" 2>/dev/null || true; "
+                "        ln -sf \"$node_runtime_bin/npx\" \"$HOME/.local/bin/npx\" 2>/dev/null || true; "
+                "        export PATH=\"$HOME/.local/bin:$node_runtime_bin:$PATH\"; "
+                "      fi; "
+                "    fi; "
                 "  fi; "
                 "fi; "
                 "export PATH=\"$HOME/.local/bin:$PATH\"; "
@@ -427,7 +460,7 @@ def _patch_claude_code_realtime_hooks() -> None:
                 "exit 0; "
                 "fi; "
                 f"wheel_dir={shlex.quote((extra_env or {}).get('CC_OPIK_PY_WHEEL_DIR', '/opt/tb-opik/python-wheels'))}; "
-                f"wheel_url={shlex.quote((extra_env or {}).get('TB_LOCAL_WHEEL_SERVER_URL', ''))}; "
+                f"wheel_url={shlex.quote((extra_env or {}).get('HARBOR_LOCAL_WHEEL_SERVER_URL', ''))}; "
                 "missing=$(\"$py_bin\" - <<'PY'\n"
                 "import importlib.util\n"
                 "mods = ('opik', 'uuid6', 'socksio')\n"

@@ -65,7 +65,7 @@ DATASET_NAME=auto \
 DATASET_PATH=/absolute/path/to/Harbor-Dataset \
 INCLUDE_TASKS=0 \
 TOTAL_WORKERS=1 \
-TB_N_CONCURRENT=1 \
+HARBOR_N_CONCURRENT=1 \
 bash start.sh
 ```
 

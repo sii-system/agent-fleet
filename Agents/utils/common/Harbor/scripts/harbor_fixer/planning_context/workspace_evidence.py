@@ -70,8 +70,12 @@ SENSITIVE_NAMES = {
 }
 SENSITIVE_SUFFIXES = {".key", ".p12", ".pem", ".pfx"}
 SECRET_PATTERNS = (
-    re.compile(r"(?i)(authorization\s*:\s*bearer\s+)[^\s\"']+"),
-    re.compile(r"(?i)\b(bearer\s+)[A-Za-z0-9._~+/=-]{12,}"),
+    re.compile(
+        r'''(?i)(["']?authorization["']?\s*:\s*["']?(?:basic|bearer)\s+)[^\s"']+'''
+    ),
+    re.compile(
+        r'''(?i)\b(bearer\s+)(?:"[^"]{12,}"|'[^']{12,}'|[A-Za-z0-9._~+/=-]{12,})'''
+    ),
     re.compile(
         r"""(?i)(["']?(?:[A-Za-z0-9]+[_-])*(?:api[_-]?key|access[_-]?token|base[_-]?url|password|secret|token)(?:[_-][A-Za-z0-9]+)*["']?\s*[=:]\s*)(?:"[^"]*"|'[^']*'|[^\s,}]+)"""
     ),
@@ -103,7 +107,7 @@ def _is_sensitive(path: Path) -> bool:
     )
 
 
-def _redact(text: str) -> str:
+def redact_sensitive_text(text: str) -> str:
     redacted = URL_USERINFO_PATTERN.sub(r"\1<REDACTED>@", text)
     redacted = PRIVATE_KEY_PATTERN.sub("<REDACTED PRIVATE KEY>", redacted)
     for pattern in SECRET_PATTERNS:
@@ -129,7 +133,7 @@ def _redact(text: str) -> str:
 
 
 def _bounded(text: str) -> str:
-    redacted = _redact(text)
+    redacted = redact_sensitive_text(text)
     if len(redacted) <= MAX_OUTPUT_CHARS:
         return redacted
     return redacted[:MAX_OUTPUT_CHARS] + "\n<TRUNCATED>"

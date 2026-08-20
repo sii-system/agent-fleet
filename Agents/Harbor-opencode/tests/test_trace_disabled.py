@@ -29,10 +29,12 @@ class FakeOpenCode:
         *args,
         model_name: str | None = None,
         extra_env: dict[str, str] | None = None,
+        fake_opencode_present: bool = True,
         **kwargs,
     ) -> None:
         self.model_name = model_name
         self._extra_env = extra_env or {}
+        self.fake_opencode_present = fake_opencode_present
         self.root_commands: list[dict[str, object]] = []
         self.agent_commands: list[dict[str, object]] = []
 
@@ -41,6 +43,9 @@ class FakeOpenCode:
 
     async def exec_as_agent(self, environment, **kwargs) -> None:
         self.agent_commands.append(kwargs)
+        command = str(kwargs.get("command", ""))
+        if not self.fake_opencode_present and "node --version" in command:
+            raise RuntimeError("opencode is not installed")
 
     def _build_register_skills_command(self):
         return None
@@ -105,15 +110,21 @@ class OpenCodeTraceDisabledTests(unittest.TestCase):
     def tearDownClass(cls) -> None:
         sys.modules.pop(cls.module_name, None)
 
-    def make_agent(self, trace: str):
+    def make_agent(self, trace: str, *, opencode_present: bool = True):
         return self.module.OpikOpenCodeHarbor(
             logs_dir=Path("/tmp/test-opencode-logs"),
             model_name="custom/test-model",
             extra_env={
                 "TRACE_TO_OPIK": trace,
+                "CC_NODE_DIST_URL": (
+                    "https://registry.npmmirror.com/-/binary/node/"
+                    "v22.14.0/node-v22.14.0-linux-x64.tar.gz"
+                ),
+                "NPM_CONFIG_REGISTRY": "https://registry.npmmirror.com",
                 "OPIK_URL": "http://localhost:5173",
                 "OPIK_URL_OVERRIDE": "http://localhost:5173/api",
             },
+            fake_opencode_present=opencode_present,
         )
 
     def test_trace_switch_matches_shell_semantics(self) -> None:
@@ -134,6 +145,40 @@ class OpenCodeTraceDisabledTests(unittest.TestCase):
         )
         self.assertNotIn("mods = ('opik', 'uuid6', 'socksio')", commands)
         self.assertNotIn("opik-trace.ts", commands)
+
+    def test_install_uses_sandbox_reachable_node_dist_before_apt(self) -> None:
+        agent = self.make_agent("false", opencode_present=False)
+
+        asyncio.run(agent.install(FakeEnvironment()))
+
+        install_command = next(
+            str(item.get("command", ""))
+            for item in agent.agent_commands
+            if "opencode_version=" in str(item.get("command", ""))
+        )
+        self.assertIn("${CC_NODE_DIST_URL:-}", install_command)
+        self.assertIn(
+            'if download_file "$CC_NODE_DIST_URL" "$node_dist_tgz" '
+            '    && [ -s "$node_dist_tgz" ]; then',
+            install_command,
+        )
+        self.assertIn(
+            'if extract_archive "$node_dist_tgz" "$node_dir"; then',
+            install_command,
+        )
+        self.assertLess(
+            install_command.index("CC_NODE_DIST_URL"),
+            install_command.index("apt-get update"),
+        )
+        self.assertIn('npm install -g "opencode-ai@${opencode_version}"', install_command)
+        bash_check = subprocess.run(
+            ["bash", "-n"],
+            input=install_command,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(bash_check.returncode, 0, bash_check.stderr)
 
     def test_install_trace_on_keeps_opik_dependencies_and_plugin_files(self) -> None:
         agent = self.make_agent("true")
@@ -214,45 +259,66 @@ class EnableTrackHarborTests(unittest.TestCase):
     def tearDownClass(cls) -> None:
         sys.modules.pop(cls.module_name, None)
 
-    def run_main(self, trace: str):
+    def run_main(self, trace: str, environment_type: str = "docker"):
         app = mock.Mock()
+        patch_e2b_runtime = mock.Mock()
         harbor = types.ModuleType("harbor")
         harbor.__path__ = []
         harbor_cli = types.ModuleType("harbor.cli")
         harbor_cli.__path__ = []
         harbor_main = types.ModuleType("harbor.cli.main")
         harbor_main.app = app
+        e2b_runtime = types.ModuleType("e2b_runtime")
+        e2b_runtime.patch_e2b_runtime_from_env = patch_e2b_runtime
         modules = {
             "harbor": harbor,
             "harbor.cli": harbor_cli,
             "harbor.cli.main": harbor_main,
+            "e2b_runtime": e2b_runtime,
         }
 
         with (
-            mock.patch.dict(os.environ, {"TRACE_TO_OPIK": trace}, clear=True),
+            mock.patch.dict(
+                os.environ,
+                {
+                    "TRACE_TO_OPIK": trace,
+                    "HARBOR_ENVIRONMENT_TYPE": environment_type,
+                },
+                clear=True,
+            ),
             mock.patch.dict(sys.modules, modules),
             mock.patch.object(sys, "argv", ["enable_track_harbor.py", "--help"]),
             mock.patch.object(self.module, "_patch_opik_batch_tags") as patch_batch,
             mock.patch.object(self.module, "_install_track_harbor") as install_tracking,
             mock.patch.object(
                 self.module,
-                "_patch_trial_decorator_with_tb_tags",
+                "_patch_trial_decorator_with_harbor_tags",
             ) as patch_tags,
         ):
             self.module.main()
 
         app.assert_called_once_with()
-        return patch_batch, install_tracking, patch_tags
+        return (patch_batch, install_tracking, patch_tags), patch_e2b_runtime
 
     def test_trace_off_uses_plain_harbor_entrypoint(self) -> None:
-        tracking_calls = self.run_main("false")
+        tracking_calls, patch_e2b_runtime = self.run_main("false")
         for call in tracking_calls:
             call.assert_not_called()
+        patch_e2b_runtime.assert_not_called()
 
     def test_trace_on_keeps_host_tracking(self) -> None:
-        tracking_calls = self.run_main("true")
+        tracking_calls, patch_e2b_runtime = self.run_main("true")
         for call in tracking_calls:
             call.assert_called_once_with()
+        patch_e2b_runtime.assert_not_called()
+
+    def test_e2b_compatible_backends_apply_runtime_patches(self) -> None:
+        for environment_type in ("e2b", "qz"):
+            with self.subTest(environment_type=environment_type):
+                _, patch_e2b_runtime = self.run_main(
+                    "false", environment_type=environment_type
+                )
+                patch_e2b_runtime.assert_called_once_with()
 
 
 class FinalizerTraceGateTest(unittest.TestCase):

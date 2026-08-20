@@ -38,14 +38,14 @@ class ModelFusionWrapperTest(unittest.TestCase):
             set -euo pipefail
 
             MODEL="${MODEL:-shared-model}"
-            TB_MODEL="${TB_MODEL:-$MODEL}"
-            TB_ANTHROPIC_MODEL="${TB_ANTHROPIC_MODEL:-$MODEL}"
-            TB_ANTHROPIC_DEFAULT_OPUS_MODEL="${TB_ANTHROPIC_DEFAULT_OPUS_MODEL:-$MODEL}"
-            TB_ANTHROPIC_DEFAULT_SONNET_MODEL="${TB_ANTHROPIC_DEFAULT_SONNET_MODEL:-$MODEL}"
-            TB_ANTHROPIC_DEFAULT_HAIKU_MODEL="${TB_ANTHROPIC_DEFAULT_HAIKU_MODEL:-$MODEL}"
-            TB_CLAUDE_CODE_SUBAGENT_MODEL="${TB_CLAUDE_CODE_SUBAGENT_MODEL:-$MODEL}"
+            HARBOR_MODEL="${HARBOR_MODEL:-$MODEL}"
+            HARBOR_ANTHROPIC_MODEL="${HARBOR_ANTHROPIC_MODEL:-$MODEL}"
+            HARBOR_ANTHROPIC_DEFAULT_OPUS_MODEL="${HARBOR_ANTHROPIC_DEFAULT_OPUS_MODEL:-$MODEL}"
+            HARBOR_ANTHROPIC_DEFAULT_SONNET_MODEL="${HARBOR_ANTHROPIC_DEFAULT_SONNET_MODEL:-$MODEL}"
+            HARBOR_ANTHROPIC_DEFAULT_HAIKU_MODEL="${HARBOR_ANTHROPIC_DEFAULT_HAIKU_MODEL:-$MODEL}"
+            HARBOR_CLAUDE_CODE_SUBAGENT_MODEL="${HARBOR_CLAUDE_CODE_SUBAGENT_MODEL:-$MODEL}"
             HARBOR_OPIK_BIN="${HARBOR_OPIK_BIN:-/bin/true}"
-            TB_DISALLOWED_TOOLS="${TB_DISALLOWED_TOOLS:-WebSearch Task Agent Bash}"
+            HARBOR_DISALLOWED_TOOLS="${HARBOR_DISALLOWED_TOOLS:-WebSearch Task Agent Bash}"
 
             TASK_FILE="${TASK_FILE:-${OUTPUT_PATH}/tasks.txt}"
             QUEUE_DIR="${QUEUE_DIR:-${OUTPUT_PATH}/queue/${AGENT}}"
@@ -53,10 +53,10 @@ class ModelFusionWrapperTest(unittest.TestCase):
             JOBS_ROOT="${JOBS_ROOT:-${OUTPUT_PATH}/jobs/${AGENT}}"
             NEXT_INDEX_FILE="${NEXT_INDEX_FILE:-${QUEUE_DIR}/next-index}"
 
-            export MODEL TB_MODEL
-            export TB_ANTHROPIC_MODEL TB_ANTHROPIC_DEFAULT_OPUS_MODEL
-            export TB_ANTHROPIC_DEFAULT_SONNET_MODEL TB_ANTHROPIC_DEFAULT_HAIKU_MODEL
-            export TB_CLAUDE_CODE_SUBAGENT_MODEL HARBOR_OPIK_BIN TB_DISALLOWED_TOOLS
+            export MODEL HARBOR_MODEL
+            export HARBOR_ANTHROPIC_MODEL HARBOR_ANTHROPIC_DEFAULT_OPUS_MODEL
+            export HARBOR_ANTHROPIC_DEFAULT_SONNET_MODEL HARBOR_ANTHROPIC_DEFAULT_HAIKU_MODEL
+            export HARBOR_CLAUDE_CODE_SUBAGENT_MODEL HARBOR_OPIK_BIN HARBOR_DISALLOWED_TOOLS
             export TASK_FILE QUEUE_DIR RUNTIME_DIR JOBS_ROOT NEXT_INDEX_FILE
 
             harbor_init_run_dirs() {
@@ -93,7 +93,7 @@ class ModelFusionWrapperTest(unittest.TestCase):
             printf '%s\n' "$JOBS_ROOT" > "$OUTPUT_PATH/worker-jobs-root.txt"
             printf '%s\n' "$RESET_RUN" > "$OUTPUT_PATH/worker-reset-run.txt"
             cp "$TASK_FILE" "$OUTPUT_PATH/worker-task.txt"
-            task_safe="$(printf '%s' "$TB_TASK_ID" | tr '/[:space:]' '___' | tr -cd 'A-Za-z0-9._-')"
+            task_safe="$(printf '%s' "$HARBOR_TASK_ID" | tr '/[:space:]' '___' | tr -cd 'A-Za-z0-9._-')"
             task_dir="$JOBS_ROOT/worker-1/1-${task_safe}"
             mkdir -p "$task_dir"
             printf '%s\n' '{"verifier_result":{"rewards":{"reward":1}}}' > "$task_dir/result.json"
@@ -139,11 +139,11 @@ class ModelFusionWrapperTest(unittest.TestCase):
                         "RUN_ID",
                         "DATASET_NAME",
                         "MODEL",
-                        "TB_MODEL",
-                        "TB_ANTHROPIC_MODEL",
-                        "TB_ANTHROPIC_DEFAULT_OPUS_MODEL",
-                        "TB_ANTHROPIC_DEFAULT_SONNET_MODEL",
-                        "TB_ANTHROPIC_DEFAULT_HAIKU_MODEL",
+                        "HARBOR_MODEL",
+                        "HARBOR_ANTHROPIC_MODEL",
+                        "HARBOR_ANTHROPIC_DEFAULT_OPUS_MODEL",
+                        "HARBOR_ANTHROPIC_DEFAULT_SONNET_MODEL",
+                        "HARBOR_ANTHROPIC_DEFAULT_HAIKU_MODEL",
                     )
                 }
                 Path(option("--output-agents")).write_text("{}\n", encoding="utf-8")
@@ -220,7 +220,7 @@ class ModelFusionWrapperTest(unittest.TestCase):
             {
                 "RUN_ID": "derived-models",
                 "MID_TURN_PREPARE_ONLY": "1",
-                "TB_ANTHROPIC_DEFAULT_SONNET_MODEL": "caller-sonnet",
+                "HARBOR_ANTHROPIC_DEFAULT_SONNET_MODEL": "caller-sonnet",
             }
         )
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -231,24 +231,24 @@ class ModelFusionWrapperTest(unittest.TestCase):
         )
         capture = json.loads(fusion.read_text())["capture"]
         self.assertEqual(capture["MODEL"], "selected-main-model")
-        self.assertEqual(capture["TB_MODEL"], "selected-main-model")
-        self.assertEqual(capture["TB_ANTHROPIC_MODEL"], "selected-main-model")
+        self.assertEqual(capture["HARBOR_MODEL"], "selected-main-model")
+        self.assertEqual(capture["HARBOR_ANTHROPIC_MODEL"], "selected-main-model")
         self.assertEqual(
-            capture["TB_ANTHROPIC_DEFAULT_OPUS_MODEL"], "selected-main-model"
+            capture["HARBOR_ANTHROPIC_DEFAULT_OPUS_MODEL"], "selected-main-model"
         )
         self.assertEqual(
-            capture["TB_ANTHROPIC_DEFAULT_SONNET_MODEL"], "caller-sonnet"
+            capture["HARBOR_ANTHROPIC_DEFAULT_SONNET_MODEL"], "caller-sonnet"
         )
         self.assertEqual(
-            capture["TB_ANTHROPIC_DEFAULT_HAIKU_MODEL"], "selected-main-model"
+            capture["HARBOR_ANTHROPIC_DEFAULT_HAIKU_MODEL"], "selected-main-model"
         )
 
     def test_caller_explicit_anthropic_aliases_are_preserved(self) -> None:
         explicit_aliases = {
-            "TB_ANTHROPIC_MODEL": "caller-main",
-            "TB_ANTHROPIC_DEFAULT_OPUS_MODEL": "caller-opus",
-            "TB_ANTHROPIC_DEFAULT_SONNET_MODEL": "caller-sonnet",
-            "TB_ANTHROPIC_DEFAULT_HAIKU_MODEL": "caller-haiku",
+            "HARBOR_ANTHROPIC_MODEL": "caller-main",
+            "HARBOR_ANTHROPIC_DEFAULT_OPUS_MODEL": "caller-opus",
+            "HARBOR_ANTHROPIC_DEFAULT_SONNET_MODEL": "caller-sonnet",
+            "HARBOR_ANTHROPIC_DEFAULT_HAIKU_MODEL": "caller-haiku",
         }
         result = self._run_wrapper(
             {

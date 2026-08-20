@@ -60,6 +60,16 @@ def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
+def _process_start_ticks(pid: int) -> int | None:
+    try:
+        stat_fields = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8").rsplit(
+            ")", 1
+        )[1].split()
+        return int(stat_fields[19])
+    except (IndexError, OSError, ValueError):
+        return None
+
+
 def _tail_summary(value: str, *, limit: int) -> str:
     return value[-limit:]
 
@@ -137,8 +147,11 @@ def _write_action_logs(
     return _relative_log_paths(output_dir, stdout_path, stderr_path)
 
 
-def build_exec_input(fix_plan_path: Path, workspace_root: Path) -> dict[str, Any]:
-    fix_plan = read_json(fix_plan_path)
+def build_exec_input_from_plan(
+    fix_plan: dict[str, Any],
+    fix_plan_path: Path,
+    workspace_root: Path,
+) -> dict[str, Any]:
     payload = {
         "schema_version": 1,
         "kind": "harbor_fixer_exec_input",
@@ -148,6 +161,14 @@ def build_exec_input(fix_plan_path: Path, workspace_root: Path) -> dict[str, Any
     }
     validate_exec_input(payload)
     return payload
+
+
+def build_exec_input(fix_plan_path: Path, workspace_root: Path) -> dict[str, Any]:
+    return build_exec_input_from_plan(
+        read_json(fix_plan_path),
+        fix_plan_path,
+        workspace_root,
+    )
 
 
 def _action_record(
@@ -267,6 +288,24 @@ def _terminate_process_group(process: subprocess.Popen[str]) -> int:
     return process.wait()
 
 
+def _terminate_remaining_process_group(pgid: int) -> None:
+    try:
+        os.killpg(pgid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    deadline = time.monotonic() + PROCESS_TERMINATION_GRACE_SECONDS
+    while time.monotonic() < deadline:
+        try:
+            os.killpg(pgid, 0)
+        except ProcessLookupError:
+            return
+        time.sleep(0.05)
+    try:
+        os.killpg(pgid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+
+
 def _run_command_action(
     output_dir: Path,
     plan_id: str,
@@ -295,6 +334,7 @@ def _run_command_action(
     stdout_file, stderr_file = _action_log_paths(
         output_dir, plan_id, action["action_id"], action_index
     )
+    active_action_path = output_dir / "active-action.json"
     stdout_file.parent.mkdir(parents=True, exist_ok=True)
     try:
         with (
@@ -327,24 +367,47 @@ def _run_command_action(
                 encoding="utf-8",
             ) as stderr_handle,
         ):
-            process = subprocess.Popen(
-                [resolved_executable, *action["arguments"]],
-                cwd=cwd,
-                env=_command_environment(),
-                text=True,
-                stdin=subprocess.DEVNULL,
-                stdout=stdout_handle,
-                stderr=stderr_handle,
-                start_new_session=True,
-            )
+            write_json_atomic(active_action_path, {"status": "launching"})
+            process: subprocess.Popen[str] | None = None
             try:
-                return_code = process.wait(timeout=timeout_seconds)
-            except subprocess.TimeoutExpired:
-                _terminate_process_group(process)
-                return_code = None
-                stderr_handle.write(
-                    f"command timed out after {timeout_seconds:g} seconds\n"
+                process = subprocess.Popen(
+                    [resolved_executable, *action["arguments"]],
+                    cwd=cwd,
+                    env=_command_environment(),
+                    text=True,
+                    stdin=subprocess.DEVNULL,
+                    stdout=stdout_handle,
+                    stderr=stderr_handle,
+                    start_new_session=True,
                 )
+                start_ticks = _process_start_ticks(process.pid)
+                if start_ticks is None:
+                    _terminate_process_group(process)
+                    raise OSError("cannot identify the action process")
+                try:
+                    write_json_atomic(
+                        active_action_path,
+                        {
+                            "status": "running",
+                            "pid": process.pid,
+                            "start_ticks": start_ticks,
+                        },
+                    )
+                except OSError:
+                    _terminate_process_group(process)
+                    raise
+                try:
+                    return_code = process.wait(timeout=timeout_seconds)
+                except subprocess.TimeoutExpired:
+                    _terminate_process_group(process)
+                    return_code = None
+                    stderr_handle.write(
+                        f"command timed out after {timeout_seconds:g} seconds\n"
+                    )
+            finally:
+                if process is not None:
+                    _terminate_remaining_process_group(process.pid)
+                active_action_path.unlink(missing_ok=True)
     except OSError as exc:
         duration_ms = int((time.monotonic() - start) * 1000)
         return _action_record(

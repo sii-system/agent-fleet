@@ -335,15 +335,15 @@ run_harboropik() {
     TRACE_TO_OPIK="$trace" \
     MIN_TEST="$min_test" \
     MIN_TEST_INCLUDE_TASK="fix-git" \
-    TB_CC_OPIK_ENABLE_HOOK="$hook_flag" \
-    TB_CC_PY_WHEEL_DIR_SOURCE="$wheel_dir" \
+    HARBOR_CC_OPIK_ENABLE_HOOK="$hook_flag" \
+    HARBOR_CC_PY_WHEEL_DIR_SOURCE="$wheel_dir" \
     TRACE_PLUGIN_SOURCE_DIR="$trace_dir" \
-    TB_SKIP_DOCKERHUB_PREFLIGHT="1" \
-    TB_RUNS="$runs" \
+    HARBOR_SKIP_DOCKERHUB_PREFLIGHT="1" \
+    HARBOR_RUNS="$runs" \
     N_ATTEMPTS="1" \
-    TB_N_CONCURRENT="$n_concurrent" \
+    HARBOR_N_CONCURRENT="$n_concurrent" \
     TOTAL_WORKERS="1" \
-    TB_MAX_RETRIES="0" \
+    HARBOR_MAX_RETRIES="0" \
     HARBOR_CAPTURE_FILE="$capture_file" \
     HARBOR_CAPTURE_RESULT="1" \
     HARBOR_OPIK_BIN="$capture_bin" \
@@ -363,6 +363,7 @@ assert_registry_summary() {
   for pattern in \
     '^status: +complete$' \
     '^DATASET_NAME: codepde@1\.0$' \
+    '^MODEL: +fake-model$' \
     '^harbor_exit_code: 0$' \
     '^total: +2$' \
     '^completed: +2$' \
@@ -418,13 +419,14 @@ main() {
     "codepde@1.0"
   assert_extra_compose_arg "$claude_capture" "$default_overlay"
   assert_arg_pair "$claude_capture" "--dataset" "codepde@1.0"
+  assert_arg_pair "$claude_capture" "--ae" "HARBOR_DATASET=codepde@1.0"
   assert_file_content \
     "${claude_capture}.verifier-tools" \
     "curl,env,uv,uvx"
   assert_arg_pair \
     "$claude_capture" \
     "--ve" \
-    "TB_VERIFIER_UV_BIN_DIR=/opt/tb-uv-backup/bin"
+    "HARBOR_VERIFIER_UV_BIN_DIR=/opt/tb-uv-backup/bin"
 
   registry_capture="$tmp/claude-registry.args"
   run_harboropik \
@@ -440,6 +442,10 @@ main() {
     "terminalbench21" "fix-git"
   assert_extra_compose_arg "$opencode_capture" "$default_overlay"
   assert_arg_pair "$opencode_capture" "--dataset" "terminal-bench/terminal-bench-2-1"
+  assert_arg_pair \
+    "$opencode_capture" \
+    "--ae" \
+    "HARBOR_DATASET=terminal-bench/terminal-bench-2-1"
   assert_arg_pair "$opencode_capture" "-i" "terminal-bench/fix-git"
   assert_structured_mount_arg \
     "$opencode_capture" \
@@ -451,7 +457,7 @@ main() {
   assert_arg_pair \
     "$opencode_capture" \
     "--ve" \
-    "TB_VERIFIER_UV_BIN_DIR=/opt/tb-uv-backup/bin"
+    "HARBOR_VERIFIER_UV_BIN_DIR=/opt/tb-uv-backup/bin"
 
   pi_capture="$tmp/pi-default.args"
   run_harboropik \
@@ -479,7 +485,7 @@ main() {
   assert_arg_pair \
     "$pi_capture" \
     "--ae" \
-    "NO_PROXY=127.0.0.1,localhost,host.docker.internal,opik.example,10.192.0.1,llm.example"
+    "NO_PROXY=127.0.0.1,localhost,host.docker.internal,opik.example,llm.example"
   assert_arg_absent "$pi_capture" "disallowed_tools="
   assert_arg_absent "$pi_capture" "max_turns="
   assert_structured_mount_arg \

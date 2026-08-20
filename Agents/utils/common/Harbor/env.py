@@ -20,7 +20,7 @@ def parse_finite_float(name: str, value: str) -> float:
 
 def build_llm_kwargs() -> dict[str, object]:
     payload: dict[str, object] = {
-        "api_key": os.environ.get("TB_ANTHROPIC_AUTH_TOKEN", ""),
+        "api_key": os.environ.get("HARBOR_ANTHROPIC_AUTH_TOKEN", ""),
         "temperature": parse_finite_float(
             "HARBOR_TEMPERATURE",
             os.environ.get("HARBOR_TEMPERATURE") or "1.0",
@@ -42,25 +42,25 @@ def build_model_info() -> dict[str, object]:
 
 
 def model_request_headers() -> dict[str, str]:
-    raw = os.environ.get("TB_LLM_KWARGS", "")
+    raw = os.environ.get("HARBOR_LLM_KWARGS", "")
     if not raw:
         return {}
     llm_kwargs = json.loads(raw)
     if not isinstance(llm_kwargs, dict):
-        raise TypeError("TB_LLM_KWARGS must be a JSON object")
+        raise TypeError("HARBOR_LLM_KWARGS must be a JSON object")
     headers = llm_kwargs.get("extra_headers", {})
     if not isinstance(headers, dict) or not all(
         isinstance(name, str) and isinstance(value, str)
         for name, value in headers.items()
     ):
-        raise TypeError("TB_LLM_KWARGS.extra_headers must be a string map")
+        raise TypeError("HARBOR_LLM_KWARGS.extra_headers must be a string map")
     return headers
 
 
 def build_opencode_config() -> dict[str, object]:
-    base_url = os.environ.get("TB_ANTHROPIC_BASE_URL", "").rstrip("/") + "/v1"
-    api_key = os.environ.get("TB_ANTHROPIC_AUTH_TOKEN", "")
-    provider, separator, model = os.environ.get("TB_MODEL", "").partition("/")
+    base_url = os.environ.get("HARBOR_ANTHROPIC_BASE_URL", "").rstrip("/") + "/v1"
+    api_key = os.environ.get("HARBOR_ANTHROPIC_AUTH_TOKEN", "")
+    provider, separator, model = os.environ.get("HARBOR_MODEL", "").partition("/")
     if not separator:
         model = provider
     temperature = os.environ.get("HARBOR_TEMPERATURE", "")
@@ -116,7 +116,10 @@ def build_opencode_config() -> dict[str, object]:
 
 
 def _pi_base_url_from_env() -> str:
-    base_url = os.environ.get("BASE_URL", "").strip().rstrip("/")
+    base_url = (
+        os.environ.get("HARBOR_ANTHROPIC_BASE_URL", "").strip()
+        or os.environ.get("BASE_URL", "").strip()
+    ).rstrip("/")
     if not base_url:
         raise ValueError("BASE_URL must not be empty")
     parsed = urlparse(base_url)
@@ -151,7 +154,7 @@ def _pi_provider_from_env(base_url: str) -> str:
 def build_pi_models_config() -> dict[str, object]:
     base_url = _pi_base_url_from_env()
     provider = _pi_provider_from_env(base_url)
-    model = os.environ.get("TB_MODEL", "").strip()
+    model = os.environ.get("HARBOR_MODEL", "").strip()
     if "/" in model:
         model_provider, model = model.split("/", 1)
         if model_provider != provider:
@@ -159,26 +162,26 @@ def build_pi_models_config() -> dict[str, object]:
                 f"Pi model provider must be {provider!r}, got {model_provider!r}"
             )
     if not provider or not model:
-        raise ValueError("PI_PROVIDER and TB_MODEL must not be empty")
+        raise ValueError("PI_PROVIDER and HARBOR_MODEL must not be empty")
     max_tokens_override = ""
     if os.environ.get("ROLLOUT") == "1":
-        # Rollout workers budget per-request tokens via RL_/TB_MAX_NEW_TOKENS;
+        # Rollout workers budget per-request tokens via RL_/HARBOR_MAX_NEW_TOKENS;
         # env.sh clears HARBOR_MAX_TOKENS in rollout mode.
         max_tokens_override = (
             os.environ.get("HARBOR_MAX_TOKENS", "").strip()
-            or os.environ.get("TB_MAX_NEW_TOKENS", "").strip()
+            or os.environ.get("HARBOR_MAX_NEW_TOKENS", "").strip()
             or os.environ.get("RL_MAX_NEW_TOKENS", "").strip()
             or ""
         )
     # Benchmark runs keep the pi default unless the user pinned a value;
-    # env.sh always exports TB_MAX_NEW_TOKENS, so it must not leak into
+    # env.sh always exports HARBOR_MAX_NEW_TOKENS, so it must not leak into
     # the benchmark default.
     max_tokens_raw = max_tokens_override or os.environ.get(
         "HARBOR_MAX_TOKENS", ""
     ).strip() or "32768"
     if not max_tokens_raw.isdigit() or int(max_tokens_raw) <= 0:
         raise ValueError(
-            "HARBOR_MAX_TOKENS/TB_MAX_NEW_TOKENS must be a positive integer"
+            "HARBOR_MAX_TOKENS/HARBOR_MAX_NEW_TOKENS must be a positive integer"
         )
     max_tokens = int(max_tokens_raw)
 
@@ -226,11 +229,11 @@ def build_pi_models_config() -> dict[str, object]:
 def build_pi_settings_config() -> dict[str, object]:
     base_url = _pi_base_url_from_env()
     provider = _pi_provider_from_env(base_url)
-    model = os.environ.get("TB_MODEL", "").strip()
+    model = os.environ.get("HARBOR_MODEL", "").strip()
     if "/" in model:
         _, model = model.split("/", 1)
     if not provider or not model:
-        raise ValueError("PI_PROVIDER and TB_MODEL must not be empty")
+        raise ValueError("PI_PROVIDER and HARBOR_MODEL must not be empty")
     return {
         "defaultProvider": provider,
         "defaultModel": model,
