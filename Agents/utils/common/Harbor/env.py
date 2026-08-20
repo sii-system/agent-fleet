@@ -151,6 +151,39 @@ def _pi_provider_from_env(base_url: str) -> str:
     return host.lower()
 
 
+def _pi_supports_reasoning_effort() -> bool:
+    """Whether pi should emit OpenAI-style ``reasoning_effort`` on requests.
+
+    Disabled by ``PI_SUPPORTS_REASONING_EFFORT=0``; everything else keeps the
+    reasoning effort channel enabled so thinking *levels* are actually carried
+    in the request (rather than collapsing to a bare enabled/disabled switch).
+    """
+    return os.environ.get("PI_SUPPORTS_REASONING_EFFORT", "1").strip() != "0"
+
+
+def _pi_thinking_level_map() -> dict[str, str | None]:
+    """Map pi thinking levels to the gateway's ``reasoning_effort`` values.
+
+    Use a JSON override from ``PI_THINKING_LEVEL_MAP`` when supplied, otherwise
+    default to letting every level flow through (``xhigh``/``max`` map to a
+    ``max`` effort so the strongest setting has a concrete representation).
+    """
+    raw = os.environ.get("PI_THINKING_LEVEL_MAP", "").strip()
+    if raw:
+        parsed = json.loads(raw)
+        if not isinstance(parsed, dict):
+            raise ValueError("PI_THINKING_LEVEL_MAP must be a JSON object")
+        return parsed
+    return {
+        "off": None,
+        "low": "low",
+        "medium": "medium",
+        "high": "high",
+        "xhigh": "max",
+        "max": "max",
+    }
+
+
 def build_pi_models_config() -> dict[str, object]:
     base_url = _pi_base_url_from_env()
     provider = _pi_provider_from_env(base_url)
@@ -200,7 +233,7 @@ def build_pi_models_config() -> dict[str, object]:
                     "sendSessionAffinityHeaders": True,
                     "sessionAffinityFormat": "openai",
                     "supportsDeveloperRole": False,
-                    "supportsReasoningEffort": False,
+                    "supportsReasoningEffort": _pi_supports_reasoning_effort(),
                     "supportsUsageInStreaming": True,
                     "maxTokensField": "max_tokens",
                     "thinkingFormat": "zai",
@@ -213,6 +246,7 @@ def build_pi_models_config() -> dict[str, object]:
                         "input": ["text"],
                         "contextWindow": context_window,
                         "maxTokens": max_tokens,
+                        "thinkingLevelMap": _pi_thinking_level_map(),
                         "cost": {
                             "input": 0,
                             "output": 0,

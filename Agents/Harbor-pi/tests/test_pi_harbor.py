@@ -165,6 +165,29 @@ class AgentFleetPiTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "provider/model_name"):
             asyncio.run(agent.run("solve", object(), object()))
 
+    def test_build_cli_flags_is_empty(self) -> None:
+        # Pi extension -e flags are built inside the container (the mount is
+        # only visible there), so the wrapper must not try to emit them.
+        agent = self.module.AgentFleetPi()
+        self.assertEqual(agent.build_cli_flags(), "")
+
+    def test_run_collects_extensions_inside_container(self) -> None:
+        agent = self.module.AgentFleetPi(
+            model_name="sii-gateway/test-model",
+            extra_env={"PI_EXTENSION_DIR": "/opt/tb-pi/extensions"},
+        )
+
+        asyncio.run(agent.run("- solve task", object(), object()))
+
+        command = str(agent.agent_commands[-1]["command"])
+        self.assertIn("ext_args=()", command)
+        self.assertIn('"$PI_EXTENSION_DIR"/*.ts', command)
+        self.assertIn('ext_args+=( -e "$ext" )', command)
+        self.assertIn('"${ext_args[@]:-}"', command)
+        # provider/model still present after the pi invocation
+        self.assertIn("--provider sii-gateway", command)
+        self.assertIn("--model test-model", command)
+
 
 if __name__ == "__main__":
     unittest.main()

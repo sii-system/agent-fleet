@@ -103,6 +103,22 @@ render_report() {
   elif harbor_agent_is_pi; then
     echo "PI_VERSION:   $PI_VERSION"
     echo "PI_THINKING:  $PI_THINKING_LEVEL"
+    echo "PI_EXTENSION_DIR: ${PI_EXTENSION_DIR:-<none>}"
+    if [[ -n "${PI_EXTENSION_SOURCE:-}" && -d "$PI_EXTENSION_SOURCE" ]]; then
+      local plugin_file ext_count=0
+      for plugin_file in "$PI_EXTENSION_SOURCE"/*.ts; do
+        [[ -e "$plugin_file" ]] || continue
+        echo "  EXT: $(basename "$plugin_file")"
+        ext_count=$((ext_count + 1))
+      done
+      if [[ "$ext_count" -eq 0 ]]; then
+        echo "PI_EXTENSIONS: <none>"
+      else
+        echo "PI_EXTENSION_MOUNT: $PI_EXTENSION_DIR"
+      fi
+    else
+      echo "PI_EXTENSIONS: <none>"
+    fi
     echo "MODEL:        $HARBOR_MODEL"
     prep_status="unknown"
     [[ -f "$RUNTIME_DIR/local-deps-prepare.status" ]] && prep_status="$(cat "$RUNTIME_DIR/local-deps-prepare.status" 2>/dev/null || true)"

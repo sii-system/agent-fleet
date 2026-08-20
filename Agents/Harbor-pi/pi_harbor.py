@@ -28,6 +28,11 @@ class AgentFleetPi(Pi):
         # Reasoning strength is configured via settings.json (written from
         # PI_SETTINGS_CONFIG during install), mirroring opencode's
         # config-driven thinking instead of a wrapper-level CLI flag.
+        #
+        # Pi extensions (.ts) are host-mounted into $PI_EXTENSION_DIR and
+        # collected inside the container's run() shell, because the mount
+        # point does not exist on the host (see run()). Keep this empty so the
+        # -e flags are only ever built where the files actually exist.
         return ""
 
     async def install(self, environment: BaseEnvironment) -> None:
@@ -92,8 +97,6 @@ class AgentFleetPi(Pi):
 
         env = dict(self._extra_env)
         env.setdefault("PI_OFFLINE", "1")
-        cli_flags = self.build_cli_flags()
-        cli_suffix = f"{cli_flags} " if cli_flags else ""
 
         skills_command = self._build_register_skills_command()
         if skills_command:
@@ -103,11 +106,20 @@ class AgentFleetPi(Pi):
             environment,
             command=(
                 'set -o pipefail; export PATH="$HOME/.local/bin:$PATH"; '
+                'ext_args=(); '
+                # Collect any bind-mounted Pi extensions inside the container:
+                # the mount point ($PI_EXTENSION_DIR) exists only here, so the
+                # -e flags cannot be built on the host.
+                "if [[ -n \"${PI_EXTENSION_DIR:-}\" && -d \"$PI_EXTENSION_DIR\" ]]; then "
+                '  for ext in "$PI_EXTENSION_DIR"/*.ts; do '
+                '    [[ -f "$ext" ]] && ext_args+=( -e "$ext" ); '
+                '  done; '
+                "fi; "
                 f"printf '%s' {shlex.quote(instruction)} | "
                 "pi --print --mode json --no-session "
                 f"--provider {shlex.quote(provider)} "
                 f"--model {shlex.quote(model)} "
-                f"{cli_suffix}"
+                '"${ext_args[@]:-}" '
                 "2>&1 "
                 "| { grep -v '\"type\":\"message_update\"' || true; } "
                 f"| {{ if command -v stdbuf >/dev/null 2>&1; then "

@@ -53,3 +53,7 @@ docs/CODE_REVIEW_*.md
 # Local analyzer validation artifacts
 .tmp-*/
 analyzer-issue109-comment-*.md
+
+# Pi task extensions (.ts plugins) live outside version control; each runner
+# drops its own plugins into Agents/Harbor-pi/extensions.
+Agents/Harbor-pi/extensions/

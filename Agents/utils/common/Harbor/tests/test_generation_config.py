@@ -311,6 +311,17 @@ PY
         )
         self.assertEqual(provider["models"][0]["id"], "test-model")
         self.assertEqual(provider["models"][0]["maxTokens"], 8192)
+        # Thinking levels flow through to the gateway as reasoning_effort by
+        # default, so max is actually emitted instead of collapsing to enabled.
+        self.assertTrue(provider["compat"]["supportsReasoningEffort"])
+        self.assertEqual(
+            provider["models"][0]["thinkingLevelMap"]["max"],
+            "max",
+        )
+        self.assertEqual(
+            provider["models"][0]["thinkingLevelMap"]["xhigh"],
+            "max",
+        )
         self.assertEqual(
             config["pi_settings_config"],
             {
@@ -321,6 +332,28 @@ PY
             },
         )
         self.assertNotIn("fake-key", json.dumps(config["pi_models_config"]))
+
+    def test_pi_can_disable_reasoning_effort_channel(self) -> None:
+        config = self._load_config(
+            "pi",
+            MODEL="test-model",
+            BASE_URL="https://llm.example/v1",
+            PI_SUPPORTS_REASONING_EFFORT="0",
+        )
+        provider = config["pi_models_config"]["providers"]["llm.example"]
+        self.assertFalse(provider["compat"]["supportsReasoningEffort"])
+
+    def test_pi_thinking_level_map_override(self) -> None:
+        config = self._load_config(
+            "pi",
+            MODEL="test-model",
+            BASE_URL="https://llm.example/v1",
+            PI_THINKING_LEVEL_MAP=json.dumps(
+                {"off": None, "max": "high"}
+            ),
+        )
+        provider = config["pi_models_config"]["providers"]["llm.example"]
+        self.assertEqual(provider["models"][0]["thinkingLevelMap"]["max"], "high")
 
     def test_pi_rejects_unsupported_sampling_settings(self) -> None:
         result = self._run_validation(
