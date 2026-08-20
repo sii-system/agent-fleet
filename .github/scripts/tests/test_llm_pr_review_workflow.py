@@ -156,6 +156,16 @@ class PiPrSummaryWorkflowTest(unittest.TestCase):
         self.assertNotIn('"findings"', prompt)
         self.assertNotIn("labels", prompt.casefold())
 
+    def test_prompt_keeps_mermaid_node_quotes_out_of_raw_json(self) -> None:
+        prompt = (ROOT / ".github" / "scripts" / "pi_summary_prompt.md").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("adds double quotes after parsing", prompt)
+        self.assertIn("escape line breaks as `\\n`", prompt)
+        self.assertIn("`A[Start] --> B{Ready?}`", prompt)
+        self.assertNotIn('A["Start"]', prompt)
+
 
 if __name__ == "__main__":
     unittest.main()

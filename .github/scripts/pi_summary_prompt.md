@@ -21,6 +21,7 @@ When component interaction is meaningful, use a Mermaid `sequenceDiagram`,
 `flowchart`, or `graph`. If the interaction cannot be represented with one of
 those supported Mermaid forms, use an ASCII diagram. Return diagram source
 without code fences. Otherwise set `diagram` to null. For flowcharts and graphs,
-use simple alphanumeric node IDs, rectangular or diamond nodes, and double-quote
-all node text, for example `A["Start"] --> B{"Ready?"}`. Keep edge text to simple
-words.
+use simple alphanumeric node IDs and rectangular or diamond nodes. Keep node
+text unquoted in the raw JSON, for example `A[Start] --> B{Ready?}`; the
+validator adds double quotes after parsing. Keep edge text to simple words and
+escape line breaks as `\n` so the response remains valid JSON.
