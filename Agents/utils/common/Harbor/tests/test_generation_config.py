@@ -11,7 +11,13 @@ HARBOR_DIR = Path(__file__).parents[1]
 
 
 class HarborGenerationConfigTests(unittest.TestCase):
-    def _run_validation(self, agent: str, **overrides: str) -> subprocess.CompletedProcess[str]:
+    def _run_validation(
+        self,
+        agent: str,
+        *,
+        validation_function: str = "harbor_validate_generation_controls",
+        **overrides: str,
+    ) -> subprocess.CompletedProcess[str]:
         with tempfile.TemporaryDirectory() as temp_dir:
             env = {
                 "PATH": os.environ["PATH"],
@@ -28,7 +34,7 @@ class HarborGenerationConfigTests(unittest.TestCase):
                 [
                     "bash",
                     "-c",
-                    'source "$1"; harbor_validate_generation_controls',
+                    f'source "$1"; {validation_function}',
                     "bash",
                     str(HARBOR_DIR / "env.sh"),
                 ],
@@ -323,6 +329,10 @@ PY
             "max",
         )
         self.assertEqual(
+            provider["models"][0]["thinkingLevelMap"]["minimal"],
+            "low",
+        )
+        self.assertEqual(
             config["pi_settings_config"],
             {
                 "defaultProvider": "llm.example",
@@ -364,6 +374,19 @@ PY
         self.assertNotEqual(result.returncode, 0)
         self.assertIn(
             "Pi does not expose temperature or top_p controls",
+            result.stderr,
+        )
+
+    def test_pi_rejects_unsupported_thinking_level(self) -> None:
+        result = self._run_validation(
+            "pi",
+            validation_function="harbor_validate_agent",
+            PI_THINKING_LEVEL="ultra",
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            "PI_THINKING_LEVEL must be off, minimal, low, medium, high, xhigh, or max",
             result.stderr,
         )
 

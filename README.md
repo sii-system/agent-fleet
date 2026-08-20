@@ -1,7 +1,7 @@
 # Agent Fleet
 
 Agent Fleet provides runnable integrations and benchmark tasksets for
-evaluating Claude Code, OpenCode, and OpenClaw.
+evaluating Claude Code, OpenCode, Pi, and OpenClaw.
 
 ## Quick Start
 
@@ -100,6 +100,30 @@ the Docker-in-Docker launcher instead:
 
 See [scripts/README.md § dind-run.sh](./scripts/README.md#dind-runsh) for
 configuration and caveats.
+
+## About enabling extensions in Pi
+
+Pi supports these thinking levels: `off`, `minimal`, `low`, `medium`, `high`,
+`xhigh`, and `max`. Set one when starting a Pi run:
+
+```bash
+PI_THINKING_LEVEL=xhigh ./scripts/run_fleet.sh \
+  --taskset terminalbench21 --agent pi --workers 1
+```
+
+To enable local TypeScript extensions, place one or more `.ts` files in:
+
+```bash
+mkdir -p Agents/Harbor-pi/extensions
+cp /path/to/my-extension.ts Agents/Harbor-pi/extensions/
+```
+
+They load automatically for `AGENT=pi`. To use another directory, set
+`PI_EXTENSION_SOURCE=/absolute/path/to/extensions` in `config.local.env`.
+Pi extensions require the Docker or OpenSandbox environment.
+
+See [Harbor Pi](./Agents/Harbor-pi/README.md#extensions) for the complete
+configuration and a launch example.
 
 ## More details
 

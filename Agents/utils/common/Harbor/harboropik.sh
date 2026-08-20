@@ -223,9 +223,9 @@ validate_environment_backend() {
   case "$HARBOR_ENVIRONMENT_TYPE" in
     docker)
       ;;
-    e2b)
+    e2b|qz)
       if harbor_agent_is_pi; then
-        echo "[ERROR] AGENT=pi with HARBOR_ENVIRONMENT_TYPE=e2b is unsupported: Pi's pinned Node and runtime archives are delivered from the host dependency cache." >&2
+        echo "[ERROR] AGENT=pi with HARBOR_ENVIRONMENT_TYPE=$HARBOR_ENVIRONMENT_TYPE is unsupported: Pi's pinned Node/runtime archives and local extensions require host bind mounts." >&2
         echo "[ERROR] use HARBOR_ENVIRONMENT_TYPE=docker or opensandbox for AGENT=pi." >&2
         exit 1
       fi

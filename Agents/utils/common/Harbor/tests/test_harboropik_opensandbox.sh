@@ -40,6 +40,7 @@ run_dry() {
   local force_build="${6:-0}"
   local agent="${7:-oracle}"
   local dry_run="${8:-1}"
+  local extension_source="${9:-$tmp/no-pi-extensions}"
   local runtime_dir="$tmp/runtime/$agent"
   local queue_dir="$tmp/queue/$agent"
   local harbor_python="$MANAGER_PYTHON"
@@ -81,6 +82,7 @@ run_dry() {
     HARBOR_RUNNER_PREPARE=0 \
     HARBOR_OPIK_PYTHON="$harbor_python" \
     HARBOR_OPENSANDBOX_BUILD_ARGS_JSON="$build_args_json" \
+    PI_EXTENSION_SOURCE="$extension_source" \
     YICLOUD_PUBLIC_KEY=fake-public \
     YICLOUD_SECRET_KEY=fake-secret \
     YICLOUD_PROJECT_NAME=test-project \
@@ -158,3 +160,15 @@ grep -F -- 'FAKE_HARBOR_ARG=OPENCODE_TGZ_PATH=' \
   <<< "$opencode_opensandbox" >/dev/null
 grep -F -- 'FAKE_HARBOR_ARG=HARBOR_VERIFIER_UV_BIN_DIR=/opt/tb-uv-backup/bin' \
   <<< "$opencode_opensandbox" >/dev/null
+
+mkdir -p "$tmp/pi-extensions"
+printf 'export default function () {}\n' > "$tmp/pi-extensions/smoke.ts"
+pi_opensandbox="$(run_dry \
+  'test-project/manual:immutable' "$tmp/does-not-exist.py" '{}' auto \
+  opensandbox 0 pi 0 "$tmp/pi-extensions")"
+grep -F -- 'FAKE_HARBOR_ARG=PI_EXTENSION_DIR=/opt/tb-pi/extensions' \
+  <<< "$pi_opensandbox" >/dev/null
+grep -F -- "\"source\": \"$tmp/pi-extensions\"" \
+  <<< "$pi_opensandbox" >/dev/null
+grep -F -- '"target": "/opt/tb-pi/extensions"' <<< "$pi_opensandbox" >/dev/null
+grep -F -- '"read_only": true' <<< "$pi_opensandbox" >/dev/null

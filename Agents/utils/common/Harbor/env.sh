@@ -773,9 +773,9 @@ harbor_validate_agent() {
   fi
   if harbor_agent_is_pi; then
     case "$PI_THINKING_LEVEL" in
-      off|minimal|low|medium|high|xhigh|max|ultra) ;;
+      off|minimal|low|medium|high|xhigh|max) ;;
       *)
-        echo "[ERROR] PI_THINKING_LEVEL must be off, minimal, low, medium, high, xhigh, max, or ultra." >&2
+        echo "[ERROR] PI_THINKING_LEVEL must be off, minimal, low, medium, high, xhigh, or max." >&2
         exit 1
         ;;
     esac

@@ -19,13 +19,30 @@ class HarborOpikE2BSmokeTest(unittest.TestCase):
         agent: str = "oracle",
         prebuilt_template: str = "",
         extra_env: dict[str, str] | None = None,
+        enable_pi_extensions: bool = False,
+        dry_run: bool = True,
     ) -> subprocess.CompletedProcess[str]:
         with tempfile.TemporaryDirectory() as root:
             root_path = Path(root)
+            dataset_path = root_path / "dataset"
+            (dataset_path / "0" / "environment").mkdir(parents=True)
+            (dataset_path / "0" / "task.toml").write_text(
+                "[environment]\n", encoding="utf-8"
+            )
+            (root_path / "queue").mkdir()
             tools_path = root_path / "bin"
             tools_path.mkdir()
             (tools_path / "uv").symlink_to("/bin/true")
             (tools_path / "uvx").symlink_to("/bin/true")
+            fake_docker = tools_path / "docker"
+            fake_docker.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+            fake_docker.chmod(0o755)
+            fake_harbor = tools_path / "harbor"
+            fake_harbor.write_text(
+                "#!/usr/bin/env bash\nprintf 'FAKE_HARBOR_ARG=%s\\n' \"$@\"\n",
+                encoding="utf-8",
+            )
+            fake_harbor.chmod(0o755)
             env = os.environ.copy()
             env.update(
                 {
@@ -34,8 +51,13 @@ class HarborOpikE2BSmokeTest(unittest.TestCase):
                     "HARBOR_E2B_SANDBOX_TIMEOUT_SEC": "3600",
                     "HARBOR_E2B_PREBUILT_TEMPLATE": prebuilt_template,
                     "E2B_TEMPLATE": "",
-                    "HARBOR_DRY_RUN": "1",
-                    "DATASET_PATH": str(root_path / "dataset"),
+                    "DATASET_NAME": "auto",
+                    "HARBOR_DRY_RUN": "1" if dry_run else "0",
+                    "HARBOR_OPIK_BIN": str(fake_harbor),
+                    "HARBOR_CLI_BIN": str(fake_harbor),
+                    "HARBOR_RUNNER_PREPARE": "0",
+                    "HARBOR_SKIP_DOCKERHUB_PREFLIGHT": "1",
+                    "DATASET_PATH": str(dataset_path),
                     "JOBS_ROOT": str(root_path / "jobs"),
                     "OUTPUT_ROOT": str(root_path / "output"),
                     "OUTPUT_PATH": str(root_path / "output"),
@@ -49,9 +71,19 @@ class HarborOpikE2BSmokeTest(unittest.TestCase):
                     "HARBOR_MODEL": "test-model",
                     "HARBOR_ANTHROPIC_AUTH_TOKEN": "fake-api-key",
                     "HARBOR_LLM_KWARGS": '{"temperature":1.0}',
+                    # Keep tests independent from developers' ignored local
+                    # extensions. Individual cases opt in below.
+                    "PI_EXTENSION_SOURCE": str(root_path / "no-pi-extensions"),
                     "PATH": f"{tools_path}:{env.get('PATH', '')}",
                 }
             )
+            if enable_pi_extensions:
+                extensions = root_path / "pi-extensions"
+                extensions.mkdir()
+                (extensions / "smoke.ts").write_text(
+                    "export default function () {}\n", encoding="utf-8"
+                )
+                env["PI_EXTENSION_SOURCE"] = str(extensions)
             if extra_env:
                 env.update(extra_env)
             completed = subprocess.run(
@@ -112,6 +144,26 @@ class HarborOpikE2BSmokeTest(unittest.TestCase):
         self.assertIn("[INFO] pi version: 0.81.1 | thinking: high", completed.stdout)
         self.assertIn("agent_import_path: pi_harbor:AgentFleetPi", completed.stdout)
         self.assertNotIn("--extra-docker-compose", completed.stdout)
+
+    def test_pi_docker_mounts_extensions_read_only(self) -> None:
+        completed = self.run_dry_run(
+            "docker", "pi", enable_pi_extensions=True, dry_run=False
+        )
+
+        self.assertEqual(completed.returncode, 0, completed.stdout)
+        self.assertIn('"target": "/opt/tb-pi/extensions"', completed.stdout)
+        self.assertIn('"read_only": true', completed.stdout)
+        self.assertIn("PI_EXTENSION_DIR=/opt/tb-pi/extensions", completed.stdout)
+
+    def test_pi_qz_fails_cleanly_with_clear_message(self) -> None:
+        completed = self.run_dry_run("qz", "pi")
+
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn(
+            "AGENT=pi with HARBOR_ENVIRONMENT_TYPE=qz is unsupported",
+            completed.stdout,
+        )
+        self.assertIn("use HARBOR_ENVIRONMENT_TYPE=docker", completed.stdout)
 
     def test_oracle_startup_prepares_only_runner(self) -> None:
         with tempfile.TemporaryDirectory() as root:

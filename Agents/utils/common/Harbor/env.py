@@ -176,6 +176,9 @@ def _pi_thinking_level_map() -> dict[str, str | None]:
         return parsed
     return {
         "off": None,
+        # Pi's "minimal" level has no OpenAI reasoning_effort equivalent.
+        # Preserve the smallest enabled effort supported by compatible gateways.
+        "minimal": "low",
         "low": "low",
         "medium": "medium",
         "high": "high",
