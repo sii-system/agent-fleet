@@ -67,6 +67,7 @@ def evaluate(
     summary_text: str | None,
     max_harness_failure_ratio: float = DEFAULT_MAX_HARNESS_FAILURE_RATIO,
     harbor_status: int = 0,
+    expected_trials: int | None = None,
 ) -> Verdict:
     stats: dict = {}
     reasons: list[str] = []
@@ -112,15 +113,23 @@ def evaluate(
     completed = int_field(fields, "completed") or 0
     errored = int_field(fields, "errored") or 0
     cancelled = int_field(fields, "cancelled") or 0
-    harness_failures = errored + cancelled
+    retries = int_field(fields, "retries") or 0
+    # A trial that errored and was then retried to completion is counted in
+    # BOTH n_errored_trials and n_completed_trials (see the fixture in
+    # Agents/utils/common/Harbor/tests/test_harboropik_extra_compose.sh:118-123,
+    # where total=2, completed=2, errored=1). So errored+cancelled overcounts
+    # harness breakage whenever a retry succeeded, and HARBOR_MAX_RETRIES
+    # defaults to 2. Count trials that never completed instead: that excludes
+    # recovered retries and still catches permanent failures and cancellations.
+    unresolved = max(0, total - completed)
     stats.update(
         {
             "total": total,
             "completed": completed,
             "errored": errored,
             "cancelled": cancelled,
-            "retries": int_field(fields, "retries") or 0,
-            "harness_failures": harness_failures,
+            "retries": retries,
+            "unresolved": unresolved,
         }
     )
 
@@ -130,21 +139,30 @@ def evaluate(
         )
         return Verdict(False, reasons, stats)
 
-    accounted = completed + errored + cancelled
-    if accounted != total:
+    if expected_trials is not None and total != expected_trials:
         reasons.append(
-            f"trials do not reconcile: {accounted} accounted for of {total}"
+            f"expected {expected_trials} trials but Harbor ran {total}: "
+            "task selection did not reach the benchmark"
+        )
+
+    # Over-count is normal with retries, so only a shortfall means trials went
+    # missing entirely.
+    accounted = completed + errored + cancelled
+    if accounted < total:
+        reasons.append(
+            f"trials unaccounted for: {accounted} of {total} recorded"
         )
 
     # Expressed as a count, not a rounded percentage. At the default tolerance
     # the smallest failing count on 89 trials is 9, and 9/89 rounds to 10%, so a
     # percentage would render as "10% exceeds tolerance 10%".
     allowed = int(max_harness_failure_ratio * total)
-    stats["harness_failures_allowed"] = allowed
-    if harness_failures > allowed:
+    stats["unresolved_allowed"] = allowed
+    if unresolved > allowed:
         reasons.append(
-            f"{harness_failures} harness failures of {total} trials exceeds the "
-            f"allowance of {allowed} ({errored} errored, {cancelled} cancelled)"
+            f"{unresolved} of {total} trials never completed, exceeding the "
+            f"allowance of {allowed} ({errored} errored, {cancelled} cancelled, "
+            f"{retries} retried)"
         )
 
     return Verdict(not reasons, reasons, stats)
@@ -165,9 +183,9 @@ def render_summary(verdict: Verdict) -> str:
         f"| Cancelled | {stats.get('cancelled', 0)} |",
         f"| Retries | {stats.get('retries', 0)} |",
         (
-            "| Harness failures (allowed) | "
-            f"{stats.get('harness_failures', 0)} "
-            f"({stats.get('harness_failures_allowed', 0)}) |"
+            "| Never completed (allowed) | "
+            f"{stats.get('unresolved', 0)} "
+            f"({stats.get('unresolved_allowed', 0)}) |"
         ),
         f"| Mean reward | {stats.get('mean_reward', 'unavailable')} |",
         "",
@@ -205,9 +223,17 @@ def main(argv: list[str] | None = None) -> int:
         type=float,
     )
     parser.add_argument("--step-summary", default=None, type=Path)
+    parser.add_argument(
+        "--expected-trials",
+        default="",
+        help="Reject a summary whose trial total differs; empty skips the check",
+    )
     args = parser.parse_args(argv)
 
     try:
+        expected_trials = (
+            int(args.expected_trials) if args.expected_trials.strip() else None
+        )
         try:
             summary_text = (args.output_path / "summary.txt").read_text(
                 encoding="utf-8"
@@ -218,6 +244,7 @@ def main(argv: list[str] | None = None) -> int:
             summary_text,
             args.max_harness_failure_ratio,
             args.harbor_status,
+            expected_trials,
         )
     except (ValueError, OSError) as error:
         print(f"::error::unreadable Harbor summary: {error}", file=sys.stderr)

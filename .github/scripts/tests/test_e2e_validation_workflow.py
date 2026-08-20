@@ -52,7 +52,50 @@ class E2eValidationWorkflowTest(unittest.TestCase):
 
     def test_checks_out_submodules_for_opik_tracing(self):
         self.assertIn("submodules: recursive", self.workflow)
-        self.assertIn('TRACE_TO_OPIK: "true"', self.workflow)
+
+    def test_enables_tracing_only_with_a_real_opik_credential(self):
+        # env.sh substitutes the literal local-dev-key for a missing
+        # OPIK_API_KEY and harboropik.sh's preflight accepts 401/403, so an
+        # unconditional TRACE_TO_OPIK=true would look healthy while no trace
+        # reached Opik.
+        self.assertNotIn('TRACE_TO_OPIK: "true"', self.workflow)
+        self.assertIn("secrets.OPIK_API_KEY", self.workflow)
+        self.assertIn("export TRACE_TO_OPIK=true", self.workflow)
+        self.assertIn("export TRACE_TO_OPIK=false", self.workflow)
+
+    def test_redacts_every_credential_it_injects(self):
+        redact = self.workflow[self.workflow.index("Stage and redact artifacts"):]
+        for name in ("API_KEY", "OPIK_API_KEY"):
+            with self.subTest(credential=name):
+                self.assertIn(name, redact)
+
+    def test_pins_the_output_path_for_producer_and_consumers(self):
+        # A runner-level OUTPUT_ROOT/OUTPUT_PATH would otherwise win via
+        # config_loader.sh and Harbor would write outside runs/$RUN_ID.
+        self.assertIn(
+            "OUTPUT_PATH: ${{ steps.params.outputs.output_path }}",
+            self.workflow,
+        )
+        self.assertIn("export OUTPUT_PATH", self.workflow)
+
+    def test_rejects_a_truncated_run(self):
+        self.assertIn("expected_trials", self.workflow)
+        self.assertIn("--expected-trials", self.workflow)
+
+    def test_never_prunes_the_shared_docker_daemon(self):
+        # These hosts also run the code-review container runners; a daemon-wide
+        # prune deletes their stopped containers and dangling build layers.
+        # Match executable lines only -- the comments explaining the absence of
+        # these commands legitimately name them.
+        code = [
+            line
+            for line in self.workflow.splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
+        ]
+        for destructive in ("container prune", "image prune", "system prune"):
+            with self.subTest(command=destructive):
+                offenders = [line for line in code if destructive in line]
+                self.assertEqual(offenders, [])
 
     def test_never_cancels_a_running_benchmark(self):
         self.assertIn("cancel-in-progress: false", self.workflow)
