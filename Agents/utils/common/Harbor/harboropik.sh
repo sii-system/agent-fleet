@@ -204,6 +204,32 @@ append_rust_package_mirror_env() {
   fi
 }
 
+append_package_environment_args() {
+  local env_name
+  for env_name in \
+    PIP_INDEX_URL \
+    PIP_EXTRA_INDEX_URL \
+    PIP_TRUSTED_HOST \
+    UV_INDEX_URL \
+    UV_DEFAULT_INDEX \
+    NPM_CONFIG_REGISTRY
+  do
+    if [[ -n "${!env_name:-}" ]]; then
+      cmd+=( --ae "$env_name=${!env_name}" --ve "$env_name=${!env_name}" )
+    fi
+  done
+  if [[ -n "${HARBOR_CC_NODE_DIST_URL:-}" ]]; then
+    cmd+=( --ae "CC_NODE_DIST_URL=$HARBOR_CC_NODE_DIST_URL" )
+  fi
+  for env_name in GO111MODULE GOPROXY GOSUMDB; do
+    if [[ -n "${!env_name:-}" ]]; then
+      cmd+=( --ae "$env_name=${!env_name}" --ve "$env_name=${!env_name}" )
+    fi
+  done
+  append_rust_package_mirror_env --ae
+  append_rust_package_mirror_env --ve
+}
+
 append_harbor_unprivileged_docker_compose() {
   if [[ "${HARBOR_ENVIRONMENT_TYPE:-docker}" != "docker" ]]; then
     if [[ "${HARBOR_DRY_RUN:-0}" == "1" ]]; then
@@ -1171,39 +1197,7 @@ run_harbor() {
     )
   fi
 
-  if [[ -n "${PIP_INDEX_URL:-}" ]]; then
-    cmd+=( --ae "PIP_INDEX_URL=$PIP_INDEX_URL" --ve "PIP_INDEX_URL=$PIP_INDEX_URL" )
-  fi
-  if [[ -n "${PIP_EXTRA_INDEX_URL:-}" ]]; then
-    cmd+=( --ae "PIP_EXTRA_INDEX_URL=$PIP_EXTRA_INDEX_URL" --ve "PIP_EXTRA_INDEX_URL=$PIP_EXTRA_INDEX_URL" )
-  fi
-  if [[ -n "${PIP_TRUSTED_HOST:-}" ]]; then
-    cmd+=( --ae "PIP_TRUSTED_HOST=$PIP_TRUSTED_HOST" --ve "PIP_TRUSTED_HOST=$PIP_TRUSTED_HOST" )
-  fi
-  if [[ -n "${UV_INDEX_URL:-}" ]]; then
-    # SWE-smith verifier scripts run `uv add ...`; pip env alone is ignored by uv.
-    cmd+=( --ae "UV_INDEX_URL=$UV_INDEX_URL" --ve "UV_INDEX_URL=$UV_INDEX_URL" )
-  fi
-  if [[ -n "${UV_DEFAULT_INDEX:-}" ]]; then
-    cmd+=( --ae "UV_DEFAULT_INDEX=$UV_DEFAULT_INDEX" --ve "UV_DEFAULT_INDEX=$UV_DEFAULT_INDEX" )
-  fi
-  if [[ -n "${NPM_CONFIG_REGISTRY:-}" ]]; then
-    cmd+=( --ae "NPM_CONFIG_REGISTRY=$NPM_CONFIG_REGISTRY" --ve "NPM_CONFIG_REGISTRY=$NPM_CONFIG_REGISTRY" )
-  fi
-  if [[ -n "${HARBOR_CC_NODE_DIST_URL:-}" ]]; then
-    cmd+=( --ae "CC_NODE_DIST_URL=$HARBOR_CC_NODE_DIST_URL" )
-  fi
-  if [[ -n "${GO111MODULE:-}" ]]; then
-    cmd+=( --ae "GO111MODULE=$GO111MODULE" --ve "GO111MODULE=$GO111MODULE" )
-  fi
-  if [[ -n "${GOPROXY:-}" ]]; then
-    cmd+=( --ae "GOPROXY=$GOPROXY" --ve "GOPROXY=$GOPROXY" )
-  fi
-  if [[ -n "${GOSUMDB:-}" ]]; then
-    cmd+=( --ae "GOSUMDB=$GOSUMDB" --ve "GOSUMDB=$GOSUMDB" )
-  fi
-  append_rust_package_mirror_env --ae
-  append_rust_package_mirror_env --ve
+  append_package_environment_args
 
   if [[ "$HARBOR_DEBUG" == "1" ]]; then
     cmd+=( --debug )
@@ -1487,38 +1481,7 @@ run_opencode_task() {
       fi
     done
 
-    if [[ -n "${PIP_INDEX_URL:-}" ]]; then
-      cmd+=( --ae "PIP_INDEX_URL=$PIP_INDEX_URL" --ve "PIP_INDEX_URL=$PIP_INDEX_URL" )
-    fi
-    if [[ -n "${PIP_EXTRA_INDEX_URL:-}" ]]; then
-      cmd+=( --ae "PIP_EXTRA_INDEX_URL=$PIP_EXTRA_INDEX_URL" --ve "PIP_EXTRA_INDEX_URL=$PIP_EXTRA_INDEX_URL" )
-    fi
-    if [[ -n "${PIP_TRUSTED_HOST:-}" ]]; then
-      cmd+=( --ae "PIP_TRUSTED_HOST=$PIP_TRUSTED_HOST" --ve "PIP_TRUSTED_HOST=$PIP_TRUSTED_HOST" )
-    fi
-    if [[ -n "${UV_INDEX_URL:-}" ]]; then
-      cmd+=( --ae "UV_INDEX_URL=$UV_INDEX_URL" --ve "UV_INDEX_URL=$UV_INDEX_URL" )
-    fi
-    if [[ -n "${UV_DEFAULT_INDEX:-}" ]]; then
-      cmd+=( --ae "UV_DEFAULT_INDEX=$UV_DEFAULT_INDEX" --ve "UV_DEFAULT_INDEX=$UV_DEFAULT_INDEX" )
-    fi
-    if [[ -n "${NPM_CONFIG_REGISTRY:-}" ]]; then
-      cmd+=( --ae "NPM_CONFIG_REGISTRY=$NPM_CONFIG_REGISTRY" --ve "NPM_CONFIG_REGISTRY=$NPM_CONFIG_REGISTRY" )
-    fi
-    if [[ -n "${HARBOR_CC_NODE_DIST_URL:-}" ]]; then
-      cmd+=( --ae "CC_NODE_DIST_URL=$HARBOR_CC_NODE_DIST_URL" )
-    fi
-    if [[ -n "${GO111MODULE:-}" ]]; then
-      cmd+=( --ae "GO111MODULE=$GO111MODULE" --ve "GO111MODULE=$GO111MODULE" )
-    fi
-    if [[ -n "${GOPROXY:-}" ]]; then
-      cmd+=( --ae "GOPROXY=$GOPROXY" --ve "GOPROXY=$GOPROXY" )
-    fi
-    if [[ -n "${GOSUMDB:-}" ]]; then
-      cmd+=( --ae "GOSUMDB=$GOSUMDB" --ve "GOSUMDB=$GOSUMDB" )
-    fi
-    append_rust_package_mirror_env --ae
-    append_rust_package_mirror_env --ve
+    append_package_environment_args
 
     if [[ -n "$INCLUDE_TASKS" ]]; then
       IFS=',' read -r -a include_arr <<< "$INCLUDE_TASKS"
