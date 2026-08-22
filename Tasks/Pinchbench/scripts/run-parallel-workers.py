@@ -75,9 +75,10 @@ def config_bool(value: str | None, default: bool) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
-def trace_to_opik_enabled(value: str | None) -> bool:
-    """Match the fleet-wide trace switch used by the Harbor/OpenClaw runners."""
-    return (value or "true") not in {"false", "0"}
+def trace_to_opik_enabled(opik_url: str | None) -> bool:
+    """OPIK_URL is the single switch shared with the Harbor/OpenClaw runners:
+    an endpoint uploads traces, an empty value skips them."""
+    return bool((opik_url or "").strip())
 
 
 def positive_int(value: str) -> int:
@@ -129,7 +130,7 @@ def load_runner_config() -> dict[str, str]:
         "MODEL": shared_model(),
         "BASE_URL": shared("BASE_URL"),
         "API_KEY": shared("API_KEY"),
-        "TRACE_TO_OPIK": shared("TRACE_TO_OPIK", "true"),
+        "OPIK_URL": shared("OPIK_URL"),
         "PINCHBENCH_MODEL_PROVIDER": "auto",
         "PINCHBENCH_TIMEOUT_MULTIPLIER": "1.0",
         "JUDGE_MODEL": "",
@@ -158,7 +159,7 @@ def load_runner_config() -> dict[str, str]:
     # This is a fleet-wide switch, not a PinchBench-specific setting. Keep it
     # on the shared config precedence chain even if an old runner file happens
     # to contain a conflicting key; the caller environment still wins below.
-    config["TRACE_TO_OPIK"] = shared("TRACE_TO_OPIK", "true")
+    config["OPIK_URL"] = shared("OPIK_URL")
     for key in config:
         if key in os.environ:
             config[key] = os.environ[key]
@@ -216,9 +217,9 @@ def validate_trace_off_gateway_configs(config_base: Path, instances: int) -> Non
         else "instances " + ",".join(str(index) for index in stale_instances)
     )
     sys.exit(
-        "Error: TRACE_TO_OPIK=false, but the OpenClaw gateway config for "
+        "Error: OPIK_URL is empty, but the OpenClaw gateway config for "
         f"{instance_label} still enables openclaw-opik-tracer. "
-        f"Rerun TRACE_TO_OPIK=false ./Agents/Openclaw/scripts/setup.sh {instances}, "
+        f"Rerun OPIK_URL= ./Agents/Openclaw/scripts/setup.sh {instances}, "
         "then restart the OpenClaw fleet before running PinchBench."
     )
 
@@ -391,7 +392,7 @@ def run_worker_phase(
     run_dir: Path,
 ) -> None:
     run_as_user = config["OPENCLAW_CONTAINER_USER"]
-    tracing_enabled = trace_to_opik_enabled(config.get("TRACE_TO_OPIK"))
+    tracing_enabled = trace_to_opik_enabled(config.get("OPIK_URL"))
     procs: list[subprocess.Popen] = []
     for spec in worker_specs:
         log_file = Path(spec["worker_dir"]) / f"{phase_name}.log"
@@ -428,7 +429,7 @@ def run_worker_phase(
                     "PIP_INDEX_URL",
                     "PIP_EXTRA_INDEX_URL",
                     "PIP_TRUSTED_HOST",
-                    "TRACE_TO_OPIK",
+                    "OPIK_URL",
                 )
             },
             bench_cmd=wrap_worker_command(
@@ -1104,7 +1105,7 @@ def worker_image_build_command(config: dict[str, str], *, tracing_enabled: bool)
     build_cmd = [
         "docker", "build", "-f", str(BENCH_DIR / "Dockerfile"),
         "-t", config["PINCHBENCH_DOCKER_IMAGE"],
-        "--build-arg", f"TRACE_TO_OPIK={'true' if tracing_enabled else 'false'}",
+        "--build-arg", f"OPIK_TRACING={'true' if tracing_enabled else 'false'}",
         "--build-arg",
         f"OPENCLAW_BASE_IMAGE={'openclaw:local-opik' if tracing_enabled else 'openclaw:local'}",
     ]
@@ -1119,7 +1120,7 @@ def worker_image_build_command(config: dict[str, str], *, tracing_enabled: bool)
 def main() -> None:
     config = load_runner_config()
     args = parse_args(config)
-    tracing_enabled = trace_to_opik_enabled(config.get("TRACE_TO_OPIK"))
+    tracing_enabled = trace_to_opik_enabled(config.get("OPIK_URL"))
     exact_task_ids = os.environ.get("PINCHBENCH_EXACT_TASK_SELECTION") == "1"
 
     pinchbench_dir = Path(config["PINCHBENCH_DIR"])

@@ -77,7 +77,6 @@ connection_fields = (
     "OPIK_URL",
     "OPIK_URL_OVERRIDE",
     "OPIK_BASE",
-    "OPIK_MODE",
     "OPIK_PROJECT_NAME",
     "OPIK_API_KEY",
     "OPIK_WORKSPACE",
@@ -325,14 +324,13 @@ run_harboropik() {
     INCLUDE_TASKS="$include_tasks" \
     OUTPUT_PATH="$output_dir/run" \
     HARBOR_QUEUE_WORKER="$queue_worker" \
-    OPIK_MODE="remote" \
+    OPIK_URL="$opik_url_override" \
     OPIK_BASE="$opik_base" \
     OPIK_URL_OVERRIDE="$opik_url_override" \
     OPIK_API_KEY="fake-opik-key" \
     BASE_URL="http://llm.example" \
     API_KEY="fake-llm-key" \
     MODEL="fake-model" \
-    TRACE_TO_OPIK="$trace" \
     MIN_TEST="$min_test" \
     MIN_TEST_INCLUDE_TASK="fix-git" \
     HARBOR_CC_OPIK_ENABLE_HOOK="$hook_flag" \
@@ -530,14 +528,13 @@ main() {
   assert_arg_pair "$min_test_capture" "-i" "terminal-bench/fix-git"
   grep -q 'MIN_TEST=1 enabled' "$tmp/claude-min-test/claude-code.log"
 
-  # TRACE_TO_OPIK=false with no Opik configuration at all: the run must
+  # OPIK_URL empty with no Opik configuration at all: the run must
   # still construct the benchmark command, with the realtime hook off.
   traceoff_capture="$tmp/claude-traceoff.args"
   run_harboropik \
     "claude-code" "$capture_bin" "$traceoff_capture" "$tmp/claude-traceoff" \
     "codepde@1.0" "" "false"
   assert_arg_pair "$traceoff_capture" "--dataset" "codepde@1.0"
-  assert_arg_pair "$traceoff_capture" "--ae" "TRACE_TO_OPIK=false"
   assert_arg_pair "$traceoff_capture" "--ae" "CC_OPIK_ENABLE_HOOK=false"
   assert_file_content "${traceoff_capture}.opik-track-disable" "true"
   assert_file_content "${traceoff_capture}.opik-environment" "{}"
@@ -557,7 +554,6 @@ main() {
     "terminalbench21" "fix-git" "false"
   assert_arg_pair "$traceoff_oc_capture" "--dataset" "terminal-bench/terminal-bench-2-1"
   assert_arg_pair "$traceoff_oc_capture" "-i" "terminal-bench/fix-git"
-  assert_arg_pair "$traceoff_oc_capture" "--ae" "TRACE_TO_OPIK=false"
   assert_file_content "${traceoff_oc_capture}.opik-track-disable" "true"
   assert_file_content "${traceoff_oc_capture}.opik-environment" "{}"
   assert_arg_absent "$traceoff_oc_capture" "OPIK_API_KEY="

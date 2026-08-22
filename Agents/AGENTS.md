@@ -89,7 +89,7 @@ port `18789 + (N-1)*20`.
 ```bash
 ./Agents/Openclaw/scripts/build-openclaw-image.sh   # build image
 # Opik-enabled image instead:
-OPIK_PLUGIN=enabled ./Agents/Openclaw/scripts/build-openclaw-image.sh
+OPIK_URL=https://opik.example.com/api ./Agents/Openclaw/scripts/build-openclaw-image.sh
 
 BASE_URL="https://api.example.com/v1" API_KEY="sk-fake" MODEL="your-model-id" \
   ./Agents/Openclaw/scripts/setup.sh 3              # generate 3 instances

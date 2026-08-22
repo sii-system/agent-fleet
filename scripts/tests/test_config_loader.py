@@ -26,6 +26,11 @@ CONFIG_NAMES = (
     "RL_API_KEY",
     "RL_MODEL_NAME",
     "AGENT_FLEET_CONFIG_LOADED_ROOT",
+    "TRACE_TO_OPIK",
+    "OPIK_PLUGIN",
+    "OPIK_MODE",
+    "AGENT_FLEET_CONFIG_QUIET",
+    "AGENT_FLEET_OPIK_DEPRECATION_WARNED",
 )
 
 
@@ -140,7 +145,6 @@ class ConfigLoaderTest(unittest.TestCase):
                 "ANTHROPIC_AUTH_TOKEN": "fake-runtime-key",
                 "HARBOR_MODEL": "runtime-model",
                 "ROLLOUT": "1",
-                "TRACE_TO_OPIK": "false",
             }
         )
         result = subprocess.run(
@@ -172,6 +176,70 @@ class ConfigLoaderTest(unittest.TestCase):
             "|https://runtime.example.invalid/v1/chat/completions"
             "|https://runtime.example.invalid/v1|runtime-model"
             "|https://runtime.example.invalid/v1|fake-runtime-key|runtime-model",
+        )
+
+    def test_retired_opik_vars_warn_once_each_and_can_be_silenced(self):
+        command = 'agent_fleet_load_config "$2"'
+
+        clean = self.run_loader(command)
+        self.assertEqual(clean.returncode, 0, clean.stderr)
+        self.assertEqual(clean.stderr, "")
+
+        warned = self.run_loader(
+            command,
+            extra_env={
+                "TRACE_TO_OPIK": "true",
+                "OPIK_PLUGIN": "1",
+                "OPIK_MODE": "hook",
+            },
+        )
+        self.assertEqual(warned.returncode, 0, warned.stderr)
+        for name in ("TRACE_TO_OPIK", "OPIK_PLUGIN", "OPIK_MODE"):
+            self.assertIn(
+                f"[WARN] {name} is no longer used; Opik tracing follows OPIK_URL",
+                warned.stderr,
+            )
+        # The name-specific line repeats per retired var, but the trailing
+        # guidance line is printed once per invocation, not once per var.
+        self.assertEqual(
+            warned.stderr.count(
+                "[WARN] set OPIK_URL to upload traces, or leave it empty to disable"
+            ),
+            1,
+        )
+
+        quiet = self.run_loader(
+            command,
+            extra_env={
+                "TRACE_TO_OPIK": "true",
+                "OPIK_PLUGIN": "1",
+                "OPIK_MODE": "hook",
+                "AGENT_FLEET_CONFIG_QUIET": "1",
+            },
+        )
+        self.assertEqual(quiet.returncode, 0, quiet.stderr)
+        self.assertEqual(quiet.stderr, "")
+
+    def test_retired_opik_vars_warn_once_per_process_tree(self):
+        # A launcher and the runner it execs both source the loader; the
+        # exported AGENT_FLEET_OPIK_DEPRECATION_WARNED marker makes the
+        # second call in the same process silent instead of repeating the
+        # warning.
+        result = self.run_loader(
+            "agent_fleet_warn_retired_opik_vars; "
+            "agent_fleet_warn_retired_opik_vars",
+            extra_env={"TRACE_TO_OPIK": "true"},
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            result.stderr.count("[WARN] TRACE_TO_OPIK is no longer used"),
+            1,
+        )
+        self.assertEqual(
+            result.stderr.count(
+                "[WARN] set OPIK_URL to upload traces, or leave it empty to disable"
+            ),
+            1,
         )
 
 

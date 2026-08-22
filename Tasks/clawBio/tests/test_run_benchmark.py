@@ -80,7 +80,7 @@ class ClawBioRunnerTest(unittest.TestCase):
                 {
                     "TASK_CONFIG": str(config),
                     "RUN_ROOT": str(run_root),
-                    "TRACE_TO_OPIK": "false",
+                    "OPIK_URL": "",
                 },
                 "--tasks",
                 "missing-a,missing-b",
@@ -115,7 +115,7 @@ class ClawBioRunnerTest(unittest.TestCase):
             result = self.run_wrapper(
                 {
                     "RUN_ROOT": str(run_root),
-                    "TRACE_TO_OPIK": "false",
+                    "OPIK_URL": "",
                     "SANDBOX_MODE": "non-main",
                     "EXEC_SECURITY": "deny",
                     "EXEC_ASK": "always",
@@ -136,25 +136,54 @@ class ClawBioRunnerTest(unittest.TestCase):
 
     def test_wrapper_loads_dedicated_benchmark_security(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            run_root = Path(tmp) / "run"
+            root = Path(tmp)
+            config = root / "tasks.json"
+            run_root = root / "run"
+            config.write_text(
+                '{"defaults":{},"tasks":[{"id":"task-a","prompt":"A"}]}',
+                encoding="utf-8",
+            )
+            # The committed profile supplies the permissive settings, so the
+            # preflight passes and only warns. Stop at task validation so the
+            # assertion does not depend on a Docker build.
             result = self.run_wrapper(
                 {
+                    "TASK_CONFIG": str(config),
                     "RUN_ROOT": str(run_root),
-                    "TRACE_TO_OPIK": "true",
-                    "OPIK_PLUGIN": "enabled",
                     "OPIK_URL": "",
                     "DOCKER_COMPOSE_READ_ONLY": "true",
-                }
+                },
+                "--tasks",
+                "task-a",
+                "--validate-tasks-only",
             )
 
-            self.assertEqual(result.returncode, 1)
-            self.assertIn("OPIK_PLUGIN=enabled requires OPIK_URL", result.stderr)
-            self.assertIn(
-                "applying the permissive ClawBio benchmark profile",
-                result.stderr,
-            )
+            self.assertEqual(result.returncode, 0, result.stderr)
             self.assertNotIn("security preflight failed", result.stderr)
             self.assertFalse(run_root.exists())
+
+    def test_wrapper_tolerates_retired_opik_switches(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = root / "tasks.json"
+            config.write_text(
+                '{"defaults":{},"tasks":[{"id":"task-a","prompt":"A"}]}',
+                encoding="utf-8",
+            )
+            result = self.run_wrapper(
+                {
+                    "TASK_CONFIG": str(config),
+                    "RUN_ROOT": str(root / "run"),
+                    "OPIK_URL": "",
+                    "TRACE_TO_OPIK": "false",
+                },
+                "--tasks",
+                "task-a",
+                "--validate-tasks-only",
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("TRACE_TO_OPIK is no longer used", result.stderr)
 
     def test_clear_artifact_paths_removes_declared_outputs_only(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

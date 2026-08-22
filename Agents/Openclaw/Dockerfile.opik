@@ -5,7 +5,7 @@
 #   - agent-opik-plugin submodule must be initialized at third_party/agent-opik-plugin
 #
 # Build:
-#   OPIK_PLUGIN=enabled ./Agents/Openclaw/scripts/build-openclaw-image.sh
+#   OPIK_URL=https://opik.example.com/api ./Agents/Openclaw/scripts/build-openclaw-image.sh
 
 FROM openclaw:local
 

@@ -66,7 +66,7 @@ class HarborFixerVerificationRuntimeTest(FixerTestCase):
             "DATASET_PATH": str(dataset),
             "MODEL": "fake-model",
             "HARBOR_DRY_RUN": "1",
-            "TRACE_TO_OPIK": "false",
+            "OPIK_URL": "",
             **env_overrides,
         }
         with mock.patch.dict(os.environ, env):

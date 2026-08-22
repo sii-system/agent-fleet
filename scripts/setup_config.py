@@ -141,9 +141,6 @@ def merge_local_config(path: Path, environ: Mapping[str, str]) -> None:
         "API_KEY": environ["AUTH_TOKEN"],
         "MODEL": environ["MODEL"],
     }
-    trace_to_opik = environ.get("TRACE_TO_OPIK", "").strip()
-    if trace_to_opik:
-        managed["TRACE_TO_OPIK"] = trace_to_opik
     opik_url = environ.get("OPIK_URL", "").strip()
     if opik_url:
         managed.update(

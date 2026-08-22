@@ -2,7 +2,7 @@
 # Build the openclaw Docker image.
 #
 # Default:       builds openclaw:local from the openclaw repo.
-# OPIK_PLUGIN=enabled: builds openclaw:local-opik with the opik-tracer plugin.
+# OPIK_URL set:  also builds openclaw:local-opik with the opik-tracer plugin.
 #
 # Variables:
 #   OPENCLAW_REPO   OpenClaw git repo URL  (default: https://github.com/openclaw/openclaw.git)
@@ -32,18 +32,13 @@ done
 eval "$__caller_env"
 unset __caller_env config_file
 
-OPENCLAW_REPO="${OPENCLAW_REPO:-https://github.com/openclaw/openclaw.git}"
+# OPIK_URL is the single switch, so warn about retired names read from the
+# config files above and decide the Opik layer from the endpoint alone.
+# shellcheck source=../../../scripts/config_loader.sh
+. "$REPO_ROOT/scripts/config_loader.sh"
+agent_fleet_warn_retired_opik_vars
 
-# Keep the top-level tracing switch authoritative over stale fleet/plugin
-# configuration, matching setup.py and the benchmark launchers.
-case "${TRACE_TO_OPIK:-true}" in
-  false|0)
-    if [ "${OPIK_PLUGIN:-}" = "enabled" ]; then
-      echo "TRACE_TO_OPIK=false overrides OPIK_PLUGIN=enabled; tracing plugin disabled" >&2
-    fi
-    OPIK_PLUGIN=disabled
-    ;;
-esac
+OPENCLAW_REPO="${OPENCLAW_REPO:-https://github.com/openclaw/openclaw.git}"
 
 OPENCLAW_CACHE="$PROJECT_DIR/cache/openclaw"
 OPENCLAW_SESSION_AFFINITY_PATCH="$PROJECT_DIR/patches/openclaw/openclaw-session-affinity.patch"
@@ -144,13 +139,13 @@ docker_build_load openclaw:local "$OPENCLAW_CACHE"
 echo ""
 echo "Done. Image: openclaw:local"
 
-# ── Opik layer (only when OPIK_PLUGIN=enabled) ──
-if [ "${OPIK_PLUGIN:-}" != "enabled" ]; then
+# ── Opik layer (only when an Opik endpoint is configured) ──
+if [ -z "${OPIK_URL:-}" ]; then
   exit 0
 fi
 
 echo ""
-echo "OPIK_PLUGIN=enabled — building opik layer..."
+echo "OPIK_URL is set — building opik layer..."
 
 # ── Step 3: Verify the agent-opik-plugin submodule ──
 if [ ! -d "$PLUGIN_SRC" ] || [ ! -f "$TRACE_PLUGIN_SOURCE_DIR/src/sii_opik_plugin/openclaw/openclaw_opik_tracer.py" ]; then
@@ -170,4 +165,4 @@ docker_build_load openclaw:local-opik \
 
 echo ""
 echo "Done. Image: openclaw:local-opik"
-echo "To use: OPIK_PLUGIN=enabled OPIK_URL=... OPIK_PROJECT_NAME=... ./Agents/Openclaw/scripts/setup.sh"
+echo "To use: OPIK_URL=... OPIK_PROJECT_NAME=... ./Agents/Openclaw/scripts/setup.sh"

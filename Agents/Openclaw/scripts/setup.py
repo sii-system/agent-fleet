@@ -69,9 +69,22 @@ def _build_arg_parser(defaults: dict[str, str]) -> argparse.ArgumentParser:
 
 # ── Config resolution ─────────────────────────────────────────────────────────
 
-def trace_to_opik_enabled(value: str | None) -> bool:
-    """Return whether fleet-wide tracing is enabled."""
-    return (value or "true") not in {"false", "0"}
+def opik_enabled(cfg: dict[str, Any]) -> bool:
+    """Return whether Opik tracing is configured.
+
+    OPIK_URL is the single switch: an endpoint means traces are uploaded, an
+    empty value means they are not."""
+    return bool(str(cfg.get("OPIK_URL", "")).strip())
+
+
+def warn_retired_opik_vars(env: dict[str, str]) -> None:
+    """Report retired switches so a stale value is not ignored in silence."""
+    for name in ("TRACE_TO_OPIK", "OPIK_PLUGIN", "OPIK_MODE"):
+        if env.get(name, "").strip():
+            print(
+                f"[WARN] {name} is no longer used; Opik tracing follows OPIK_URL",
+                file=sys.stderr,
+            )
 
 
 def resolve_config(env: dict[str, str], argv: list[str]) -> dict[str, Any]:
@@ -108,8 +121,6 @@ def resolve_config(env: dict[str, str], argv: list[str]) -> dict[str, Any]:
         "COUNT": env.get("COUNT", "2"),
         "BASE_URL": env.get("BASE_URL", ""),
         "API_KEY": env.get("API_KEY", ""),
-        "TRACE_TO_OPIK": env.get("TRACE_TO_OPIK", "true"),
-        "OPIK_PLUGIN": env.get("OPIK_PLUGIN", "disabled"),
         "OPIK_URL": env.get("OPIK_URL", ""),
         "OPIK_API_KEY": env.get("OPIK_API_KEY", ""),
         "OPIK_WORKSPACE": env.get("OPIK_WORKSPACE", "default"),
@@ -137,10 +148,7 @@ def resolve_config(env: dict[str, str], argv: list[str]) -> dict[str, Any]:
     cfg["OPENCLAW_UID"] = int(cfg["OPENCLAW_UID"])
     cfg["OPENCLAW_GID"] = int(cfg["OPENCLAW_GID"])
 
-    # TRACE_TO_OPIK is the fleet-wide kill switch. A stale subsystem-specific
-    # OPIK_PLUGIN=enabled setting must not turn tracing back on.
-    if not trace_to_opik_enabled(cfg["TRACE_TO_OPIK"]):
-        cfg["OPIK_PLUGIN"] = "disabled"
+    warn_retired_opik_vars(env)
 
     if cfg["DOCKER_COMPOSE_READ_ONLY"] not in ("true", "false"):
         raise _ParserError("--docker_compose_read_only must be 'true' or 'false'.")
@@ -166,12 +174,10 @@ def validate_required(cfg: dict[str, Any]) -> None:
         )
         raise _ParserError(msg)
 
-    if cfg["OPIK_PLUGIN"] == "enabled" and (
-        not cfg["OPIK_URL"] or not cfg["OPIK_PROJECT_NAME"]
-    ):
+    if opik_enabled(cfg) and not cfg["OPIK_PROJECT_NAME"]:
         raise _ParserError(
-            "Error: OPIK_PLUGIN is enabled but OPIK_URL and OPIK_PROJECT_NAME are required.\n"
-            f'  OPIK_PLUGIN=enabled OPIK_URL="https://opik.example.com/api/" '
+            "Error: OPIK_URL is set but OPIK_PROJECT_NAME is required.\n"
+            f'  OPIK_URL="https://opik.example.com/api/" '
             f'OPIK_PROJECT_NAME="my-project" {SCRIPT_DIR}/setup.sh {cfg["COUNT"]}'
         )
 
@@ -225,7 +231,7 @@ def build_openclaw_config(template: dict[str, Any], cfg: dict[str, Any], *, toke
     result["tools"]["exec"]["ask"] = cfg["EXEC_ASK"]
     result["tools"]["fs"]["workspaceOnly"] = cfg["WORKSPACE_ONLY"] == "true"
 
-    if cfg["OPIK_PLUGIN"] == "enabled":
+    if opik_enabled(cfg):
         result["plugins"]["allow"] = ["openai", "openclaw-opik-tracer"]
         result["plugins"]["load"] = {
             "paths": ["/opt/openclaw-plugins/openclaw-opik-tracer"],
@@ -294,14 +300,14 @@ def render_compose_service(svc: str, *, token_var: str, gw_port: int, image_defa
     for key in ("NPM_CONFIG_REGISTRY", "PIP_INDEX_URL", "PIP_EXTRA_INDEX_URL", "PIP_TRUSTED_HOST"):
         if cfg.get(key):
             lines.append(f"      {key}: {yaml_double_quote(str(cfg[key]))}")
-    if cfg["OPIK_PLUGIN"] == "enabled":
+    if opik_enabled(cfg):
         lines.append('      OC_OPIK_PROCESS_TIMEOUT_S: "60"')
     lines.append("    volumes:")
     lines.append(f"      - {config_dir}:{CONTAINER_STATE_DIR}         # per-instance OpenClaw state")
     lines.append(f"      - {workspace_dir}:{CONTAINER_WORKSPACE_DIR}  # per-instance agent workspace")
     lines.append(f"      - {npm_cache}:/home/node/.npm             # shared npm cache (read/write safe)")
     lines.append(f"      - {openclaw_home_dir}:{CONTAINER_OPENCLAW_HOME}  # writable .openclaw (exec tool needs chmod)")
-    if cfg["OPIK_PLUGIN"] == "enabled" and opik_state_dir is not None:
+    if opik_enabled(cfg) and opik_state_dir is not None:
         lines.append(f"      - {opik_state_dir}:/home/node/.openclaw/state  # opik tracer state only")
     if plugin_cache is not None and plugin_cache.is_dir():
         lines.append(f"      - {plugin_cache}:/opt/plugin-cache:ro   # shared plugin cache (read-only)")
@@ -455,7 +461,7 @@ def main(argv: list[str] | None = None) -> int:
     count = cfg["COUNT"]
     print(f"Generating {count} instance(s)...")
 
-    image_default = "openclaw:local-opik" if cfg["OPIK_PLUGIN"] == "enabled" else "openclaw:local"
+    image_default = "openclaw:local-opik" if opik_enabled(cfg) else "openclaw:local"
 
     config_base = Path(cfg["CONFIG_BASE"]).expanduser()
     workspace_base = Path(cfg["WORKSPACE_BASE"]).expanduser()
@@ -478,7 +484,7 @@ def main(argv: list[str] | None = None) -> int:
         token_var = f"TOKEN_{i}"
         config_dir = config_base / str(i)
         workspace_dir = workspace_base / str(i)
-        opik_state_dir = config_dir / "opik-state" if cfg["OPIK_PLUGIN"] == "enabled" else None
+        opik_state_dir = config_dir / "opik-state" if opik_enabled(cfg) else None
 
         config_dir.mkdir(parents=True, exist_ok=True)
         workspace_dir.mkdir(parents=True, exist_ok=True)
@@ -541,8 +547,6 @@ def main(argv: list[str] | None = None) -> int:
     COMPOSE_FILE.write_text("".join(compose_parts), encoding="utf-8")
 
     env_lines.append(f"CONTAINER_NAME_PREFIX={prefix}")
-    if cfg["OPIK_PLUGIN"] == "enabled":
-        env_lines.append(f"OPIK_PLUGIN={cfg['OPIK_PLUGIN']}")
     ENV_FILE.write_text("\n".join(env_lines) + "\n", encoding="utf-8")
 
     print()
@@ -558,7 +562,7 @@ def main(argv: list[str] | None = None) -> int:
     print()
     print(f"Run:  cd {PROJECT_DIR} && docker compose up -d")
     print(f"Stop: cd {PROJECT_DIR} && docker compose down")
-    if cfg["OPIK_PLUGIN"] == "enabled":
+    if opik_enabled(cfg):
         print()
         print(f"Opik tracer: enabled (project: {cfg['OPIK_PROJECT_NAME']})")
 

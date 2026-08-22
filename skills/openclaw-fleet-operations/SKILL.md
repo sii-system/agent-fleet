@@ -22,7 +22,7 @@ per-instance `$CONFIG_BASE/<N>/openclaw.json`, followed by Docker Compose and
    root `config.local.env`, then root `config.env`.
 3. Build the image when needed:
    `./Agents/Openclaw/scripts/build-openclaw-image.sh`. Use
-   `OPIK_PLUGIN=enabled` only when Opik tracing should be built into the image.
+   `OPIK_URL` only when Opik tracing should be built into the image.
 4. Generate the fleet with `Agents/Openclaw/scripts/setup.sh`. Required model
    gateway values are `BASE_URL` and `API_KEY`; `MODEL` selects the model.
 5. Start with
@@ -69,7 +69,7 @@ per-instance `$CONFIG_BASE/<N>/openclaw.json`, followed by Docker Compose and
 - If a benchmark cannot access files outside the workspace, rerun setup with
   `WORKSPACE_ONLY=false` only for that benchmark path.
 - If plugin tracing is missing, verify both the image build and setup used
-  `OPIK_PLUGIN=enabled` and that `OPIK_URL` plus `OPIK_PROJECT_NAME` were set.
+  `OPIK_URL` plus `OPIK_PROJECT_NAME` were set.
 - If generated config paths look wrong, inspect `CONFIG_BASE`,
   `WORKSPACE_BASE`, UID/GID, and host permissions before patching code.
 

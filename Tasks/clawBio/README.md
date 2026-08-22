@@ -50,11 +50,11 @@ The benchmark distributes tasks across instances using round-robin scheduling an
 
 ```bash
 # From repo root
-TRACE_TO_OPIK=false ./Agents/Openclaw/scripts/build-openclaw-image.sh
+OPIK_URL= ./Agents/Openclaw/scripts/build-openclaw-image.sh
 ```
 
 For tracing, initialize the submodule and build with
-`TRACE_TO_OPIK=true OPIK_PLUGIN=enabled` instead.
+`OPIK_URL=https://opik.example.com/api` instead.
 
 ---
 
@@ -128,7 +128,7 @@ set -a
 . ./Tasks/clawBio/config/benchmark.env
 set +a
 PLUGIN_CACHE_DIR=$(pwd)/Tasks/clawBio/cache \
-TRACE_TO_OPIK=false \
+OPIK_URL= \
 BASE_URL="https://api.example.com/v1" \
 API_KEY="sk-xxx" \
 MODEL="your-model" \

@@ -107,7 +107,7 @@ finalize_timeout_trace() {
   # the same trace switch as the fixed-dataset worker so trace-off runs never
   # replay Claude or OpenCode hook backups into Opik.
   if ! harbor_trace_to_opik_enabled; then
-    log_msg "timeout finalize skipped: TRACE_TO_OPIK=false"
+    log_msg "timeout finalize skipped: OPIK_URL is empty"
     return 0
   fi
   local project_name="${2:-${OPIK_PROJECT_NAME:-}}"

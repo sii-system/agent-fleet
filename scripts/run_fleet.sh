@@ -65,10 +65,8 @@ validate_run_config() {
   for required in BASE_URL API_KEY MODEL; do
     [[ -n "${!required:-}" ]] || missing+=("$required")
   done
-  case "${TRACE_TO_OPIK:-true}" in
-    false|0) ;;
-    *) [[ -n "${OPIK_URL:-}" ]] || missing+=("OPIK_URL (required when TRACE_TO_OPIK=true)") ;;
-  esac
+  # OPIK_URL is intentionally not required: an empty value means run without
+  # Opik tracing.
   if [[ ${#missing[@]} -gt 0 ]]; then
     printf '[ERROR] missing required configuration: %s\n' "${missing[*]}" >&2
     printf '[ERROR] run ./scripts/setup.sh or add the values to config.local.env\n' >&2

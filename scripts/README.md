@@ -49,9 +49,8 @@ OPIK_URL=https://your-opik-host/api \
 ./scripts/setup.sh
 ```
 
-For an advanced or temporary override, set `TRACE_TO_OPIK=false` to disable
-Opik while retaining a saved endpoint, or set `TRACE_TO_OPIK=true` together
-with `OPIK_URL` to force it on.
+`OPIK_URL` is the only tracing control. To disable Opik for a single run
+without editing the saved config, pass an empty value: `OPIK_URL= ...`.
 
 **System prerequisites**: Install Docker with Compose v2, Python >=3.9,
 `git`, `curl`, `jq`, `openssl`, Linux `util-linux`, and `procps`. Commands must
@@ -95,7 +94,7 @@ dependency and is prepared separately by the runner.
   the project-private default. Existing files in `$HOME/.local/bin` are left
   untouched; set `AGENT_FLEET_BIN_DIR` explicitly to choose another path.
 - `config.local.env`: only managed keys (`BASE_URL` / `API_KEY` / `MODEL`,
-  plus `TRACE_TO_OPIK` and `OPIK_*` when set) are updated; comments and other
+  plus `OPIK_*` when `OPIK_URL` is set) are updated; comments and other
   keys are preserved. Caller environment variables win over existing local
   values, and setup prompts only for missing required values.
 - Host Harbor runner: exact direct dependencies come from
@@ -506,26 +505,19 @@ interfaces:
 - `--detach` is redundant for multi-run input: Harbor runs always detach there
   (an informational notice is printed), while OpenClaw runners stay in the
   foreground and ignore `--detach` with a warning in every mode.
-- If `TRACE_TO_OPIK` is absent, benchmark runners retain their historical
-  tracing-on default and require `OPIK_URL`. Interactive setup avoids that
-  ambiguity by always persisting an explicit state: a supplied `OPIK_URL`
-  derives `TRACE_TO_OPIK=true`, while an empty optional URL derives
-  `TRACE_TO_OPIK=false`.
-- `TRACE_TO_OPIK` remains the advanced fleet-wide switch for Harbor, workers,
-  rollouts, DinD, ClawBio, and PinchBench. A caller-supplied switch takes
-  precedence over a caller-supplied URL, which in turn takes precedence over
-  saved setup state. Setup accepts common boolean spellings and normalizes
-  them, while runtime consumers treat only `false` or `0` as off.
-- With `TRACE_TO_OPIK=false` there are no traces and no dashboard, Opik
-  settings are not exposed to task containers, and the Claude realtime hook
-  is forced off. `TRACE_TO_OPIK=false` is authoritative in ClawBio: it forces
-  `OPIK_PLUGIN=disabled` even over an explicit `OPIK_PLUGIN=enabled`; with
-  tracing on, an explicit `OPIK_PLUGIN` wins and `OPIK_PLUGIN=enabled` requires
-  `OPIK_URL`. Setup retains an existing endpoint and credentials when tracing
-  is disabled so they can be re-enabled without re-entry.
-- PinchBench refuses a `TRACE_TO_OPIK=false` run while the OpenClaw gateway
-  configs still enable the Opik tracer plugin; regenerate the fleet with
-  `TRACE_TO_OPIK=false ./Agents/Openclaw/scripts/setup.sh <n>` first.
+- `OPIK_URL` is the single fleet-wide tracing switch for Harbor, workers,
+  rollouts, DinD, ClawBio, and PinchBench: an endpoint uploads traces, an
+  empty value runs without Opik. A caller-supplied value takes precedence
+  over saved setup state.
+- With `OPIK_URL` empty there are no traces and no dashboard, Opik settings
+  are not exposed to task containers, the Claude realtime hook is forced off,
+  and OpenClaw builds and runs `openclaw:local` without the tracer layer.
+- The retired `TRACE_TO_OPIK`, `OPIK_PLUGIN`, and `OPIK_MODE` variables are
+  reported on stderr and otherwise ignored, so a stale value in
+  `config.local.env` or a CI job does not silently change behavior.
+- PinchBench refuses an untraced run while the OpenClaw gateway configs still
+  enable the Opik tracer plugin; regenerate the fleet with
+  `OPIK_URL= ./Agents/Openclaw/scripts/setup.sh <n>` first.
 - The parent directory for `--output` must already exist. A successful write
   replaces an existing file at the same path.
 
@@ -567,8 +559,8 @@ When invoked inside a container, the launcher warns and delegates directly to
 5. Mount the repo at the same absolute path inside DinD.
 6. Forward configured HTTP(S) proxy settings, a no-proxy list that includes
    the model and Opik hosts, and — when set — tracing settings
-   (`TRACE_TO_OPIK`, `OPIK_URL`, `OPIK_API_KEY`, `OPIK_WORKSPACE`,
-   `OPIK_PROJECT_NAME`), local Claude package paths, and package mirrors.
+   (`OPIK_URL`, `OPIK_API_KEY`, `OPIK_WORKSPACE`, `OPIK_PROJECT_NAME`),
+   local Claude package paths, and package mirrors.
 7. Run `scripts/setup.sh` inside DinD per `DIND_BOOTSTRAP` (`always` every
    time, `missing` only when Pi provider configuration or the Pi skills are absent,
    `skip` never).

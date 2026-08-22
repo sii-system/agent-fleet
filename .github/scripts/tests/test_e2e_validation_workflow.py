@@ -56,12 +56,16 @@ class E2eValidationWorkflowTest(unittest.TestCase):
     def test_enables_tracing_only_with_a_real_opik_credential(self):
         # env.sh substitutes the literal local-dev-key for a missing
         # OPIK_API_KEY and harboropik.sh's preflight accepts 401/403, so an
-        # unconditional TRACE_TO_OPIK=true would look healthy while no trace
-        # reached Opik.
-        self.assertNotIn('TRACE_TO_OPIK: "true"', self.workflow)
+        # unconditionally non-empty OPIK_URL would look healthy while no
+        # trace reached Opik. OPIK_URL is the single switch: clear it unless
+        # both it and OPIK_API_KEY are real.
+        self.assertNotIn("TRACE_TO_OPIK", self.workflow)
         self.assertIn("secrets.OPIK_API_KEY", self.workflow)
-        self.assertIn("export TRACE_TO_OPIK=true", self.workflow)
-        self.assertIn("export TRACE_TO_OPIK=false", self.workflow)
+        self.assertIn(
+            'if [[ -n "${OPIK_API_KEY:-}" && -n "${OPIK_URL:-}" ]]; then',
+            self.workflow,
+        )
+        self.assertIn('export OPIK_URL=""', self.workflow)
 
     def test_redacts_every_credential_it_injects(self):
         redact = self.workflow[self.workflow.index("Stage and redact artifacts"):]

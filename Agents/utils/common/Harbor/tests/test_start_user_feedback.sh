@@ -48,7 +48,6 @@ run_start() {
     BASE_URL="https://gateway.example.invalid" \
     API_KEY="fake-key" \
     MODEL="fake-model" \
-    TRACE_TO_OPIK="false" \
     HARBOR_MONITOR_ENABLED="0" \
     HARBOR_ONLINE_ANALYSIS="0" \
     "$@" \

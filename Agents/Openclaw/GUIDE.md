@@ -75,10 +75,8 @@ DEFAULT_PORTS_OFFSET="100" \
 | `WORKSPACE_ONLY` | `true` | Default value for `tools.fs.workspaceOnly`; set `false` to let skills read outside the workspace (e.g. plugin/extension dirs) |
 | `DOCKER_COMPOSE_READ_ONLY` | `true` | Default value for generated Compose `read_only` |
 | `OPENCLAW_IMAGE` | `openclaw:local` | Docker image to use |
-| `TRACE_TO_OPIK` | `true` | Fleet-wide tracing switch; `false` forces the OpenClaw plugin off |
-| `OPIK_PLUGIN` | `disabled` | Set to `enabled` to activate opik tracing |
-| `OPIK_URL` | _(none)_ | Opik API endpoint (required when `OPIK_PLUGIN=enabled`) |
-| `OPIK_PROJECT_NAME` | _(none)_ | Opik project name (required when `OPIK_PLUGIN=enabled`) |
+| `OPIK_URL` | _(none)_ | Opik API endpoint; the single tracing switch, empty runs without Opik |
+| `OPIK_PROJECT_NAME` | _(none)_ | Opik project name (required when `OPIK_URL` is set) |
 | `OPIK_API_KEY` | _(empty)_ | Opik API key |
 | `OPIK_WORKSPACE` | `default` | Opik workspace name |
 | `TZ` | `Asia/Shanghai` | Container timezone |
@@ -91,23 +89,23 @@ The generated containers intentionally do not mount over `/home/node/.openclaw`.
 
 ### Opik Tracing Plugin
 
-Build with `OPIK_PLUGIN=enabled` and provide the opik config at setup:
+Provide the Opik endpoint at build and setup time:
 
 ```bash
-OPIK_PLUGIN=enabled ./Agents/Openclaw/scripts/build-openclaw-image.sh
+OPIK_URL="https://opik.example.com/api/" ./Agents/Openclaw/scripts/build-openclaw-image.sh
 
-OPIK_PLUGIN=enabled \
 OPIK_URL="https://opik.example.com/api/" \
 OPIK_PROJECT_NAME="my-project" \
 BASE_URL="https://api.example.com/v1" API_KEY="sk-xxx" MODEL="nex/nex-n1.1" \
 ./Agents/Openclaw/scripts/setup.sh 3
 ```
 
-`TRACE_TO_OPIK=false` is authoritative: shared setup and image builds ignore a
-stale `OPIK_PLUGIN=enabled` value and use `openclaw:local` without requiring an
-Opik endpoint or plugin checkout. Both scripts read `config.env`,
-`config.local.env`, and `config/fleet.env`; one-off caller environment values
-retain the highest precedence.
+`OPIK_URL` is the single switch. With it empty, shared setup and image builds
+use `openclaw:local` and need no Opik endpoint or plugin checkout; the retired
+`TRACE_TO_OPIK`, `OPIK_PLUGIN`, and `OPIK_MODE` variables are reported and
+ignored. Both scripts read `config.env`, `config.local.env`, and
+`config/fleet.env`; one-off caller environment values retain the highest
+precedence.
 
 ### Package Mirrors
 
@@ -117,7 +115,7 @@ For restricted networks, pass npm and pip mirrors to the build and generated con
 NPM_CONFIG_REGISTRY="https://registry.npmmirror.com" \
 PIP_INDEX_URL="https://pypi.tuna.tsinghua.edu.cn/simple" \
 PIP_TRUSTED_HOST="pypi.tuna.tsinghua.edu.cn" \
-OPIK_PLUGIN=enabled ./Agents/Openclaw/scripts/build-openclaw-image.sh
+OPIK_URL="https://opik.example.com/api/" ./Agents/Openclaw/scripts/build-openclaw-image.sh
 
 NPM_CONFIG_REGISTRY="https://registry.npmmirror.com" \
 PIP_INDEX_URL="https://pypi.tuna.tsinghua.edu.cn/simple" \

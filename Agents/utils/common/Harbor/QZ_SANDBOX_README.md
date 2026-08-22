@@ -117,9 +117,9 @@ Under the hood:
 - the agent talks to the SII model gateway through `ANTHROPIC_BASE_URL` /
   `ANTHROPIC_AUTH_TOKEN` (derived from `BASE_URL` / `API_KEY`); the gateway
   natively serves the Anthropic `/v1/messages` API;
-- realtime Opik hooks stay disabled (they need host bind mounts), so use
-  `TRACE_TO_OPIK=false` or a remote Opik (`OPIK_MODE=remote` is required for
-  non-oracle qz runs, same as e2b).
+- realtime Opik hooks stay disabled (they need host bind mounts), so either
+  leave `OPIK_URL` empty or point it at a remote Opik endpoint (a local Opik
+  stack is not reachable from qz runs, same as e2b).
 
 ### opencode (via the launcher)
 
@@ -127,7 +127,7 @@ Under the hood:
 sources as Claude Code. The generated custom-provider config continues to
 route the agent through `BASE_URL` / `API_KEY`.
 
-Start with `TRACE_TO_OPIK=false`. Traced OpenCode runs require remote Opik and
+Start with `OPIK_URL` empty. Traced OpenCode runs require a remote Opik and
 a sandbox-reachable Python package mirror for the hook dependencies; they do
 not use runner-local bind mounts or the runner-local wheel HTTP server.
 

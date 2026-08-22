@@ -22,9 +22,7 @@ trap cleanup_verifier_uv_bin_dir EXIT
 #   2. Normalize the Opik API URL (ensures /api suffix is present)
 #   3. Apply minimal-test defaults when MIN_TEST=1 (fast smoke test)
 #   4. Docker Hub connectivity preflight (warn or abort if unreachable)
-#   5. Ensure Opik is available:
-#        - OPIK_MODE=local  → clone Opik repo and start via docker-compose
-#        - OPIK_MODE=remote → verify health and ingestion endpoints
+#   5. Verify Opik health and ingestion endpoints when OPIK_URL is set
 #   6. Clone the Terminal Bench dataset if not already present locally
 #   7. Build and execute with the pinned runner's `opik harbor run` command,
 #      with PYTHONPATH pointing at Harbor-claude-code so that sitecustomize.py
@@ -37,7 +35,7 @@ trap cleanup_verifier_uv_bin_dir EXIT
 # Usage examples:
 #   MIN_TEST=1 bash harboropik.sh                       # quick smoke test
 #   HARBOR_DRY_RUN=1  bash harboropik.sh                    # print command, skip run
-#   OPIK_MODE=remote OPIK_BASE=http://host:5173 \
+#   OPIK_URL=http://host:5173/api \
 #     HARBOR_RUNS=10 HARBOR_N_CONCURRENT=4 bash harboropik.sh   # standard remote run
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -138,7 +136,7 @@ configure_trace_disabled_runtime() {
   # inherit them from the parent environment.
   OPIK_TRACK_DISABLE=true
   export OPIK_TRACK_DISABLE
-  export -n OPIK_URL OPIK_URL_OVERRIDE OPIK_BASE OPIK_MODE \
+  export -n OPIK_URL OPIK_URL_OVERRIDE OPIK_BASE \
     OPIK_PROJECT_NAME OPIK_API_KEY OPIK_WORKSPACE
 }
 
@@ -146,7 +144,7 @@ normalize_opik_url_override() {
   local normalized="${OPIK_URL_OVERRIDE%/}"
   if [[ -z "$normalized" ]]; then
     echo "[ERROR] OPIK_URL_OVERRIDE/OPIK_URL is empty; set it to an Opik API URL such as http://host:5173/api" >&2
-    echo "[ERROR] or set TRACE_TO_OPIK=false to run the benchmark without Opik tracing" >&2
+    echo "[ERROR] or leave OPIK_URL empty to run the benchmark without Opik tracing" >&2
     exit 1
   fi
   if [[ "$normalized" != */api ]]; then
@@ -333,19 +331,9 @@ ensure_environment_backend() {
       echo "[ERROR] E2B_API_KEY is required when HARBOR_ENVIRONMENT_TYPE=e2b" >&2
       exit 1
     fi
-    if ! harbor_agent_is_oracle && [[ "$OPIK_MODE" != "remote" ]]; then
-      echo "[ERROR] OPIK_MODE=remote is required when HARBOR_ENVIRONMENT_TYPE=e2b" >&2
-      exit 1
-    fi
     echo "[INFO] using E2B environment; skip host Docker daemon and Docker Hub preflight"
   fi
   if [[ "$HARBOR_ENVIRONMENT_TYPE" == "qz" ]]; then
-    if ! harbor_agent_is_oracle && [[ "$OPIK_MODE" != "remote" ]]; then
-      # Same constraint as e2b: a local Opik stack needs the host Docker
-      # daemon, which qz runs skip entirely.
-      echo "[ERROR] OPIK_MODE=remote is required when HARBOR_ENVIRONMENT_TYPE=qz" >&2
-      exit 1
-    fi
     echo "[INFO] using qz sandbox environment; skip host Docker daemon and Docker Hub preflight"
   fi
 }
@@ -474,15 +462,14 @@ ensure_trace_plugin_source_if_needed() {
   if [[ "$HARBOR_DRY_RUN" == "1" ]]; then
     return 0
   fi
-  local trace_enabled="${TRACE_TO_OPIK:-}"
   local -a required=()
   if [[ "$AGENT" == "opencode" ]]; then
-    if [[ "$trace_enabled" == "true" || "$trace_enabled" == "1" ]]; then
+    if harbor_trace_to_opik_enabled; then
       required=("$TRACE_PLUGIN_OPENCODE_PLUGIN_SOURCE" "$TRACE_PLUGIN_OPENCODE_HOOK_SOURCE")
     fi
   elif harbor_agent_is_claude_code && harbor_trace_to_opik_enabled &&
     [[ "$HARBOR_ENVIRONMENT_TYPE" == "docker" ]] &&
-    [[ "$trace_enabled" == "true" || "$trace_enabled" == "1" || "$HARBOR_CC_OPIK_ENABLE_HOOK" == "1" ]]; then
+    [[ "$HARBOR_CC_OPIK_ENABLE_HOOK" == "1" ]]; then
     # With tracing off the realtime hook is forced off at command
     # construction. E2B cannot use the host bind-mounted hook source.
     required=("$TRACE_PLUGIN_CLAUDE_HOOK_SOURCE")
@@ -639,15 +626,6 @@ ensure_docker_daemon() {
   fi
 }
 
-ensure_opik_repo() {
-  if [[ -d "$OPIK_REPO_DIR/.git" ]]; then
-    echo "[INFO] using existing Opik repo: $OPIK_REPO_DIR"
-    return 0
-  fi
-  echo "[INFO] cloning Opik repo"
-  git clone https://github.com/comet-ml/opik.git "$OPIK_REPO_DIR"
-}
-
 prepare_local_dataset_if_needed() {
   if harbor_uses_registry_dataset; then
     return 0
@@ -655,31 +633,6 @@ prepare_local_dataset_if_needed() {
 
   harbor_ensure_dataset
   harbor_prepare_task_file
-}
-
-start_opik_local() {
-  if [[ ! -d "$COMPOSE_DIR" ]]; then
-    echo "[ERROR] compose directory not found: $COMPOSE_DIR" >&2
-    exit 1
-  fi
-
-  echo "[INFO] starting local Opik stack"
-  (
-    cd "$COMPOSE_DIR"
-    docker compose --profile opik up -d
-  )
-
-  echo "[INFO] waiting for Opik /health"
-  for _ in $(seq 1 180); do
-    if curl -fsS "$OPIK_BASE/health" >/dev/null 2>&1; then
-      echo "[INFO] Opik is ready"
-      return 0
-    fi
-    sleep 2
-  done
-
-  echo "[ERROR] Opik is not ready after timeout" >&2
-  exit 1
 }
 
 verify_opik_reachable() {
@@ -951,7 +904,7 @@ run_harbor() {
   if [[ "$HARBOR_DRY_RUN" == "1" ]]; then
     echo "[INFO] HARBOR_DRY_RUN=1, skip Opik project preflight check"
   elif ! harbor_trace_to_opik_enabled; then
-    echo "[INFO] TRACE_TO_OPIK=false, skip Opik project preflight check"
+    echo "[INFO] OPIK_URL is empty, skip Opik project preflight check"
   else
     local _projects_status
     _projects_status="$(
@@ -1025,7 +978,6 @@ run_harbor() {
     --max-retries "$HARBOR_MAX_RETRIES"
     -o "$out_dir"
     -k "$HARBOR_RUNS"
-    --ae "TRACE_TO_OPIK=$TRACE_TO_OPIK"
     --ae "HARBOR_LOCAL_WHEEL_SERVER_URL=${HARBOR_LOCAL_WHEEL_SERVER_URL:-}"
     --ae "PIP_DEFAULT_TIMEOUT=$HARBOR_PIP_DEFAULT_TIMEOUT"
     --ae "PIP_RETRIES=$HARBOR_PIP_RETRIES"
@@ -1396,7 +1348,7 @@ run_opencode_task() {
     exit 1
   fi
 
-  if [[ "$HARBOR_DRY_RUN" != "1" && "$OPIK_MODE" == "remote" ]] && harbor_trace_to_opik_enabled; then
+  if [[ "$HARBOR_DRY_RUN" != "1" ]] && harbor_trace_to_opik_enabled; then
     verify_opik_reachable
     verify_opik_ingestion_route
   fi
@@ -1453,7 +1405,6 @@ run_opencode_task() {
       --ak "version=$OPENCODE_VERSION"
       --agent-import-path opik_opencode_harbor:OpikOpenCodeHarbor
       -m "$HARBOR_MODEL"
-      --ae "TRACE_TO_OPIK=$TRACE_TO_OPIK"
       --ae "CC_OPIK_PY_WHEEL_DIR=$HARBOR_CC_PY_WHEEL_DIR_MOUNT_PATH"
       --ae "HARBOR_LOCAL_WHEEL_SERVER_URL=${HARBOR_LOCAL_WHEEL_SERVER_URL:-}"
       --ae "OPENCODE_TGZ_PATH=$HARBOR_CC_PY_WHEEL_DIR_MOUNT_PATH/$OPENCODE_TGZ_BASENAME"
@@ -1667,28 +1618,9 @@ main() {
     ensure_environment_backend
 
     if ! harbor_trace_to_opik_enabled; then
-      echo "[INFO] TRACE_TO_OPIK=false, skip Opik readiness checks"
-    else
-      if [[ "$OPIK_MODE" != "local" && "$OPIK_MODE" != "remote" ]]; then
-        echo "[ERROR] OPIK_MODE must be local or remote, got: $OPIK_MODE" >&2
-        exit 1
-      fi
-
-      if [[ "$OPIK_MODE" == "local" ]]; then
-        ensure_opik_repo
-      fi
+      echo "[INFO] OPIK_URL is empty, skip Opik readiness checks"
     fi
     prepare_local_dataset_if_needed
-    if harbor_trace_to_opik_enabled; then
-      if [[ "$OPIK_MODE" == "local" ]]; then
-        start_opik_local
-      elif [[ "$OPIK_BASE" == "http://localhost:5173" && "$OPIK_URL_OVERRIDE" == "http://localhost:5173/api" ]]; then
-        echo "[ERROR] OPIK_MODE=remote requires a real remote Opik endpoint." >&2
-        echo "[ERROR] please set OPIK_BASE (for example: https://your-opik-host)" >&2
-        echo "[ERROR] and optionally OPIK_URL_OVERRIDE (for example: https://your-opik-host/api)." >&2
-        exit 1
-      fi
-    fi
 
     run_opencode_task
     return $?
@@ -1730,31 +1662,12 @@ main() {
   fi
 
   if ! harbor_trace_to_opik_enabled; then
-    echo "[INFO] TRACE_TO_OPIK=false, skip Opik readiness checks"
-  else
-    if [[ "$OPIK_MODE" != "local" && "$OPIK_MODE" != "remote" ]]; then
-      echo "[ERROR] OPIK_MODE must be local or remote, got: $OPIK_MODE" >&2
-      exit 1
-    fi
-
-    if [[ "$OPIK_MODE" == "local" ]]; then
-      ensure_opik_repo
-    fi
+    echo "[INFO] OPIK_URL is empty, skip Opik readiness checks"
   fi
   prepare_local_dataset_if_needed
   if harbor_trace_to_opik_enabled; then
-    if [[ "$OPIK_MODE" == "local" ]]; then
-      start_opik_local
-    else
-      if [[ "$OPIK_BASE" == "http://localhost:5173" && "$OPIK_URL_OVERRIDE" == "http://localhost:5173/api" ]]; then
-        echo "[ERROR] OPIK_MODE=remote requires a real remote Opik endpoint." >&2
-        echo "[ERROR] please set OPIK_BASE (for example: https://your-opik-host)" >&2
-        echo "[ERROR] and optionally OPIK_URL_OVERRIDE (for example: https://your-opik-host/api)." >&2
-        exit 1
-      fi
-      verify_opik_reachable
-      verify_opik_ingestion_route
-    fi
+    verify_opik_reachable
+    verify_opik_ingestion_route
   fi
   run_harbor
 }

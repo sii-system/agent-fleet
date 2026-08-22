@@ -229,7 +229,6 @@ DIND_USER_GID=5678 \
 HTTP_PROXY=http://proxy.invalid:8080 \
 HTTPS_PROXY=http://proxy.invalid:8443 \
 NO_PROXY=existing.example \
-TRACE_TO_OPIK=false \
 MIN_TEST=1 \
 MIN_TEST_INCLUDE_TASK=custom-canary \
 HARBOR_TEMPERATURE=0.2 \
@@ -285,7 +284,6 @@ for expected_env in \
   "HOME=/home/agent" \
   "HTTP_PROXY=http://proxy.invalid:8080" \
   "HTTPS_PROXY=http://proxy.invalid:8443" \
-  "TRACE_TO_OPIK=false" \
   "MIN_TEST=1" \
   "MIN_TEST_INCLUDE_TASK=custom-canary" \
   "HARBOR_TEMPERATURE=0.2" \
@@ -325,7 +323,6 @@ PATH="$TMP_DIR/bin:$PATH" \
 ANTHROPIC_BASE_URL=https://runtime-alias.example.com \
 AUTH_TOKEN=fake-runtime-alias-key \
 HARBOR_MODEL=runtime-alias-model \
-TRACE_TO_OPIK=false \
 DIND_BOOTSTRAP=always \
 "$PROJECT_DIR/scripts/dind-run.sh" \
   --taskset terminalbench21 --agent claude-code --workers 1 > "$ALIAS_LOG"
@@ -351,7 +348,6 @@ AUTH_ONLY_LOG="$TMP_DIR/runtime-auth-token.log"
 PATH="$TMP_DIR/bin:$PATH" \
 API_KEY= \
 AUTH_TOKEN=fake-runtime-auth-only \
-TRACE_TO_OPIK=false \
 DIND_BOOTSTRAP=always \
 "$PROJECT_DIR/scripts/dind-run.sh" \
   --taskset terminalbench21 --agent claude-code --workers 1 > "$AUTH_ONLY_LOG"
@@ -372,7 +368,6 @@ FAILURE_LOG="$TMP_DIR/failure.log"
 if PATH="$TMP_DIR/bin:$PATH" \
   MOCK_FAIL_RUN_FLEET=1 \
   DIND_BOOTSTRAP=always \
-  TRACE_TO_OPIK=false \
   "$PROJECT_DIR/scripts/dind-run.sh" \
     --taskset terminalbench21 --agent claude-code --workers 1 \
     > "$FAILURE_LOG" 2>&1; then
@@ -398,7 +393,6 @@ run_signal_test() {
   PATH="$TMP_DIR/bin:$PATH" \
   MOCK_SIGNAL_RUN_FLEET="$signal" \
   DIND_BOOTSTRAP=always \
-  TRACE_TO_OPIK=false \
   "$PROJECT_DIR/scripts/dind-run.sh" \
     --taskset terminalbench21 --agent claude-code --workers 1 \
     > "$signal_log" 2>&1 ||

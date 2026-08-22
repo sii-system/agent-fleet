@@ -105,7 +105,7 @@ finalize_timeout_trace() {
   # Timeout finalization replays hook backups into Opik. With tracing off
   # there is no server to write to, for either agent's fallback path.
   if ! harbor_trace_to_opik_enabled; then
-    log_msg "timeout finalize skipped: TRACE_TO_OPIK=false"
+    log_msg "timeout finalize skipped: OPIK_URL is empty"
     return 0
   fi
   local logs_dir py
@@ -152,7 +152,7 @@ run_claimed_task() {
   local task_jobs_root="$2"
   local task_index="$3"
   (
-    export HARBOR_ROOT MODEL AGENT API_KEY BASE_URL TRACE_TO_OPIK OPIK_URL OPIK_URL_OVERRIDE OPIK_PROJECT_NAME OPIK_API_KEY OPIK_WORKSPACE
+    export HARBOR_ROOT MODEL AGENT API_KEY BASE_URL OPIK_URL OPIK_URL_OVERRIDE OPIK_PROJECT_NAME OPIK_API_KEY OPIK_WORKSPACE
     # Trace naming in the Claude hook uses HARBOR_TASK_ID as the canonical
     # per-task identifier. Keep INCLUDE_TASKS for Harbor task selection.
     export HARBOR_TASK_ID="$task_name"

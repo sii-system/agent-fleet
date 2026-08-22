@@ -82,12 +82,14 @@ OPENCODE_RUNTIME_SECRETS = _load_opencode_runtime_secrets()
 
 
 def _trace_to_opik_enabled(extra_env: dict[str, str] | None = None) -> bool:
+    """OPIK_URL is the single switch; the host forwards it only when tracing
+    is on, so an empty value means skip Opik entirely."""
     value: str | None = None
     if extra_env is not None:
-        value = extra_env.get("TRACE_TO_OPIK")
+        value = extra_env.get("OPIK_URL")
     if value is None:
-        value = os.environ.get("TRACE_TO_OPIK", "true")
-    return value not in {"false", "0"}
+        value = os.environ.get("OPIK_URL", "")
+    return bool(value.strip())
 
 
 # ── url helpers ───────────────────────────────────────────────────────────────
@@ -453,7 +455,7 @@ class OpikOpenCodeHarbor(OpenCode):
 
         if not _trace_to_opik_enabled(getattr(self, "_extra_env", None)):
             print(
-                "[opik-cold] TRACE_TO_OPIK=false: skip Opik hook dependencies "
+                "[opik-cold] OPIK_URL is empty: skip Opik hook dependencies "
                 "and plugin files",
                 flush=True,
             )

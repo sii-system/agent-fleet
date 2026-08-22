@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # The worker's timeout finalization replays hook backups into Opik for both
-# agents. With TRACE_TO_OPIK=false it must return before touching anything;
+# agents. With OPIK_URL empty it must return before touching anything;
 # with tracing on it must keep its existing behavior. Extract the shared
 # helper and the function under test instead of running the worker loop.
 HARBOR_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -23,9 +23,9 @@ harbor_agent_is_opencode() {
   exit 1
 }
 
-TRACE_TO_OPIK=false
+OPIK_URL=""
 finalize_timeout_trace "/tmp/trace-gate-result.json"
-[[ "$LOGGED" == *"TRACE_TO_OPIK=false"* ]] || {
+[[ "$LOGGED" == *"OPIK_URL is empty"* ]] || {
   echo "missing trace-off skip log, got: $LOGGED" >&2
   exit 1
 }
@@ -33,7 +33,7 @@ finalize_timeout_trace "/tmp/trace-gate-result.json"
 # Tracing on must still reach the logs-dir resolution (empty here, so the
 # function logs the missing-dir skip instead of finalizing).
 find_trial_logs_dir() { echo ""; }
-TRACE_TO_OPIK=true
+OPIK_URL="https://opik.example.invalid/api"
 LOGGED=""
 finalize_timeout_trace "/tmp/trace-gate-result.json"
 [[ "$LOGGED" == *"missing logs dir"* ]] || {

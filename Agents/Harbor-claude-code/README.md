@@ -12,7 +12,7 @@ DATASET_NAME=seta \
 MODEL=minimax2.7 \
 BASE_URL="https://your-openai-compatible-endpoint" \
 API_KEY="sk-xxx" \
-TRACE_TO_OPIK=false \
+OPIK_URL= \
 bash start.sh
 ```
 

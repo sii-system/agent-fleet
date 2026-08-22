@@ -28,8 +28,6 @@ OPENCLAW_UID="${OPENCLAW_UID:-$(id -u)}"
 OPENCLAW_GID="${OPENCLAW_GID:-$(id -g)}"
 OPENCLAW_CONTAINER_USER="${OPENCLAW_CONTAINER_USER:-$OPENCLAW_UID}"
 
-# Default is resolved after config loading so it can follow TRACE_TO_OPIK.
-OPIK_PLUGIN="${OPIK_PLUGIN:-}"
 OPIK_URL="${OPIK_URL:-}"
 OPIK_WORKSPACE="${OPIK_WORKSPACE:-default}"
 OPIK_API_KEY="${OPIK_API_KEY:-}"
@@ -54,7 +52,7 @@ One-command launcher for ClawBio benchmark:
 
 Optional env vars:
   COUNT, ITERATIONS, TASK_CONFIG, RUN_ROOT
-  TRACE_TO_OPIK, OPIK_URL, OPIK_WORKSPACE, OPIK_API_KEY, OPIK_PROJECT_NAME
+  OPIK_URL, OPIK_WORKSPACE, OPIK_API_KEY, OPIK_PROJECT_NAME
   OPENCLAW_IMAGE_POLICY=if-missing|always
   CONFIG_BASE, WORKSPACE_BASE, PLUGIN_CACHE_DIR
 
@@ -133,6 +131,12 @@ eval "$__caller_env"
 unset __caller_env
 SELECTED_TASKS="$CLI_SELECTED_TASKS"
 
+# Report retired switches read from the caller or any config file above before
+# the early-exit paths below, so a stale value is never silently ignored.
+# shellcheck source=../../../scripts/config_loader.sh
+. "$REPO_ROOT/scripts/config_loader.sh"
+agent_fleet_warn_retired_opik_vars
+
 if [[ -n "$SELECTED_TASKS" ]]; then
   python3 "$BENCH_DIR/scripts/run-benchmark.py" \
     --config "$TASK_CONFIG" \
@@ -197,32 +201,13 @@ Use it only for the generated ClawBio fleet. The profile remains active until
 that fleet is stopped or regenerated.
 EOF
 
-# TRACE_TO_OPIK is the authoritative switch documented in the root README:
-# tracing off forces the plugin off, even over an explicit
-# OPIK_PLUGIN=enabled lingering in fleet.env or another config file. With
-# tracing on, an explicit OPIK_PLUGIN still wins and the default is enabled.
-case "${TRACE_TO_OPIK:-true}" in
-  false|0)
-    if [[ "$OPIK_PLUGIN" == "enabled" ]]; then
-      echo "TRACE_TO_OPIK=false overrides OPIK_PLUGIN=enabled; tracing plugin disabled" >&2
-    fi
-    OPIK_PLUGIN=disabled
-    # These values may have been exported while loading config files. Clear
-    # them before invoking setup/build/benchmark children so trace-off runs do
-    # not retain unnecessary Opik credentials in their process environments.
-    OPIK_URL=""
-    OPIK_WORKSPACE=""
-    OPIK_API_KEY=""
-    OPIK_PROJECT_NAME=""
-    ;;
-  *) OPIK_PLUGIN="${OPIK_PLUGIN:-enabled}" ;;
-esac
-
-if [[ "$OPIK_PLUGIN" == "enabled" ]]; then
-  if [[ -z "$OPIK_URL" ]]; then
-    echo "Error: OPIK_PLUGIN=enabled requires OPIK_URL." >&2
-    exit 1
-  fi
+# OPIK_URL is the single switch. Without an endpoint, clear the remaining Opik
+# values before invoking setup/build/benchmark children so untraced runs do not
+# retain unnecessary Opik credentials in their process environments.
+if [[ -z "$OPIK_URL" ]]; then
+  OPIK_WORKSPACE=""
+  OPIK_API_KEY=""
+  OPIK_PROJECT_NAME=""
 fi
 
 image_exists() {
@@ -238,7 +223,7 @@ echo "iterations:     $ITERATIONS"
 echo "run root:       $RUN_ROOT"
 echo "task config:    $TASK_CONFIG"
 echo "image policy:   $OPENCLAW_IMAGE_POLICY"
-if [[ "$OPIK_PLUGIN" == "enabled" ]]; then
+if [[ -n "$OPIK_URL" ]]; then
   echo "opik tracing:   enabled"
   echo "opik project:   $OPIK_PROJECT_NAME"
   echo "opik url:       $OPIK_URL"
@@ -254,15 +239,14 @@ if [[ "$OPENCLAW_IMAGE_POLICY" == "always" ]]; then
   need_build=1
 elif ! image_exists "openclaw:local"; then
   need_build=1
-elif [[ "$OPIK_PLUGIN" == "enabled" ]] && ! image_exists "openclaw:local-opik"; then
+elif [[ -n "$OPIK_URL" ]] && ! image_exists "openclaw:local-opik"; then
   need_build=1
 fi
 
 if [[ "$need_build" -eq 1 ]]; then
-  TRACE_TO_OPIK="${TRACE_TO_OPIK:-true}" \
-    OPIK_PLUGIN="$OPIK_PLUGIN" \
+  OPIK_URL="$OPIK_URL" \
     "$OPENCLAW_DIR/scripts/build-openclaw-image.sh"
-elif [[ "$OPIK_PLUGIN" == "enabled" ]]; then
+elif [[ -n "$OPIK_URL" ]]; then
   echo "Reusing local images: openclaw:local and openclaw:local-opik"
 else
   echo "Reusing local image: openclaw:local"
@@ -271,8 +255,6 @@ fi
 "$BENCH_DIR/scripts/prewarm-cache.sh" --cache-dir "$PLUGIN_CACHE_DIR"
 
 env_args=(
-  "TRACE_TO_OPIK=${TRACE_TO_OPIK:-true}"
-  "OPIK_PLUGIN=$OPIK_PLUGIN"
   "OPENCLAW_UID=$OPENCLAW_UID"
   "OPENCLAW_GID=$OPENCLAW_GID"
   "OPENCLAW_CONTAINER_USER=$OPENCLAW_CONTAINER_USER"
@@ -281,7 +263,7 @@ env_args=(
   "PLUGIN_CACHE_DIR=$PLUGIN_CACHE_DIR"
 )
 
-if [[ "$OPIK_PLUGIN" == "enabled" ]]; then
+if [[ -n "$OPIK_URL" ]]; then
   env_args+=(
     "OPIK_URL=$OPIK_URL"
     "OPIK_WORKSPACE=$OPIK_WORKSPACE"
@@ -332,7 +314,7 @@ ln -s "$RUN_NAME" "$LATEST_LINK"
 
 echo
 echo "Run complete."
-if [[ "$OPIK_PLUGIN" == "enabled" ]]; then
+if [[ -n "$OPIK_URL" ]]; then
   echo "Opik project: $OPIK_PROJECT_NAME"
 else
   echo "Opik tracing: disabled"

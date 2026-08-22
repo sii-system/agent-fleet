@@ -125,7 +125,7 @@ def _fallback_timeout_trace(logs_dir: Path, status: str) -> int:
 def _trace_to_opik_enabled() -> bool:
     if os.environ.get("OPIK_TRACK_DISABLE", "").lower() in {"true", "1"}:
         return False
-    return os.environ.get("TRACE_TO_OPIK", "true") not in {"false", "0"}
+    return bool(os.environ.get("OPIK_URL", "").strip())
 
 
 def main() -> int:

@@ -70,8 +70,7 @@ exit "${STUB_EXIT:-0}"
         (self.repo / "config.local.env").write_text(
             "BASE_URL=https://gateway.example.invalid\n"
             "API_KEY=fake-runner-key\n"
-            "MODEL=test-model\n"
-            "TRACE_TO_OPIK=false\n",
+            "MODEL=test-model\n",
             encoding="utf-8",
         )
 
@@ -144,7 +143,6 @@ exit "${STUB_EXIT:-0}"
             "BASE_URL=https://gateway.example.invalid\n"
             "API_KEY=fake-runner-key\n"
             "MODEL=test-model\n"
-            "TRACE_TO_OPIK=false\n"
             "RL_ENVIRONMENT_TYPE=qz\n"
             "SBX_API_KEY=sbx_fake_qz_key\n"
             "QZ_SANDBOX_TEMPLATE=current_template\n",
@@ -334,21 +332,21 @@ exit "${STUB_EXIT:-0}"
         self.assertIn("unsupported when ROLLOUT=1", result.stderr)
         self.assertNotIn("runner=", result.stdout)
 
-    def test_tracing_requires_opik_url_before_starting_runner(self):
+    def test_empty_opik_url_does_not_block_startup(self):
+        # OPIK_URL is the single switch for tracing: an empty/unset value
+        # means run without Opik, not a missing-configuration error.
         (self.repo / "config.local.env").write_text(
             "BASE_URL=https://gateway.example.invalid\n"
             "API_KEY=fake-runner-key\n"
-            "MODEL=test-model\n"
-            "TRACE_TO_OPIK=true\n",
+            "MODEL=test-model\n",
             encoding="utf-8",
         )
 
         result = self.run_fleet("--taskset", "terminalbench21")
 
-        self.assertEqual(result.returncode, 1)
-        self.assertIn("OPIK_URL", result.stderr)
-        self.assertIn("./scripts/setup.sh", result.stderr)
-        self.assertNotIn("runner=harbor", result.stdout)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("missing required configuration", result.stderr)
+        self.assertIn("runner=harbor", result.stdout)
 
     def test_tool_aliases_do_not_override_saved_global_config(self):
         result = self.run_fleet(
@@ -359,7 +357,6 @@ exit "${STUB_EXIT:-0}"
                 "ANTHROPIC_BASE_URL": "https://alias-gateway.example.invalid",
                 "ANTHROPIC_AUTH_TOKEN": "fake-alias-token",
                 "HARBOR_MODEL": "alias-model",
-                "TRACE_TO_OPIK": "false",
             },
         )
 
@@ -371,8 +368,7 @@ exit "${STUB_EXIT:-0}"
     def test_auth_token_supplies_a_missing_api_key(self):
         (self.repo / "config.local.env").write_text(
             "BASE_URL=https://gateway.example.invalid\n"
-            "MODEL=test-model\n"
-            "TRACE_TO_OPIK=false\n",
+            "MODEL=test-model\n",
             encoding="utf-8",
         )
 
@@ -393,7 +389,6 @@ exit "${STUB_EXIT:-0}"
                 "BASE_URL": "https://runtime-gateway.example.invalid",
                 "API_KEY": "fake-runtime-token",
                 "MODEL": "runtime-model",
-                "TRACE_TO_OPIK": "false",
             },
         )
 
@@ -409,8 +404,7 @@ exit "${STUB_EXIT:-0}"
         (self.repo / "config.env").write_text(
             "BASE_URL=https://public-gateway.example.invalid\n"
             "API_KEY=fake-public-token\n"
-            "MODEL=public-model\n"
-            "TRACE_TO_OPIK=true\n",
+            "MODEL=public-model\n",
             encoding="utf-8",
         )
 

@@ -58,15 +58,13 @@ require_trace_plugin_source() {
 }
 
 validate_trace_plugin_source() {
-  local trace_enabled="${TRACE_TO_OPIK:-}"
-
   if [[ "$RL_AGENT" == "opencode" ]]; then
     # The custom OpenCode runner always uploads both files during install,
     # including when trace emission is disabled for the task.
     require_trace_plugin_source "$TRACE_PLUGIN_OPENCODE_PLUGIN_SOURCE" || return 1
     require_trace_plugin_source "$TRACE_PLUGIN_OPENCODE_HOOK_SOURCE" || return 1
   elif [[ "$RL_AGENT" == "claude-code" ]] \
-    && [[ "$trace_enabled" == "true" || "$trace_enabled" == "1" || "$HARBOR_CC_OPIK_ENABLE_HOOK" == "1" ]]; then
+    && [[ "$HARBOR_CC_OPIK_ENABLE_HOOK" == "1" ]]; then
     require_trace_plugin_source "$TRACE_PLUGIN_CLAUDE_HOOK_SOURCE"
   fi
 }

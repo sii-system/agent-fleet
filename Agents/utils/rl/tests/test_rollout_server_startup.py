@@ -57,7 +57,11 @@ harbor_prepare_agent_runtime() {
                     "HARBOR_SCRIPT_DIR": str(harbor_dir),
                     "TEST_ROOT": str(root_path),
                     "RL_AGENT": agent,
-                    "TRACE_TO_OPIK": trace_enabled,
+                    "OPIK_URL": (
+                        "https://opik.example.invalid/api"
+                        if trace_enabled == "true"
+                        else ""
+                    ),
                     "HARBOR_CC_OPIK_ENABLE_HOOK": "0",
                     "TRACE_PLUGIN_CLAUDE_HOOK_SOURCE": str(
                         root_path / "missing-claude-hook.py"

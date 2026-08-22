@@ -10,7 +10,7 @@ DATASET_NAME=terminalbench21 \
 MODEL=your-model-id \
 BASE_URL=https://your-openai-compatible-endpoint \
 API_KEY=sk-fake \
-TRACE_TO_OPIK=false \
+OPIK_URL= \
 bash Agents/utils/common/Harbor/start.sh
 ```
 

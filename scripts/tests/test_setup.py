@@ -186,8 +186,7 @@ exit 0
             "KEEP_SETTING=yes\n"
             "BASE_URL=https://old.invalid\n"
             "API_KEY=old-secret\n"
-            "MODEL=old-model\n"
-            "TRACE_TO_OPIK=true\n",
+            "MODEL=old-model\n",
             encoding="utf-8",
         )
 
@@ -255,7 +254,6 @@ exit 0
                 "BASE_URL": "https://gateway.example.invalid",
                 "API_KEY": "fake-setup-secret",
                 "MODEL": "test-model",
-                "TRACE_TO_OPIK": "false",
                 "CLAUDE_TGZ_SOURCE": str(self.claude_tgz),
                 "CLAUDE_WHEEL_DIR_SOURCE": str(self.wheel_dir),
             }
@@ -341,7 +339,7 @@ exit 0
         self.assertIn("BASE_URL=https://gateway.example.invalid", config)
         self.assertIn("API_KEY=fake-setup-secret", config)
         self.assertIn("MODEL=test-model", config)
-        self.assertIn("TRACE_TO_OPIK=false", config)
+        self.assertNotIn("OPIK_URL", config)
 
         denied_env = env.copy()
         denied_env["SETUP_TEST_DOCKER_DENY"] = "1"
@@ -412,7 +410,6 @@ exit 0
             "BASE_URL=https://existing.example.invalid\n"
             "API_KEY=fake-existing-secret\n"
             "MODEL=existing-model\n"
-            "TRACE_TO_OPIK=false\n"
             "RL_ENVIRONMENT_TYPE=qz\n",
             encoding="utf-8",
         )
@@ -525,7 +522,7 @@ exit 0
         self.assertIn("BASE_URL=https://existing.example.invalid", config)
         self.assertIn("API_KEY=fake-existing-secret", config)
         self.assertIn("MODEL=existing-model", config)
-        self.assertIn("TRACE_TO_OPIK=false", config)
+        self.assertNotIn("OPIK_URL", config)
 
         models = json.loads(
             (self.home / ".pi" / "agent" / "models.json").read_text(
@@ -562,7 +559,6 @@ exit 0
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("Opik enabled", result.stdout)
         config = (self.repo / "config.local.env").read_text(encoding="utf-8")
-        self.assertIn("TRACE_TO_OPIK=true", config)
         self.assertIn("OPIK_URL=https://opik.example.invalid/api", config)
         self.assertIn("OPIK_WORKSPACE=default", config)
 
@@ -588,10 +584,11 @@ exit 0
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("Opik enabled", result.stdout)
         config = (self.repo / "config.local.env").read_text(encoding="utf-8")
-        self.assertIn("TRACE_TO_OPIK=true", config)
         self.assertIn("OPIK_URL=https://opik.example.invalid/api", config)
 
-    def test_setup_explicit_trace_off_preserves_existing_opik_config(self):
+    def test_setup_saved_trace_off_no_longer_disables_opik(self):
+        # TRACE_TO_OPIK is retired; a leftover "false" value in a saved
+        # config must not suppress tracing when OPIK_URL is present.
         (self.repo / "config.local.env").write_text(
             "BASE_URL=https://existing.example.invalid\n"
             "API_KEY=fake-existing-secret\n"
@@ -613,9 +610,8 @@ exit 0
         )
 
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("Opik disabled", result.stdout)
+        self.assertIn("Opik enabled", result.stdout)
         config = (self.repo / "config.local.env").read_text(encoding="utf-8")
-        self.assertIn("TRACE_TO_OPIK=false", config)
         self.assertIn("OPIK_URL=https://opik.example.invalid/api", config)
         self.assertIn("OPIK_API_KEY=fake-opik-secret", config)
 
@@ -643,10 +639,12 @@ exit 0
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("Opik enabled", result.stdout)
         config = (self.repo / "config.local.env").read_text(encoding="utf-8")
-        self.assertIn("TRACE_TO_OPIK=true", config)
         self.assertIn("OPIK_URL=https://opik.example.invalid/api", config)
 
-    def test_setup_caller_trace_off_wins_over_caller_url(self):
+    def test_setup_caller_trace_off_does_not_disable_opik(self):
+        # Retired var supplied via the caller environment, alongside a
+        # caller-supplied OPIK_URL: the URL alone decides, so tracing must
+        # stay enabled instead of being overridden off.
         (self.repo / "config.local.env").write_text(
             "BASE_URL=https://existing.example.invalid\n"
             "API_KEY=fake-existing-secret\n"
@@ -672,12 +670,14 @@ exit 0
         )
 
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("Opik disabled", result.stdout)
+        self.assertIn("Opik enabled", result.stdout)
         config = (self.repo / "config.local.env").read_text(encoding="utf-8")
-        self.assertIn("TRACE_TO_OPIK=false", config)
         self.assertIn("OPIK_URL=https://opik.example.invalid/api", config)
 
-    def test_setup_rejects_enabled_tracing_without_opik_url(self):
+    def test_setup_caller_trace_to_opik_alone_does_not_enable_opik(self):
+        # TRACE_TO_OPIK=true with no OPIK_URL anywhere used to be a hard
+        # error ("Opik is enabled but OPIK_URL is empty"). The var is now
+        # inert, so this must succeed with tracing off instead of failing.
         (self.repo / "config.local.env").write_text(
             "BASE_URL=https://existing.example.invalid\n"
             "API_KEY=fake-existing-secret\n"
@@ -697,11 +697,10 @@ exit 0
             check=False,
         )
 
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn(
-            "Opik is enabled but OPIK_URL is empty",
-            result.stderr,
-        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Opik disabled", result.stdout)
+        config = (self.repo / "config.local.env").read_text(encoding="utf-8")
+        self.assertNotIn("OPIK_URL", config)
 
     def test_setup_config_backup_is_ignored(self):
         gitignore = SETUP.parents[1] / ".gitignore"
@@ -715,7 +714,6 @@ exit 0
                 "BASE_URL": "https://gateway.example.invalid",
                 "API_KEY": "fake-setup-secret",
                 "MODEL": "test-model",
-                "TRACE_TO_OPIK": "false",
                 "SETUP_TEST_GIT_REV_PARSE_ERROR": (
                     "fatal: detected dubious ownership in repository"
                 ),
@@ -746,7 +744,6 @@ exit 0
                 "BASE_URL": "https://gateway.example.invalid",
                 "API_KEY": "fake-setup-secret",
                 "MODEL": "test-model",
-                "TRACE_TO_OPIK": "false",
                 "SETUP_TEST_GIT_REV_PARSE_ERROR": (
                     "fatal: not a git repository (or any parent directories): .git"
                 ),
@@ -779,7 +776,6 @@ exit 0
                 "BASE_URL": "https://gateway.example.invalid",
                 "API_KEY": "fake-setup-secret",
                 "MODEL": "test-model",
-                "TRACE_TO_OPIK": "false",
                 "SETUP_TEST_GIT_REV_PARSE_ERROR": (
                     "fatal: not a git repository (or any parent directories): .git"
                 ),

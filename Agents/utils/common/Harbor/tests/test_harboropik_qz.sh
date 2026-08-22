@@ -41,7 +41,6 @@ run_dry() {
     QZ_SANDBOX_TIMEOUT_SEC="$qz_timeout" \
     HARBOR_ANTHROPIC_BASE_URL=http://fake-gw \
     HARBOR_ANTHROPIC_AUTH_TOKEN=fake_token \
-    TRACE_TO_OPIK=false \
     PATH="$tmp/bin:/usr/bin:/bin" \
     HOME="$tmp/home" \
     DATASET_NAME=auto \

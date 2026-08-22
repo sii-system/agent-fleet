@@ -64,7 +64,7 @@ class HarborOpikE2BSmokeTest(unittest.TestCase):
                     "RUNTIME_DIR": str(root_path / "runtime"),
                     "QUEUE_DIR": str(root_path / "queue"),
                     "HARBOR_DIRECT_BIN": "/tmp/direct-harbor",
-                    "TRACE_TO_OPIK": "false",
+                    "OPIK_URL": "",
                     "API_KEY": "fake-api-key",
                     "BASE_URL": "https://model.example",
                     "MODEL": "test-model",

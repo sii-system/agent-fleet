@@ -4,7 +4,9 @@ These complement Agents/Openclaw/tests/test_setup_mounts.py, which exercises the
 setup.sh -> setup.py wrapper end-to-end. The tests here target the pure
 functions so failures point at a specific transformation."""
 
+import contextlib
 import importlib.util
+import io
 import json
 import os
 import sys
@@ -31,22 +33,15 @@ setup = _load_setup_module()
 
 
 class AnsibleFleetTemplateTests(unittest.TestCase):
-    def test_trace_switch_is_normalized_in_ansible_template(self):
-        trace_lines = [
-            line
-            for line in ANSIBLE_FLEET_TEMPLATE_PATH.read_text(encoding="utf-8").splitlines()
-            if line.startswith("TRACE_TO_OPIK=")
-        ]
+    def test_opik_block_is_gated_on_the_url_alone(self):
+        template = ANSIBLE_FLEET_TEMPLATE_PATH.read_text(encoding="utf-8")
 
-        self.assertEqual(
-            trace_lines,
-            [
-                (
-                    "TRACE_TO_OPIK={{ 'false' if (trace_to_opik | default(true) | string | lower) "
-                    "in ['false', '0'] else 'true' }}"
-                ),
-            ],
-        )
+        # OPIK_URL is the single switch, so no retired switch may be rendered
+        # and the credential block must depend on the URL being set.
+        for retired in ("TRACE_TO_OPIK", "OPIK_PLUGIN", "OPIK_MODE"):
+            self.assertNotIn(f"{retired}=", template)
+        self.assertIn("{% if opik_url is defined and opik_url %}", template)
+        self.assertIn("OPIK_URL={{ opik_url }}", template)
 
 
 def _base_cfg(**overrides):
@@ -59,8 +54,6 @@ def _base_cfg(**overrides):
         "EXEC_SECURITY": "deny",
         "EXEC_ASK": "always",
         "WORKSPACE_ONLY": "true",
-        "TRACE_TO_OPIK": "true",
-        "OPIK_PLUGIN": "disabled",
         "OPIK_URL": "",
         "OPIK_API_KEY": "",
         "OPIK_WORKSPACE": "default",
@@ -122,7 +115,7 @@ class BuildOpenclawConfigTests(unittest.TestCase):
         self.assertEqual(result["tools"]["fs"]["workspaceOnly"], False)
 
     def test_opik_enabled(self):
-        cfg = _base_cfg(OPIK_PLUGIN="enabled", OPIK_URL="https://opik.example/api/",
+        cfg = _base_cfg(OPIK_URL="https://opik.example/api/",
                         OPIK_PROJECT_NAME="proj", OPIK_API_KEY="k", OPIK_WORKSPACE="ws")
         result = setup.build_openclaw_config(self.template, cfg, token="t0", gw_port=18789)
         self.assertEqual(result["plugins"]["allow"], ["openai", "openclaw-opik-tracer"])
@@ -174,7 +167,7 @@ class RenderComposeServiceTests(unittest.TestCase):
         self.assertNotIn("/opt/plugin-cache", block)
 
     def test_opik_block_has_state_mount_and_timeout(self):
-        cfg = _base_cfg(OPIK_PLUGIN="enabled")
+        cfg = _base_cfg(OPIK_URL="https://opik.example/api/")
         block = setup.render_compose_service(
             "openclaw-2", token_var="TOKEN_2", gw_port=18809,
             image_default="openclaw:local-opik",
@@ -248,20 +241,57 @@ class ResolveConfigTests(unittest.TestCase):
         cfg = setup.resolve_config(env, [])
         self.assertEqual(cfg["SANDBOX_MODE"], "off")
 
-    def test_trace_off_overrides_stale_enabled_opik_plugin(self):
+    def test_absent_opik_url_disables_tracing(self):
+        env = {"BASE_URL": "u", "API_KEY": "k", "HOME": "/h"}
+
+        cfg = setup.resolve_config(env, [])
+
+        self.assertFalse(setup.opik_enabled(cfg))
+        setup.validate_required(cfg)
+
+    def test_opik_url_enables_tracing(self):
         env = {
             "BASE_URL": "u",
             "API_KEY": "k",
             "HOME": "/h",
-            "TRACE_TO_OPIK": "false",
-            "OPIK_PLUGIN": "enabled",
+            "OPIK_URL": "https://opik.example.invalid/api",
+            "OPIK_PROJECT_NAME": "proj",
         }
 
         cfg = setup.resolve_config(env, [])
 
-        self.assertEqual(cfg["TRACE_TO_OPIK"], "false")
-        self.assertEqual(cfg["OPIK_PLUGIN"], "disabled")
+        self.assertTrue(setup.opik_enabled(cfg))
         setup.validate_required(cfg)
+
+    def test_opik_url_without_project_name_is_rejected(self):
+        env = {
+            "BASE_URL": "u",
+            "API_KEY": "k",
+            "HOME": "/h",
+            "OPIK_URL": "https://opik.example.invalid/api",
+        }
+
+        cfg = setup.resolve_config(env, [])
+
+        with self.assertRaises(setup._ParserError):
+            setup.validate_required(cfg)
+
+    def test_retired_switches_warn_and_do_not_enable_tracing(self):
+        env = {
+            "BASE_URL": "u",
+            "API_KEY": "k",
+            "HOME": "/h",
+            "TRACE_TO_OPIK": "true",
+            "OPIK_PLUGIN": "enabled",
+        }
+
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            cfg = setup.resolve_config(env, [])
+
+        self.assertFalse(setup.opik_enabled(cfg))
+        self.assertIn("TRACE_TO_OPIK is no longer used", stderr.getvalue())
+        self.assertIn("OPIK_PLUGIN is no longer used", stderr.getvalue())
 
     def test_cli_count_overrides_env(self):
         env = {"COUNT": "2", "BASE_URL": "u", "API_KEY": "k", "HOME": "/h"}

@@ -47,7 +47,7 @@ class HarborTaskSelectionTest(unittest.TestCase):
             "TASK_FILE": str(output / "tasks.txt"),
             "QUEUE_DIR": str(output / "queue"),
             "RUNTIME_DIR": str(output / "runtime"),
-            "TRACE_TO_OPIK": "false",
+            "OPIK_URL": "",
         }
 
     def prepare_local(
@@ -73,7 +73,7 @@ class HarborTaskSelectionTest(unittest.TestCase):
             ),
             DATASET_NAME="terminalbench21",
             FLEET_TASKS="fix-git,break-filter-js-from-html",
-            TRACE_TO_OPIK="false",
+            OPIK_URL="",
         )
 
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -85,7 +85,7 @@ class HarborTaskSelectionTest(unittest.TestCase):
             "harbor_prepare_registry_task_selection",
             DATASET_NAME="sweverify",
             FLEET_TASKS="missing-a,astropy__astropy-12907,missing-b",
-            TRACE_TO_OPIK="false",
+            OPIK_URL="",
         )
 
         self.assertEqual(result.returncode, 2)
@@ -100,7 +100,7 @@ class HarborTaskSelectionTest(unittest.TestCase):
                 DATASET_NAME="terminalbench21",
                 TASK_SOURCE_FILE=str(task_source),
                 FLEET_TASKS="custom-task",
-                TRACE_TO_OPIK="false",
+                OPIK_URL="",
             )
 
             self.assertEqual(result.returncode, 0, result.stderr)
@@ -298,7 +298,7 @@ class HarborTaskSelectionTest(unittest.TestCase):
                     "SMITH_GENERATE_IF_MISSING": "1",
                     "FLEET_TASKS": "missing-task",
                     "OUTPUT_PATH": str(output),
-                    "TRACE_TO_OPIK": "false",
+                    "OPIK_URL": "",
                 }
             )
 

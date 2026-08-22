@@ -40,6 +40,44 @@ agent_fleet_load_config() {
 
   AGENT_FLEET_CONFIG_LOADED_ROOT="$repo_root"
   export AGENT_FLEET_CONFIG_LOADED_ROOT
+
+  agent_fleet_warn_retired_opik_vars
+}
+
+# OPIK_URL is the single switch for Opik tracing: an endpoint means traces are
+# uploaded, an empty value means they are not. TRACE_TO_OPIK, OPIK_PLUGIN, and
+# OPIK_MODE used to gate the same thing and were always derived from the URL in
+# practice. A stale value in config.local.env or a CI job would now be ignored
+# silently, so say so once instead. Tools whose stdout is parsed (the Harbor
+# controller emits JSON) set AGENT_FLEET_CONFIG_QUIET=1.
+#
+# The marker is exported so a launcher and the runner it execs warn once
+# between them rather than once each.
+agent_fleet_warn_retired_opik_vars() {
+  local name warned=0
+  if [[ "${AGENT_FLEET_CONFIG_QUIET:-0}" == "1" ]] ||
+     [[ -n "${AGENT_FLEET_OPIK_DEPRECATION_WARNED:-}" ]]; then
+    return 0
+  fi
+
+  for name in TRACE_TO_OPIK OPIK_PLUGIN OPIK_MODE; do
+    if [[ -n "${!name:-}" ]]; then
+      echo "[WARN] $name is no longer used; Opik tracing follows OPIK_URL" >&2
+      warned=1
+    fi
+  done
+
+  if (( warned )); then
+    echo "[WARN] set OPIK_URL to upload traces, or leave it empty to disable" >&2
+    AGENT_FLEET_OPIK_DEPRECATION_WARNED=1
+    export AGENT_FLEET_OPIK_DEPRECATION_WARNED
+  fi
+}
+
+# Tracing is on when an Opik endpoint is configured. Sourced by every entry
+# point so the shell and Python paths agree.
+agent_fleet_opik_enabled() {
+  [[ -n "${OPIK_URL:-}" ]]
 }
 
 # AUTH_TOKEN is a documented fleet-runner credential alias, not a general

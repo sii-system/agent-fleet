@@ -83,7 +83,6 @@ run_dry() {
     HARBOR_LLM_KWARGS='{"temperature":1.0}' \
     HARBOR_CC_CLAUDE_TGZ_SOURCE="$tmp/deps/claude.tgz" \
     HARBOR_CC_PY_WHEEL_DIR_SOURCE="$tmp/deps/wheels" \
-    TRACE_TO_OPIK=false \
     HARBOR_ENVIRONMENT_TYPE="$environment_type" \
     HARBOR_OPENSANDBOX_IMAGE_REF="$image_ref" \
     HARBOR_OPENSANDBOX_BUNDLE_MANIFEST="$bundle_manifest" \

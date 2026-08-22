@@ -55,8 +55,7 @@ required only when tracing is enabled:
 BASE_URL=https://your-openai-compatible-endpoint
 API_KEY=your-api-key
 MODEL=your-model-id
-TRACE_TO_OPIK=false
-# When TRACE_TO_OPIK=true:
+# Set OPIK_URL to upload traces; leave it out to run without Opik:
 OPIK_URL=http://your-opik-host/api
 OPIK_PROJECT_NAME=your-project-name
 ```
@@ -86,7 +85,7 @@ provider derives from `BASE_URL` when `PI_PROVIDER` is unset. Rollout mode
 keeps its separate `RL_TEMPERATURE`, `RL_TOP_P`, and `RL_MAX_NEW_TOKENS`
 interface.
 
-When `TRACE_TO_OPIK=true` (the default), the Opik tracing plugin is loaded from
+When `OPIK_URL` is set, the Opik tracing plugin is loaded from
 the `third_party/agent-opik-plugin` submodule. Initialize it before a traced run:
 
 ```bash

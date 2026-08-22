@@ -129,10 +129,11 @@ def _hook_enabled(extra_env: dict[str, str] | None) -> bool:
     if not extra_env:
         return False
     # If CC_OPIK_ENABLE_HOOK is explicitly set, it takes precedence (including
-    # explicit false).  Only fall back to TRACE_TO_OPIK when the key is absent.
+    # explicit false).  Otherwise follow OPIK_URL, which the host forwards only
+    # when tracing is on.
     if "CC_OPIK_ENABLE_HOOK" in extra_env:
         return _is_true(extra_env["CC_OPIK_ENABLE_HOOK"])
-    return _is_true(extra_env.get("TRACE_TO_OPIK"))
+    return bool(extra_env.get("OPIK_URL", "").strip())
 
 
 def _hook_mount_path(extra_env: dict[str, str] | None) -> str:

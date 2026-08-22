@@ -164,7 +164,7 @@ Typical dataset paths:
 | `OPIK_API_KEY` | Opik API key |
 | `OPIK_PROJECT_NAME` | Opik project name; defaults to the effective agent, dataset, model, and timestamp |
 | `TRACE_PLUGIN_SOURCE_DIR` | Tracing source path, defaults to `third_party/agent-opik-plugin` |
-| `TRACE_TO_OPIK` | Enables or disables trace upload |
+| `OPIK_URL` | Opik API endpoint; set enables trace upload, empty disables it |
 | `CLAUDE_CODE_VERSION` | Claude Code package version used by local dependency cache |
 | `OPENCODE_VERSION` | OpenCode package version used by local dependency cache |
 | `PI_VERSION` | Pi fork package version used by the local dependency cache; defaults to `0.81.1` |

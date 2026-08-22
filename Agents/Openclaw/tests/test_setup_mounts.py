@@ -122,7 +122,6 @@ class OpenClawSetupMountTests(unittest.TestCase):
                     "MODEL": "test-model",
                     "CONFIG_BASE": str(tmp_path / "config"),
                     "WORKSPACE_BASE": str(tmp_path / "workspace"),
-                    "OPIK_PLUGIN": "enabled",
                     "OPIK_URL": "https://opik.example.invalid/api/",
                     "OPIK_PROJECT_NAME": "test-project",
                 }

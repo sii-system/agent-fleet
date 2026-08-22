@@ -24,7 +24,7 @@
 | Exec tools | `tools.exec.security` and `tools.exec.ask` come from setup defaults / CLI flags |
 | File access | `tools.fs.workspaceOnly` defaults to `true`; configurable via `WORKSPACE_ONLY` |
 | Sandbox | `agents.defaults.sandbox.mode` comes from setup defaults / CLI flags |
-| Plugins | Restrictive `plugins.allow` with only `openai` by default; `OPIK_PLUGIN=enabled` additionally allows `openclaw-opik-tracer` and enables `allowConversationAccess` for it |
+| Plugins | Restrictive `plugins.allow` with only `openai` by default; a configured `OPIK_URL` additionally allows `openclaw-opik-tracer` and enables `allowConversationAccess` for it |
 
 ## Infrastructure-Level Controls
 

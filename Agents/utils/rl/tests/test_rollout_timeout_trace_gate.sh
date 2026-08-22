@@ -22,29 +22,34 @@ find_trial_logs_dir() {
   printf '%s\n' ""
 }
 
-for TRACE_TO_OPIK in false 0; do
-  for RL_AGENT in claude-code opencode; do
-    rm -f "$probe"
-    LOGGED=""
-    finalize_timeout_trace "/tmp/rollout-trace-gate-result.json"
-    [[ ! -e "$probe" ]] || {
-      echo "$RL_AGENT resolved logs with TRACE_TO_OPIK=$TRACE_TO_OPIK" >&2
-      exit 1
-    }
-    [[ "$LOGGED" == *"TRACE_TO_OPIK=false"* ]] || {
-      echo "$RL_AGENT missing trace-off skip log: $LOGGED" >&2
-      exit 1
-    }
-  done
+OPIK_URL=""
+for RL_AGENT in claude-code opencode; do
+  rm -f "$probe"
+  LOGGED=""
+  finalize_timeout_trace "/tmp/rollout-trace-gate-result.json"
+  [[ ! -e "$probe" ]] || {
+    echo "$RL_AGENT resolved logs with OPIK_URL empty" >&2
+    exit 1
+  }
+  [[ "$LOGGED" == *"OPIK_URL is empty"* ]] || {
+    echo "$RL_AGENT missing trace-off skip log: $LOGGED" >&2
+    exit 1
+  }
 done
 
-# Tracing on must continue into the existing logs-dir resolution path.
-TRACE_TO_OPIK=true
+# Tracing on must continue into the existing logs-dir resolution path
+# instead of taking the trace-off skip branch.
+OPIK_URL="https://opik.example.invalid/api"
 RL_AGENT=claude-code
 rm -f "$probe"
+LOGGED=""
 finalize_timeout_trace "/tmp/rollout-trace-gate-result.json"
 [[ -e "$probe" ]] || {
   echo "trace-on rollout did not resolve the trial logs dir" >&2
+  exit 1
+}
+[[ "$LOGGED" != *"OPIK_URL is empty"* ]] || {
+  echo "trace-on rollout incorrectly took the trace-off skip path: $LOGGED" >&2
   exit 1
 }
 

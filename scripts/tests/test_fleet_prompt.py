@@ -31,8 +31,7 @@ class FleetGoalTest(unittest.TestCase):
         (self.repo / "config.local.env").write_text(
             "BASE_URL=https://local.example.invalid/v1\n"
             "API_KEY=fake-local-token\n"
-            "MODEL=local-model\n"
-            "TRACE_TO_OPIK=false\n",
+            "MODEL=local-model\n",
             encoding="utf-8",
         )
 
@@ -375,8 +374,7 @@ exec {shlex.quote(str(self.bin_dir / "pi"))} "$@"
         (self.repo / "config.env").write_text("", encoding="utf-8")
         (self.repo / "config.local.env").write_text(
             "BASE_URL=https://local.example.invalid/v1\n"
-            "MODEL=local-model\n"
-            "TRACE_TO_OPIK=false\n",
+            "MODEL=local-model\n",
             encoding="utf-8",
         )
 

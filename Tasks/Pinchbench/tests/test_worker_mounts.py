@@ -72,12 +72,37 @@ class WorkerMountTests(unittest.TestCase):
             results_dir=Path("/tmp/results"),
             opik_state_dir=None,
             bench_cmd="echo test",
-            container_env={"TRACE_TO_OPIK": "false"},
+            container_env={"OPIK_URL": ""},
         )
 
         command = " ".join(docker_cmd)
         self.assertNotIn("pinchbench-opik-state", command)
-        self.assertIn("-e TRACE_TO_OPIK=false", command)
+        # An empty endpoint is not forwarded at all, so the worker cannot trace.
+        self.assertNotIn("OPIK_URL", command)
+
+    def test_traced_worker_forwards_the_opik_endpoint(self):
+        docker_cmd = self.runner.build_worker_docker_command(
+            image="pinchbench-runner:local",
+            instance_index=1,
+            container_prefix="fleet",
+            token="fleet-token",
+            openrouter_key="router-key",
+            openai_api_key="custom-key",
+            model_provider="openai-compatible",
+            uv_cache_dir=Path("/tmp/uv-cache"),
+            pinchbench_dir=Path("/tmp/pinchbench-skill"),
+            worker_dir=Path("/tmp/worker"),
+            config_dir=Path("/tmp/config"),
+            workspace_dir=Path("/tmp/openclaw-workspace"),
+            plugin_cache_dir=None,
+            results_dir=Path("/tmp/results"),
+            opik_state_dir=Path("/tmp/opik-state"),
+            bench_cmd="echo test",
+            container_env={"OPIK_URL": "https://opik.example.invalid/api"},
+        )
+
+        command = " ".join(docker_cmd)
+        self.assertIn("-e OPIK_URL=https://opik.example.invalid/api", command)
 
 
 if __name__ == "__main__":

@@ -41,7 +41,7 @@ import sys
 
 
 def _trace_to_opik_enabled() -> bool:
-    return os.environ.get("TRACE_TO_OPIK", "true") not in {"false", "0"}
+    return bool(os.environ.get("OPIK_URL", "").strip())
 
 
 def _clean_tags(tags: object) -> list[str]:

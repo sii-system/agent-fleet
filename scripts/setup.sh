@@ -53,7 +53,7 @@ load_existing_setup_config() {
     key="$(trim_setup_config_value "${line%%=*}")"
     value="$(trim_setup_config_value "${line#*=}")"
     case "$key" in
-      BASE_URL|API_KEY|AUTH_TOKEN|MODEL|TRACE_TO_OPIK|\
+      BASE_URL|API_KEY|AUTH_TOKEN|MODEL|\
       OPIK_URL|OPIK_API_KEY|OPIK_WORKSPACE|OPIK_PROJECT_NAME|\
       CLAUDE_TGZ_SOURCE|CLAUDE_WHEEL_DIR_SOURCE|\
       HARBOR_CC_CLAUDE_TGZ_SOURCE|HARBOR_CC_PY_WHEEL_DIR_SOURCE|\
@@ -84,11 +84,7 @@ load_existing_setup_config() {
 # Load the saved backend before prerequisite validation: qz/e2b runner hosts
 # intentionally do not need Docker. Capture caller intent first so values read
 # from config.local.env are not mistaken for explicit inputs to this setup run.
-SETUP_CALLER_HAS_TRACE_TO_OPIK=0
 SETUP_CALLER_HAS_OPIK_URL=0
-if declare -p TRACE_TO_OPIK >/dev/null 2>&1; then
-  SETUP_CALLER_HAS_TRACE_TO_OPIK=1
-fi
 if declare -p OPIK_URL >/dev/null 2>&1; then
   SETUP_CALLER_HAS_OPIK_URL=1
 fi
@@ -106,72 +102,23 @@ info "Prerequisite downloads: $AGENT_FLEET_CACHE_DIR/downloads"
 
 # ---- 2. Gather config (caller env, existing local config, then prompts) ----
 
-normalize_trace_to_opik() {
-  local value
-  value="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
-  case "$value" in
-    1|true|yes|y|on)
-      TRACE_TO_OPIK=true
-      ;;
-    0|false|no|n|off)
-      TRACE_TO_OPIK=false
-      ;;
-    *)
-      return 1
-      ;;
-  esac
-}
-
+# OPIK_URL is the single switch: an endpoint uploads traces, empty disables
+# tracing everywhere. Only prompt when neither the caller nor the saved config
+# supplied a value, so a re-run does not re-ask.
 configure_opik() {
   if (( SETUP_CALLER_HAS_OPIK_URL )); then
     OPIK_URL="$(trim_setup_config_value "${OPIK_URL:-}")"
   fi
 
-  if (( SETUP_CALLER_HAS_TRACE_TO_OPIK )) &&
-     [[ -n "${TRACE_TO_OPIK:-}" ]]; then
-    # Keep the caller's explicit switch as the highest-priority input.
-    :
-  elif (( SETUP_CALLER_HAS_OPIK_URL )) &&
-       [[ -n "${OPIK_URL:-}" ]]; then
-    # A URL supplied for this setup run enables Opik even if an earlier
-    # no-Opik run persisted TRACE_TO_OPIK=false in config.local.env.
-    TRACE_TO_OPIK=true
-  fi
-
-  if [[ -n "${TRACE_TO_OPIK:-}" ]]; then
-    if ! normalize_trace_to_opik "$TRACE_TO_OPIK"; then
-      err "TRACE_TO_OPIK must be true or false (also accepts yes/no and 1/0)."
-      return 1
-    fi
-  elif [[ -n "${OPIK_URL:-}" ]]; then
-    # Preserve the historical/default traced behavior for existing configs
-    # that predate the explicit fleet-wide switch.
-    TRACE_TO_OPIK=true
-  else
+  if [[ -z "${OPIK_URL:-}" ]] && (( ! SETUP_CALLER_HAS_OPIK_URL )); then
     if ! read -rp "OPIK_URL (optional; press Enter to disable Opik): " OPIK_URL; then
       echo
       OPIK_URL=""
     fi
-    OPIK_URL="$(trim_setup_config_value "${OPIK_URL:-}")"
-    if [[ -n "$OPIK_URL" ]]; then
-      TRACE_TO_OPIK=true
-    else
-      TRACE_TO_OPIK=false
-    fi
   fi
+  OPIK_URL="$(trim_setup_config_value "${OPIK_URL:-}")"
 
-  if [[ "$TRACE_TO_OPIK" == "true" ]]; then
-    if [[ -z "${OPIK_URL:-}" ]]; then
-      if ! read -rp "OPIK_URL (required because TRACE_TO_OPIK=true; usually ending in /api): " OPIK_URL; then
-        echo
-        OPIK_URL=""
-      fi
-    fi
-    OPIK_URL="$(trim_setup_config_value "${OPIK_URL:-}")"
-    if [[ -z "${OPIK_URL:-}" ]]; then
-      err "Opik is enabled but OPIK_URL is empty."
-      return 1
-    fi
+  if [[ -n "${OPIK_URL:-}" ]]; then
     OPIK_WORKSPACE="${OPIK_WORKSPACE:-default}"
     ok "Opik enabled"
   else
@@ -498,7 +445,6 @@ fi
 BASE_URL="$BASE_URL" \
 AUTH_TOKEN="$AUTH_TOKEN" \
 MODEL="$MODEL" \
-TRACE_TO_OPIK="${TRACE_TO_OPIK:-}" \
 OPIK_URL="${OPIK_URL:-}" \
 OPIK_API_KEY="${OPIK_API_KEY:-}" \
 OPIK_WORKSPACE="${OPIK_WORKSPACE:-}" \

@@ -119,27 +119,40 @@ class OpenCodeTraceDisabledTests(unittest.TestCase):
         sys.modules.pop(cls.module_name, None)
 
     def make_agent(self, trace: str, *, opencode_present: bool = True):
+        # OPIK_URL is the single switch, so "tracing off" means the host never
+        # forwarded an endpoint into the container environment.
+        traced = trace not in {"false", "0", ""}
         return self.module.OpikOpenCodeHarbor(
             logs_dir=Path("/tmp/test-opencode-logs"),
             model_name="custom/test-model",
             extra_env={
-                "TRACE_TO_OPIK": trace,
                 "CC_NODE_DIST_URL": (
                     "https://registry.npmmirror.com/-/binary/node/"
                     "v22.14.0/node-v22.14.0-linux-x64.tar.gz"
                 ),
                 "NPM_CONFIG_REGISTRY": "https://registry.npmmirror.com",
-                "OPIK_URL": "http://localhost:5173",
-                "OPIK_URL_OVERRIDE": "http://localhost:5173/api",
+                "OPIK_URL": "http://localhost:5173" if traced else "",
+                "OPIK_URL_OVERRIDE": (
+                    "http://localhost:5173/api" if traced else ""
+                ),
             },
             fake_opencode_present=opencode_present,
         )
 
     def test_trace_switch_matches_shell_semantics(self) -> None:
-        self.assertFalse(self.module._trace_to_opik_enabled({"TRACE_TO_OPIK": "false"}))
-        self.assertFalse(self.module._trace_to_opik_enabled({"TRACE_TO_OPIK": "0"}))
-        self.assertTrue(self.module._trace_to_opik_enabled({"TRACE_TO_OPIK": "true"}))
-        self.assertTrue(self.module._trace_to_opik_enabled({"TRACE_TO_OPIK": "unexpected"}))
+        self.assertFalse(self.module._trace_to_opik_enabled({"OPIK_URL": ""}))
+        self.assertFalse(self.module._trace_to_opik_enabled({"OPIK_URL": "   "}))
+        self.assertTrue(
+            self.module._trace_to_opik_enabled(
+                {"OPIK_URL": "https://opik.example.invalid/api"}
+            )
+        )
+        # A retired switch must not turn tracing back on.
+        self.assertFalse(
+            self.module._trace_to_opik_enabled(
+                {"OPIK_URL": "", "TRACE_TO_OPIK": "true"}
+            )
+        )
 
     def test_install_skips_opik_dependencies_and_missing_plugin_files(self) -> None:
         agent = self.make_agent("false")
@@ -390,7 +403,10 @@ class EnableTrackHarborTests(unittest.TestCase):
             mock.patch.dict(
                 os.environ,
                 {
-                    "TRACE_TO_OPIK": trace,
+                    "OPIK_URL": (
+                        "" if trace in {"false", "0", ""}
+                        else "https://opik.example.invalid/api"
+                    ),
                     "HARBOR_ENVIRONMENT_TYPE": environment_type,
                 },
                 clear=True,
@@ -437,7 +453,7 @@ class FinalizerTraceGateTest(unittest.TestCase):
 
     def run_finalizer(self, env_overrides: dict[str, str]):
         env = os.environ.copy()
-        env.pop("TRACE_TO_OPIK", None)
+        env.pop("OPIK_URL", None)
         env.pop("OPIK_TRACK_DISABLE", None)
         env.update(env_overrides)
         return subprocess.run(
@@ -456,7 +472,7 @@ class FinalizerTraceGateTest(unittest.TestCase):
         )
 
     def test_trace_off_skips_timeout_finalization(self) -> None:
-        result = self.run_finalizer({"TRACE_TO_OPIK": "false"})
+        result = self.run_finalizer({"OPIK_URL": ""})
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("finalize skipped", result.stdout)
 

@@ -128,8 +128,7 @@ fi
         (self.repo / "config.local.env").write_text(
             "BASE_URL=https://gateway.example.invalid\n"
             "API_KEY=fake-runner-key\n"
-            "MODEL=test-model\n"
-            "TRACE_TO_OPIK=false\n",
+            "MODEL=test-model\n",
             encoding="utf-8",
         )
 

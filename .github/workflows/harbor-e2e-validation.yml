@@ -161,16 +161,15 @@ jobs:
           export BASE_URL="${BASE_URL_RAW%/chat/completions}"
           export TOTAL_WORKERS="$WORKERS"
           export HARBOR_N_CONCURRENT="$WORKERS"
-          # Only enable tracing when a real Opik credential is present. env.sh
+          # Only trace when a real Opik credential is present. env.sh
           # substitutes the literal 'local-dev-key' for a missing OPIK_API_KEY,
           # and harboropik.sh's preflight accepts 401/403, so tracing would
-          # appear healthy while no trace reached Opik. Fail loud or run
-          # untraced instead of silently pretending.
+          # appear healthy while no trace reached Opik. Clearing OPIK_URL is the
+          # switch: run untraced instead of silently pretending.
           if [[ -n "${OPIK_API_KEY:-}" && -n "${OPIK_URL:-}" ]]; then
-            export TRACE_TO_OPIK=true
             printf 'Opik tracing enabled for %s\n' "$OPIK_URL"
           else
-            export TRACE_TO_OPIK=false
+            export OPIK_URL=""
             echo "::warning::OPIK_API_KEY or OPIK_URL is unset; running without tracing. Add OPIK_API_KEY to the self-hosted-env environment to enable it."
           fi
           # OUTPUT_PATH is exported, not left to env.sh's default. A runner-level

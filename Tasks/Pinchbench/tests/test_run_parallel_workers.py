@@ -330,13 +330,13 @@ class BenchmarkCommandTests(unittest.TestCase):
             generated_env = tmp_path / ".env"
             pinchbench_env = tmp_path / "pinchbench.env"
             config_env.write_text(
-                "MODEL=shared-model\nTRACE_TO_OPIK=false\n",
+                "MODEL=shared-model\nOPIK_URL=https://opik.example.invalid/api\n",
                 encoding="utf-8",
             )
             config_local_env.write_text("", encoding="utf-8")
             fleet_env.write_text("COUNT=2\n", encoding="utf-8")
             generated_env.write_text("", encoding="utf-8")
-            pinchbench_env.write_text("TRACE_TO_OPIK=true\n", encoding="utf-8")
+            pinchbench_env.write_text("OPIK_URL=https://stale.example.invalid/api\n", encoding="utf-8")
 
             with mock.patch.object(self.runner, "CONFIG_ENV_FILE", config_env), \
                  mock.patch.object(self.runner, "CONFIG_LOCAL_ENV_FILE", config_local_env), \
@@ -347,7 +347,15 @@ class BenchmarkCommandTests(unittest.TestCase):
                 config = self.runner.load_runner_config()
 
         self.assertEqual(config["MODEL"], "shared-model")
-        self.assertEqual(config["TRACE_TO_OPIK"], "false")
+        self.assertEqual(config["OPIK_URL"], "https://opik.example.invalid/api")
+
+    def test_tracing_follows_opik_url(self):
+        self.assertTrue(
+            self.runner.trace_to_opik_enabled("https://opik.example.invalid/api")
+        )
+        self.assertFalse(self.runner.trace_to_opik_enabled(""))
+        self.assertFalse(self.runner.trace_to_opik_enabled("   "))
+        self.assertFalse(self.runner.trace_to_opik_enabled(None))
 
     def test_runner_config_resolves_relative_local_repo_url_from_repo_root(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -386,7 +394,7 @@ class BenchmarkCommandTests(unittest.TestCase):
 
             with self.assertRaisesRegex(
                 SystemExit,
-                r"TRACE_TO_OPIK=false.*instance 1.*setup\.sh.*restart",
+                r"OPIK_URL is empty.*instance 1.*setup\.sh.*restart",
             ):
                 self.runner.validate_trace_off_gateway_configs(config_base, 1)
 
@@ -446,9 +454,11 @@ class BenchmarkCommandTests(unittest.TestCase):
         )
 
         self.assertIn("/opt/opik-venv", dockerfile)
-        self.assertIn("ARG OPENCLAW_BASE_IMAGE=openclaw:local-opik", dockerfile)
+        # A manual build with no --build-arg must produce the untraced pair;
+        # the runner always passes both args explicitly.
+        self.assertIn("ARG OPENCLAW_BASE_IMAGE=openclaw:local", dockerfile)
         self.assertIn("FROM ${OPENCLAW_BASE_IMAGE}", dockerfile)
-        self.assertIn('ARG TRACE_TO_OPIK=true', dockerfile)
+        self.assertIn('ARG OPIK_TRACING=false', dockerfile)
         self.assertIn("/opt/pinchbench-trace-to-opik", dockerfile)
         self.assertNotIn("cache/" + "sii-opik", dockerfile)
         self.assertIn("opik>=1.0.0", dockerfile)
@@ -467,7 +477,7 @@ class BenchmarkCommandTests(unittest.TestCase):
             tracing_enabled=False,
         )
 
-        self.assertIn("TRACE_TO_OPIK=false", build_command)
+        self.assertIn("OPIK_TRACING=false", build_command)
         self.assertIn("OPENCLAW_BASE_IMAGE=openclaw:local", build_command)
         self.assertIn("pinchbench-trace-to-opik", probe_command[-1])
         self.assertIn("test ! -e /opt/opik-venv", probe_command[-1])
@@ -485,7 +495,7 @@ class BenchmarkCommandTests(unittest.TestCase):
             tracing_enabled=True,
         )
 
-        self.assertIn("TRACE_TO_OPIK=true", build_command)
+        self.assertIn("OPIK_TRACING=true", build_command)
         self.assertIn("OPENCLAW_BASE_IMAGE=openclaw:local-opik", build_command)
         self.assertIn("pinchbench-trace-to-opik", probe_command[-1])
         self.assertIn("opik-venv", probe_command[-1])
