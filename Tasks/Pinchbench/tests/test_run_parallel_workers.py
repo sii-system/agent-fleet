@@ -1,6 +1,8 @@
 import importlib.util
+import io
 import tempfile
 import unittest
+from contextlib import redirect_stderr
 from datetime import datetime
 from pathlib import Path
 from unittest import mock
@@ -348,6 +350,36 @@ class BenchmarkCommandTests(unittest.TestCase):
 
         self.assertEqual(config["MODEL"], "shared-model")
         self.assertEqual(config["OPIK_URL"], "https://opik.example.invalid/api")
+
+    def test_runner_config_warns_about_retired_opik_switches(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            config_env = tmp_path / "config.env"
+            config_local_env = tmp_path / "config.local.env"
+            fleet_env = tmp_path / "fleet.env"
+            generated_env = tmp_path / ".env"
+            pinchbench_env = tmp_path / "pinchbench.env"
+            config_env.write_text("TRACE_TO_OPIK=true\n", encoding="utf-8")
+            for path in (
+                config_local_env,
+                fleet_env,
+                generated_env,
+                pinchbench_env,
+            ):
+                path.write_text("", encoding="utf-8")
+
+            stderr = io.StringIO()
+            with mock.patch.object(self.runner, "CONFIG_ENV_FILE", config_env), \
+                 mock.patch.object(self.runner, "CONFIG_LOCAL_ENV_FILE", config_local_env), \
+                 mock.patch.object(self.runner, "FLEET_ENV_FILE", fleet_env), \
+                 mock.patch.object(self.runner, "ENV_FILE", generated_env), \
+                 mock.patch.object(self.runner, "PINCHBENCH_ENV_FILE", pinchbench_env), \
+                 mock.patch.dict(self.runner.os.environ, {}, clear=True), \
+                 redirect_stderr(stderr):
+                self.runner.load_runner_config()
+
+        self.assertIn("TRACE_TO_OPIK is no longer used", stderr.getvalue())
+        self.assertIn("Opik tracing follows OPIK_URL", stderr.getvalue())
 
     def test_tracing_follows_opik_url(self):
         self.assertTrue(

@@ -339,7 +339,7 @@ exit 0
         self.assertIn("BASE_URL=https://gateway.example.invalid", config)
         self.assertIn("API_KEY=fake-setup-secret", config)
         self.assertIn("MODEL=test-model", config)
-        self.assertNotIn("OPIK_URL", config)
+        self.assertIn("OPIK_URL=\n", config)
 
         denied_env = env.copy()
         denied_env["SETUP_TEST_DOCKER_DENY"] = "1"
@@ -522,7 +522,7 @@ exit 0
         self.assertIn("BASE_URL=https://existing.example.invalid", config)
         self.assertIn("API_KEY=fake-existing-secret", config)
         self.assertIn("MODEL=existing-model", config)
-        self.assertNotIn("OPIK_URL", config)
+        self.assertIn("OPIK_URL=\n", config)
 
         models = json.loads(
             (self.home / ".pi" / "agent" / "models.json").read_text(
@@ -561,6 +561,62 @@ exit 0
         config = (self.repo / "config.local.env").read_text(encoding="utf-8")
         self.assertIn("OPIK_URL=https://opik.example.invalid/api", config)
         self.assertIn("OPIK_WORKSPACE=default", config)
+        self.assertIn("OPIK_PROJECT_NAME=agent-fleet", config)
+
+    def test_setup_caller_empty_url_removes_saved_opik_config(self):
+        (self.repo / "config.local.env").write_text(
+            "BASE_URL=https://existing.example.invalid\n"
+            "API_KEY=fake-existing-secret\n"
+            "MODEL=existing-model\n"
+            "OPIK_URL=https://opik.example.invalid/api\n"
+            "OPIK_API_KEY=fake-opik-secret\n"
+            "OPIK_WORKSPACE=old-workspace\n"
+            "OPIK_PROJECT_NAME=old-project\n",
+            encoding="utf-8",
+        )
+        env = self.setup_env()
+        env["OPIK_URL"] = ""
+
+        result = subprocess.run(
+            [str(SETUP)],
+            cwd=self.repo,
+            env=env,
+            input="",
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        config = (self.repo / "config.local.env").read_text(encoding="utf-8")
+        self.assertIn("OPIK_URL=\n", config)
+        self.assertNotIn("OPIK_API_KEY", config)
+        self.assertNotIn("OPIK_WORKSPACE", config)
+        self.assertNotIn("OPIK_PROJECT_NAME", config)
+
+    def test_setup_saved_empty_url_does_not_reenable_from_prompt(self):
+        (self.repo / "config.local.env").write_text(
+            "BASE_URL=https://existing.example.invalid\n"
+            "API_KEY=fake-existing-secret\n"
+            "MODEL=existing-model\n"
+            "OPIK_URL=\n",
+            encoding="utf-8",
+        )
+
+        result = subprocess.run(
+            [str(SETUP)],
+            cwd=self.repo,
+            env=self.setup_env(),
+            input="https://unexpected.example.invalid/api\n",
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        config = (self.repo / "config.local.env").read_text(encoding="utf-8")
+        self.assertIn("OPIK_URL=\n", config)
+        self.assertNotIn("unexpected.example.invalid", config)
 
     def test_setup_enables_opik_for_legacy_config_with_url_only(self):
         (self.repo / "config.local.env").write_text(
@@ -700,7 +756,7 @@ exit 0
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("Opik disabled", result.stdout)
         config = (self.repo / "config.local.env").read_text(encoding="utf-8")
-        self.assertNotIn("OPIK_URL", config)
+        self.assertIn("OPIK_URL=\n", config)
 
     def test_setup_config_backup_is_ignored(self):
         gitignore = SETUP.parents[1] / ".gitignore"

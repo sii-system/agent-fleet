@@ -64,6 +64,10 @@ load_existing_setup_config() {
         ;;
     esac
 
+    if [[ "$key" == "OPIK_URL" ]]; then
+      SETUP_SAVED_HAS_OPIK_URL=1
+    fi
+
     # setup writes plain values, but accept a simple matching quote pair from
     # hand-written files too. Do not eval the credential-bearing config.
     if (( ${#value} >= 2 )); then
@@ -85,6 +89,7 @@ load_existing_setup_config() {
 # intentionally do not need Docker. Capture caller intent first so values read
 # from config.local.env are not mistaken for explicit inputs to this setup run.
 SETUP_CALLER_HAS_OPIK_URL=0
+SETUP_SAVED_HAS_OPIK_URL=0
 if declare -p OPIK_URL >/dev/null 2>&1; then
   SETUP_CALLER_HAS_OPIK_URL=1
 fi
@@ -110,7 +115,8 @@ configure_opik() {
     OPIK_URL="$(trim_setup_config_value "${OPIK_URL:-}")"
   fi
 
-  if [[ -z "${OPIK_URL:-}" ]] && (( ! SETUP_CALLER_HAS_OPIK_URL )); then
+  if [[ -z "${OPIK_URL:-}" ]] &&
+     (( ! SETUP_CALLER_HAS_OPIK_URL && ! SETUP_SAVED_HAS_OPIK_URL )); then
     if ! read -rp "OPIK_URL (optional; press Enter to disable Opik): " OPIK_URL; then
       echo
       OPIK_URL=""
@@ -120,6 +126,7 @@ configure_opik() {
 
   if [[ -n "${OPIK_URL:-}" ]]; then
     OPIK_WORKSPACE="${OPIK_WORKSPACE:-default}"
+    OPIK_PROJECT_NAME="${OPIK_PROJECT_NAME:-agent-fleet}"
     ok "Opik enabled"
   else
     ok "Opik disabled"

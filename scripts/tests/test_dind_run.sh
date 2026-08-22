@@ -69,6 +69,7 @@ cat > "$PROJECT_DIR/config.local.env" <<'EOF'
 BASE_URL=https://local.example.com
 API_KEY=sk-local
 MODEL=local-model
+OPIK_URL=https://saved-opik.example.com/api
 OPIK_API_KEY=opik-local
 PIP_INDEX_URL=https://packages.example.com/simple
 NPM_CONFIG_REGISTRY=https://npm.example.com
@@ -229,6 +230,7 @@ DIND_USER_GID=5678 \
 HTTP_PROXY=http://proxy.invalid:8080 \
 HTTPS_PROXY=http://proxy.invalid:8443 \
 NO_PROXY=existing.example \
+OPIK_URL= \
 MIN_TEST=1 \
 MIN_TEST_INCLUDE_TASK=custom-canary \
 HARBOR_TEMPERATURE=0.2 \
@@ -284,6 +286,7 @@ for expected_env in \
   "HOME=/home/agent" \
   "HTTP_PROXY=http://proxy.invalid:8080" \
   "HTTPS_PROXY=http://proxy.invalid:8443" \
+  "OPIK_URL=" \
   "MIN_TEST=1" \
   "MIN_TEST_INCLUDE_TASK=custom-canary" \
   "HARBOR_TEMPERATURE=0.2" \
@@ -323,6 +326,7 @@ PATH="$TMP_DIR/bin:$PATH" \
 ANTHROPIC_BASE_URL=https://runtime-alias.example.com \
 AUTH_TOKEN=fake-runtime-alias-key \
 HARBOR_MODEL=runtime-alias-model \
+OPIK_URL= \
 DIND_BOOTSTRAP=always \
 "$PROJECT_DIR/scripts/dind-run.sh" \
   --taskset terminalbench21 --agent claude-code --workers 1 > "$ALIAS_LOG"
@@ -348,6 +352,7 @@ AUTH_ONLY_LOG="$TMP_DIR/runtime-auth-token.log"
 PATH="$TMP_DIR/bin:$PATH" \
 API_KEY= \
 AUTH_TOKEN=fake-runtime-auth-only \
+OPIK_URL= \
 DIND_BOOTSTRAP=always \
 "$PROJECT_DIR/scripts/dind-run.sh" \
   --taskset terminalbench21 --agent claude-code --workers 1 > "$AUTH_ONLY_LOG"
@@ -368,6 +373,7 @@ FAILURE_LOG="$TMP_DIR/failure.log"
 if PATH="$TMP_DIR/bin:$PATH" \
   MOCK_FAIL_RUN_FLEET=1 \
   DIND_BOOTSTRAP=always \
+  OPIK_URL= \
   "$PROJECT_DIR/scripts/dind-run.sh" \
     --taskset terminalbench21 --agent claude-code --workers 1 \
     > "$FAILURE_LOG" 2>&1; then
@@ -393,6 +399,7 @@ run_signal_test() {
   PATH="$TMP_DIR/bin:$PATH" \
   MOCK_SIGNAL_RUN_FLEET="$signal" \
   DIND_BOOTSTRAP=always \
+  OPIK_URL= \
   "$PROJECT_DIR/scripts/dind-run.sh" \
     --taskset terminalbench21 --agent claude-code --workers 1 \
     > "$signal_log" 2>&1 ||

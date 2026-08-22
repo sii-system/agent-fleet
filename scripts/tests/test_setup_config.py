@@ -115,7 +115,8 @@ class SetupConfigTest(unittest.TestCase):
             "KEEP_SETTING=yes\n"
             "BASE_URL=https://gateway.example.invalid\n"
             "API_KEY=fake-new-secret\n"
-            "MODEL=test-model\n",
+            "MODEL=test-model\n"
+            "OPIK_URL=\n",
         )
 
     def test_merge_local_config_persists_opik_fields_when_url_is_set(self):
@@ -140,6 +141,32 @@ class SetupConfigTest(unittest.TestCase):
         self.assertIn("OPIK_API_KEY=fake-opik-secret", content)
         self.assertIn("OPIK_WORKSPACE=default", content)
         self.assertIn("OPIK_PROJECT_NAME=fleet", content)
+
+    def test_merge_local_config_persists_opik_off_and_removes_stale_fields(self):
+        path = self.root / "config.local.env"
+        path.write_text(
+            "BASE_URL=https://old.invalid\n"
+            "API_KEY=old-secret\n"
+            "OPIK_URL=https://opik.example.invalid/api\n"
+            "OPIK_API_KEY=fake-old-opik-secret\n"
+            "OPIK_WORKSPACE=old-workspace\n"
+            "OPIK_PROJECT_NAME=old-project\n",
+            encoding="utf-8",
+        )
+        environ = {
+            "BASE_URL": "https://gateway.example.invalid",
+            "AUTH_TOKEN": "fake-new-secret",
+            "MODEL": "test-model",
+            "OPIK_URL": "",
+        }
+
+        setup_config.merge_local_config(path, environ)
+
+        content = path.read_text(encoding="utf-8")
+        self.assertIn("OPIK_URL=\n", content)
+        self.assertNotIn("OPIK_API_KEY", content)
+        self.assertNotIn("OPIK_WORKSPACE", content)
+        self.assertNotIn("OPIK_PROJECT_NAME", content)
 
     def test_setup_shell_contains_no_embedded_python_programs(self):
         setup_shell = Path(__file__).resolve().parents[1] / "setup.sh"

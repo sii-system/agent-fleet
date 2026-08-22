@@ -9,7 +9,7 @@ import os
 import shlex
 import subprocess
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
@@ -81,6 +81,22 @@ def trace_to_opik_enabled(opik_url: str | None) -> bool:
     return bool((opik_url or "").strip())
 
 
+def warn_retired_opik_vars(sources: tuple[Mapping[str, str], ...]) -> None:
+    warned = False
+    for name in ("TRACE_TO_OPIK", "OPIK_PLUGIN", "OPIK_MODE"):
+        if any(source.get(name, "").strip() for source in sources):
+            print(
+                f"[WARN] {name} is no longer used; Opik tracing follows OPIK_URL",
+                file=sys.stderr,
+            )
+            warned = True
+    if warned:
+        print(
+            "[WARN] set OPIK_URL to upload traces, or leave it empty to disable",
+            file=sys.stderr,
+        )
+
+
 def positive_int(value: str) -> int:
     parsed = int(value)
     if parsed < 1:
@@ -110,6 +126,16 @@ def load_runner_config() -> dict[str, str]:
     fleet_env = load_env_file(FLEET_ENV_FILE)
     generated_env = load_env_file(ENV_FILE)
     runner_env = load_env_file(PINCHBENCH_ENV_FILE)
+    warn_retired_opik_vars(
+        (
+            os.environ,
+            runner_env,
+            generated_env,
+            fleet_env,
+            config_local_env,
+            config_env,
+        )
+    )
 
     def shared(key: str, default: str = "") -> str:
         # Shared infra lives in config.env (base layer); config.local.env holds
