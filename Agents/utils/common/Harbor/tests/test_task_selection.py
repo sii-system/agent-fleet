@@ -279,6 +279,31 @@ class HarborTaskSelectionTest(unittest.TestCase):
             self.assertEqual(probe.returncode, 1)
             self.assertEqual(process.returncode, 0, stderr or stdout)
 
+    def test_shared_process_terminator_stops_process(self) -> None:
+        process = subprocess.Popen(["sleep", "30"], start_new_session=True)
+
+        def cleanup() -> None:
+            if process.poll() is None:
+                process.kill()
+            process.wait(timeout=2)
+
+        self.addCleanup(cleanup)
+
+        result = self.run_env(
+            f"harbor_terminate_validated_process {process.pid} 1",
+            OPIK_URL="",
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        process.wait(timeout=2)
+        self.assertLess(process.returncode, 0)
+        self.assertEqual(
+            ENV_SH.read_text(encoding="utf-8").count(
+                "harbor_terminate_validated_process"
+            ),
+            4,
+        )
+
     def test_start_passes_run_id_to_analyzer(self) -> None:
         self.assertIn('--run-id "$RUN_ID"', START_SH.read_text(encoding="utf-8"))
 
