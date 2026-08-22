@@ -822,9 +822,25 @@ harbor_online_analysis_pid_matches_run() {
   [[ "$script_seen" == 1 && "$run_seen" == 1 ]]
 }
 
+# Call only after the subsystem-specific PID identity check succeeds.
+harbor_terminate_validated_process() {
+  local pid="$1" wait_attempts="${2:-30}" sid signal_target attempt
+  sid="$(ps -o sid= -p "$pid" 2>/dev/null | tr -d ' ' || true)"
+  signal_target="$pid"
+  [[ "$sid" == "$pid" ]] && signal_target="-$pid"
+  kill -TERM -- "$signal_target" >/dev/null 2>&1 || true
+  for attempt in $(seq 1 "$wait_attempts"); do
+    kill -0 "$pid" >/dev/null 2>&1 || break
+    sleep 1
+  done
+  if kill -0 "$pid" >/dev/null 2>&1; then
+    kill -KILL -- "$signal_target" >/dev/null 2>&1 || true
+  fi
+}
+
 harbor_stop_online_analysis() {
   [[ -f "$HARBOR_ONLINE_ANALYSIS_PID_FILE" ]] || return 0
-  local pid sid signal_target
+  local pid
   pid="$(cat "$HARBOR_ONLINE_ANALYSIS_PID_FILE" 2>/dev/null || true)"
   if [[ ! "$pid" =~ ^[0-9]+$ ]] || ! kill -0 "$pid" >/dev/null 2>&1; then
     rm -f "$HARBOR_ONLINE_ANALYSIS_PID_FILE"
@@ -834,23 +850,13 @@ harbor_stop_online_analysis() {
     echo "[ERROR] refusing to stop unrelated process from $HARBOR_ONLINE_ANALYSIS_PID_FILE: pid=$pid" >&2
     return 1
   fi
-  sid="$(ps -o sid= -p "$pid" 2>/dev/null | tr -d ' ' || true)"
-  signal_target="$pid"
-  [[ "$sid" == "$pid" ]] && signal_target="-$pid"
-  kill -TERM -- "$signal_target" >/dev/null 2>&1 || true
-  for _ in $(seq 1 30); do
-    kill -0 "$pid" >/dev/null 2>&1 || break
-    sleep 1
-  done
-  if kill -0 "$pid" >/dev/null 2>&1; then
-    kill -KILL -- "$signal_target" >/dev/null 2>&1 || true
-  fi
+  harbor_terminate_validated_process "$pid"
   rm -f "$HARBOR_ONLINE_ANALYSIS_PID_FILE"
 }
 
 harbor_stop_monitor() {
   [[ -f "$HARBOR_MONITOR_PID_FILE" ]] || return 0
-  local pid sid signal_target
+  local pid
   pid="$(cat "$HARBOR_MONITOR_PID_FILE" 2>/dev/null || true)"
   if [[ ! "$pid" =~ ^[0-9]+$ ]] || ! kill -0 "$pid" >/dev/null 2>&1; then
     rm -f "$HARBOR_MONITOR_PID_FILE"
@@ -860,17 +866,7 @@ harbor_stop_monitor() {
     echo "[ERROR] refusing to stop unrelated process from $HARBOR_MONITOR_PID_FILE: pid=$pid" >&2
     return 1
   fi
-  sid="$(ps -o sid= -p "$pid" 2>/dev/null | tr -d ' ' || true)"
-  signal_target="$pid"
-  [[ "$sid" == "$pid" ]] && signal_target="-$pid"
-  kill -TERM -- "$signal_target" >/dev/null 2>&1 || true
-  for _ in $(seq 1 30); do
-    kill -0 "$pid" >/dev/null 2>&1 || break
-    sleep 1
-  done
-  if kill -0 "$pid" >/dev/null 2>&1; then
-    kill -KILL -- "$signal_target" >/dev/null 2>&1 || true
-  fi
+  harbor_terminate_validated_process "$pid"
   rm -f "$HARBOR_MONITOR_PID_FILE"
 }
 
@@ -924,7 +920,7 @@ harbor_stop_analyzer_supervisor() {
 
 harbor_stop_analyzer() {
   [[ -f "$HARBOR_ANALYZER_PID_FILE" ]] || return 0
-  local expected_pid="${1:-}" current_pid pid sid signal_target
+  local expected_pid="${1:-}" current_pid pid
   current_pid="$(cat "$HARBOR_ANALYZER_PID_FILE" 2>/dev/null || true)"
   pid="${expected_pid:-$current_pid}"
   if [[ -n "$expected_pid" && "$current_pid" != "$expected_pid" ]]; then
@@ -938,17 +934,7 @@ harbor_stop_analyzer() {
     echo "[ERROR] refusing to stop unrelated process from $HARBOR_ANALYZER_PID_FILE: pid=$pid" >&2
     return 1
   fi
-  sid="$(ps -o sid= -p "$pid" 2>/dev/null | tr -d ' ' || true)"
-  signal_target="$pid"
-  [[ "$sid" == "$pid" ]] && signal_target="-$pid"
-  kill -TERM -- "$signal_target" >/dev/null 2>&1 || true
-  for _ in $(seq 1 30); do
-    kill -0 "$pid" >/dev/null 2>&1 || break
-    sleep 1
-  done
-  if kill -0 "$pid" >/dev/null 2>&1; then
-    kill -KILL -- "$signal_target" >/dev/null 2>&1 || true
-  fi
+  harbor_terminate_validated_process "$pid"
   [[ -z "$expected_pid" || "$current_pid" == "$expected_pid" ]] && rm -f "$HARBOR_ANALYZER_PID_FILE"
 }
 
