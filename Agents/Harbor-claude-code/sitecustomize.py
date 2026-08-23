@@ -30,8 +30,16 @@
 import json
 import os
 import shlex
+import sys
 from pathlib import Path
 from types import MethodType
+
+HARBOR_RUNTIME_DIR = (
+    Path(__file__).resolve().parents[1] / "utils" / "common" / "Harbor"
+)
+sys.path.append(str(HARBOR_RUNTIME_DIR))
+
+from opik_trace_gate import _is_true, opik_tracing_enabled  # noqa: E402
 
 _HOOK_EVENTS = [
     "UserPromptSubmit",
@@ -43,12 +51,6 @@ _HOOK_EVENTS = [
     "SubagentStop",
     "SessionEnd",
 ]
-
-
-def _is_true(value: str | None) -> bool:
-    if value is None:
-        return False
-    return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _rust_package_mirror_bootstrap(extra_env: dict[str, str] | None) -> str:
@@ -128,12 +130,9 @@ def _fix_unquoted_append_system_prompt(command: str) -> str:
 def _hook_enabled(extra_env: dict[str, str] | None) -> bool:
     if not extra_env:
         return False
-    # If CC_OPIK_ENABLE_HOOK is explicitly set, it takes precedence (including
-    # explicit false).  Otherwise follow OPIK_URL, which the host forwards only
-    # when tracing is on.
-    if "CC_OPIK_ENABLE_HOOK" in extra_env:
-        return _is_true(extra_env["CC_OPIK_ENABLE_HOOK"])
-    return bool(extra_env.get("OPIK_URL", "").strip())
+    if not opik_tracing_enabled(extra_env):
+        return False
+    return _is_true(extra_env.get("CC_OPIK_ENABLE_HOOK", "true"))
 
 
 def _hook_mount_path(extra_env: dict[str, str] | None) -> str:

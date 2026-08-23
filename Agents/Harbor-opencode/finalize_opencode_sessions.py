@@ -16,6 +16,15 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+_SCRIPT_DIR = Path(__file__).resolve().parent
+_HARBOR_RUNTIME_DIR = _SCRIPT_DIR.parent / "utils" / "common" / "Harbor"
+for _import_dir in (_SCRIPT_DIR, _HARBOR_RUNTIME_DIR):
+    if (_import_dir / "opik_trace_gate.py").is_file():
+        sys.path.append(str(_import_dir))
+        break
+
+from opik_trace_gate import opik_tracing_enabled  # noqa: E402
+
 
 def _resolve_timeout_hook() -> Path:
     """Locate the opencode realtime hook for host-side timeout replay."""
@@ -122,16 +131,10 @@ def _fallback_timeout_trace(logs_dir: Path, status: str) -> int:
         return 1
 
 
-def _trace_to_opik_enabled() -> bool:
-    if os.environ.get("OPIK_TRACK_DISABLE", "").lower() in {"true", "1"}:
-        return False
-    return bool(os.environ.get("OPIK_URL", "").strip())
-
-
 def main() -> int:
     # Defense in depth for the worker-side timeout replay: even if a caller
     # forgets the shell gate, a trace-off run must never write to Opik.
-    if not _trace_to_opik_enabled():
+    if not opik_tracing_enabled():
         print("[INFO] finalize skipped: Opik tracing disabled")
         return 0
 

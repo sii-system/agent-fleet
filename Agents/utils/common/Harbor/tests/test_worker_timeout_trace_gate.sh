@@ -6,6 +6,7 @@ set -euo pipefail
 # with tracing on it must keep its existing behavior. Extract the shared
 # helper and the function under test instead of running the worker loop.
 HARBOR_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SCRIPT_DIR="$HARBOR_DIR"
 
 source /dev/stdin <<EOF
 $(sed -n '/^harbor_trace_to_opik_enabled()/,/^}/p' "$HARBOR_DIR/env.sh")
@@ -25,7 +26,7 @@ harbor_agent_is_opencode() {
 
 OPIK_URL=""
 finalize_timeout_trace "/tmp/trace-gate-result.json"
-[[ "$LOGGED" == *"OPIK_URL is empty"* ]] || {
+[[ "$LOGGED" == *"tracing disabled"* ]] || {
   echo "missing trace-off skip log, got: $LOGGED" >&2
   exit 1
 }
@@ -40,5 +41,15 @@ finalize_timeout_trace "/tmp/trace-gate-result.json"
   echo "trace-on path did not reach logs-dir resolution, got: $LOGGED" >&2
   exit 1
 }
+
+for disable in 1 true TRUE " yes " On; do
+  OPIK_TRACK_DISABLE="$disable"
+  LOGGED=""
+  finalize_timeout_trace "/tmp/trace-gate-result.json"
+  [[ "$LOGGED" == *"tracing disabled"* ]] || {
+    echo "OPIK_TRACK_DISABLE=$disable did not stop timeout finalization, got: $LOGGED" >&2
+    exit 1
+  }
+done
 
 echo "worker timeout trace gate OK"

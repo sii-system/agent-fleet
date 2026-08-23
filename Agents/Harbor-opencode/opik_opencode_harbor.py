@@ -18,6 +18,7 @@ import asyncio
 import json
 import os
 import shlex
+import sys
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
@@ -29,6 +30,11 @@ from harbor.models.agent.context import AgentContext
 
 ROOT = Path(__file__).resolve().parent
 REPO_ROOT = ROOT.parents[1]
+HARBOR_RUNTIME_DIR = REPO_ROOT / "Agents" / "utils" / "common" / "Harbor"
+sys.path.append(str(HARBOR_RUNTIME_DIR))
+
+from opik_trace_gate import opik_tracing_enabled  # noqa: E402
+
 TRACE_PLUGIN_SOURCE_DIR = Path(
     os.environ.get(
         "TRACE_PLUGIN_SOURCE_DIR",
@@ -52,6 +58,7 @@ HOOK_PY = Path(
     )
 ).expanduser()
 FINALIZER_PY = ROOT / "finalize_opencode_sessions.py"
+TRACE_GATE_PY = HARBOR_RUNTIME_DIR / "opik_trace_gate.py"
 
 CONTAINER_PLUGIN_REL = ".config/opencode/plugins"
 CONTAINER_STATE_REL = ".opencode/state"
@@ -79,17 +86,6 @@ def _load_opencode_runtime_secrets() -> dict[str, str]:
 
 
 OPENCODE_RUNTIME_SECRETS = _load_opencode_runtime_secrets()
-
-
-def _trace_to_opik_enabled(extra_env: dict[str, str] | None = None) -> bool:
-    """OPIK_URL is the single switch; the host forwards it only when tracing
-    is on, so an empty value means skip Opik entirely."""
-    value: str | None = None
-    if extra_env is not None:
-        value = extra_env.get("OPIK_URL")
-    if value is None:
-        value = os.environ.get("OPIK_URL", "")
-    return bool(value.strip())
 
 
 # ── url helpers ───────────────────────────────────────────────────────────────
@@ -453,9 +449,9 @@ class OpikOpenCodeHarbor(OpenCode):
             sanity_check=_opencode_present,
         )
 
-        if not _trace_to_opik_enabled(getattr(self, "_extra_env", None)):
+        if not opik_tracing_enabled(getattr(self, "_extra_env", None)):
             print(
-                "[opik-cold] OPIK_URL is empty: skip Opik hook dependencies "
+                "[opik-cold] Opik tracing disabled: skip hook dependencies "
                 "and plugin files",
                 flush=True,
             )
@@ -548,6 +544,7 @@ class OpikOpenCodeHarbor(OpenCode):
         await environment.upload_file(PLUGIN_TS, "/tmp/opik-trace.ts")
         await environment.upload_file(HOOK_PY, "/tmp/opencode_realtime_trace.py")
         await environment.upload_file(FINALIZER_PY, "/tmp/finalize_opencode_sessions.py")
+        await environment.upload_file(TRACE_GATE_PY, "/tmp/opik_trace_gate.py")
         await self.exec_as_agent(
             environment,
             command=(
@@ -558,7 +555,9 @@ class OpikOpenCodeHarbor(OpenCode):
                 "install -m 0755 /tmp/opencode_realtime_trace.py "
                 f'"$HOME/{CONTAINER_PLUGIN_REL}/opencode_realtime_trace.py"; '
                 "install -m 0755 /tmp/finalize_opencode_sessions.py "
-                f'"$HOME/{CONTAINER_PLUGIN_REL}/finalize_opencode_sessions.py"'
+                f'"$HOME/{CONTAINER_PLUGIN_REL}/finalize_opencode_sessions.py"; '
+                "install -m 0644 /tmp/opik_trace_gate.py "
+                f'"$HOME/{CONTAINER_PLUGIN_REL}/opik_trace_gate.py"'
             ),
         )
 
@@ -570,7 +569,7 @@ class OpikOpenCodeHarbor(OpenCode):
         context: AgentContext,
     ) -> None:
         escaped_instruction = shlex.quote(instruction)
-        trace_enabled = _trace_to_opik_enabled(getattr(self, "_extra_env", None))
+        trace_enabled = opik_tracing_enabled(getattr(self, "_extra_env", None))
 
         if not self.model_name:
             raise ValueError("Model name must not be empty")

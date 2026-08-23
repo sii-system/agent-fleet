@@ -140,19 +140,41 @@ class OpenCodeTraceDisabledTests(unittest.TestCase):
         )
 
     def test_trace_switch_matches_shell_semantics(self) -> None:
-        self.assertFalse(self.module._trace_to_opik_enabled({"OPIK_URL": ""}))
-        self.assertFalse(self.module._trace_to_opik_enabled({"OPIK_URL": "   "}))
+        self.assertFalse(self.module.opik_tracing_enabled({"OPIK_URL": ""}))
+        self.assertFalse(self.module.opik_tracing_enabled({"OPIK_URL": "   "}))
         self.assertTrue(
-            self.module._trace_to_opik_enabled(
+            self.module.opik_tracing_enabled(
                 {"OPIK_URL": "https://opik.example.invalid/api"}
             )
         )
         # A retired switch must not turn tracing back on.
         self.assertFalse(
-            self.module._trace_to_opik_enabled(
+            self.module.opik_tracing_enabled(
                 {"OPIK_URL": "", "TRACE_TO_OPIK": "true"}
             )
         )
+
+    def test_trace_switch_honors_disable_truth_table(self) -> None:
+        for value in ("1", "true", "TRUE", " yes ", "On"):
+            with self.subTest(value=value):
+                self.assertFalse(
+                    self.module.opik_tracing_enabled(
+                        {
+                            "OPIK_URL": "https://opik.example.invalid/api",
+                            "OPIK_TRACK_DISABLE": value,
+                        }
+                    )
+                )
+        for value in ("", "0", "false", "no", "off", "unexpected"):
+            with self.subTest(value=value):
+                self.assertTrue(
+                    self.module.opik_tracing_enabled(
+                        {
+                            "OPIK_URL": "https://opik.example.invalid/api",
+                            "OPIK_TRACK_DISABLE": value,
+                        }
+                    )
+                )
 
     def test_install_skips_opik_dependencies_and_missing_plugin_files(self) -> None:
         agent = self.make_agent("false")
@@ -223,12 +245,28 @@ class OpenCodeTraceDisabledTests(unittest.TestCase):
                 "/tmp/opik-trace.ts",
                 "/tmp/opencode_realtime_trace.py",
                 "/tmp/finalize_opencode_sessions.py",
+                "/tmp/opik_trace_gate.py",
             ],
         )
         commands = "\n".join(
             str(item.get("command", "")) for item in agent.agent_commands
         )
         self.assertIn("mods = ('opik', 'uuid6', 'socksio')", commands)
+
+    def test_runtime_disable_skips_trace_install_and_run(self) -> None:
+        agent = self.make_agent("true")
+        environment = FakeEnvironment()
+
+        with mock.patch.dict(os.environ, {"OPIK_TRACK_DISABLE": "true"}):
+            asyncio.run(agent.install(environment))
+            asyncio.run(agent.run("solve the task", environment, object()))
+
+        self.assertEqual(environment.uploads, [])
+        commands = "\n".join(
+            str(item.get("command", "")) for item in agent.agent_commands
+        )
+        self.assertNotIn("opik-trace.ts", commands)
+        self.assertNotIn("finalize_opencode_sessions.py", commands)
 
     def test_run_skips_plugin_registration_and_finalizer(self) -> None:
         agent = self.make_agent("false")
@@ -381,7 +419,12 @@ class EnableTrackHarborTests(unittest.TestCase):
     def tearDownClass(cls) -> None:
         sys.modules.pop(cls.module_name, None)
 
-    def run_main(self, trace: str, environment_type: str = "docker"):
+    def run_main(
+        self,
+        trace: str,
+        environment_type: str = "docker",
+        track_disable: str = "",
+    ):
         app = mock.Mock()
         patch_e2b_runtime = mock.Mock()
         harbor = types.ModuleType("harbor")
@@ -407,6 +450,7 @@ class EnableTrackHarborTests(unittest.TestCase):
                         "" if trace in {"false", "0", ""}
                         else "https://opik.example.invalid/api"
                     ),
+                    "OPIK_TRACK_DISABLE": track_disable,
                     "HARBOR_ENVIRONMENT_TYPE": environment_type,
                 },
                 clear=True,
@@ -436,6 +480,13 @@ class EnableTrackHarborTests(unittest.TestCase):
         for call in tracking_calls:
             call.assert_called_once_with()
         patch_e2b_runtime.assert_not_called()
+
+    def test_track_disable_truthy_values_skip_host_tracking(self) -> None:
+        for value in ("1", "true", "TRUE", " yes ", "On"):
+            with self.subTest(value=value):
+                tracking_calls, _ = self.run_main("true", track_disable=value)
+                for call in tracking_calls:
+                    call.assert_not_called()
 
     def test_e2b_compatible_backends_apply_runtime_patches(self) -> None:
         for environment_type in ("e2b", "qz"):
@@ -476,10 +527,17 @@ class FinalizerTraceGateTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("finalize skipped", result.stdout)
 
-    def test_opik_track_disable_skips_timeout_finalization(self) -> None:
-        result = self.run_finalizer({"OPIK_TRACK_DISABLE": "true"})
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("finalize skipped", result.stdout)
+    def test_opik_track_disable_truthy_values_skip_timeout_finalization(self) -> None:
+        for value in ("1", "true", "TRUE", " yes ", "On"):
+            with self.subTest(value=value):
+                result = self.run_finalizer(
+                    {
+                        "OPIK_URL": "https://opik.example.invalid/api",
+                        "OPIK_TRACK_DISABLE": value,
+                    }
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("finalize skipped", result.stdout)
 
 
 if __name__ == "__main__":

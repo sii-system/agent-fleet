@@ -33,6 +33,32 @@ def load_module():
 
 
 class ClaudeCommandPatchTest(unittest.TestCase):
+    def test_opik_hook_requires_shared_trace_gate(self) -> None:
+        module = load_module()
+        endpoint = "https://opik.example.invalid/api"
+
+        self.assertFalse(
+            module._hook_enabled(
+                {"CC_OPIK_ENABLE_HOOK": "true", "OPIK_URL": ""}
+            )
+        )
+        for value in ("1", "true", "TRUE", " yes ", "On"):
+            with self.subTest(value=value):
+                self.assertFalse(
+                    module._hook_enabled(
+                        {
+                            "CC_OPIK_ENABLE_HOOK": "true",
+                            "OPIK_URL": endpoint,
+                            "OPIK_TRACK_DISABLE": value,
+                        }
+                    )
+                )
+        self.assertTrue(
+            module._hook_enabled(
+                {"CC_OPIK_ENABLE_HOOK": "true", "OPIK_URL": endpoint}
+            )
+        )
+
     def test_quotes_append_system_prompt_when_opik_hook_is_disabled(self) -> None:
         module = load_module()
         captured: list[str] = []

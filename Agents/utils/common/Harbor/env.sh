@@ -134,11 +134,11 @@ HARBOR_FIXER_MAX_CONCURRENCY="${HARBOR_FIXER_MAX_CONCURRENCY:-4}"
 HARBOR_FIXER_MAX_TASK_SUMMARY_CHARS="${HARBOR_FIXER_MAX_TASK_SUMMARY_CHARS:-24000}"
 HARBOR_FIXER_MAX_TASK_SUMMARIES_CHARS="${HARBOR_FIXER_MAX_TASK_SUMMARIES_CHARS:-400000}"
 OPIK_URL="${OPIK_URL:-}"
-# OPIK_URL is the single switch for running with or without Opik, shared by
-# every script that sources env.sh (harboropik.sh, run_harbor_worker.sh):
-# an endpoint uploads traces, an empty value skips them entirely.
+# OPIK_URL is the operator switch for running with or without Opik. The shared
+# gate also honors OPIK_TRACK_DISABLE as a runtime safety override.
 harbor_trace_to_opik_enabled() {
-  [[ -n "${OPIK_URL:-}" ]]
+  OPIK_URL="${OPIK_URL:-}" OPIK_TRACK_DISABLE="${OPIK_TRACK_DISABLE:-}" \
+    python3 "$SCRIPT_DIR/opik_trace_gate.py"
 }
 OPIK_URL_OVERRIDE="${OPIK_URL_OVERRIDE:-$OPIK_URL}"
 OPIK_BASE="${OPIK_BASE:-${OPIK_URL_OVERRIDE%/api}}"

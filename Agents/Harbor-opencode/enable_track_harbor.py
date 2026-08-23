@@ -38,10 +38,14 @@ from __future__ import annotations
 
 import os
 import sys
+from pathlib import Path
 
+HARBOR_RUNTIME_DIR = (
+    Path(__file__).resolve().parents[1] / "utils" / "common" / "Harbor"
+)
+sys.path.append(str(HARBOR_RUNTIME_DIR))
 
-def _trace_to_opik_enabled() -> bool:
-    return bool(os.environ.get("OPIK_URL", "").strip())
+from opik_trace_gate import opik_tracing_enabled  # noqa: E402
 
 
 def _clean_tags(tags: object) -> list[str]:
@@ -119,7 +123,7 @@ def main() -> None:
         from e2b_runtime import patch_e2b_runtime_from_env
 
         patch_e2b_runtime_from_env()
-    if _trace_to_opik_enabled():
+    if opik_tracing_enabled():
         _patch_opik_batch_tags()
         _install_track_harbor()
         _patch_trial_decorator_with_harbor_tags()

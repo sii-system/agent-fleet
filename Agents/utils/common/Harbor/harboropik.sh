@@ -930,7 +930,7 @@ run_harbor() {
   if [[ "$HARBOR_DRY_RUN" == "1" ]]; then
     echo "[INFO] HARBOR_DRY_RUN=1, skip Opik project preflight check"
   elif ! harbor_trace_to_opik_enabled; then
-    echo "[INFO] OPIK_URL is empty, skip Opik project preflight check"
+    echo "[INFO] Opik tracing disabled, skip project preflight check"
   else
     local _projects_status
     _projects_status="$(
@@ -1581,7 +1581,7 @@ main() {
     ensure_environment_backend
 
     if ! harbor_trace_to_opik_enabled; then
-      echo "[INFO] OPIK_URL is empty, skip Opik readiness checks"
+      echo "[INFO] Opik tracing disabled, skip readiness checks"
     fi
     prepare_local_dataset_if_needed
 
@@ -1625,7 +1625,7 @@ main() {
   fi
 
   if ! harbor_trace_to_opik_enabled; then
-    echo "[INFO] OPIK_URL is empty, skip Opik readiness checks"
+    echo "[INFO] Opik tracing disabled, skip readiness checks"
   fi
   prepare_local_dataset_if_needed
   if harbor_trace_to_opik_enabled; then
