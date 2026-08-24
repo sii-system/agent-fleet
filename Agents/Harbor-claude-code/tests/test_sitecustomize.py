@@ -106,7 +106,7 @@ class ClaudeCommandPatchTest(unittest.TestCase):
 
 
 class ClaudeInstallCommandTest(unittest.TestCase):
-    def _install_command(self, extra_env: dict[str, str]) -> str:
+    def _install_commands(self, extra_env: dict[str, str]) -> list[str]:
         module = load_module()
         captured: list[str] = []
 
@@ -124,6 +124,7 @@ class ClaudeInstallCommandTest(unittest.TestCase):
             async def exec_as_root(
                 self, environment, command=None, env=None, cwd=None, timeout_sec=None
             ):
+                captured.append(command)
                 return command
 
             async def exec_as_agent(
@@ -148,6 +149,10 @@ class ClaudeInstallCommandTest(unittest.TestCase):
             agent._extra_env = extra_env
             asyncio.run(agent.install(object()))
 
+        return captured
+
+    def _install_command(self, extra_env: dict[str, str]) -> str:
+        captured = self._install_commands(extra_env)
         self.assertEqual(len(captured), 1)
         return captured[0]
 
@@ -169,7 +174,8 @@ class ClaudeInstallCommandTest(unittest.TestCase):
 
     def test_node_dist_url_bootstrap_skipped_when_unset(self) -> None:
         command = self._install_command({"CC_OPIK_ENABLE_HOOK": "false"})
-        self.assertIn("[ -n '' ]", command)
+        self.assertIn("node_dist_url=''", command)
+        self.assertIn('[ -n "$node_dist_url" ]', command)
         bash_check = subprocess.run(
             ["bash", "-n"],
             input=command,
@@ -187,9 +193,7 @@ class ClaudeInstallCommandTest(unittest.TestCase):
             }
         )
 
-        guarded_extract = (
-            'if python3 - <<\'PY\' "$node_dist_tgz" "$node_dir"'
-        )
+        guarded_extract = 'if extract_archive "$node_dist_tgz" "$node_dir"; then'
         package_manager_fallback = "if ! command -v npm >/dev/null 2>&1; then"
         self.assertIn(guarded_extract, command)
         self.assertLess(
@@ -205,6 +209,55 @@ class ClaudeInstallCommandTest(unittest.TestCase):
             check=False,
         )
         self.assertEqual(bash_check.returncode, 0, bash_check.stderr)
+
+    def test_hook_dependencies_use_rich_shared_pip_fallbacks(self) -> None:
+        commands = self._install_commands(
+            {
+                "CC_OPIK_ENABLE_HOOK": "true",
+                "CC_OPIK_INSTALL_DEPS": "true",
+                "HARBOR_LOCAL_WHEEL_SERVER_URL": "https://cache.example/wheels",
+                "OPIK_URL": "https://opik.example.invalid/api",
+            }
+        )
+        command = next(item for item in commands if "mods = ('opik', 'uuid6', 'socksio')" in item)
+
+        self.assertIn("export PIP_BREAK_SYSTEM_PACKAGES=1", command)
+        self.assertIn("--retries 10 --timeout 120", command)
+        self.assertIn("command -v curl", command)
+        self.assertIn("command -v wget", command)
+        bash_check = subprocess.run(
+            ["bash", "-n"],
+            input=command,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(bash_check.returncode, 0, bash_check.stderr)
+
+    def test_missing_python_skips_hook_dependencies_without_aborting_install(self) -> None:
+        commands = self._install_commands(
+            {
+                "CC_OPIK_ENABLE_HOOK": "true",
+                "CC_OPIK_INSTALL_DEPS": "true",
+                "OPIK_URL": "https://opik.example.invalid/api",
+            }
+        )
+        runtime_command = next(
+            item for item in commands if "python_works()" in item
+        )
+        dependencies_command = next(
+            item
+            for item in commands
+            if "mods = ('opik', 'uuid6', 'socksio')" in item
+        )
+
+        warning = "echo '[WARN] python missing, skip opik hook deps' >&2"
+        self.assertIn(warning, runtime_command)
+        self.assertIn(warning, dependencies_command)
+        self.assertIn("exit 0", runtime_command[runtime_command.index(warning) :])
+        self.assertIn(
+            "exit 0", dependencies_command[dependencies_command.index(warning) :]
+        )
 
 
 class QzInstructionHookGateTest(unittest.TestCase):

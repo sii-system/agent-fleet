@@ -8,6 +8,8 @@ Agents/Harbor-claude-code/
 ```
 
 `sitecustomize.py` contains Claude Code specific runtime hooks used by the Harbor runner.
+Its container runtime and package bootstrap commands come from
+`Agents/utils/common/Harbor/container_bootstrap.py`.
 
 The realtime Opik hook is loaded from the `third_party/agent-opik-plugin`
 submodule:

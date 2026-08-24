@@ -39,6 +39,7 @@ HARBOR_RUNTIME_DIR = (
 )
 sys.path.append(str(HARBOR_RUNTIME_DIR))
 
+import container_bootstrap  # noqa: E402
 from opik_trace_gate import _is_true, opik_tracing_enabled  # noqa: E402
 
 _HOOK_EVENTS = [
@@ -227,141 +228,30 @@ def _patch_claude_code_realtime_hooks() -> None:
                 # Harbor's bootstrap.sh install passes the version as
                 # "bash -s -- 2.1.90" rather than in the npm spec format.
                 m = _re.search(r"bash -s --\s+([\d][^\s'\";]*)", command)
-            version_suffix = f"@{m.group(1)}" if m else ""
-            npm_prefix = (
-                f"NPM_CONFIG_REGISTRY={shlex.quote(npm_registry)} "
-                if npm_registry
-                else ""
+            version = m.group(1) if m else ""
+            wheel_dir = (extra_env or {}).get(
+                "CC_OPIK_PY_WHEEL_DIR", "/opt/tb-opik/python-wheels"
             )
-            claude_tgz_path = shlex.quote(
-                (extra_env or {}).get("CC_OPIK_CLAUDE_TGZ_PATH", "/opt/tb-opik/claude-code.tgz")
+            claude_tgz_path = (extra_env or {}).get(
+                "CC_OPIK_CLAUDE_TGZ_PATH", "/opt/tb-opik/claude-code.tgz"
             )
-            claude_tgz_url = shlex.quote((extra_env or {}).get("HARBOR_LOCAL_CLAUDE_TGZ_URL", ""))
-            node_runtime_path = shlex.quote(
-                (extra_env or {}).get("CC_OPIK_PY_WHEEL_DIR", "/opt/tb-opik/python-wheels")
-                + "/node-runtime.tar.xz"
-            )
-            npm_cache_path = shlex.quote(
-                (extra_env or {}).get("CC_OPIK_NPM_CACHE_DIR", "")
-                or (extra_env or {}).get("CC_OPIK_PY_WHEEL_DIR", "/opt/tb-opik/python-wheels")
-                + "/npm-cache"
-            )
-            node_dist_url = shlex.quote((extra_env or {}).get("CC_NODE_DIST_URL", ""))
-            return (
-                "set -euo pipefail; "
-                f"if [ ! -f {claude_tgz_path} ] && [ -n {claude_tgz_url} ]; then "
-                "  tmp_tgz=\"$(mktemp /tmp/claude-code-XXXXXX.tgz)\"; "
-                f"  python3 - <<'PY' {claude_tgz_url} \"$tmp_tgz\" >/dev/null 2>&1 || true\n"
-                "import sys, urllib.request\n"
-                "urllib.request.urlretrieve(sys.argv[1], sys.argv[2])\n"
-                "PY\n"
-                "  if [ -s \"$tmp_tgz\" ]; then claude_tgz_path=\"$tmp_tgz\"; else claude_tgz_path=\"\"; fi; "
-                "else "
-                f"  claude_tgz_path={claude_tgz_path}; "
-                "fi; "
-                # Prefer the offline Node runtime prepared by monitor_harbor.sh.
-                # SWE-bench task images often lack npm, and apt may be slow or
-                # unavailable inside the isolated task container.
-                "if ! command -v npm >/dev/null 2>&1 && [ -f "
-                f"{node_runtime_path}"
-                " ] && command -v python3 >/dev/null 2>&1; then "
-                "  node_dir=\"$(mktemp -d /tmp/tb-node-XXXXXX)\"; "
-                "  python3 - <<'PY' "
-                f"{node_runtime_path}"
-                " \"$node_dir\"\n"
-                "import sys, tarfile\n"
-                "with tarfile.open(sys.argv[1]) as archive:\n"
-                "    archive.extractall(sys.argv[2])\n"
-                "PY\n"
-                "  node_bin=\"$(find \"$node_dir\" -path '*/bin/npm' -print -quit 2>/dev/null)\"; "
-                "  if [ -n \"$node_bin\" ]; then "
-                "    node_runtime_bin=\"$(dirname \"$node_bin\")\"; "
-                "    mkdir -p \"$HOME/.local/bin\"; "
-                "    ln -sf \"$node_runtime_bin/node\" \"$HOME/.local/bin/node\" 2>/dev/null || true; "
-                "    ln -sf \"$node_runtime_bin/npm\" \"$HOME/.local/bin/npm\" 2>/dev/null || true; "
-                "    ln -sf \"$node_runtime_bin/npx\" \"$HOME/.local/bin/npx\" 2>/dev/null || true; "
-                "    export PATH=\"$HOME/.local/bin:$node_runtime_bin:$PATH\"; "
-                "  fi; "
-                "fi; "
-                # Sandboxes without host mounts can get Node from an explicitly
-                # configured, Sandbox-reachable dist endpoint instead of
-                # depending on the task image's package manager.
-                "if ! command -v npm >/dev/null 2>&1 && [ -n "
-                f"{node_dist_url}"
-                " ] && command -v python3 >/dev/null 2>&1; then "
-                "  node_dist_tgz=\"$(mktemp /tmp/tb-node-dist-XXXXXX.tgz)\"; "
-                f"  python3 - <<'PY' {node_dist_url} \"$node_dist_tgz\" || true\n"
-                "import shutil, sys, urllib.request\n"
-                "with urllib.request.urlopen(sys.argv[1], timeout=180) as r, open(sys.argv[2], 'wb') as f:\n"
-                "    shutil.copyfileobj(r, f)\n"
-                "PY\n"
-                "  if [ -s \"$node_dist_tgz\" ]; then "
-                "    node_dir=\"$(mktemp -d /tmp/tb-node-XXXXXX)\"; "
-                "    if python3 - <<'PY' \"$node_dist_tgz\" \"$node_dir\"\n"
-                "import sys, tarfile\n"
-                "with tarfile.open(sys.argv[1]) as archive:\n"
-                "    archive.extractall(sys.argv[2])\n"
-                "PY\n"
-                "    then "
-                "      node_bin=\"$(find \"$node_dir\" -path '*/bin/npm' -print -quit 2>/dev/null)\"; "
-                "      if [ -n \"$node_bin\" ]; then "
-                "        node_runtime_bin=\"$(dirname \"$node_bin\")\"; "
-                "        mkdir -p \"$HOME/.local/bin\"; "
-                "        ln -sf \"$node_runtime_bin/node\" \"$HOME/.local/bin/node\" 2>/dev/null || true; "
-                "        ln -sf \"$node_runtime_bin/npm\" \"$HOME/.local/bin/npm\" 2>/dev/null || true; "
-                "        ln -sf \"$node_runtime_bin/npx\" \"$HOME/.local/bin/npx\" 2>/dev/null || true; "
-                "        export PATH=\"$HOME/.local/bin:$node_runtime_bin:$PATH\"; "
-                "      fi; "
-                "    fi; "
-                "  fi; "
-                "fi; "
-                "export PATH=\"$HOME/.local/bin:$PATH\"; "
-                "claude_check() { "
-                "  hash -r 2>/dev/null || true; "
-                "  for attempt in 1 2 3; do "
-                "    if [ -x \"$HOME/.local/bin/claude\" ]; then "
-                "      \"$HOME/.local/bin/claude\" --version && return 0; "
-                "    elif command -v claude >/dev/null 2>&1; then "
-                "      claude --version && return 0; "
-                "    fi; "
-                "    sleep 1; "
-                "  done; "
-                "  return 1; "
-                "}; "
-                "if ! command -v npm >/dev/null 2>&1; then "
-                "  if command -v apk >/dev/null 2>&1; then "
-                "    apk add --no-cache nodejs npm bash curl; "
-                "  elif command -v apt-get >/dev/null 2>&1; then "
-                "    apt-get -o Acquire::ForceIPv4=true update -qq && "
-                "    apt-get install -y -qq nodejs npm; "
-                "  elif command -v yum >/dev/null 2>&1; then "
-                "    yum install -y nodejs npm; "
-                "  fi; "
-                "fi; "
-                "mkdir -p \"$HOME/.local/bin\"; "
-                "if command -v npm >/dev/null 2>&1; then npm config set prefix \"$HOME/.local\" >/dev/null 2>&1 || true; fi; "
-                "claude_installed=0; "
-                "if command -v npm >/dev/null 2>&1 && [ -n \"${claude_tgz_path:-}\" ]; then "
-                f"  if [ -d {npm_cache_path} ]; then "
-                "    npm_cache_tmp=\"$(mktemp -d /tmp/tb-npm-cache-XXXXXX)\"; "
-                # The shared cache is mounted read-only into task containers, but
-                # npm still writes tmp/index metadata even for --offline installs.
-                f"    if cp -a {npm_cache_path}/. \"$npm_cache_tmp\"/ && "
-                "npm install -g --offline --cache \"$npm_cache_tmp\" \"${claude_tgz_path}\" && claude_check; then "
-                "      claude_installed=1; "
-                "    fi; "
-                "  fi; "
-                "  if [ \"$claude_installed\" != 1 ] && "
-                "npm install -g \"${claude_tgz_path}\" && claude_check; then "
-                "    claude_installed=1; "
-                "  fi; "
-                "fi; "
-                "if [ \"$claude_installed\" != 1 ]; then "
-                f"  {npm_prefix}npm install -g @anthropic-ai/claude-code{version_suffix} && "
-                "  echo 'export PATH=\"$HOME/.local/bin:$PATH\"' >> ~/.bashrc && "
-                "  export PATH=\"$HOME/.local/bin:$PATH\" && "
-                "  claude_check; "
-                "fi"
+            return container_bootstrap.build_npm_tool_install_command(
+                container_bootstrap.NpmToolSpec(
+                    executable="claude",
+                    package="@anthropic-ai/claude-code",
+                    version=version,
+                    archive_path=claude_tgz_path,
+                    archive_url=(extra_env or {}).get(
+                        "HARBOR_LOCAL_CLAUDE_TGZ_URL", ""
+                    ),
+                    archive_basename=Path(claude_tgz_path).name,
+                    npm_cache_dir=(extra_env or {}).get("CC_OPIK_NPM_CACHE_DIR", "")
+                    or f"{wheel_dir}/npm-cache",
+                    npm_registry=npm_registry,
+                ),
+                wheel_dir=wheel_dir,
+                wheel_url=(extra_env or {}).get("HARBOR_LOCAL_WHEEL_SERVER_URL", ""),
+                node_dist_url=(extra_env or {}).get("CC_NODE_DIST_URL", ""),
             )
 
         _apt_fix = (
@@ -386,7 +276,10 @@ def _patch_claude_code_realtime_hooks() -> None:
         async def _exec_as_agent_install_fix(
             _self, environment, command=None, env=None, cwd=None, timeout_sec=None,
         ):
-            if command and ("claude.ai/install.sh" in command or "downloads.claude.ai/claude-code-releases/bootstrap.sh" in command):
+            if command and (
+                "claude.ai/install.sh" in command
+                or "downloads.claude.ai/claude-code-releases/bootstrap.sh" in command
+            ):
                 command = _make_claude_install_command(command)
             return await original_exec_as_agent(
                 environment, command=command, env=env, cwd=cwd, timeout_sec=timeout_sec,
@@ -410,92 +303,24 @@ def _patch_claude_code_realtime_hooks() -> None:
         if not _is_true((extra_env or {}).get("CC_OPIK_INSTALL_DEPS", "true")):
             return
 
+        wheel_dir = (extra_env or {}).get(
+            "CC_OPIK_PY_WHEEL_DIR", "/opt/tb-opik/python-wheels"
+        )
+        wheel_url = (extra_env or {}).get("HARBOR_LOCAL_WHEEL_SERVER_URL", "")
         await self.exec_as_root(
             environment,
-            command=(
-                "set -euo pipefail; "
-                f"wheel_dir={shlex.quote((extra_env or {}).get('CC_OPIK_PY_WHEEL_DIR', '/opt/tb-opik/python-wheels'))}; "
-                "if ! command -v python3 >/dev/null 2>&1; then "
-                "if command -v apk >/dev/null 2>&1; then "
-                "apk add --no-cache python3 py3-pip; "
-                "elif command -v apt-get >/dev/null 2>&1; then "
-                "apt-get update && apt-get install -y python3 python3-pip; "
-                "elif command -v yum >/dev/null 2>&1; then "
-                "yum install -y python3 python3-pip; "
-                "else "
-                "echo '[WARN] no known package manager, skip python dependency install' >&2; "
-                "fi; "
-                "fi; "
-                "if ! command -v python3.12 >/dev/null 2>&1 "
-                "&& [ -f \"$wheel_dir/python3.12-runtime.tar.gz\" ] "
-                "&& command -v python3 >/dev/null 2>&1; then "
-                "rm -rf /opt/python3.12-runtime; "
-                "mkdir -p /opt; "
-                "python3 - <<'PY' \"$wheel_dir/python3.12-runtime.tar.gz\" /opt\n"
-                "import sys, tarfile\n"
-                "with tarfile.open(sys.argv[1], 'r:gz') as archive:\n"
-                "    archive.extractall(sys.argv[2])\n"
-                "PY\n"
-                "fi"
+            command=container_bootstrap.build_python_runtime_command(
+                wheel_dir, python_required=False
             ),
             env={"DEBIAN_FRONTEND": "noninteractive"},
         )
-
         await self.exec_as_agent(
             environment,
-            command=(
-                "set -euo pipefail; "
-                "py_bin=\"$(command -v python3.12 || true)\"; "
-                "py_bin=\"\"; "
-                "for candidate in /opt/python3.12-runtime/bin/python3.12 python3.12 python3; do "
-                "([ -x \"$candidate\" ] || command -v \"$candidate\" >/dev/null 2>&1) || continue; "
-                "\"$candidate\" - <<'PY' >/dev/null 2>&1 || continue\n"
-                "import sys\n"
-                "print(sys.version)\n"
-                "PY\n"
-                "py_bin=\"$candidate\"; "
-                "break; "
-                "done; "
-                "if [ -z \"$py_bin\" ]; then "
-                "echo '[WARN] python missing, skip opik hook deps' >&2; "
-                "exit 0; "
-                "fi; "
-                f"wheel_dir={shlex.quote((extra_env or {}).get('CC_OPIK_PY_WHEEL_DIR', '/opt/tb-opik/python-wheels'))}; "
-                f"wheel_url={shlex.quote((extra_env or {}).get('HARBOR_LOCAL_WHEEL_SERVER_URL', ''))}; "
-                "missing=$(\"$py_bin\" - <<'PY'\n"
-                "import importlib.util\n"
-                "mods = ('opik', 'uuid6', 'socksio')\n"
-                "missing = [m for m in mods if importlib.util.find_spec(m) is None]\n"
-                "print(' '.join(missing))\n"
-                "PY\n"
-                "); "
-                "if [ -z \"$missing\" ]; then exit 0; fi; "
-                "pip_opts=\"\"; "
-                "if [ -d \"$wheel_dir\" ]; then "
-                "pip_opts=\"--no-index --find-links $wheel_dir\"; "
-                "elif [ -n \"$wheel_url\" ]; then "
-                "trusted_host=\"$(printf %s \"$wheel_url\" | sed -E 's#^https?://([^/:]+).*#\\1#')\"; "
-                "pip_opts=\"--trusted-host $trusted_host --no-index --find-links $wheel_url\"; "
-                "fi; "
-                "if ! \"$py_bin\" -m pip --version >/dev/null 2>&1; then "
-                "if [ -f \"$wheel_dir/get-pip.py\" ]; then "
-                "\"$py_bin\" \"$wheel_dir/get-pip.py\" --break-system-packages $pip_opts pip setuptools wheel >/dev/null 2>&1 || true; "
-                "elif [ -n \"$wheel_url\" ]; then "
-                "tmp_get_pip=\"$(mktemp /tmp/get-pip-XXXXXX.py)\"; "
-                "\"$py_bin\" - <<'PY' \"$wheel_url/get-pip.py\" \"$tmp_get_pip\" >/dev/null 2>&1 || true\n"
-                "import sys, urllib.request\n"
-                "urllib.request.urlretrieve(sys.argv[1], sys.argv[2])\n"
-                "PY\n"
-                "if [ -s \"$tmp_get_pip\" ]; then \"$py_bin\" \"$tmp_get_pip\" --break-system-packages $pip_opts pip setuptools wheel >/dev/null 2>&1 || true; fi; "
-                "rm -f \"$tmp_get_pip\"; "
-                "fi; "
-                "fi; "
-                "\"$py_bin\" -m pip install --break-system-packages --ignore-installed $pip_opts $missing "
-                "|| \"$py_bin\" -m pip install --ignore-installed $pip_opts $missing "
-                "|| \"$py_bin\" -m pip install --user --ignore-installed $pip_opts $missing "
-                "|| \"$py_bin\" -m pip install --break-system-packages --ignore-installed $missing "
-                "|| \"$py_bin\" -m pip install --user --ignore-installed $missing "
-                "|| { echo '[WARN] failed to install python deps for opik hook' >&2; exit 1; }"
+            command=container_bootstrap.build_python_dependencies_command(
+                ("opik", "uuid6", "socksio"),
+                wheel_dir=wheel_dir,
+                wheel_url=wheel_url,
+                python_required=False,
             ),
         )
 

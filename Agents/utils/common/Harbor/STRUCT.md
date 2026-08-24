@@ -18,6 +18,7 @@ Agents/utils/common/Harbor/
 ├── run_harbor_registry.sh      # Registry runner with optional final-pane hold
 ├── harboropik.sh               # Harbor CLI orchestration with Opik setup
 ├── harbor_shell_utils.py       # Event, JSON, URL, and mount helpers
+├── container_bootstrap.py      # Shared Python/Node/npm/pip container shell builders
 ├── qz_repository_environment_plan.py # Repository/revision final-image plan producer
 ├── qz_task_instruction.py      # Exact QZ setup-prefix handoff before agent run
 ├── prepare_local_deps.sh       # Thin Python launcher
@@ -89,10 +90,11 @@ Shell entry points own environment composition and top-level process
 lifecycle. Their Python helpers own delegated parsing and data workflows,
 including external commands required to complete them:
 
-| Shell caller | Python helper | Delegated responsibility |
+| Caller | Python helper | Delegated responsibility |
 | --- | --- | --- |
 | `prepare_local_deps.sh` | `prepare_local_deps.py` | Downloads, runtime archives, npm caches, and manifest generation |
 | `harboropik.sh` and model-fusion wrappers | `harbor_shell_utils.py` | Structured events, JSON normalization, URL parsing, and read-only mount JSON |
+| Claude Code `sitecustomize.py` and OpenCode adapter | `container_bootstrap.py` | Python runtime, Node runtime, npm package/cache, and pip/get-pip fallback shell |
 | `monitor_harbor.sh` | `harbor_monitor_utils.py` | Reward, success, exception, and environment statistics |
 | `Agents/utils/rl/run_rl_rollout_server.sh`, `run_rl_rollout_worker.sh`, `monitor_rl_rollout.sh` | `Agents/utils/rl/rollout_worker_utils.py` | Request headers/JSON, LLM kwargs, result assembly, and monitor rendering |
 | Mimo/OpenRouter `run_tb21.sh` | `model-fusion/router_cli_utils.py` | Wheel metadata/extraction, doctor validation, and task-list conversion |

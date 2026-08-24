@@ -14,15 +14,20 @@ from pathlib import Path
 from unittest import mock
 
 MODULE_DIR = Path(__file__).resolve().parents[1]
+HARBOR_RUNTIME_DIR = MODULE_DIR.parent / "utils" / "common" / "Harbor"
 
 
 def load_module(name: str, path: Path):
-    spec = importlib.util.spec_from_file_location(name, path)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[name] = module
-    spec.loader.exec_module(module)
-    return module
+    sys.path.insert(0, str(HARBOR_RUNTIME_DIR))
+    try:
+        spec = importlib.util.spec_from_file_location(name, path)
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[name] = module
+        spec.loader.exec_module(module)
+        return module
+    finally:
+        sys.path.remove(str(HARBOR_RUNTIME_DIR))
 
 
 class FakeOpenCode:
@@ -197,23 +202,25 @@ class OpenCodeTraceDisabledTests(unittest.TestCase):
         install_command = next(
             str(item.get("command", ""))
             for item in agent.agent_commands
-            if "opencode_version=" in str(item.get("command", ""))
+            if "tool_executable=opencode" in str(item.get("command", ""))
         )
-        self.assertIn("${CC_NODE_DIST_URL:-}", install_command)
+        self.assertIn("node_dist_url=https://registry.npmmirror.com", install_command)
         self.assertIn(
-            'if download_file "$CC_NODE_DIST_URL" "$node_dist_tgz" '
-            '    && [ -s "$node_dist_tgz" ]; then',
+            'if download_file "$node_dist_url" "$node_dist_tgz" '
+            '&& [ -s "$node_dist_tgz" ]; then',
             install_command,
         )
         self.assertIn(
             'if extract_archive "$node_dist_tgz" "$node_dir"; then',
             install_command,
         )
+        self.assertIn("Acquire::ForceIPv4=true", install_command)
+        self.assertIn("npm install -g --offline --cache", install_command)
         self.assertLess(
-            install_command.index("CC_NODE_DIST_URL"),
-            install_command.index("apt-get update"),
+            install_command.index("node_dist_url="),
+            install_command.index("apt-get -o Acquire::ForceIPv4=true update"),
         )
-        self.assertIn('npm install -g "opencode-ai@${opencode_version}"', install_command)
+        self.assertIn("npm install -g opencode-ai@latest", install_command)
         bash_check = subprocess.run(
             ["bash", "-n"],
             input=install_command,

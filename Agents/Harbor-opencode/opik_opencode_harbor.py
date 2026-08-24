@@ -33,6 +33,7 @@ REPO_ROOT = ROOT.parents[1]
 HARBOR_RUNTIME_DIR = REPO_ROOT / "Agents" / "utils" / "common" / "Harbor"
 sys.path.append(str(HARBOR_RUNTIME_DIR))
 
+import container_bootstrap  # noqa: E402
 from opik_trace_gate import opik_tracing_enabled  # noqa: E402
 
 TRACE_PLUGIN_SOURCE_DIR = Path(
@@ -229,68 +230,12 @@ class OpikOpenCodeHarbor(OpenCode):
 
     async def install(self, environment: BaseEnvironment) -> None:
         async def _prepare_python_runtime() -> None:
-            # Do not run apt unless Python is actually missing. Several Seta
-            # images intentionally contain broken dpkg state; a no-op apt
-            # install still reconfigures those packages and breaks setup.
+            wheel_dir = self._extra_env.get(
+                "CC_OPIK_PY_WHEEL_DIR", "/opt/tb-opik/python-wheels"
+            )
             await self.exec_as_root(
                 environment,
-                command=(
-                    "set -euo pipefail; "
-                    "wheel_dir=\"${CC_OPIK_PY_WHEEL_DIR:-/opt/tb-opik/python-wheels}\"; "
-                    # Some task images contain a python3 wrapper whose target
-                    # is missing. Treat Python as present only if it executes.
-                    "if command -v python3 >/dev/null 2>&1 && python3 - <<'PY' >/dev/null 2>&1\n"
-                    "import sys\n"
-                    "print(sys.version)\n"
-                    "PY\n"
-                    "then exit 0; fi; "
-                    "if [ -f \"$wheel_dir/python3.12-runtime.tar.gz\" ] && command -v tar >/dev/null 2>&1; then "
-                      "  rm -rf /opt/python3.12-runtime; "
-                      "  mkdir -p /opt; "
-                      "  tar -xzf \"$wheel_dir/python3.12-runtime.tar.gz\" -C /opt; "
-                    "  if [ -x /opt/python3.12-runtime/bin/python3.12 ] "
-                    "    && /opt/python3.12-runtime/bin/python3.12 - <<'PY' >/dev/null 2>&1\n"
-                    "import sys\n"
-                    "print(sys.version)\n"
-                    "PY\n"
-                    "  then "
-                    # Do not symlink the cached wrapper. It derives runtime
-                    # paths from $0, so a /usr/local/bin symlink makes it look
-                    # for /usr/local/bin/python3.12.real and breaks hooks.
-                    "    printf '%s\n' '#!/bin/sh' 'exec /opt/python3.12-runtime/bin/python3.12 \"$@\"' > /usr/local/bin/python3; "
-                    "    printf '%s\n' '#!/bin/sh' 'exec /opt/python3.12-runtime/bin/python3.12 \"$@\"' > /usr/local/bin/python3.12; "
-                    "    chmod +x /usr/local/bin/python3 /usr/local/bin/python3.12; "
-                      "    exit 0; "
-                      "  fi; "
-                    # A corrupt cached runtime leaves a wrapper that points at
-                    # a missing python3.12.real. Remove it so later hook startup
-                    # cannot silently spawn a broken /usr/local/bin/python3.
-                    "  rm -rf /opt/python3.12-runtime; "
-                    "  rm -f /usr/local/bin/python3 /usr/local/bin/python3.12; "
-                    "fi; "
-                    "if command -v apk >/dev/null 2>&1; then "
-                    "  apk add --no-cache python3 py3-pip; "
-                    "elif command -v apt-get >/dev/null 2>&1; then "
-                    "  apt-get update && apt-get install -y python3 python3-pip; "
-                    "elif command -v yum >/dev/null 2>&1; then "
-                    "  yum install -y python3 python3-pip; "
-                    "else "
-                    "  echo '[WARN] no known package manager for python install' >&2; "
-                    "fi; "
-                    # Keep later agent commands away from broken /usr/local/bin
-                    # wrappers by pointing python3 at the package-manager copy.
-                    "if [ -x /usr/bin/python3 ] && /usr/bin/python3 - <<'PY' >/dev/null 2>&1\n"
-                    "import sys\n"
-                    "print(sys.version)\n"
-                    "PY\n"
-                    "then ln -sf /usr/bin/python3 /usr/local/bin/python3; fi; "
-                    # The realtime plugin spawns `python3` with stderr hidden.
-                    # Fail install here instead of losing all opencode traces.
-                    "python3 - <<'PY' >/dev/null\n"
-                    "import sys\n"
-                    "print(sys.version)\n"
-                    "PY\n"
-                ),
+                command=container_bootstrap.build_python_runtime_command(wheel_dir),
                 env={"DEBIAN_FRONTEND": "noninteractive"},
             )
 
@@ -321,123 +266,43 @@ class OpikOpenCodeHarbor(OpenCode):
             if callable(raw_version):
                 raw_version = raw_version()
             version = str(raw_version or os.environ.get("OPENCODE_VERSION", "latest"))
-            version_q = shlex.quote(version)
+            wheel_dir = self._extra_env.get(
+                "CC_OPIK_PY_WHEEL_DIR", "/opt/tb-opik/python-wheels"
+            )
+            archive_basename = f"opencode-ai-{version}.tgz"
+            platform_basename = f"opencode-linux-x64-{version}.tgz"
             await self.exec_as_agent(
                 environment,
-                command=(
-                    "set -euo pipefail; "
-                    "export PATH=\"$HOME/.local/bin:$PATH\"; "
-                    f"opencode_version={version_q}; "
-                    "download_file() { "
-                    "  url=\"$1\"; dest=\"$2\"; "
-                    "  if command -v curl >/dev/null 2>&1; then curl -fsSL \"$url\" -o \"$dest\"; "
-                    "  elif command -v wget >/dev/null 2>&1; then wget -qO \"$dest\" \"$url\"; "
-                    "  elif command -v python3 >/dev/null 2>&1; then python3 - <<'PY' \"$url\" \"$dest\"\n"
-                    "import sys, urllib.request\n"
-                    "urllib.request.urlretrieve(sys.argv[1], sys.argv[2])\n"
-                    "PY\n"
-                    "  else return 1; fi; "
-                    "}; "
-                    "extract_archive() { "
-                    "  archive=\"$1\"; dest=\"$2\"; "
-                    "  mkdir -p \"$dest\"; "
-                    "  if command -v tar >/dev/null 2>&1 && tar -xf \"$archive\" -C \"$dest\"; then return 0; fi; "
-                    "  if command -v python3 >/dev/null 2>&1; then python3 - <<'PY' \"$archive\" \"$dest\"\n"
-                    "import sys, tarfile\n"
-                    "with tarfile.open(sys.argv[1]) as archive:\n"
-                    "    archive.extractall(sys.argv[2])\n"
-                    "PY\n"
-                    "  else return 1; fi; "
-                    "}; "
-                    "wheel_dir=\"${CC_OPIK_PY_WHEEL_DIR:-/opt/tb-opik/python-wheels}\"; "
-                    "wheel_url=\"${HARBOR_LOCAL_WHEEL_SERVER_URL:-}\"; "
-                    "node_tgz=\"$wheel_dir/node-runtime.tar.xz\"; "
-                    "opencode_tgz=\"${OPENCODE_TGZ_PATH:-}\"; "
-                    "opencode_linux_x64_tgz=\"${OPENCODE_LINUX_X64_TGZ_PATH:-}\"; "
-                    "opencode_name=\"opencode-ai-${opencode_version}.tgz\"; "
-                    "opencode_linux_x64_name=\"opencode-linux-x64-${opencode_version}.tgz\"; "
-                    "if [ -z \"$opencode_tgz\" ]; then opencode_tgz=\"$wheel_dir/$opencode_name\"; fi; "
-                    "if [ -z \"$opencode_linux_x64_tgz\" ]; then opencode_linux_x64_tgz=\"$wheel_dir/$opencode_linux_x64_name\"; fi; "
-                    "if [ ! -f \"$opencode_tgz\" ] && [ -n \"${HARBOR_LOCAL_OPENCODE_TGZ_URL:-}\" ]; then "
-                    "  tmp_tgz=\"$(mktemp /tmp/opencode-ai-XXXXXX.tgz)\"; "
-                    "  download_file \"$HARBOR_LOCAL_OPENCODE_TGZ_URL\" \"$tmp_tgz\" >/dev/null 2>&1 || true; "
-                    "  if [ -s \"$tmp_tgz\" ]; then opencode_tgz=\"$tmp_tgz\"; fi; "
-                    "fi; "
-                    "if [ ! -f \"$opencode_tgz\" ] && [ -n \"$wheel_url\" ]; then "
-                    "  tmp_tgz=\"$(mktemp /tmp/opencode-ai-XXXXXX.tgz)\"; "
-                    "  download_file \"${wheel_url%/}/$opencode_name\" \"$tmp_tgz\" >/dev/null 2>&1 || true; "
-                    "  if [ -s \"$tmp_tgz\" ]; then opencode_tgz=\"$tmp_tgz\"; fi; "
-                    "fi; "
-                    "if [ ! -f \"$opencode_linux_x64_tgz\" ] && [ -n \"${HARBOR_LOCAL_OPENCODE_LINUX_X64_TGZ_URL:-}\" ]; then "
-                    "  tmp_platform_tgz=\"$(mktemp /tmp/opencode-linux-x64-XXXXXX.tgz)\"; "
-                    "  download_file \"$HARBOR_LOCAL_OPENCODE_LINUX_X64_TGZ_URL\" \"$tmp_platform_tgz\" >/dev/null 2>&1 || true; "
-                    "  if [ -s \"$tmp_platform_tgz\" ]; then opencode_linux_x64_tgz=\"$tmp_platform_tgz\"; fi; "
-                    "fi; "
-                    "if [ ! -f \"$opencode_linux_x64_tgz\" ] && [ -n \"$wheel_url\" ]; then "
-                    "  tmp_platform_tgz=\"$(mktemp /tmp/opencode-linux-x64-XXXXXX.tgz)\"; "
-                    "  download_file \"${wheel_url%/}/$opencode_linux_x64_name\" \"$tmp_platform_tgz\" >/dev/null 2>&1 || true; "
-                    "  if [ -s \"$tmp_platform_tgz\" ]; then opencode_linux_x64_tgz=\"$tmp_platform_tgz\"; fi; "
-                    "fi; "
-                    "mkdir -p \"$HOME/.local/bin\"; "
-                    "if ! command -v npm >/dev/null 2>&1 && [ -f \"$node_tgz\" ]; then "
-                    "  node_dir=\"$(mktemp -d /tmp/tb-node-XXXXXX)\"; "
-                    "  extract_archive \"$node_tgz\" \"$node_dir\"; "
-                    "  node_bin=\"$(find \"$node_dir\" -path '*/bin/npm' -print -quit 2>/dev/null)\"; "
-                    "  if [ -n \"$node_bin\" ]; then "
-                    "    node_runtime_bin=\"$(dirname \"$node_bin\")\"; "
-                    "    mkdir -p \"$HOME/.local/bin\"; "
-                    "    ln -sf \"$node_runtime_bin/node\" \"$HOME/.local/bin/node\" 2>/dev/null || true; "
-                    "    ln -sf \"$node_runtime_bin/npm\" \"$HOME/.local/bin/npm\" 2>/dev/null || true; "
-                    "    ln -sf \"$node_runtime_bin/npx\" \"$HOME/.local/bin/npx\" 2>/dev/null || true; "
-                    "    export PATH=\"$HOME/.local/bin:$node_runtime_bin:$PATH\"; "
-                    "  fi; "
-                    "fi; "
-                    # qz has no mount or route back to the runner. Use the same
-                    # sandbox-reachable Node dist mirror as Claude Code.
-                    "if ! command -v npm >/dev/null 2>&1 && [ -n \"${CC_NODE_DIST_URL:-}\" ]; then "
-                    "  node_dist_tgz=\"$(mktemp /tmp/tb-node-dist-XXXXXX.tgz)\"; "
-                    "  if download_file \"$CC_NODE_DIST_URL\" \"$node_dist_tgz\" "
-                    "    && [ -s \"$node_dist_tgz\" ]; then "
-                    "    node_dir=\"$(mktemp -d /tmp/tb-node-XXXXXX)\"; "
-                    "    if extract_archive \"$node_dist_tgz\" \"$node_dir\"; then "
-                    "      node_bin=\"$(find \"$node_dir\" -path '*/bin/npm' -print -quit 2>/dev/null)\"; "
-                    "      if [ -n \"$node_bin\" ]; then "
-                    "        node_runtime_bin=\"$(dirname \"$node_bin\")\"; "
-                    "        ln -sf \"$node_runtime_bin/node\" \"$HOME/.local/bin/node\" 2>/dev/null || true; "
-                    "        ln -sf \"$node_runtime_bin/npm\" \"$HOME/.local/bin/npm\" 2>/dev/null || true; "
-                    "        ln -sf \"$node_runtime_bin/npx\" \"$HOME/.local/bin/npx\" 2>/dev/null || true; "
-                    "        export PATH=\"$HOME/.local/bin:$node_runtime_bin:$PATH\"; "
-                    "      fi; "
-                    "    fi; "
-                    "  fi; "
-                    "fi; "
-                    "if ! command -v npm >/dev/null 2>&1; then "
-                    "  if command -v apt-get >/dev/null 2>&1; then apt-get update && apt-get install -y nodejs npm; "
-                    "  elif command -v apk >/dev/null 2>&1; then apk add --no-cache nodejs npm; "
-                    "  elif command -v yum >/dev/null 2>&1; then yum install -y nodejs npm; fi; "
-                    "fi; "
-                    "npm config set prefix \"$HOME/.local\" >/dev/null 2>&1 || true; "
-                    "use_linux_x64_platform=0; "
-                    # Only use the cached glibc x64 binary on matching images.
-                    # Alpine/musl keeps the existing npm fallback so optional
-                    # package selection can pick the compatible binary.
-                    "if [ \"$(uname -m 2>/dev/null)\" = \"x86_64\" ] "
-                    "  && command -v ldd >/dev/null 2>&1 "
-                    "  && ldd --version 2>&1 | grep -qi 'glibc\\|GNU libc' "
-                    "  && [ -f \"$opencode_linux_x64_tgz\" ]; then "
-                    "  use_linux_x64_platform=1; "
-                    "fi; "
-                    "if [ -f \"$opencode_tgz\" ]; then "
-                    "  if [ \"$use_linux_x64_platform\" = \"1\" ]; then "
-                    "    npm install -g \"$opencode_tgz\" \"$opencode_linux_x64_tgz\" && opencode --version; "
-                    "  else "
-                    "    npm install -g \"$opencode_tgz\" && opencode --version; "
-                    "  fi "
-                    "    || { npm install -g \"opencode-ai@${opencode_version}\"; opencode --version; }; "
-                    "else "
-                    "  npm install -g \"opencode-ai@${opencode_version}\"; "
-                    "  opencode --version; "
-                    "fi"
+                command=container_bootstrap.build_npm_tool_install_command(
+                    container_bootstrap.NpmToolSpec(
+                        executable="opencode",
+                        package="opencode-ai",
+                        version=version,
+                        archive_path=self._extra_env.get("OPENCODE_TGZ_PATH", "")
+                        or f"{wheel_dir}/{archive_basename}",
+                        archive_url=self._extra_env.get(
+                            "HARBOR_LOCAL_OPENCODE_TGZ_URL", ""
+                        ),
+                        archive_basename=archive_basename,
+                        platform_archive_path=self._extra_env.get(
+                            "OPENCODE_LINUX_X64_TGZ_PATH", ""
+                        )
+                        or f"{wheel_dir}/{platform_basename}",
+                        platform_archive_url=self._extra_env.get(
+                            "HARBOR_LOCAL_OPENCODE_LINUX_X64_TGZ_URL", ""
+                        ),
+                        platform_archive_basename=platform_basename,
+                        npm_cache_dir=self._extra_env.get(
+                            "CC_OPIK_NPM_CACHE_DIR", ""
+                        )
+                        or f"{wheel_dir}/npm-cache",
+                        npm_registry=self._extra_env.get("NPM_CONFIG_REGISTRY", ""),
+                    ),
+                    wheel_dir=wheel_dir,
+                    wheel_url=self._extra_env.get(
+                        "HARBOR_LOCAL_WHEEL_SERVER_URL", ""
+                    ),
+                    node_dist_url=self._extra_env.get("CC_NODE_DIST_URL", ""),
                 ),
             )
 
@@ -461,72 +326,17 @@ class OpikOpenCodeHarbor(OpenCode):
             # Keep the runtime install offline/cache-first. Only fall back to
             # public pip when neither the mounted cache nor the wheel HTTP
             # mirror is usable.
+            wheel_dir = self._extra_env.get(
+                "CC_OPIK_PY_WHEEL_DIR", "/opt/tb-opik/python-wheels"
+            )
             await self.exec_as_agent(
                 environment,
-                command=(
-                    "set -euo pipefail; "
-                    "py_bin=\"\"; "
-                    "for candidate in /opt/python3.12-runtime/bin/python3.12 python3.12 python3; do "
-                    "  ([ -x \"$candidate\" ] || command -v \"$candidate\" >/dev/null 2>&1) || continue; "
-                    "  \"$candidate\" - <<'PY' >/dev/null 2>&1 || continue\n"
-                    "import sys\n"
-                    "print(sys.version)\n"
-                    "PY\n"
-                    "  py_bin=\"$candidate\"; break; "
-                    "done; "
-                    "if [ -z \"$py_bin\" ]; then echo '[WARN] python missing for opik hook deps' >&2; exit 1; fi; "
-                    "wheel_dir=\"${CC_OPIK_PY_WHEEL_DIR:-/opt/tb-opik/python-wheels}\"; "
-                    "wheel_url=\"${HARBOR_LOCAL_WHEEL_SERVER_URL:-}\"; "
-                    "missing=$(\"$py_bin\" - <<'PY'\n"
-                    "import importlib.util\n"
-                    "mods = ('opik', 'uuid6', 'socksio')\n"
-                    "print(' '.join(m for m in mods if importlib.util.find_spec(m) is None))\n"
-                    "PY\n"
-                    "); "
-                    "if [ -z \"$missing\" ]; then exit 0; fi; "
-                    # Debian/Ubuntu task images often enable PEP 668. Set the
-                    # env override unconditionally so cached wheel installs do
-                    # not fail agent setup before the hook can be installed.
-                    "export PIP_BREAK_SYSTEM_PACKAGES=1; "
-                    "pip_opts=\"\"; "
-                    "if [ -d \"$wheel_dir\" ]; then "
-                    "  pip_opts=\"--no-index --find-links $wheel_dir\"; "
-                    "elif [ -n \"$wheel_url\" ]; then "
-                    "  trusted_host=\"$(printf %s \"$wheel_url\" | sed -E 's#^https?://([^/:]+).*#\\1#')\"; "
-                    "  pip_opts=\"--trusted-host $trusted_host --no-index --find-links $wheel_url\"; "
-                    "fi; "
-                    "if ! \"$py_bin\" -m pip --version >/dev/null 2>&1; then "
-                    "  if [ -f \"$wheel_dir/get-pip.py\" ]; then "
-                    "    \"$py_bin\" \"$wheel_dir/get-pip.py\" --user $pip_opts pip setuptools wheel >/dev/null 2>&1 "
-                    "      || \"$py_bin\" \"$wheel_dir/get-pip.py\" --break-system-packages $pip_opts pip setuptools wheel >/dev/null 2>&1 "
-                    "      || true; "
-                    "  elif [ -n \"$wheel_url\" ]; then "
-                    "    tmp_get_pip=\"$(mktemp /tmp/get-pip-XXXXXX.py)\"; "
-                    "    if command -v curl >/dev/null 2>&1; then curl -fsSL \"${wheel_url%/}/get-pip.py\" -o \"$tmp_get_pip\"; "
-                    "    elif command -v wget >/dev/null 2>&1; then wget -qO \"$tmp_get_pip\" \"${wheel_url%/}/get-pip.py\"; "
-                    "    elif command -v python3 >/dev/null 2>&1; then python3 - <<'PY' \"${wheel_url%/}/get-pip.py\" \"$tmp_get_pip\" >/dev/null 2>&1 || true\n"
-                    "import sys, urllib.request\n"
-                    "urllib.request.urlretrieve(sys.argv[1], sys.argv[2])\n"
-                    "PY\n"
-                    "    fi; "
-                    "    if [ -s \"$tmp_get_pip\" ]; then "
-                    "      \"$py_bin\" \"$tmp_get_pip\" --user $pip_opts pip setuptools wheel >/dev/null 2>&1 "
-                    "        || \"$py_bin\" \"$tmp_get_pip\" --break-system-packages $pip_opts pip setuptools wheel >/dev/null 2>&1 "
-                    "        || true; "
-                    "    fi; "
-                    "    rm -f \"$tmp_get_pip\"; "
-                    "  fi; "
-                    "fi; "
-                    "break_opt=\"\"; "
-                    "if \"$py_bin\" -m pip install --help 2>/dev/null | grep -q -- '--break-system-packages'; then "
-                    "  break_opt=\"--break-system-packages\"; "
-                    "fi; "
-                    "\"$py_bin\" -m pip install --retries 10 --timeout 120 $break_opt --ignore-installed $pip_opts $missing "
-                    "|| \"$py_bin\" -m pip install --retries 10 --timeout 120 --ignore-installed $pip_opts $missing "
-                    "|| \"$py_bin\" -m pip install --retries 10 --timeout 120 --user --ignore-installed $pip_opts $missing "
-                    "|| \"$py_bin\" -m pip install --retries 10 --timeout 120 $break_opt --ignore-installed $missing "
-                    "|| \"$py_bin\" -m pip install --retries 10 --timeout 120 --user --ignore-installed $missing "
-                    "|| { echo '[WARN] failed to install python deps for opik hook' >&2; exit 1; }"
+                command=container_bootstrap.build_python_dependencies_command(
+                    ("opik", "uuid6", "socksio"),
+                    wheel_dir=wheel_dir,
+                    wheel_url=self._extra_env.get(
+                        "HARBOR_LOCAL_WHEEL_SERVER_URL", ""
+                    ),
                 ),
             )
 

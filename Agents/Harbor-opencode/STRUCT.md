@@ -13,6 +13,8 @@ Agents/Harbor-opencode/
 `enable_track_harbor.py` starts OpenCode runs through Harbor with tracing enabled.
 
 `opik_opencode_harbor.py` implements the OpenCode Harbor agent adapter.
+Its container runtime and package bootstrap commands come from
+`Agents/utils/common/Harbor/container_bootstrap.py`.
 
 `finalize_opencode_sessions.py` collects and finalizes OpenCode trace/session output after a worker finishes.
 
