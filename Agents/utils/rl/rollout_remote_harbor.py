@@ -354,9 +354,9 @@ def _ensure_submission_zellij(
     with lock:
         ready_session = _cached_job_session(session_key)
         if ready_session:
-            if _zellij_session_exists(ready_session):
-                return ready_session
-            _clear_cached_job_session(session_key, ready_session)
+            # Another request created and validated this session while this
+            # thread waited for the per-submission initialization lock.
+            return ready_session
 
         script = SCRIPT_DIR / "ensure_rl_job_zellij.sh"
         if not script.exists():

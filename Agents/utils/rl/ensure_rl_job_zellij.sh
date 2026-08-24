@@ -99,7 +99,7 @@ session_ready() {
     RUNTIME_DIR="$job_runtime_dir" \
     LAYOUT_FILE="$layout_file" \
     JOBS_ROOT="${OUTPUT_PATH}/jobs/${agent_slug}/${submission_slug}" \
-    script -q -c "$zellij_cmd" /dev/null >/dev/null 2>&1 &
+    script -q -c "$zellij_cmd" /dev/null >/dev/null 2>&1 9>&- &
 
   # zellij can take tens of seconds to become visible under Docker-in-Docker
   # load.  Do not report failure while the detached session is still starting.

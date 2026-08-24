@@ -319,6 +319,8 @@ class OpenCodeTraceDisabledTests(unittest.TestCase):
     def test_install_uses_sandbox_reachable_node_dist_before_apt(self) -> None:
         install_command = self._local_install_command()
         self.assertIn("${CC_NODE_DIST_URL:-}", install_command)
+        self.assertIn("node_runtime_ready()", install_command)
+        self.assertIn(">= 18 ? 0 : 1", install_command)
         self.assertIn(
             'if download_file "$CC_NODE_DIST_URL" "$node_dist_tgz" '
             '    && [ -s "$node_dist_tgz" ]; then',
@@ -407,6 +409,15 @@ class OpenCodeTraceDisabledTests(unittest.TestCase):
             install_command,
         )
 
+    def test_install_requires_python_39_for_verifier_runtime(self) -> None:
+        agent = self.make_agent("false")
+
+        asyncio.run(agent.install(FakeEnvironment()))
+
+        prepare_command = str(agent.root_commands[0].get("command", ""))
+        self.assertIn("sys.version_info >= (3, 9)", prepare_command)
+        self.assertIn("python3.12-runtime.tar.gz", prepare_command)
+
     def test_install_trace_on_keeps_opik_dependencies_and_plugin_files(self) -> None:
         agent = self.make_agent("true")
         environment = FakeEnvironment()
@@ -470,6 +481,7 @@ class OpenCodeTraceDisabledTests(unittest.TestCase):
             "OPENCODE_FAKE_VCS",
             agent.agent_commands[-1].get("env", {}),
         )
+        self.assertEqual(agent.agent_commands[-1].get("timeout_sec"), 1800)
 
     def test_run_trace_on_keeps_plugin_registration_and_finalizer(self) -> None:
         agent = self.make_agent("true")

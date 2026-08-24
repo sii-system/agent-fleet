@@ -345,6 +345,14 @@ validate_environment_backend() {
   fi
 }
 
+opensandbox_task_image_ref() {
+  local task_config="${DATASET_PATH:-}/${INCLUDE_TASKS:-}/task.toml"
+  [[ -f "$task_config" ]] || return 0
+  python3 -c \
+    'import sys, tomllib; print(tomllib.load(open(sys.argv[1], "rb")).get("environment", {}).get("docker_image", ""))' \
+    "$task_config"
+}
+
 ensure_environment_backend() {
   validate_environment_backend
   if [[ "$HARBOR_ENVIRONMENT_TYPE" == "docker" ]]; then
@@ -402,6 +410,12 @@ print(ref)
   if [[ -n "$HARBOR_OPENSANDBOX_IMAGE_REF" ]]; then
     # Legacy explicit single-image mode remains supported until the runtime
     # environment consumes Bundle Manifests exclusively.
+    return 0
+  fi
+  HARBOR_OPENSANDBOX_IMAGE_REF="$(opensandbox_task_image_ref)"
+  if [[ -n "$HARBOR_OPENSANDBOX_IMAGE_REF" ]]; then
+    export HARBOR_OPENSANDBOX_IMAGE_REF
+    echo "[INFO] using task prebuilt OpenSandbox image: $HARBOR_OPENSANDBOX_IMAGE_REF" >&2
     return 0
   fi
   # DATASET_NAME can have a Harbor Registry alias (for example, seta ->

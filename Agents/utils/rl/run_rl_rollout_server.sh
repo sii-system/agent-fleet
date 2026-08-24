@@ -105,7 +105,7 @@ fi
 if [[ "$DETACH_MODE" == "true" ]]; then
   # The listener is intentionally not inside zellij. It owns port 19001; job
   # zellij sessions are created lazily per Ray submission.
-  nohup setsid env -u ZELLIJ_SESSION_NAME TERM=xterm-256color bash -lc \
+  nohup setsid env -u ZELLIJ_SESSION_NAME TERM=xterm-256color bash -c \
     "cd '$RL_SCRIPT_DIR' && exec python3 rollout_remote_harbor.py" \
     >>"$RL_SERVER_LOG" 2>&1 &
   pid="$!"

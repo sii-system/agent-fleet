@@ -9,9 +9,21 @@ import unittest
 from pathlib import Path
 
 SCRIPT = Path(__file__).resolve().parents[1] / "run_rl_rollout_server.sh"
+ZELLIJ_HELPER = Path(__file__).resolve().parents[1] / "ensure_rl_job_zellij.sh"
 
 
 class RolloutServerStartupTest(unittest.TestCase):
+    def test_detached_listener_preserves_configured_path(self) -> None:
+        source = SCRIPT.read_text(encoding="utf-8")
+
+        self.assertIn("TERM=xterm-256color bash -c", source)
+        self.assertNotIn("TERM=xterm-256color bash -lc", source)
+
+    def test_detached_zellij_does_not_inherit_initialization_lock(self) -> None:
+        source = ZELLIJ_HELPER.read_text(encoding="utf-8")
+
+        self.assertIn('>/dev/null 2>&1 9>&- &', source)
+
     def _run_server_preflight(
         self,
         *,

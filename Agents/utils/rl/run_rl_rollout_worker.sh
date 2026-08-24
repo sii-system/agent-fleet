@@ -20,6 +20,14 @@ log_msg() {
   printf '[%s] [rl-worker-%s] %s\n' "$(date '+%F %T')" "$WORKER_ID" "$1" | tee -a "$WORKER_LOG"
 }
 
+idle_wait() {
+  if [[ -t 0 ]]; then
+    read -r -t "${RL_QUEUE_POLL_INTERVAL_SEC:-1}" _ || true
+  else
+    sleep "${RL_QUEUE_POLL_INTERVAL_SEC:-1}"
+  fi
+}
+
 safe_name() {
   printf '%s' "$1" | tr '/[:space:]' '___' | tr -cd 'A-Za-z0-9._-'
 }
@@ -145,11 +153,12 @@ finalize_timeout_trace() {
 
 claim_request() {
   local pending active
+  CLAIMED_REQUEST=""
   shopt -s nullglob
   for pending in "$PENDING_DIR"/*.json; do
-    active="$ACTIVE_QUEUE_DIR/$(basename "$pending")"
+    active="$ACTIVE_QUEUE_DIR/${pending##*/}"
     if mv "$pending" "$active" 2>/dev/null; then
-      printf '%s\n' "$active"
+      CLAIMED_REQUEST="$active"
       return 0
     fi
   done
@@ -163,9 +172,13 @@ cleanup() {
 trap cleanup EXIT
 
 while true; do
-  request_file="$(claim_request || true)"
+  request_file=""
+  claim_request || true
+  request_file="$CLAIMED_REQUEST"
   if [[ -z "${request_file:-}" ]]; then
-    sleep 1
+    # Zellij workers have a PTY, so this waits without forking one `sleep`
+    # process per worker every second while the queue is empty.
+    idle_wait
     continue
   fi
 

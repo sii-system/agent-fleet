@@ -222,6 +222,16 @@ grep -F -- '--ek image_ref=test-project/from-bundle:immutable' \
 grep -F -- '[INFO] using OpenSandbox Bundle Manifest:' \
   <<< "$manual_bundle_run" >/dev/null
 
+printf '[environment]\nbuild_timeout_sec = 60\ndocker_image = "harbor-sandbox.example/tasks:prebuilt"\n' \
+  > "$tmp/dataset/0/task.toml"
+task_prebuilt="$(run_dry '' "$HARBOR_DIR/opensandbox_image_manager.py")"
+grep -F -- '--ek image_ref=harbor-sandbox.example/tasks:prebuilt' \
+  <<< "$task_prebuilt" >/dev/null
+if grep -F -- '[INFO] preparing OpenSandbox image' <<< "$task_prebuilt" >/dev/null; then
+  echo 'task prebuilt image unexpectedly invoked the image manager' >&2
+  exit 1
+fi
+
 claude_opensandbox="$(run_dry \
   'test-project/manual:immutable' "$tmp/does-not-exist.py" '{}' auto \
   opensandbox 0 claude-code 0)"
