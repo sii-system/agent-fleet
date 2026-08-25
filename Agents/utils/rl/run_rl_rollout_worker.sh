@@ -172,10 +172,9 @@ cleanup() {
 trap cleanup EXIT
 
 while true; do
-  request_file=""
-  claim_request || true
-  request_file="$CLAIMED_REQUEST"
-  if [[ -z "${request_file:-}" ]]; then
+  if claim_request; then
+    request_file="$CLAIMED_REQUEST"
+  else
     # Zellij workers have a PTY, so this waits without forking one `sleep`
     # process per worker every second while the queue is empty.
     idle_wait
