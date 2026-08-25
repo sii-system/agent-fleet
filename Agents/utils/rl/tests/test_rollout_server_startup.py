@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import os
+import shutil
+import socket
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -18,11 +21,132 @@ class RolloutServerStartupTest(unittest.TestCase):
 
         self.assertIn("TERM=xterm-256color bash -c", source)
         self.assertNotIn("TERM=xterm-256color bash -lc", source)
+        self.assertIn("command -v python3", source)
+        self.assertIn("exec \"$2\" rollout_remote_harbor.py", source)
 
     def test_detached_zellij_does_not_inherit_initialization_lock(self) -> None:
         source = ZELLIJ_HELPER.read_text(encoding="utf-8")
 
         self.assertIn('>/dev/null 2>&1 9>&- &', source)
+
+    def test_stop_does_not_require_python(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            root_path = Path(root)
+            harbor_dir = root_path / "Harbor"
+            bin_dir = root_path / "bin"
+            harbor_dir.mkdir()
+            bin_dir.mkdir()
+            for name in ("dirname", "rm"):
+                target = shutil.which(name)
+                self.assertIsNotNone(target)
+                os.symlink(target, bin_dir / name)
+            (harbor_dir / "env.sh").write_text(
+                f"RL_SERVER_PID_FILE={root_path / 'missing.pid'}\n",
+                encoding="utf-8",
+            )
+            env = os.environ.copy()
+            env.update(
+                {
+                    "PATH": str(bin_dir),
+                    "HARBOR_SCRIPT_DIR": str(harbor_dir),
+                }
+            )
+
+            stopped = subprocess.run(
+                ["/bin/bash", str(SCRIPT), "--stop"],
+                check=False,
+                capture_output=True,
+                env=env,
+                text=True,
+                timeout=15,
+            )
+
+        self.assertEqual(stopped.returncode, 0, stopped.stderr)
+        self.assertFalse((bin_dir / "python3").exists())
+
+    def test_detached_listener_uses_resolved_python(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            root_path = Path(root)
+            harbor_dir = root_path / "Harbor"
+            bin_dir = root_path / "bin"
+            harbor_dir.mkdir()
+            bin_dir.mkdir()
+            with socket.socket() as listener:
+                listener.bind(("127.0.0.1", 0))
+                port = listener.getsockname()[1]
+
+            (bin_dir / "setsid").write_text(
+                "#!/bin/sh\nexec \"$@\"\n",
+                encoding="utf-8",
+            )
+            health_server = root_path / "health_server.py"
+            health_server.write_text(
+                "import os\n"
+                "from http.server import BaseHTTPRequestHandler, HTTPServer\n"
+                "class Handler(BaseHTTPRequestHandler):\n"
+                "    def do_GET(self):\n"
+                "        self.send_response(200)\n"
+                "        self.end_headers()\n"
+                "    def log_message(self, _format, *args):\n"
+                "        pass\n"
+                "HTTPServer(('127.0.0.1', int(os.environ['RL_PORT'])), Handler).serve_forever()\n",
+                encoding="utf-8",
+            )
+            (bin_dir / "python3").write_text(
+                "#!/bin/sh\n"
+                "case \"${1:-}\" in\n"
+                "  *rollout_worker_utils.py) exit 0 ;;\n"
+                "esac\n"
+                f"exec {sys.executable!r} {str(health_server)!r}\n",
+                encoding="utf-8",
+            )
+            (bin_dir / "setsid").chmod(0o755)
+            (bin_dir / "python3").chmod(0o755)
+            (harbor_dir / "env.sh").write_text(
+                f"""
+export RL_SERVER_PID_FILE={root_path / 'server.pid'}
+export RL_TRIALS_DIR={root_path / 'trials'}
+export RL_ACTIVE_DIR={root_path / 'queue' / 'active'}
+export RL_QUEUE_DIR={root_path / 'queue'}
+export RL_JOB_QUEUE_ROOT={root_path / 'queue' / 'jobs'}
+export RL_JOB_RUNTIME_ROOT={root_path / 'runtime' / 'jobs'}
+export RL_TRACE_LOG={root_path / 'runtime' / 'trace.jsonl'}
+export RL_SERVER_LOG={root_path / 'runtime' / 'server.log'}
+export RUNTIME_DIR={root_path / 'runtime'}
+export RL_PORT={port}
+harbor_prepare_agent_runtime() {{ return 0; }}
+""",
+                encoding="utf-8",
+            )
+            env = os.environ.copy()
+            env.update(
+                {
+                    "PATH": f"{bin_dir}:/usr/bin:/bin",
+                    "HARBOR_SCRIPT_DIR": str(harbor_dir),
+                    "RL_AGENT": "claude-code",
+                    "HARBOR_CC_OPIK_ENABLE_HOOK": "0",
+                }
+            )
+            try:
+                started = subprocess.run(
+                    ["bash", str(SCRIPT), "--detach"],
+                    check=False,
+                    capture_output=True,
+                    env=env,
+                    text=True,
+                    timeout=15,
+                )
+                self.assertEqual(started.returncode, 0, started.stderr)
+                self.assertIn(f"port={port}", started.stdout)
+            finally:
+                subprocess.run(
+                    ["bash", str(SCRIPT), "--stop"],
+                    check=False,
+                    capture_output=True,
+                    env=env,
+                    text=True,
+                    timeout=15,
+                )
 
     def _run_server_preflight(
         self,

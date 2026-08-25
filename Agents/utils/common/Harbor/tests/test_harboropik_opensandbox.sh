@@ -87,7 +87,7 @@ run_dry() {
     HARBOR_OPENSANDBOX_IMAGE_REF="$image_ref" \
     HARBOR_OPENSANDBOX_BUNDLE_MANIFEST="$bundle_manifest" \
     YICLOUD_HARBOR_HOST=registry.gate.yicloud.com.cn \
-    YICLOUD_HARBOR_PROJECT=test-project \
+    YICLOUD_HARBOR_PROJECT="${RUN_DRY_HARBOR_PROJECT-test-project}" \
     HARBOR_OPENSANDBOX_IMAGE_MANAGER="$manager" \
     HARBOR_OPIK_BIN="$tmp/bin/fake-harbor" \
     HARBOR_CLI_BIN="$tmp/bin/fake-harbor" \
@@ -227,10 +227,38 @@ printf '[environment]\nbuild_timeout_sec = 60\ndocker_image = "harbor-sandbox.ex
 task_prebuilt="$(run_dry '' "$HARBOR_DIR/opensandbox_image_manager.py")"
 grep -F -- '--ek image_ref=harbor-sandbox.example/tasks:prebuilt' \
   <<< "$task_prebuilt" >/dev/null
+task_prebuilt_without_project="$(
+  RUN_DRY_HARBOR_PROJECT='' \
+    run_dry '' "$HARBOR_DIR/opensandbox_image_manager.py"
+)"
+grep -F -- '--ek image_ref=harbor-sandbox.example/tasks:prebuilt' \
+  <<< "$task_prebuilt_without_project" >/dev/null
 if grep -F -- '[INFO] preparing OpenSandbox image' <<< "$task_prebuilt" >/dev/null; then
   echo 'task prebuilt image unexpectedly invoked the image manager' >&2
   exit 1
 fi
+if grep -F -- 'import sys, tomllib' "$HARBOR_DIR/harboropik.sh" >/dev/null; then
+  echo 'OpenSandbox task image parser still requires Python 3.11 tomllib' >&2
+  exit 1
+fi
+printf '[environment]\ndocker_image = "unterminated\n' \
+  > "$tmp/dataset/0/task.toml"
+if invalid_task_image="$(run_dry '' "$HARBOR_DIR/opensandbox_image_manager.py")"; then
+  echo 'invalid task.toml unexpectedly produced an OpenSandbox command' >&2
+  exit 1
+fi
+grep -F -- '[ERROR] failed to read OpenSandbox image from task.toml' \
+  <<< "$invalid_task_image" >/dev/null
+printf '[environment]\ndocker_image = "invalid image"\n' \
+  > "$tmp/dataset/0/task.toml"
+if whitespace_task_image="$(run_dry '' "$HARBOR_DIR/opensandbox_image_manager.py")"; then
+  echo 'whitespace task image unexpectedly produced an OpenSandbox command' >&2
+  exit 1
+fi
+grep -F -- '[ERROR] task docker_image must be a single image reference' \
+  <<< "$whitespace_task_image" >/dev/null
+printf '[environment]\nbuild_timeout_sec = 60\ndocker_image = "harbor-sandbox.example/tasks:prebuilt"\n' \
+  > "$tmp/dataset/0/task.toml"
 
 claude_opensandbox="$(run_dry \
   'test-project/manual:immutable' "$tmp/does-not-exist.py" '{}' auto \
@@ -249,8 +277,11 @@ grep -F -- 'FAKE_HARBOR_ARG=OPENCODE_TGZ_PATH=' \
   <<< "$opencode_opensandbox" >/dev/null
 grep -F -- 'FAKE_HARBOR_ARG=HARBOR_VERIFIER_UV_BIN_DIR=/opt/tb-uv-backup/bin' \
   <<< "$opencode_opensandbox" >/dev/null
-grep -F -- 'FAKE_HARBOR_ARG=XDG_CONFIG_HOME=/root/.config' \
-  <<< "$opencode_opensandbox" >/dev/null
+if grep -F -- 'FAKE_HARBOR_ARG=XDG_CONFIG_HOME=' \
+  <<< "$opencode_opensandbox" >/dev/null; then
+  echo 'OpenSandbox OpenCode unexpectedly overrides the agent XDG home' >&2
+  exit 1
+fi
 
 mkdir -p "$tmp/pi-extensions"
 printf 'export default function () {}\n' > "$tmp/pi-extensions/smoke.ts"

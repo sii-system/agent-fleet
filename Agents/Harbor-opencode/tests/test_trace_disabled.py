@@ -57,7 +57,8 @@ class FakeOpenCode:
             await environment.exec(command=command, env=kwargs.get("env"))
         if (
             not self.fake_opencode_present
-            and "node --version >/dev/null && opencode --version" in command
+            and command.startswith('export PATH="$HOME/.local/bin:$PATH"; ')
+            and "opencode --version >/dev/null" in command
         ):
             raise RuntimeError("opencode is not installed")
 
@@ -316,6 +317,20 @@ class OpenCodeTraceDisabledTests(unittest.TestCase):
         self.assertNotIn("mods = ('opik', 'uuid6', 'socksio')", commands)
         self.assertNotIn("opik-trace.ts", commands)
 
+    def test_install_preflight_enforces_node_18_and_npm(self) -> None:
+        agent = self.make_agent("false")
+
+        asyncio.run(agent.install(FakeEnvironment()))
+
+        preflight = next(
+            str(item.get("command", ""))
+            for item in agent.agent_commands
+            if "opencode --version >/dev/null" in str(item.get("command", ""))
+        )
+        self.assertIn(self.module.NODE_RUNTIME_READY_COMMAND, preflight)
+        self.assertIn(">= 18 ? 0 : 1", preflight)
+        self.assertIn("npm --version", preflight)
+
     def test_install_uses_sandbox_reachable_node_dist_before_apt(self) -> None:
         install_command = self._local_install_command()
         self.assertIn("${CC_NODE_DIST_URL:-}", install_command)
@@ -351,7 +366,9 @@ class OpenCodeTraceDisabledTests(unittest.TestCase):
         )
 
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("node:--version", cache_events)
+        self.assertTrue(
+            any(event.startswith("node:-e ") for event in cache_events)
+        )
         self.assertIn("npm:--version", cache_events)
 
     def test_install_uses_cached_node_when_existing_node_is_broken(self) -> None:
@@ -361,7 +378,9 @@ class OpenCodeTraceDisabledTests(unittest.TestCase):
         )
 
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("node:--version", cache_events)
+        self.assertTrue(
+            any(event.startswith("node:-e ") for event in cache_events)
+        )
         self.assertIn("npm:--version", cache_events)
 
     def test_install_keeps_healthy_node_runtime(self) -> None:
@@ -377,10 +396,8 @@ class OpenCodeTraceDisabledTests(unittest.TestCase):
         install_command = self._local_install_command()
 
         self.assertIn(
-            "node_runtime_ready() {   command -v node >/dev/null 2>&1 "
-            "    && command -v npm >/dev/null 2>&1 "
-            "    && node --version >/dev/null 2>&1 "
-            "    && npm --version >/dev/null 2>&1; };",
+            f"node_runtime_ready() {{   "
+            f"{self.module.NODE_RUNTIME_READY_COMMAND}; }};",
             install_command,
         )
         self.assertNotIn("if ! command -v npm", install_command)
@@ -481,7 +498,33 @@ class OpenCodeTraceDisabledTests(unittest.TestCase):
             "OPENCODE_FAKE_VCS",
             agent.agent_commands[-1].get("env", {}),
         )
-        self.assertEqual(agent.agent_commands[-1].get("timeout_sec"), 1800)
+        self.assertNotIn("timeout_sec", agent.agent_commands[-1])
+
+    def test_run_forwards_explicit_positive_timeout(self) -> None:
+        agent = self.make_agent("false")
+
+        with mock.patch.dict(
+            os.environ,
+            {"HARBOR_OPENCODE_RUN_TIMEOUT_SEC": "2400"},
+        ):
+            asyncio.run(agent.run("solve the task", FakeEnvironment(), object()))
+
+        self.assertEqual(agent.agent_commands[-1].get("timeout_sec"), 2400)
+
+    def test_run_rejects_non_integer_timeout(self) -> None:
+        agent = self.make_agent("false")
+
+        with (
+            mock.patch.dict(
+                os.environ,
+                {"HARBOR_OPENCODE_RUN_TIMEOUT_SEC": "30m"},
+            ),
+            self.assertRaisesRegex(
+                ValueError,
+                "HARBOR_OPENCODE_RUN_TIMEOUT_SEC must be a positive integer",
+            ),
+        ):
+            asyncio.run(agent.run("solve the task", FakeEnvironment(), object()))
 
     def test_run_trace_on_keeps_plugin_registration_and_finalizer(self) -> None:
         agent = self.make_agent("true")

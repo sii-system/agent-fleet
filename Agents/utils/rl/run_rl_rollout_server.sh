@@ -74,9 +74,15 @@ if [[ "$STOP_MODE" == "true" ]]; then
   exit 0
 fi
 
+rollout_python="$(command -v python3 2>/dev/null || true)"
+if [[ -z "$rollout_python" || ! -x "$rollout_python" ]]; then
+  echo "python3 is required to start the rollout listener" >&2
+  exit 1
+fi
+
 # Do not expose a healthy rollout endpoint that can only return empty traces.
 validate_trace_plugin_source
-if ! python3 "$RL_SCRIPT_DIR/rollout_worker_utils.py" request-headers >/dev/null; then
+if ! "$rollout_python" "$RL_SCRIPT_DIR/rollout_worker_utils.py" request-headers >/dev/null; then
   echo "invalid MODEL_REQUEST_CONFIG_JSON; listener was not started" >&2
   exit 1
 fi
@@ -106,7 +112,8 @@ if [[ "$DETACH_MODE" == "true" ]]; then
   # The listener is intentionally not inside zellij. It owns port 19001; job
   # zellij sessions are created lazily per Ray submission.
   nohup setsid env -u ZELLIJ_SESSION_NAME TERM=xterm-256color bash -c \
-    "cd '$RL_SCRIPT_DIR' && exec python3 rollout_remote_harbor.py" \
+    'cd "$1" && exec "$2" rollout_remote_harbor.py' \
+    bash "$RL_SCRIPT_DIR" "$rollout_python" \
     >>"$RL_SERVER_LOG" 2>&1 &
   pid="$!"
   printf '%s\n' "$pid" >"$RL_SERVER_PID_FILE"
@@ -128,4 +135,4 @@ if [[ "$DETACH_MODE" == "true" ]]; then
 fi
 
 cd "$RL_SCRIPT_DIR"
-exec python3 rollout_remote_harbor.py
+exec "$rollout_python" rollout_remote_harbor.py

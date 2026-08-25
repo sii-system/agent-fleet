@@ -360,7 +360,47 @@ class RolloutRequestContextTest(unittest.TestCase):
 
         self.assertEqual(sessions, [expected_session] * 16)
         helper.assert_called_once()
-        exists.assert_not_called()
+        self.assertGreaterEqual(exists.call_count, 1)
+
+    def test_cached_session_created_while_waiting_is_revalidated(self) -> None:
+        expected_session = MODULE._submission_session_name(
+            "ray-submission-test", "seta"
+        )
+        helper = mock.Mock(return_value=(0, f"{expected_session}\n", ""))
+
+        self.stack.enter_context(mock.patch.object(MODULE, "JOB_ZELLIJ_LOCKS", {}))
+        self.stack.enter_context(mock.patch.object(MODULE, "JOB_ZELLIJ_READY", {}))
+        self.stack.enter_context(
+            mock.patch.object(
+                MODULE,
+                "_cached_job_session",
+                mock.Mock(side_effect=["", expected_session]),
+            )
+        )
+        exists = self.stack.enter_context(
+            mock.patch.object(
+                MODULE,
+                "_zellij_session_exists",
+                mock.Mock(return_value=False),
+            )
+        )
+        clear = self.stack.enter_context(
+            mock.patch.object(MODULE, "_clear_cached_job_session")
+        )
+        self.stack.enter_context(mock.patch.object(MODULE, "_run_helper", helper))
+
+        session = MODULE._ensure_submission_zellij(
+            "ray-submission-test",
+            "seta",
+            Path("/tmp/queue"),
+            "model-from-request",
+            "ray-submission-test",
+        )
+
+        self.assertEqual(session, expected_session)
+        exists.assert_called_once_with(expected_session)
+        clear.assert_called_once_with(expected_session, expected_session)
+        helper.assert_called_once()
 
     def test_legacy_raw_zellij_session_is_not_reused_for_hashed_queue(self) -> None:
         legacy_session = "harbor-rollout-claude-code-seta-ray-submission-test"
