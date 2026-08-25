@@ -75,7 +75,13 @@ class E2eValidationWorkflowTest(unittest.TestCase):
 
     def test_pins_the_output_path_for_producer_and_consumers(self):
         # A runner-level OUTPUT_ROOT/OUTPUT_PATH would otherwise win via
-        # config_loader.sh and Harbor would write outside runs/$RUN_ID.
+        # config_loader.sh. The path must also stay stable when start.sh changes
+        # into the Harbor script directory before launching Zellij.
+        self.assertIn(
+            "printf 'output_path=%s/runs/%s\\n' \"$GITHUB_WORKSPACE\" \"$RUN_ID\"",
+            self.workflow,
+        )
+        self.assertNotIn("printf 'output_path=runs/%s\\n'", self.workflow)
         self.assertIn(
             "OUTPUT_PATH: ${{ steps.params.outputs.output_path }}",
             self.workflow,

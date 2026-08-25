@@ -98,7 +98,7 @@ jobs:
             printf 'tasks=%s\n' "$tasks"
             printf 'agent=%s\n' "$agent"
             printf 'run_id=%s\n' "$RUN_ID"
-            printf 'output_path=runs/%s\n' "$RUN_ID"
+            printf 'output_path=%s/runs/%s\n' "$GITHUB_WORKSPACE" "$RUN_ID"
           } >> "$GITHUB_OUTPUT"
 
           # The expected trial count guards against task selection silently not
