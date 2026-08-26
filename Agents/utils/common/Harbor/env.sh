@@ -1128,6 +1128,8 @@ harbor_validate_task_selection() {
 
 harbor_prepare_task_file() {
   mkdir -p "$(dirname "$TASK_FILE")"
+  (
+  flock -x 9
   if [[ -z "$FLEET_TASKS" ]]; then
     if [[ "${RESET_RUN:-0}" == "1" || ! -s "$TASK_FILE" ]]; then
       harbor_generate_task_file
@@ -1158,6 +1160,7 @@ harbor_prepare_task_file() {
   if [[ ! -f "$NEXT_INDEX_FILE" ]]; then
     echo 1 > "$NEXT_INDEX_FILE"
   fi
+  ) 9>"${TASK_FILE}.lock"
 }
 
 harbor_task_count() {

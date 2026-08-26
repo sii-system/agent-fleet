@@ -136,6 +136,35 @@ class HarborTaskSelectionTest(unittest.TestCase):
             self.assertIn("unknown task(s): missing-a, missing-b", result.stderr)
             self.assertFalse((output / "tasks.txt").exists())
 
+    def test_concurrent_prepare_generates_task_file_once(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output, common = self.local_fixture(Path(tmp), "task-a")
+            env = os.environ.copy()
+            env.update(common, FLEET_TASKS="")
+            command = (
+                '. "$1"; mkdir -p "$QUEUE_DIR" "$RUNTIME_DIR"; '
+                "harbor_generate_task_file() { "
+                'echo generate >> "$OUTPUT_PATH/generate.calls"; sleep 0.2; '
+                'echo task-a > "$TASK_FILE"; }; '
+                "harbor_prepare_task_file"
+            )
+            processes = [
+                subprocess.Popen(
+                    ["bash", "-c", command, "bash", str(ENV_SH)],
+                    env=env,
+                    text=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                )
+                for _ in range(8)
+            ]
+
+            for process in processes:
+                stdout, stderr = process.communicate(timeout=5)
+                self.assertEqual(process.returncode, 0, stderr or stdout)
+            calls = (output / "generate.calls").read_text(encoding="utf-8")
+            self.assertEqual(calls.splitlines(), ["generate"])
+
     def test_missing_generic_dataset_explains_removed_auto_provisioning(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             _, common = self.local_fixture(Path(tmp))

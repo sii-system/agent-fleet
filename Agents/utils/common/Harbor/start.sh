@@ -519,6 +519,7 @@ fi
 if [[ $# -gt 0 ]]; then
   if [[ "$ROLLOUT" != "1" ]] && ! harbor_uses_registry_dataset; then
     harbor_prepare_task_file
+    export RESET_RUN=0
   fi
   if [[ "$ROLLOUT" != "1" ]]; then
     harbor_start_online_analysis_if_enabled
@@ -564,6 +565,7 @@ fi
 if [[ "$ROLLOUT" != "1" ]] && ! harbor_uses_registry_dataset; then
   harbor_prepare_task_file
 fi
+export RESET_RUN=0
 if [[ "$ROLLOUT" != "1" ]]; then
   harbor_start_online_analysis_if_enabled
 fi
