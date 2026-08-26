@@ -595,6 +595,10 @@ def _wait_result(result_path: Path, timeout: float) -> dict[str, Any]:
     raise TimeoutError(f"timed out waiting for rollout worker result: {result_path}")
 
 
+class RolloutHTTPServer(ThreadingHTTPServer):
+    request_queue_size = 1024
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "agent-fleet-rl-rollout/0.2"
 
@@ -749,7 +753,7 @@ def main() -> int:
     for path in (TRACE_LOG.parent, PENDING_DIR, ACTIVE_DIR, RESULTS_DIR):
         path.mkdir(parents=True, exist_ok=True)
     print(f"RL rollout Harbor service listening on {host}:{port}", flush=True)
-    ThreadingHTTPServer((host, port), Handler).serve_forever()
+    RolloutHTTPServer((host, port), Handler).serve_forever()
     return 0
 
 

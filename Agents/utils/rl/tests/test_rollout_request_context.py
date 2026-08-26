@@ -34,6 +34,9 @@ class RolloutRequestContextTest(unittest.TestCase):
         handler._send_json = mock.Mock()
         return handler
 
+    def test_http_backlog_supports_rollout_burst(self) -> None:
+        self.assertGreaterEqual(MODULE.RolloutHTTPServer.request_queue_size, 300)
+
     def _enqueue_with_temp_context(
         self,
         request: dict[str, object],
