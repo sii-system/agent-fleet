@@ -71,7 +71,10 @@ jobs:
         run: |
           set -euo pipefail
           echo "Running scripts/tests/test_prerequisites.sh"
-          bash scripts/tests/test_prerequisites.sh
+          if ! bash scripts/tests/test_prerequisites.sh; then
+            bash -x scripts/tests/test_prerequisites.sh
+            exit 1
+          fi
           echo "Running scripts/tests/test_dind_cgroup_v2.sh"
           bash scripts/tests/test_dind_cgroup_v2.sh
           echo "Running scripts/tests/test_dind_run.sh"
