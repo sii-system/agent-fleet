@@ -52,6 +52,14 @@ class PrValidationWorkflowContractTest(unittest.TestCase):
         self.assertIn("git ls-files -z '*.sh'", self.workflow)
         self.assertIn('bash -n "$script"', self.workflow)
 
+    def test_installs_the_declared_harbor_runner_dependencies(self):
+        self.assertIn(
+            "uv pip install --system -r "
+            "Agents/utils/common/Harbor/runner-requirements.txt",
+            self.workflow,
+        )
+        self.assertNotIn("uv pip install --system PyYAML", self.workflow)
+
     def test_runs_all_python_test_suites(self):
         suites = (
             "tests",
