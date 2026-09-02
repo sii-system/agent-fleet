@@ -70,10 +70,17 @@ jobs:
       - name: Run portable shell regressions
         run: |
           set -euo pipefail
+          echo "Running scripts/tests/test_prerequisites.sh"
           bash scripts/tests/test_prerequisites.sh
+          echo "Running scripts/tests/test_dind_cgroup_v2.sh"
           bash scripts/tests/test_dind_cgroup_v2.sh
+          echo "Running scripts/tests/test_dind_run.sh"
           bash scripts/tests/test_dind_run.sh
+          echo "Running Agents/Openclaw/tests/test_build_openclaw_image.sh"
           bash Agents/Openclaw/tests/test_build_openclaw_image.sh
+          echo "Running Agents/Openclaw/tests/test_session_layout.sh"
           bash Agents/Openclaw/tests/test_session_layout.sh
+          echo "Running Agents/Openclaw/tests/test_start_session_tui.sh"
           bash Agents/Openclaw/tests/test_start_session_tui.sh
+          echo "Running Agents/Openclaw/tests/test_stream_openclaw_session_sh.sh"
           bash Agents/Openclaw/tests/test_stream_openclaw_session_sh.sh
