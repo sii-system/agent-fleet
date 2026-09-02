@@ -1,0 +1,79 @@
+name: PR Validation
+
+"on":
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-validation-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  portable-checks:
+    name: Portable tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      PYTHONPATH: .
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@83679a892e2d95755f2dac6acb0bfd1e9ac5d548 # v6.1.0
+        with:
+          python-version: "3.12"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+
+      - name: Install test dependencies
+        run: uv pip install --system PyYAML==6.0.3
+
+      - name: Validate shell syntax
+        run: |
+          set -euo pipefail
+          while IFS= read -r -d '' script; do
+            bash -n "$script"
+          done < <(git ls-files -z '*.sh')
+
+      - name: Run repository automation tests
+        run: |
+          set -euo pipefail
+          python -m unittest discover -s tests -v
+          python -m unittest discover -s scripts/tests -v
+          python -m unittest discover -s .github/scripts/tests -v
+
+      - name: Run agent tests
+        run: |
+          set -euo pipefail
+          python -m unittest discover -s Agents/Harbor-claude-code/tests -v
+          python -m unittest discover -s Agents/Harbor-opencode/tests -v
+          python -m unittest discover -s Agents/Harbor-pi/tests -v
+          python -m unittest discover -s Agents/Openclaw/tests -v
+          python -m unittest discover -s Agents/utils/common/Harbor/tests -v
+          python -m unittest discover -s Agents/utils/rl/tests -v
+
+      - name: Run task runner tests
+        run: |
+          set -euo pipefail
+          python -m unittest discover -s Tasks/Pinchbench/tests -v
+          python -m unittest discover -s Tasks/clawBio/tests -v
+
+      - name: Run portable shell regressions
+        run: |
+          set -euo pipefail
+          bash scripts/tests/test_prerequisites.sh
+          bash scripts/tests/test_dind_cgroup_v2.sh
+          bash scripts/tests/test_dind_run.sh
+          bash Agents/Openclaw/tests/test_build_openclaw_image.sh
+          bash Agents/Openclaw/tests/test_session_layout.sh
+          bash Agents/Openclaw/tests/test_start_session_tui.sh
+          bash Agents/Openclaw/tests/test_stream_openclaw_session_sh.sh
