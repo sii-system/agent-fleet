@@ -47,6 +47,19 @@ jobs:
           # shellcheck source=scripts/prerequisites.sh
           source scripts/prerequisites.sh
           agent_fleet_bootstrap_setup_prerequisites
+          # Harbor's dependency-cache builder packages a Python 3.12 runtime
+          # for task containers. The generic prerequisite check only requires
+          # Python 3.9+, so check this pinned builder explicitly before Harbor
+          # opens its Zellij session.
+          required_python="${PYTHON_BIN:-python3.12}"
+          if ! command -v "$required_python" >/dev/null 2>&1; then
+            echo "::error::Harbor requires $required_python to prepare its dependency cache" >&2
+            exit 1
+          fi
+          if ! "$required_python" -c 'import sys; raise SystemExit(sys.version_info[:2] != (3, 12))'; then
+            echo "::error::Harbor dependency-cache builder requires Python 3.12, got $($required_python --version 2>&1)" >&2
+            exit 1
+          fi
 
       - name: Check host capacity
         id: capacity
