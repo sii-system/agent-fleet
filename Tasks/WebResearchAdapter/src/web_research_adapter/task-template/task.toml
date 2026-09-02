@@ -1,0 +1,30 @@
+schema_version = "1.3"
+
+[task]
+name = "agent-fleet/template"
+authors = [{ name = "Agent Fleet" }]
+keywords = ["web-research"]
+
+[metadata]
+
+[agent]
+timeout_sec = 7200.0
+
+[verifier]
+timeout_sec = 300.0
+
+[verifier.env]
+JUDGE_API_URL = "${HARBOR_API_BASE}"
+JUDGE_API_KEY = "${API_KEY:-}"
+JUDGE_MODEL = "${HARBOR_MODEL}"
+JUDGE_LLM_KWARGS = "${HARBOR_LLM_KWARGS:-{}}"
+
+[environment]
+build_timeout_sec = 900.0
+cpus = 2
+memory_mb = 4096
+storage_mb = 10240
+allow_internet = true
+
+[environment.env]
+HOME = "/root"

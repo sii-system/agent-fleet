@@ -1,0 +1,19 @@
+[project]
+name = "harbor-web-research-adapter"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = ["toml>=0.10.2"]
+
+[project.scripts]
+browsecomp-adapter = "web_research_adapter.main:browsecomp_main"
+deepsearchqa-adapter = "web_research_adapter.main:deepsearchqa_main"
+
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+web_research_adapter = ["task-template/**/*"]
