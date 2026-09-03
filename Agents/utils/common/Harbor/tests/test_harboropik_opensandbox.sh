@@ -48,6 +48,10 @@ printf 'FROM alpine:3.20\n' > "$tmp/dataset/1/environment/Dockerfile"
 printf 'fake package\n' > "$tmp/deps/claude.tgz"
 printf 'fake wheel\n' > "$tmp/deps/wheels/dependency.whl"
 printf '# fake Claude Opik hook\n' > "$tmp/deps/claude_realtime_trace.py"
+printf 'fake node runtime\n' > "$tmp/deps/wheels/node-runtime.tar.gz"
+printf 'fake python runtime\n' > "$tmp/deps/wheels/dsh-sdk-minimal-python3.12-runtime.tar.gz"
+printf 'fake sdk minimal runtime\n' > "$tmp/deps/wheels/dsh-sdk-minimal-runtime-dsh-v0.1.2-alpha.2.tar.gz"
+printf 'fake sdk minimal dsh runtime\n' > "$tmp/deps/wheels/dsh-sdk-minimal-cli-runtime-0.1.2-alpha.2.tar.gz"
 
 run_dry() {
   local image_ref="$1"
@@ -87,12 +91,20 @@ run_dry() {
     HARBOR_FORCE_BUILD="$force_build" \
     HARBOR_N_CONCURRENT=1 \
     HARBOR_MAX_RETRIES=0 \
+    HARBOR_TEMPERATURE= \
+    HARBOR_TOP_P= \
+    HARBOR_MAX_TOKENS="${RUN_DRY_HARBOR_MAX_TOKENS:-}" \
+    OPIK_URL= \
+    TRACE_TO_OPIK= \
     API_KEY=fake-api-key \
     BASE_URL=https://model.example \
     MODEL=test-model \
     OPIK_URL="${RUN_DRY_OPIK_URL:-}" \
     HARBOR_CC_OPIK_ENABLE_HOOK="${RUN_DRY_CC_OPIK_ENABLE_HOOK:-}" \
     HARBOR_CC_HOOK_SOURCE="${RUN_DRY_CC_HOOK_SOURCE:-$tmp/deps/claude_realtime_trace.py}" \
+    DSH_PROVIDER="${DSH_PROVIDER_OVERRIDE:-deepseek}" \
+    DSH_API_KEY="${RUN_DRY_DSH_API_KEY-fake-dsh-api-key}" \
+    DSH_BASE_URL="${RUN_DRY_DSH_BASE_URL-https://dsh.example/v1}" \
     HARBOR_ANTHROPIC_AUTH_TOKEN=fake-api-key \
     HARBOR_LLM_KWARGS='{"temperature":1.0}' \
     HARBOR_CC_CLAUDE_TGZ_SOURCE="$tmp/deps/claude.tgz" \
@@ -385,3 +397,42 @@ grep -F -- "\"source\": \"$tmp/pi-extensions\"" \
   <<< "$pi_opensandbox" >/dev/null
 grep -F -- '"target": "/opt/tb-pi/extensions"' <<< "$pi_opensandbox" >/dev/null
 grep -F -- '"read_only": true' <<< "$pi_opensandbox" >/dev/null
+
+dsh_sdk_minimal_opensandbox="$(RUN_DRY_HARBOR_MAX_TOKENS=65536 run_dry \
+  'test-project/manual:immutable' "$tmp/does-not-exist.py" '{}' auto \
+  opensandbox 0 dsh-sdk-minimal 0)"
+grep -F -- 'FAKE_HARBOR_ARG=dsh_sdk_minimal_harbor:AgentFleetDshSdkMinimal' \
+  <<< "$dsh_sdk_minimal_opensandbox" >/dev/null
+grep -F -- 'FAKE_HARBOR_ARG=version=0.1.2-alpha.2' \
+  <<< "$dsh_sdk_minimal_opensandbox" >/dev/null
+grep -F -- 'FAKE_HARBOR_ARG=max_tokens=65536' \
+  <<< "$dsh_sdk_minimal_opensandbox" >/dev/null
+grep -F -- 'FAKE_HARBOR_ARG=DSH_API_KEY=${DSH_API_KEY}' \
+  <<< "$dsh_sdk_minimal_opensandbox" >/dev/null
+grep -F -- 'FAKE_HARBOR_ARG=DSH_BASE_URL=https://dsh.example/v1' \
+  <<< "$dsh_sdk_minimal_opensandbox" >/dev/null
+if missing_dsh_key="$(RUN_DRY_DSH_API_KEY= run_dry \
+  'test-project/manual:immutable' "$tmp/does-not-exist.py" '{}' auto \
+  opensandbox 0 dsh-sdk-minimal 0 2>&1)"; then
+  echo 'DSH sdk-minimal unexpectedly accepted an empty dedicated API key' >&2
+  exit 1
+fi
+grep -F -- 'requires explicit DSH_API_KEY and DSH_BASE_URL' \
+  <<< "$missing_dsh_key" >/dev/null
+grep -F -- 'FAKE_HARBOR_ARG=DSH_SDK_MINIMAL_RUNTIME_TAR_PATH=/opt/agent-fleet/dsh-runtime/dsh-sdk-minimal-runtime-dsh-v0.1.2-alpha.2.tar.gz' \
+  <<< "$dsh_sdk_minimal_opensandbox" >/dev/null
+grep -F -- 'FAKE_HARBOR_ARG=DSH_CLI_RUNTIME_PATH=/opt/agent-fleet/dsh-runtime/dsh-sdk-minimal-cli-runtime-0.1.2-alpha.2.tar.gz' \
+  <<< "$dsh_sdk_minimal_opensandbox" >/dev/null
+for dependency in \
+  dsh-sdk-minimal-python3.12-runtime.tar.gz \
+  dsh-sdk-minimal-runtime-dsh-v0.1.2-alpha.2.tar.gz \
+  node-runtime.tar.gz \
+  dsh-sdk-minimal-cli-runtime-0.1.2-alpha.2.tar.gz; do
+  grep -F -- "\"source\": \"$tmp/deps/wheels/$dependency\"" \
+    <<< "$dsh_sdk_minimal_opensandbox" >/dev/null
+done
+if grep -F -- 'FAKE_HARBOR_ARG=provider_retry_max=' \
+  <<< "$dsh_sdk_minimal_opensandbox" >/dev/null; then
+  echo 'DSH sdk-minimal unexpectedly added a custom provider retry policy' >&2
+  exit 1
+fi

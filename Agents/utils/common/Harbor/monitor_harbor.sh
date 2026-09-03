@@ -125,6 +125,17 @@ render_report() {
     echo "LOCAL_DEPS_PREP: $prep_status"
     echo "LOCAL_WHEEL_URL: ${HARBOR_LOCAL_WHEEL_SERVER_URL:-<none>}"
     echo "LOCAL_WHEEL_LOG: $LOCAL_DEPS_LOG_FILE"
+  elif harbor_agent_is_dsh; then
+    local prep_status="unknown"
+    [[ ! -f "$RUNTIME_DIR/local-deps-prepare.status" ]] \
+      || prep_status="$(cat "$RUNTIME_DIR/local-deps-prepare.status" 2>/dev/null || true)"
+    echo "DSH_PROFILE:    sdk-minimal"
+    echo "DSH_VERSION:    $DSH_SDK_MINIMAL_CLI_VERSION"
+    echo "DSH_SDK_SOURCE: $DSH_SDK_MINIMAL_SOURCE_REF@$DSH_SDK_MINIMAL_SOURCE_SHA"
+    echo "MODEL:          $HARBOR_MODEL"
+    echo "LOCAL_DEPS_PREP: $prep_status"
+    echo "LOCAL_WHEEL_URL: ${HARBOR_LOCAL_WHEEL_SERVER_URL:-<none>}"
+    echo "LOCAL_WHEEL_LOG: $LOCAL_DEPS_LOG_FILE"
   else
     # oracle and any non-pi agent keep the previous opencode-style summary:
     # the runner-CLI prep state and log are the only diagnostics available.

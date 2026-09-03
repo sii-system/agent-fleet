@@ -10,7 +10,7 @@ if ! harbor_wait_for_workers_ready; then
   echo "worker startup aborted: monitor failed readiness checks" >&2
   exit 1
 fi
-if harbor_local_cache_ready; then
+if harbor_local_cache_ready && ! harbor_agent_is_dsh; then
   harbor_ensure_local_wheels_server
 fi
 
@@ -171,6 +171,8 @@ run_claimed_task() {
       export PI_PROVIDER PI_VERSION PI_TGZ_BASENAME PI_NODE_RUNTIME_BASENAME PI_RUNTIME_BASENAME PI_THINKING_LEVEL
       export PI_MODELS_CONFIG PI_SETTINGS_CONFIG LOCAL_WHEEL_DIR
       export HARBOR_LOCAL_WHEEL_SERVER_URL LOCAL_WHEEL_PORT
+    elif harbor_agent_is_dsh; then
+      export LOCAL_WHEEL_DIR HARBOR_LOCAL_WHEEL_SERVER_URL LOCAL_WHEEL_PORT
     else
       export CC_OPIK_DEBUG
       export CLAUDE_CODE_VERSION CLAUDE_CODE_TGZ_BASENAME LOCAL_WHEEL_DIR

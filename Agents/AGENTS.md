@@ -25,7 +25,7 @@ zellij attach <session-name>
 Main `env.sh` parameters:
 
 ```bash
-AGENT="claude-code"        # claude-code, opencode, or pi
+AGENT="claude-code"        # claude-code, opencode, pi, or dsh-sdk-minimal
 DATASET_NAME="seta"        # seta, smith, terminalbench21, or sweverify
 DATASET_PATH="/workspace/seta-env/Harbor-Dataset"
 TOTAL_WORKERS="80"         # zellij worker panes

@@ -1,7 +1,7 @@
 # Harbor Runner
 
 This directory contains the shared Harbor runner for Claude Code, OpenCode,
-and Pi.
+Pi, and DeepSeek Harness SDK minimal.
 
 For YiCloud OpenSandbox, start with the
 [OpenSandbox quick start](OPENSANDBOX_README.md). For qz (SII Inspire)
@@ -63,7 +63,7 @@ OPIK_PROJECT_NAME=your-project-name
 Then edit the run parameters in `env.sh`:
 
 ```bash
-AGENT="claude-code"        # claude-code, opencode, or pi
+AGENT="claude-code"        # claude-code, opencode, pi, or dsh-sdk-minimal
 DATASET_NAME="seta"        # built-in Harbor registry alias
 TOTAL_WORKERS="80"
 HARBOR_N_CONCURRENT="80"
@@ -78,9 +78,9 @@ HARBOR_TOP_P=0.9
 HARBOR_MAX_TOKENS=8192
 ```
 
-`HARBOR_MAX_TOKENS` also applies to Claude Code and Pi. Neither exposes
-temperature or top-p controls, so the runner rejects those two settings for
-`AGENT=claude-code` and `AGENT=pi` instead of silently ignoring them. The Pi
+`HARBOR_MAX_TOKENS` also applies to Claude Code, Pi, and DSH SDK minimal. Claude
+Code and Pi expose neither temperature nor top-p. The runner rejects unsupported
+settings instead of silently ignoring them. The Pi
 provider derives from `BASE_URL` when `PI_PROVIDER` is unset. Rollout mode
 keeps its separate `RL_TEMPERATURE`, `RL_TOP_P`, and `RL_MAX_NEW_TOKENS`
 interface.

@@ -25,13 +25,14 @@ TASKS_DIR="${TASKS_DIR:-$REPO_ROOT/Tasks}"
 HARBOR_CLAUDE_CODE_DIR="${HARBOR_CLAUDE_CODE_DIR:-$AGENTS_DIR/Harbor-claude-code}"
 HARBOR_OPENCODE_DIR="${HARBOR_OPENCODE_DIR:-$AGENTS_DIR/Harbor-opencode}"
 HARBOR_PI_DIR="${HARBOR_PI_DIR:-$AGENTS_DIR/Harbor-pi}"
+HARBOR_DSH_DIR="${HARBOR_DSH_DIR:-$AGENTS_DIR/Harbor-dsh}"
 WORKSPACE_DIR="${WORKSPACE_DIR:-/workspace}"
 
 RUN_ID="${RUN_ID:-$(date +%Y-%m-%d-%H%M)-harbor-tui}"
 TOTAL_WORKERS="${TOTAL_WORKERS:-10}"
 N_ATTEMPTS="${N_ATTEMPTS:-1}"
 MAX_RETRIES="${MAX_RETRIES:-${HARBOR_MAX_RETRIES:-2}}"
-# AGENT selects the runner: claude-code (default), opencode, or pi.
+# AGENT selects the runner: claude-code (default), opencode, pi, or dsh-sdk-minimal.
 AGENT="${AGENT:-claude-code}"
 MODEL="${MODEL:-minimax2.7}"
 _HARBOR_EFFECTIVE_MODEL="${HARBOR_MODEL:-$MODEL}"
@@ -244,6 +245,9 @@ HARBOR_MODEL="${HARBOR_MODEL:-$_HARBOR_EFFECTIVE_MODEL}"
 if [[ "$AGENT" == "pi" && -z "$HARBOR_AGENT_IMPORT_PATH" ]]; then
   HARBOR_AGENT_IMPORT_PATH="pi_harbor:AgentFleetPi"
 fi
+if [[ "$AGENT" == "dsh-sdk-minimal" && -z "$HARBOR_AGENT_IMPORT_PATH" ]]; then
+  HARBOR_AGENT_IMPORT_PATH="dsh_sdk_minimal_harbor:AgentFleetDshSdkMinimal"
+fi
 if [[ "$AGENT" == "pi" && -z "$PI_PROVIDER" && -n "$HARBOR_ANTHROPIC_BASE_URL" ]]; then
   # Keep the Pi provider name tied to the gateway host. env.py uses the same
   # derivation while rendering models.json, so the CLI model and config agree.
@@ -283,6 +287,29 @@ if [[ "$ROLLOUT" == "1" ]]; then
   HARBOR_TEMPERATURE=""
   HARBOR_TOP_P=""
   HARBOR_MAX_TOKENS=""
+fi
+if [[ "$AGENT" == "dsh-sdk-minimal" ]]; then
+  DSH_SDK_MINIMAL_PYTHON_RUNTIME_BASENAME="${DSH_SDK_MINIMAL_PYTHON_RUNTIME_BASENAME:-dsh-sdk-minimal-python3.12-runtime.tar.gz}"
+  DSH_SDK_MINIMAL_CLI_VERSION="${DSH_SDK_MINIMAL_CLI_VERSION:-0.1.2-alpha.2}"
+  DSH_SDK_MINIMAL_SOURCE_REF="${DSH_SDK_MINIMAL_SOURCE_REF:-dsh-v0.1.2-alpha.2}"
+  DSH_SDK_MINIMAL_SOURCE_SHA="${DSH_SDK_MINIMAL_SOURCE_SHA:-0a53fb55bea101816fa226bb964ae2bed71c343b}"
+  DSH_SDK_MINIMAL_SOURCE_DIR="${DSH_SDK_MINIMAL_SOURCE_DIR:-}"
+  DSH_SDK_MINIMAL_RUNTIME_BASENAME="${DSH_SDK_MINIMAL_RUNTIME_BASENAME:-dsh-sdk-minimal-runtime-${DSH_SDK_MINIMAL_SOURCE_REF}.tar.gz}"
+  DSH_SDK_MINIMAL_RUNTIME_VERSION_BASENAME="${DSH_SDK_MINIMAL_RUNTIME_VERSION_BASENAME:-dsh-sdk-minimal-runtime.version}"
+  DSH_SDK_MINIMAL_CLI_RUNTIME_BASENAME="${DSH_SDK_MINIMAL_CLI_RUNTIME_BASENAME:-dsh-sdk-minimal-cli-runtime-${DSH_SDK_MINIMAL_CLI_VERSION}.tar.gz}"
+  DSH_SDK_MINIMAL_CLI_RUNTIME_VERSION_BASENAME="${DSH_SDK_MINIMAL_CLI_RUNTIME_VERSION_BASENAME:-dsh-sdk-minimal-cli-runtime.version}"
+  DSH_SDK_MINIMAL_MAX_TOKENS="${DSH_SDK_MINIMAL_MAX_TOKENS:-${HARBOR_MAX_TOKENS:-65536}}"
+  DSH_PROVIDER="${DSH_PROVIDER:-deepseek}"
+  DSH_PERMISSION_MODE="${DSH_PERMISSION_MODE:-danger-full-access}"
+  DSH_CONTEXT_WINDOW="${DSH_CONTEXT_WINDOW:-200000}"
+  DSH_PROCESS_RETRY_MAX="${DSH_PROCESS_RETRY_MAX:-0}"
+  DSH_API_KEY="${DSH_API_KEY:-}"
+  DSH_BASE_URL="${DSH_BASE_URL:-}"
+  DSH_RUNTIME_SOURCE_DIR="${DSH_RUNTIME_SOURCE_DIR:-$LOCAL_WHEEL_DIR}"
+  DSH_RUNTIME_MOUNT_PATH="${DSH_RUNTIME_MOUNT_PATH:-/opt/agent-fleet/dsh-runtime}"
+  if [[ "$HARBOR_MODEL" != "${DSH_PROVIDER}/"* ]]; then
+    HARBOR_MODEL="${DSH_PROVIDER}/${HARBOR_MODEL}"
+  fi
 fi
 PI_MODELS_CONFIG="${PI_MODELS_CONFIG:-}"
 PI_SETTINGS_CONFIG="${PI_SETTINGS_CONFIG:-}"
@@ -660,7 +687,7 @@ HARBOR_OPENSANDBOX_BUILD_NETWORK="${HARBOR_OPENSANDBOX_BUILD_NETWORK:-host}"
 HARBOR_OPENSANDBOX_BUILD_PROXY_URL="${HARBOR_OPENSANDBOX_BUILD_PROXY_URL:-}"
 HARBOR_OPENSANDBOX_IMAGE_MANAGER="${HARBOR_OPENSANDBOX_IMAGE_MANAGER:-$SCRIPT_DIR/opensandbox_image_manager.py}"
 
-export SCRIPT_DIR REPO_ROOT AGENTS_DIR TASKS_DIR HARBOR_CLAUDE_CODE_DIR HARBOR_OPENCODE_DIR HARBOR_PI_DIR WORKSPACE_DIR RUN_ID TOTAL_WORKERS N_ATTEMPTS MODEL AGENT MAX_RETRIES
+export SCRIPT_DIR REPO_ROOT AGENTS_DIR TASKS_DIR HARBOR_CLAUDE_CODE_DIR HARBOR_OPENCODE_DIR HARBOR_PI_DIR HARBOR_DSH_DIR WORKSPACE_DIR RUN_ID TOTAL_WORKERS N_ATTEMPTS MODEL AGENT MAX_RETRIES
 export HARBOR_ROOT DATASET_PATH DATASET_NAME METRIC_MODE OUTPUT_ROOT OUTPUT_PATH TASK_SOURCE_FILE TASK_FILE FLEET_TASKS QUEUE_DIR RUNTIME_DIR LAYOUT_FILE JOBS_ROOT
 export HARBOR_ONLINE_ANALYSIS HARBOR_ONLINE_ANALYSIS_POLL_INTERVAL HARBOR_ONLINE_ANALYSIS_DIR HARBOR_ONLINE_ANALYSIS_PID_FILE HARBOR_ONLINE_ANALYSIS_LOG_FILE HARBOR_EARLY_STOP HARBOR_ZELLIJ_CLOSE_ON_COMPLETE HARBOR_ZELLIJ_KEEP_ON_FAILURE
 export HARBOR_MONITOR_ENABLED HARBOR_MONITOR_DIR HARBOR_MONITOR_PID_FILE HARBOR_MONITOR_LOG_FILE HARBOR_BENCHMARK_PID_FILE HARBOR_BENCHMARK_EXIT_FILE HARBOR_JOB_DIR_FILE HARBOR_MONITOR_RESTART_CMD HARBOR_MONITOR_STOP_CMD HARBOR_MONITOR_INTERVAL HARBOR_MONITOR_STARTUP_GRACE HARBOR_MONITOR_STALL_SECONDS HARBOR_MONITOR_MAX_RETRIES HARBOR_MONITOR_CONFIGURED_TIMEOUT
@@ -674,6 +701,14 @@ export HARBOR_ENVIRONMENT_TYPE HARBOR_ENVIRONMENT_SPEC HARBOR_OPENSANDBOX_IMAGE_
 export HARBOR_E2B_SANDBOX_TIMEOUT_SEC HARBOR_E2B_PREBUILT_TEMPLATE HARBOR_E2B_PREBUILT_ENVIRONMENT_SPEC
 export HARBOR_N_CONCURRENT HARBOR_MAX_RETRIES HARBOR_RETRY_INCLUDE_EXCEPTIONS HARBOR_RETRY_EXCLUDE_EXCEPTIONS HARBOR_AK_MAX_TURNS HARBOR_AK_COLLECT_ROLLOUT_DETAILS HARBOR_AK_ENABLE_SUMMARIZE HARBOR_DISALLOWED_TOOLS HARBOR_APPEND_SYSTEM_PROMPT
 export HARBOR_TEMPERATURE HARBOR_TOP_P HARBOR_MAX_TOKENS
+export DSH_SDK_MINIMAL_PYTHON_RUNTIME_BASENAME
+export DSH_SDK_MINIMAL_CLI_VERSION DSH_SDK_MINIMAL_SOURCE_REF
+export DSH_SDK_MINIMAL_SOURCE_SHA DSH_SDK_MINIMAL_SOURCE_DIR
+export DSH_SDK_MINIMAL_RUNTIME_BASENAME DSH_SDK_MINIMAL_RUNTIME_VERSION_BASENAME
+export DSH_SDK_MINIMAL_CLI_RUNTIME_BASENAME DSH_SDK_MINIMAL_CLI_RUNTIME_VERSION_BASENAME
+export DSH_SDK_MINIMAL_MAX_TOKENS DSH_PROVIDER DSH_PERMISSION_MODE
+export DSH_CONTEXT_WINDOW DSH_PROCESS_RETRY_MAX DSH_API_KEY DSH_BASE_URL
+export DSH_RUNTIME_SOURCE_DIR DSH_RUNTIME_MOUNT_PATH
 export HARBOR_API_BASE HARBOR_LLM_KWARGS HARBOR_MAX_NEW_TOKENS HARBOR_MODEL_INFO HARBOR_ANTHROPIC_BASE_URL HARBOR_ANTHROPIC_AUTH_TOKEN HARBOR_ANTHROPIC_CUSTOM_HEADERS HARBOR_CLAUDE_CODE_MAX_OUTPUT_TOKENS
 export HARBOR_CLAUDE_CODE_DISABLE_AUTOUPDATER HARBOR_ANTHROPIC_MODEL HARBOR_ANTHROPIC_DEFAULT_OPUS_MODEL HARBOR_ANTHROPIC_DEFAULT_SONNET_MODEL HARBOR_ANTHROPIC_DEFAULT_HAIKU_MODEL HARBOR_CLAUDE_CODE_SUBAGENT_MODEL HARBOR_CLAUDE_CODE_EFFORT_LEVEL
 export HARBOR_TIMEOUT_MULTIPLIER HARBOR_AGENT_TIMEOUT_MULTIPLIER HARBOR_AGENT_SETUP_TIMEOUT_MULTIPLIER HARBOR_FORCE_BUILD HARBOR_DEBUG TRACE_PLUGIN_SOURCE_DIR TRACE_PLUGIN_CLAUDE_HOOK_SOURCE TRACE_PLUGIN_OPENCODE_PLUGIN_SOURCE TRACE_PLUGIN_OPENCODE_HOOK_SOURCE HARBOR_CC_OPIK_ENABLE_HOOK
@@ -709,6 +744,10 @@ harbor_agent_is_pi() {
   [[ "$AGENT" == "pi" ]]
 }
 
+harbor_agent_is_dsh() {
+  [[ "$AGENT" == "dsh-sdk-minimal" ]]
+}
+
 harbor_agent_tgz_basename() {
   if harbor_agent_is_opencode; then
     printf '%s\n' "$OPENCODE_TGZ_BASENAME"
@@ -733,6 +772,10 @@ harbor_validate_generation_controls() {
     fi
     echo "[ERROR] $agent_display does not expose temperature or top_p controls." >&2
     echo "[ERROR] Use AGENT=opencode for these settings, or leave them unset." >&2
+    return 1
+  fi
+  if harbor_agent_is_dsh && [[ -n "$HARBOR_TOP_P" ]]; then
+    echo "[ERROR] dsh-sdk-minimal fixes top_p in its relay; unset HARBOR_TOP_P." >&2
     return 1
   fi
 }
@@ -807,9 +850,9 @@ harbor_agent_is_oracle() {
 
 harbor_validate_agent() {
   case "$AGENT" in
-    claude-code|opencode|pi|oracle) ;;
+    claude-code|opencode|pi|dsh-sdk-minimal|oracle) ;;
     *)
-      echo "[ERROR] AGENT must be claude-code, opencode, pi, or oracle, got: $AGENT" >&2
+      echo "[ERROR] AGENT must be claude-code, opencode, pi, dsh-sdk-minimal, or oracle, got: $AGENT" >&2
       exit 1
       ;;
   esac
@@ -828,6 +871,25 @@ harbor_validate_agent() {
         exit 1
         ;;
     esac
+  fi
+  if harbor_agent_is_dsh; then
+    if [[ -z "$DSH_API_KEY" || -z "$DSH_BASE_URL" ]]; then
+      echo "[ERROR] dsh-sdk-minimal requires explicit DSH_API_KEY and DSH_BASE_URL." >&2
+      exit 1
+    fi
+    if [[ "$DSH_PROVIDER" != "deepseek" ]]; then
+      echo "[ERROR] dsh-sdk-minimal supports only DSH_PROVIDER=deepseek." >&2
+      exit 1
+    fi
+    if [[ -n "$DSH_SDK_MINIMAL_MAX_TOKENS" \
+      && ! "$DSH_SDK_MINIMAL_MAX_TOKENS" =~ ^[1-9][0-9]*$ ]]; then
+      echo "[ERROR] DSH_SDK_MINIMAL_MAX_TOKENS must be a positive integer." >&2
+      exit 1
+    fi
+    if [[ "$DSH_PERMISSION_MODE" != "danger-full-access" ]]; then
+      echo "[ERROR] dsh-sdk-minimal requires DSH_PERMISSION_MODE=danger-full-access." >&2
+      exit 1
+    fi
   fi
 }
 
@@ -1368,6 +1430,8 @@ harbor_local_cache_ready() {
           && harbor_tar_file_ready "$LOCAL_WHEEL_DIR/${PI_NODE_RUNTIME_BASENAME}" \
           && harbor_tar_file_ready "$LOCAL_WHEEL_DIR/${PI_RUNTIME_BASENAME}" \
           && grep -qx "pi_runtime_version=${PI_VERSION}" "$LOCAL_WHEEL_DIR/manifest.txt"
+      elif harbor_agent_is_dsh; then
+        harbor_dsh_cache_ready
       else
         harbor_npm_tarball_version_ready \
           "$LOCAL_WHEEL_DIR/${CLAUDE_CODE_TGZ_BASENAME}" \
@@ -1379,10 +1443,56 @@ harbor_local_cache_ready() {
     }
 }
 
+harbor_dsh_runtime_version_ready() {
+  local path="$1" expected
+  expected="$(
+    "$HARBOR_OPIK_PYTHON" "$HARBOR_DSH_DIR/prepare_dsh_sdk_minimal_runtime.py" \
+      --print-runtime-version
+  )" || return 1
+  [[ -n "$expected" ]] && grep -Fqx -- "$expected" "$path"
+}
+
+harbor_dsh_cache_ready() {
+  harbor_tar_file_ready "$LOCAL_WHEEL_DIR/$DSH_SDK_MINIMAL_PYTHON_RUNTIME_BASENAME" \
+    && harbor_tar_file_ready "$LOCAL_WHEEL_DIR/$DSH_SDK_MINIMAL_RUNTIME_BASENAME" \
+    && harbor_dsh_runtime_version_ready \
+      "$LOCAL_WHEEL_DIR/$DSH_SDK_MINIMAL_RUNTIME_VERSION_BASENAME" \
+    && harbor_tar_file_ready "$LOCAL_WHEEL_DIR/node-runtime.tar.gz" \
+    && harbor_tar_file_ready "$LOCAL_WHEEL_DIR/$DSH_SDK_MINIMAL_CLI_RUNTIME_BASENAME" \
+    && grep -qx "$DSH_SDK_MINIMAL_CLI_VERSION" \
+      "$LOCAL_WHEEL_DIR/$DSH_SDK_MINIMAL_CLI_RUNTIME_VERSION_BASENAME"
+}
+
+harbor_dsh_prepare_runtime() {
+  WHEEL_DIR="$LOCAL_WHEEL_DIR" \
+    DSH_CLI_VERSION="$DSH_SDK_MINIMAL_CLI_VERSION" \
+    DSH_CLI_RUNTIME_BASENAME="$DSH_SDK_MINIMAL_CLI_RUNTIME_BASENAME" \
+    DSH_CLI_RUNTIME_VERSION_FILE="$LOCAL_WHEEL_DIR/$DSH_SDK_MINIMAL_CLI_RUNTIME_VERSION_BASENAME" \
+    NPM_CONFIG_REGISTRY="$NPM_CONFIG_REGISTRY" \
+    "$HARBOR_OPIK_PYTHON" "$HARBOR_DSH_DIR/prepare_dsh_sdk_minimal_cli_runtime.py" \
+      2>&1 | tee -a "$LOCAL_DEPS_LOG_FILE" || return 1
+
+  WHEEL_DIR="$LOCAL_WHEEL_DIR" \
+    DSH_SDK_MINIMAL_SOURCE_REF="$DSH_SDK_MINIMAL_SOURCE_REF" \
+    DSH_SDK_MINIMAL_SOURCE_SHA="$DSH_SDK_MINIMAL_SOURCE_SHA" \
+    DSH_SDK_MINIMAL_SOURCE_DIR="$DSH_SDK_MINIMAL_SOURCE_DIR" \
+    DSH_SDK_MINIMAL_RUNTIME_BASENAME="$DSH_SDK_MINIMAL_RUNTIME_BASENAME" \
+    DSH_SDK_MINIMAL_RUNTIME_VERSION_FILE="$LOCAL_WHEEL_DIR/$DSH_SDK_MINIMAL_RUNTIME_VERSION_BASENAME" \
+    DSH_SDK_MINIMAL_PYTHON_RUNTIME_TARBALL="$LOCAL_WHEEL_DIR/$DSH_SDK_MINIMAL_PYTHON_RUNTIME_BASENAME" \
+    "$HARBOR_OPIK_PYTHON" "$HARBOR_DSH_DIR/prepare_dsh_sdk_minimal_runtime.py" \
+      2>&1 | tee -a "$LOCAL_DEPS_LOG_FILE"
+}
+
+harbor_dsh_disable_wheel_transport() {
+  : > "$EFFECTIVE_WHEEL_URL_FILE"
+  : > "$EFFECTIVE_CLAUDE_TGZ_URL_FILE"
+  unset HARBOR_LOCAL_WHEEL_SERVER_URL HARBOR_LOCAL_CLAUDE_TGZ_URL
+}
+
 harbor_pick_remote_wheel_url() {
-  # Pi unpacks its pinned runtime from the read-only dependency mount. A
-  # remote URL cannot materialize that mount, so Pi always prepares locally.
-  if harbor_agent_is_pi; then
+  # Pi and DSH unpack pinned runtimes from the read-only dependency mount. A
+  # remote URL cannot materialize that mount, so both prepare locally.
+  if harbor_agent_is_pi || harbor_agent_is_dsh; then
     return 1
   fi
   # Claude's npm package has platform-specific optional dependencies. The
@@ -1512,8 +1622,12 @@ harbor_prepare_or_select_wheels() {
 
   if harbor_local_cache_ready; then
     echo "using local wheel cache"
-    harbor_ensure_local_wheels_server
-    harbor_write_effective_wheel_source "$HARBOR_LOCAL_WHEEL_SERVER_URL"
+    if harbor_agent_is_dsh; then
+      harbor_dsh_disable_wheel_transport
+    else
+      harbor_ensure_local_wheels_server
+      harbor_write_effective_wheel_source "$HARBOR_LOCAL_WHEEL_SERVER_URL"
+    fi
     harbor_prewarm_s3_upload_cache || {
       echo "failed" > "$status_file"
       touch "$WORKERS_FAILED_FILE"
@@ -1551,8 +1665,18 @@ harbor_prepare_or_select_wheels() {
     prepare_pi_cache=1
   fi
   if (cd "$SCRIPT_DIR" && WHEEL_DIR="$LOCAL_WHEEL_DIR" CACHE_SCHEMA=3 CLAUDE_CODE_VERSION="$CLAUDE_CODE_VERSION" CLAUDE_CODE_TGZ_BASENAME="$CLAUDE_CODE_TGZ_BASENAME" PREPARE_OPENCODE_CACHE="$prepare_opencode_cache" OPENCODE_VERSION="$OPENCODE_VERSION" OPENCODE_TGZ_BASENAME="$OPENCODE_TGZ_BASENAME" OPENCODE_LINUX_X64_TGZ_BASENAME="$OPENCODE_LINUX_X64_TGZ_BASENAME" PREPARE_PI_CACHE="$prepare_pi_cache" PI_VERSION="$PI_VERSION" PI_TGZ_BASENAME="$PI_TGZ_BASENAME" PI_NODE_RUNTIME_BASENAME="$PI_NODE_RUNTIME_BASENAME" PI_RUNTIME_BASENAME="$PI_RUNTIME_BASENAME" ./prepare_local_deps.sh 2>&1 | tee -a "$LOCAL_DEPS_LOG_FILE"); then
-    harbor_ensure_local_wheels_server
-    harbor_write_effective_wheel_source "$HARBOR_LOCAL_WHEEL_SERVER_URL"
+    if harbor_agent_is_dsh && ! harbor_dsh_prepare_runtime; then
+      echo "failed to prepare DSH sdk-minimal runtime" >&2
+      echo "failed" > "$status_file"
+      touch "$WORKERS_FAILED_FILE"
+      return 1
+    fi
+    if harbor_agent_is_dsh; then
+      harbor_dsh_disable_wheel_transport
+    else
+      harbor_ensure_local_wheels_server
+      harbor_write_effective_wheel_source "$HARBOR_LOCAL_WHEEL_SERVER_URL"
+    fi
     harbor_prewarm_s3_upload_cache || {
       echo "failed" > "$status_file"
       touch "$WORKERS_FAILED_FILE"
