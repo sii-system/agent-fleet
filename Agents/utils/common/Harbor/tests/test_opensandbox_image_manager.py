@@ -27,6 +27,7 @@ from opensandbox_image_manager import (
     apt_404_requires_cache_refresh,
     environment_content_hash,
     github_mirror_config_content,
+    mirror_image_ref,
     normalize_oci_image_config,
     oci_archive_image_config,
     package_source_build_args,
@@ -469,7 +470,7 @@ networks:
             "FROM ubuntu:24.04 AS builder\nRUN git submodule update --init --recursive\nFROM builder\n",
             dockerhub_mirror_prefix="m.daocloud.io/docker.io",
             apt_mirror="https://mirrors.tuna.tsinghua.edu.cn",
-            github_mirror_secret_id="opensandbox-github-mirror-gitconfig",
+            github_mirror_config_mount_id="opensandbox-github-mirror-gitconfig",
         )
 
         self.assertEqual(mirror, "http://github-mirror.internal:8080/repos/")
@@ -480,6 +481,18 @@ networks:
         )
         self.assertNotIn(mirror, rendered)
 
+    def test_dockerhub_mirror_matches_registry_component_exactly(self) -> None:
+        mirror = "mirror.example/docker.io"
+
+        self.assertEqual(
+            mirror_image_ref("docker.io/library/python:3.13", mirror, set()),
+            "mirror.example/docker.io/library/python:3.13",
+        )
+        self.assertEqual(
+            mirror_image_ref("docker.io.evil/library/python:3.13", mirror, set()),
+            "docker.io.evil/library/python:3.13",
+        )
+
     def test_github_mirror_accepts_provider_neutral_prefix(self) -> None:
         self.assertEqual(
             validate_github_mirror_url(
@@ -487,6 +500,12 @@ networks:
             ),
             "https://mirror.example.internal/custom/github/",
         )
+
+    def test_github_mirror_rejects_embedded_credentials(self) -> None:
+        with self.assertRaisesRegex(ValueError, "without credentials"):
+            validate_github_mirror_url(
+                "https://user:password@mirror.example.internal/github", "host"
+            )
 
     def test_render_preserves_debian_security_repository_path(self) -> None:
         rendered = render_build_dockerfile(

@@ -123,7 +123,7 @@ GITHUB_GIT_URL_PREFIXES = (
     "ssh://git@github.com/",
     "git://github.com/",
 )
-GITHUB_MIRROR_SECRET_ID = "opensandbox-github-mirror-gitconfig"
+GITHUB_MIRROR_CONFIG_MOUNT_ID = "opensandbox-github-mirror-gitconfig"
 BUILD_ARG_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 FROM_LINE = re.compile(
     r"^(?P<prefix>\s*FROM(?:\s+--platform=\S+)?\s+)"
@@ -234,10 +234,10 @@ def apt_404_requires_cache_refresh(log_path: Path) -> bool:
 def mirror_image_ref(image: str, mirror_prefix: str, aliases: set[str]) -> str:
     if not mirror_prefix or image in aliases or image.startswith("$"):
         return image
-    if image.startswith("docker.io/"):
-        return f"{mirror_prefix.rstrip('/')}/{image.removeprefix('docker.io/')}"
-    first = image.split("/", 1)[0]
-    if "/" not in image or ("." not in first and ":" not in first and first != "localhost"):
+    first, separator, remainder = image.partition("/")
+    if first == "docker.io" and separator:
+        return f"{mirror_prefix.rstrip('/')}/{remainder}"
+    if not separator or ("." not in first and ":" not in first and first != "localhost"):
         relative = image if "/" in image else f"library/{image}"
         return f"{mirror_prefix.rstrip('/')}/{relative}"
     return image
@@ -587,7 +587,7 @@ def render_build_dockerfile(
     package_build_args: dict[str, str] | None = None,
     rustup_init_url: str = "",
     pytorch_index_url: str = "",
-    github_mirror_secret_id: str = "",
+    github_mirror_config_mount_id: str = "",
 ) -> str:
     package_build_args = package_build_args or {}
     output: list[str] = []
@@ -616,12 +616,12 @@ def render_build_dockerfile(
             rustup_init_url=rustup_init_url,
             pytorch_index_url=pytorch_index_url,
         )
-        if active_instruction == "RUN" and github_mirror_secret_id:
+        if active_instruction == "RUN" and github_mirror_config_mount_id:
             line = re.sub(
                 r"^(\s*RUN\s+)",
                 (
                     r"\1--mount=type=secret,id="
-                    f"{github_mirror_secret_id},target=/etc/gitconfig,mode=0444,required=true "
+                    f"{github_mirror_config_mount_id},target=/etc/gitconfig,mode=0444,required=true "
                 ),
                 line,
                 count=1,
@@ -1782,8 +1782,8 @@ def _prepare_service_image(
                         package_build_args=args.package_build_args,
                         rustup_init_url=args.rustup_init_url,
                         pytorch_index_url=args.pytorch_index_url,
-                        github_mirror_secret_id=(
-                            GITHUB_MIRROR_SECRET_ID if github_mirror_config else ""
+                        github_mirror_config_mount_id=(
+                            GITHUB_MIRROR_CONFIG_MOUNT_ID if github_mirror_config else ""
                         ),
                     ),
                     encoding="utf-8",
@@ -1807,7 +1807,7 @@ def _prepare_service_image(
                     no_cache=getattr(args, "no_cache", False),
                     build_network=getattr(args, "build_network", "default"),
                     secret_files=(
-                        {GITHUB_MIRROR_SECRET_ID: github_mirror_config_path}
+                        {GITHUB_MIRROR_CONFIG_MOUNT_ID: github_mirror_config_path}
                         if github_mirror_config_path is not None
                         else None
                     ),
