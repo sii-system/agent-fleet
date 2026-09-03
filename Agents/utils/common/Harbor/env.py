@@ -500,6 +500,24 @@ def tar_file_ready(path: Path) -> None:
         raise SystemExit(1) from None
 
 
+def npm_tarball_version_ready(path: Path, expected_version: str) -> None:
+    if not path.is_file():
+        raise SystemExit(1)
+    try:
+        with tarfile.open(path) as archive:
+            package_json = archive.extractfile("package/package.json")
+            if package_json is None:
+                raise SystemExit(1)
+            metadata = json.load(package_json)
+        ready = (
+            isinstance(metadata, dict)
+            and metadata.get("version") == expected_version
+        )
+    except (KeyError, OSError, tarfile.TarError, UnicodeDecodeError, ValueError):
+        ready = False
+    raise SystemExit(0 if ready else 1)
+
+
 def build_portable_tar(source_path: Path, output_path: Path) -> None:
     """Rewrite an xz tar as gzip so task images only need ubiquitous gzip."""
 
@@ -568,6 +586,9 @@ def parse_args() -> argparse.Namespace:
     filter_parser.add_argument("tasks")
     tar_parser = subparsers.add_parser("tar-file-ready")
     tar_parser.add_argument("path", type=Path)
+    npm_tar_parser = subparsers.add_parser("npm-tarball-version-ready")
+    npm_tar_parser.add_argument("path", type=Path)
+    npm_tar_parser.add_argument("expected_version")
     portable_tar_parser = subparsers.add_parser("portable-tar")
     portable_tar_parser.add_argument("source", type=Path)
     portable_tar_parser.add_argument("output", type=Path)
@@ -589,6 +610,9 @@ def main() -> None:
         return
     if args.command == "tar-file-ready":
         tar_file_ready(args.path)
+        return
+    if args.command == "npm-tarball-version-ready":
+        npm_tarball_version_ready(args.path, args.expected_version)
         return
     if args.command == "portable-tar":
         build_portable_tar(args.source, args.output)

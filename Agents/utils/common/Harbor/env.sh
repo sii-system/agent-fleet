@@ -1346,6 +1346,12 @@ harbor_tar_file_ready() {
   python3 "$SCRIPT_DIR/env.py" tar-file-ready "$path" >/dev/null 2>&1
 }
 
+harbor_npm_tarball_version_ready() {
+  local path="$1" expected_version="$2"
+  python3 "$SCRIPT_DIR/env.py" npm-tarball-version-ready \
+    "$path" "$expected_version" >/dev/null 2>&1
+}
+
 harbor_local_cache_ready() {
   [[ -f "$LOCAL_WHEEL_DIR/manifest.txt" ]] \
     && grep -qx 'cache_schema=3' "$LOCAL_WHEEL_DIR/manifest.txt" \
@@ -1363,9 +1369,11 @@ harbor_local_cache_ready() {
           && harbor_tar_file_ready "$LOCAL_WHEEL_DIR/${PI_RUNTIME_BASENAME}" \
           && grep -qx "pi_runtime_version=${PI_VERSION}" "$LOCAL_WHEEL_DIR/manifest.txt"
       else
-        [[ -f "$LOCAL_WHEEL_DIR/${CLAUDE_CODE_TGZ_BASENAME}" ]] \
+        harbor_npm_tarball_version_ready \
+          "$LOCAL_WHEEL_DIR/${CLAUDE_CODE_TGZ_BASENAME}" \
+          "$CLAUDE_CODE_VERSION" \
           && [[ -d "$LOCAL_WHEEL_DIR/npm-cache/_cacache" ]] \
-          && [[ -f "$LOCAL_WHEEL_DIR/npm-cache-ready" ]] \
+          && grep -qx "$CLAUDE_CODE_VERSION" "$LOCAL_WHEEL_DIR/npm-cache-ready" \
           && grep -qx "claude_npm_cache_version=${CLAUDE_CODE_VERSION}" "$LOCAL_WHEEL_DIR/manifest.txt"
       fi
     }
@@ -1375,6 +1383,15 @@ harbor_pick_remote_wheel_url() {
   # Pi unpacks its pinned runtime from the read-only dependency mount. A
   # remote URL cannot materialize that mount, so Pi always prepares locally.
   if harbor_agent_is_pi; then
+    return 1
+  fi
+  # Claude's npm package has platform-specific optional dependencies. The
+  # remote cache path exposes only the top-level tarball to Docker trials, not
+  # the accompanying npm cache, so it can silently fall back to an online npm
+  # install in every task container. Prepare a complete local cache instead so
+  # the tarball and npm cache are mounted together.
+  if harbor_agent_is_claude_code \
+    && [[ "$HARBOR_ENVIRONMENT_TYPE" == "docker" ]]; then
     return 1
   fi
   local candidates=()

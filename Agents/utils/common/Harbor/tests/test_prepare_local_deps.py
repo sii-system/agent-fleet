@@ -1,9 +1,12 @@
 import io
+import json
 import tarfile
 import tempfile
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
+from unittest import mock
 
 from Agents.utils.common.Harbor import prepare_local_deps
 
@@ -58,6 +61,67 @@ class PrepareLocalDepsTest(unittest.TestCase):
         self.assertTrue(prepare_local_deps.tarball_ready(valid))
         self.assertFalse(prepare_local_deps.tarball_ready(corrupt))
         self.assertFalse(prepare_local_deps.tarball_ready(self.root / "missing"))
+
+    @staticmethod
+    def _write_npm_tarball(path: Path, version: str) -> None:
+        payload = json.dumps({"name": "fixture", "version": version}).encode()
+        with tarfile.open(path, "w:gz") as archive:
+            info = tarfile.TarInfo("package/package.json")
+            info.size = len(payload)
+            archive.addfile(info, io.BytesIO(payload))
+
+    def test_npm_tarball_version_reads_embedded_package_version(self):
+        archive = self.root / "package.tgz"
+        self._write_npm_tarball(archive, "1.2.3")
+
+        self.assertEqual(
+            prepare_local_deps.npm_tarball_version(archive), "1.2.3"
+        )
+        self.assertIsNone(
+            prepare_local_deps.npm_tarball_version(self.root / "missing.tgz")
+        )
+
+    def test_npm_pack_uses_exact_result_instead_of_newest_cached_archive(self):
+        wheel_dir = self.root / "wheels"
+        wheel_dir.mkdir()
+        target = wheel_dir / "claude-code-1.2.3.tgz"
+        stale = wheel_dir / "anthropic-ai-claude-code-9.9.9.tgz"
+        self._write_npm_tarball(target, "9.9.9")
+        self._write_npm_tarball(stale, "9.9.9")
+        config = prepare_local_deps.Config.from_environment(
+            {
+                "WHEEL_DIR": str(wheel_dir),
+                "CLAUDE_CODE_VERSION": "1.2.3",
+            },
+            script_dir=self.root,
+        )
+
+        def npm_pack(*args, **kwargs):
+            package_name = "anthropic-ai-claude-code-1.2.3.tgz"
+            self._write_npm_tarball(
+                Path(kwargs["cwd"]) / package_name, "1.2.3"
+            )
+            return SimpleNamespace(stdout=f"{package_name}\n")
+
+        with (
+            mock.patch.object(prepare_local_deps.shutil, "which", return_value="npm"),
+            mock.patch.object(
+                prepare_local_deps.subprocess, "run", side_effect=npm_pack
+            ),
+        ):
+            prepare_local_deps.DependencyPreparer(config)._pack_npm_to_cache(
+                config.claude_code_npm_spec,
+                config.claude_code_tgz_basename,
+                "https://registry.example.invalid/metadata",
+                config.claude_code_version,
+            )
+
+        self.assertEqual(
+            prepare_local_deps.npm_tarball_version(target), "1.2.3"
+        )
+        self.assertEqual(
+            prepare_local_deps.npm_tarball_version(stale), "9.9.9"
+        )
 
     def test_npm_tarball_urls_prefers_configured_mirror_then_origin(self):
         original = (

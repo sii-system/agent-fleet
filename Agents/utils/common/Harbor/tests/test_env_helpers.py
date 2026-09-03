@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import json
 import os
 import subprocess
@@ -163,6 +164,27 @@ class HarborEnvHelperTests(unittest.TestCase):
 
             self.assertEqual(ready.returncode, 0, ready.stderr)
             self.assertNotEqual(not_ready.returncode, 0)
+
+    def test_npm_tarball_version_ready_requires_exact_embedded_version(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            archive_path = Path(temp_dir) / "package.tgz"
+            package_json = json.dumps(
+                {"name": "@anthropic-ai/claude-code", "version": "1.2.3"}
+            ).encode()
+            with tarfile.open(archive_path, "w:gz") as archive:
+                member = tarfile.TarInfo("package/package.json")
+                member.size = len(package_json)
+                archive.addfile(member, io.BytesIO(package_json))
+
+            matching = run_env_helper(
+                "npm-tarball-version-ready", archive_path, "1.2.3"
+            )
+            mismatched = run_env_helper(
+                "npm-tarball-version-ready", archive_path, "9.9.9"
+            )
+
+            self.assertEqual(matching.returncode, 0, matching.stderr)
+            self.assertNotEqual(mismatched.returncode, 0)
 
     def test_portable_tar_removes_external_xz_runtime_requirement(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

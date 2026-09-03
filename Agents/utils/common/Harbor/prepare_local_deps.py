@@ -151,6 +151,25 @@ def tarball_ready(path: Path) -> bool:
     return True
 
 
+def npm_tarball_version(path: Path) -> str | None:
+    """Return the npm package version embedded in a package tarball."""
+
+    if not tarball_ready(path):
+        return None
+    try:
+        with tarfile.open(path) as archive:
+            package_json = archive.extractfile("package/package.json")
+            if package_json is None:
+                return None
+            metadata = json.load(package_json)
+    except (KeyError, OSError, tarfile.TarError, UnicodeDecodeError, ValueError):
+        return None
+    if not isinstance(metadata, dict):
+        return None
+    version = metadata.get("version")
+    return version if isinstance(version, str) and version else None
+
+
 def npm_tarball_urls(original_url: str, registry_url: str) -> list[str]:
     parsed = urllib.parse.urlparse(original_url)
     registry_origin = registry_url.rstrip("/")
@@ -309,7 +328,7 @@ class DependencyPreparer:
             self.config.claude_code_npm_spec,
             self.config.claude_code_tgz_basename,
             claude_meta_url,
-            "anthropic-ai-claude-code-*.tgz",
+            self.config.claude_code_version,
         )
         self._prepare_claude_npm_cache()
         (self.config.wheel_dir / "npm-cache-ready").write_text(
@@ -562,49 +581,63 @@ class DependencyPreparer:
         npm_spec: str,
         target_basename: str,
         registry_meta_url: str,
-        latest_glob: str,
+        expected_version: str,
     ) -> None:
         target = self.config.wheel_dir / target_basename
-        if shutil.which("npm"):
-            if not target.is_file():
-                with tempfile.TemporaryDirectory() as temporary_name:
-                    completed = subprocess.run(
-                        [
-                            "npm",
-                            "pack",
-                            "--registry",
-                            self.config.npm_registry_url,
-                            npm_spec,
-                        ],
-                        cwd=temporary_name,
-                        check=True,
-                        text=True,
-                        capture_output=True,
-                    )
-                    package_name = completed.stdout.splitlines()[-1].strip()
-                    shutil.move(
-                        str(Path(temporary_name) / package_name),
-                        self.config.wheel_dir / package_name,
-                    )
-            candidates = sorted(
-                self.config.wheel_dir.glob(latest_glob),
-                key=lambda path: path.stat().st_mtime,
-                reverse=True,
-            )
-            if candidates:
-                shutil.copy2(candidates[0], target)
-            return
-
-        if target.is_file():
+        if npm_tarball_version(target) == expected_version:
             print(f"[prepare] skip {target_basename} (cached)")
             return
+        target.unlink(missing_ok=True)
+        if shutil.which("npm"):
+            with tempfile.TemporaryDirectory() as temporary_name:
+                completed = subprocess.run(
+                    [
+                        "npm",
+                        "pack",
+                        "--registry",
+                        self.config.npm_registry_url,
+                        npm_spec,
+                    ],
+                    cwd=temporary_name,
+                    check=True,
+                    text=True,
+                    capture_output=True,
+                )
+                package_name = completed.stdout.splitlines()[-1].strip()
+                source = Path(temporary_name) / package_name
+                actual_version = npm_tarball_version(source)
+                if actual_version != expected_version:
+                    raise RuntimeError(
+                        "npm pack version mismatch: "
+                        f"expected {expected_version}, got {actual_version or '<invalid>'}"
+                    )
+                file_descriptor, temporary_target_name = tempfile.mkstemp(
+                    prefix=f".{target.name}.", suffix=".tmp", dir=target.parent
+                )
+                os.close(file_descriptor)
+                temporary_target = Path(temporary_target_name)
+                try:
+                    shutil.copy2(source, temporary_target)
+                    os.replace(temporary_target, target)
+                finally:
+                    temporary_target.unlink(missing_ok=True)
+            return
+
         metadata = _read_json(registry_meta_url)
         dist = metadata["dist"]
         if not isinstance(dist, dict):
             raise TypeError(f"invalid npm metadata from {registry_meta_url}")
-        url = str(dist["tarball"])
-        urllib.request.urlretrieve(url, target)
-        print(f"downloaded npm tarball: {url}")
+        urls = npm_tarball_urls(str(dist["tarball"]), self.config.npm_registry_url)
+        downloaded = _download_atomic(
+            urls,
+            target,
+            prefix="npm-pack-",
+            suffix=".tgz",
+            validate=lambda path: npm_tarball_version(path) == expected_version,
+            label="npm package",
+            timeout=120,
+        )
+        print(f"downloaded npm tarball: {downloaded}")
 
     def _download_npm_tgz_to_cache(
         self, target_basename: str, registry_meta_url: str
@@ -671,7 +704,7 @@ class DependencyPreparer:
             self.config.pi_npm_spec,
             self.config.pi_tgz_basename,
             pi_metadata_url,
-            "earendil-works-pi-coding-agent-*.tgz",
+            self.config.pi_version,
         )
         target = self.config.pi_runtime_tarball
         if tarball_ready(target) and self._manifest_has(

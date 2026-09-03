@@ -111,7 +111,15 @@ class E2eValidationWorkflowTest(unittest.TestCase):
         self.assertIn("cancel-in-progress: false", self.workflow)
 
     def test_caps_job_duration(self):
-        self.assertIn("timeout-minutes: 720", self.workflow)
+        self.assertIn("timeout-minutes: 480", self.workflow)
+
+    def test_preserves_cleanup_and_artifact_time_after_benchmark_budget(self):
+        self.assertIn("BENCHMARK_TIMEOUT: 450m", self.workflow)
+        self.assertIn(
+            'timeout --signal=TERM --kill-after=5m "$BENCHMARK_TIMEOUT"',
+            self.workflow,
+        )
+        self.assertIn("status == 124", self.workflow)
 
     def test_strips_the_chat_completions_suffix_from_the_gateway_url(self):
         # env.sh strips a trailing /v1 but not /chat/completions.
@@ -119,6 +127,10 @@ class E2eValidationWorkflowTest(unittest.TestCase):
 
     def test_bounds_per_task_time_and_enables_online_analysis(self):
         self.assertIn('HARBOR_TIMEOUT_MULTIPLIER: "1.0"', self.workflow)
+        self.assertIn(
+            'HARBOR_AGENT_SETUP_TIMEOUT_MULTIPLIER: "2.0"', self.workflow
+        )
+        self.assertIn("AgentSetupTimeoutError", self.workflow)
         self.assertIn('HARBOR_ONLINE_ANALYSIS: "1"', self.workflow)
 
     def test_pins_zellij_cleanup_for_a_pty_run(self):
