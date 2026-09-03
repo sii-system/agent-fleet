@@ -155,7 +155,6 @@ jobs:
           OPIK_URL: ${{ vars.OPIK_URL }}
           OPIK_API_KEY: ${{ secrets.OPIK_API_KEY }}
           OPIK_WORKSPACE: ${{ vars.OPIK_WORKSPACE }}
-          OPIK_PROJECT_NAME: harbor-e2e-validation
           AGENT: ${{ steps.params.outputs.agent }}
           TASKS: ${{ steps.params.outputs.tasks }}
           WORKERS: ${{ steps.capacity.outputs.workers }}
@@ -177,16 +176,16 @@ jobs:
           export BASE_URL="${BASE_URL_RAW%/chat/completions}"
           export TOTAL_WORKERS="$WORKERS"
           export HARBOR_N_CONCURRENT="$WORKERS"
-          # Only trace when a real Opik credential is present. env.sh
-          # substitutes the literal 'local-dev-key' for a missing OPIK_API_KEY,
-          # and harboropik.sh's preflight accepts 401/403, so tracing would
-          # appear healthy while no trace reached Opik. Clearing OPIK_URL is the
-          # switch: run untraced instead of silently pretending.
-          if [[ -n "${OPIK_API_KEY:-}" && -n "${OPIK_URL:-}" ]]; then
-            printf 'Opik tracing enabled for %s\n' "$OPIK_URL"
+          export OPIK_PROJECT_NAME="$(date -u +'%Y-%m-%d-%H')-harbor-e2e-validation-tb21"
+          # OPIK_URL is the tracing switch. OPIK_API_KEY is optional because
+          # self-hosted Opik deployments may allow unauthenticated ingestion;
+          # env.sh supplies the default workspace when OPIK_WORKSPACE is empty.
+          if [[ -n "${OPIK_URL:-}" ]]; then
+            printf 'Opik tracing enabled for %s in project %s\n' \
+              "$OPIK_URL" "$OPIK_PROJECT_NAME"
           else
             export OPIK_URL=""
-            echo "::warning::OPIK_API_KEY or OPIK_URL is unset; running without tracing. Add OPIK_API_KEY to the self-hosted-env environment to enable it."
+            echo "::warning::OPIK_URL is unset; running without tracing. Add OPIK_URL to the self-hosted-env environment to enable it."
           fi
           # OUTPUT_PATH is exported, not left to env.sh's default. A runner-level
           # OUTPUT_ROOT or OUTPUT_PATH would otherwise win (config_loader.sh gives
