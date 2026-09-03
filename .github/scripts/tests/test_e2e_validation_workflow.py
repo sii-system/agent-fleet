@@ -120,6 +120,7 @@ class E2eValidationWorkflowTest(unittest.TestCase):
             self.workflow,
         )
         self.assertIn('if [[ -f "$timeout_marker" ]]; then', self.workflow)
+        self.assertIn('while kill -0 "$child" 2>/dev/null; do', self.workflow)
 
     def test_strips_the_chat_completions_suffix_from_the_gateway_url(self):
         # env.sh strips a trailing /v1 but not /chat/completions.

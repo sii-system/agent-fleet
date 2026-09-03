@@ -211,7 +211,11 @@ jobs:
               trap '\''touch "$marker"; [[ -z "$child" ]] || kill -TERM "$child" 2>/dev/null || true'\'' TERM
               "$@" &
               child=$!
-              wait "$child"
+              child_status=0
+              while kill -0 "$child" 2>/dev/null; do
+                wait "$child" || child_status=$?
+              done
+              exit "$child_status"
             ' bash "$timeout_marker" \
             script -e -q -c "$(printf '%q ' "${command[@]}")" /dev/null || status=$?
           if [[ -f "$timeout_marker" ]]; then
