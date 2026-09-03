@@ -293,6 +293,14 @@ class StreamValidationTest(unittest.TestCase):
             },
         )
 
+    def test_malformed_response_preserves_final_text(self) -> None:
+        with self.assertRaises(pi_review.PiResponseFormatError) as ctx:
+            pi_review._validate_pi_stream(
+                _make_text_response("not JSON")
+            )
+
+        self.assertEqual(ctx.exception.response_text, "not JSON")
+
     def test_no_final_assistant_message_raises(self) -> None:
         events = [
             {"type": "session", "id": "s1"},
@@ -482,6 +490,19 @@ class PiClientTest(unittest.TestCase):
 
         self.assertEqual(result, {"findings": [], "_pi_tool_calls": 3})
         self.assertEqual(run_mock.call_count, 2)
+        first_call, repair_call = run_mock.call_args_list
+        self.assertEqual(first_call.kwargs["input"], "diff")
+        self.assertNotIn("--no-tools", first_call.args[0])
+        self.assertIn("--no-tools", repair_call.args[0])
+        self.assertIn("not JSON", repair_call.kwargs["input"])
+        self.assertIn(
+            "pi response is not valid JSON",
+            repair_call.kwargs["input"],
+        )
+        repair_prompt = repair_call.args[0][
+            repair_call.args[0].index("--system-prompt") + 1
+        ]
+        self.assertIn("Return exactly one JSON object", repair_prompt)
 
     def test_malformed_retry_uses_remaining_timeout_budget(self) -> None:
         client = self._make_client(timeout=30)
@@ -572,6 +593,9 @@ class PiClientTest(unittest.TestCase):
 
         self.assertEqual(result, {"findings": [], "_pi_tool_calls": 3})
         self.assertEqual(run_mock.call_count, 2)
+        repair_input = run_mock.call_args_list[1].kwargs["input"]
+        self.assertIn('"findings": {}', repair_input)
+        self.assertIn("findings must be an array", repair_input)
 
     def test_does_not_retry_malformed_model_response_by_default(self) -> None:
         client = self._make_client()

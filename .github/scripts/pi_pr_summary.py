@@ -186,7 +186,11 @@ def _quote_flowchart_labels(diagram: str) -> str:
     return "".join(parts)
 
 
-def validate_summary(payload: dict[str, Any]) -> Summary:
+def validate_summary(
+    payload: dict[str, Any],
+    *,
+    omit_invalid_diagram: bool = False,
+) -> Summary:
     raw_description = payload.get("description")
     if not isinstance(raw_description, list) or not (
         1 <= len(raw_description) <= MAX_DESCRIPTION_ITEMS
@@ -201,12 +205,18 @@ def validate_summary(payload: dict[str, Any]) -> Summary:
         "assessment",
         MAX_ASSESSMENT_CHARS,
     )
-    return Summary(description, _validate_diagram(payload.get("diagram")), assessment)
+    try:
+        diagram = _validate_diagram(payload.get("diagram"))
+    except PiSummaryError:
+        if not omit_invalid_diagram:
+            raise
+        diagram = None
+    return Summary(description, diagram, assessment)
 
 
 def _validate_summary_response(payload: dict[str, Any]) -> None:
     try:
-        validate_summary(payload)
+        validate_summary(payload, omit_invalid_diagram=True)
     except PiSummaryError as exc:
         raise _review.ModelResponseError(str(exc)) from exc
 
@@ -338,7 +348,7 @@ def run_summary(
         retry_malformed=True,
         response_validator=_validate_summary_response,
     )
-    summary = validate_summary(payload)
+    summary = validate_summary(payload, omit_invalid_diagram=True)
     github.create_issue_comment(
         pull_number,
         render_summary(str(pull.get("title") or ""), summary),

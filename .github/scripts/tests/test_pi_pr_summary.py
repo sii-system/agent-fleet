@@ -547,10 +547,15 @@ class FakeGitHub:
 
 
 class FakePi:
-    def __init__(self) -> None:
+    def __init__(self, payload: dict[str, object] | None = None) -> None:
         self.calls: list[tuple[str, str]] = []
         self.retry_malformed: list[bool] = []
         self.response_validators: list[object] = []
+        self.payload = payload or {
+            "description": ["Adds an initial PR summary."],
+            "diagram": "flowchart TD\n  PR --> Pi --> Comment",
+            "assessment": "The implementation is isolated to PR automation.",
+        }
 
     def review(
         self,
@@ -563,11 +568,7 @@ class FakePi:
         self.calls.append((prompt, model_input))
         self.retry_malformed.append(retry_malformed)
         self.response_validators.append(response_validator)
-        payload = {
-            "description": ["Adds an initial PR summary."],
-            "diagram": "flowchart TD\n  PR --> Pi --> Comment",
-            "assessment": "The implementation is isolated to PR automation.",
-        }
+        payload = dict(self.payload)
         if callable(response_validator):
             response_validator(payload)
         return payload
@@ -610,6 +611,26 @@ class SummaryOrchestrationTest(unittest.TestCase):
                     "assessment": "Assessment.",
                 }
             )
+
+    def test_omits_invalid_diagram_and_publishes_remaining_summary(self) -> None:
+        github = FakeGitHub()
+        pi = FakePi(
+            {
+                "description": ["Adds an initial PR summary."],
+                "diagram": "flowchart TD\n  PR[Pull request",
+                "assessment": "The summary content remains useful.",
+            }
+        )
+
+        result = summary.run_summary(github, pi, 17, "summary prompt")
+
+        self.assertEqual(result, "published")
+        self.assertEqual(len(pi.calls), 1)
+        self.assertEqual(len(github.comments), 1)
+        comment = github.comments[0][1]
+        self.assertIn("Adds an initial PR summary", comment)
+        self.assertIn("The summary content remains useful", comment)
+        self.assertNotIn("<summary>Diagram</summary>", comment)
 
     def test_large_diff_is_bounded_without_extra_pi_calls(self) -> None:
         github = FakeGitHub()
