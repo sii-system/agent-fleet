@@ -5,6 +5,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import sys
 import tarfile
 import tempfile
@@ -509,9 +510,13 @@ def npm_tarball_version_ready(path: Path, expected_version: str) -> None:
             if package_json is None:
                 raise SystemExit(1)
             metadata = json.load(package_json)
-        ready = (
-            isinstance(metadata, dict)
-            and metadata.get("version") == expected_version
+        version = metadata.get("version") if isinstance(metadata, dict) else None
+        exact_version = re.fullmatch(
+            r"[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?",
+            expected_version,
+        )
+        ready = isinstance(version, str) and (
+            version == expected_version if exact_version else bool(version)
         )
     except (KeyError, OSError, tarfile.TarError, UnicodeDecodeError, ValueError):
         ready = False

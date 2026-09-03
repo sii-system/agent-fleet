@@ -200,14 +200,26 @@ jobs:
             command+=(--task "$TASKS")
           fi
 
+          timeout_marker="${RUNNER_TEMP}/harbor-benchmark-timeout"
+          rm -f "$timeout_marker"
           status=0
           timeout --signal=TERM --kill-after=5m "$BENCHMARK_TIMEOUT" \
+            bash -c '
+              marker="$1"
+              shift
+              child=""
+              trap '\''touch "$marker"; [[ -z "$child" ]] || kill -TERM "$child" 2>/dev/null || true'\'' TERM
+              "$@" &
+              child=$!
+              wait "$child"
+            ' bash "$timeout_marker" \
             script -e -q -c "$(printf '%q ' "${command[@]}")" /dev/null || status=$?
-          if (( status == 124 )); then
+          if [[ -f "$timeout_marker" ]]; then
             echo "::error::Harbor exceeded its $BENCHMARK_TIMEOUT benchmark budget"
             # Stop detached workers before health evaluation and artifact staging.
             zellij kill-session "$ZELLIJ_SESSION_NAME" >/dev/null 2>&1 || true
           fi
+          rm -f "$timeout_marker"
           printf 'status=%s\n' "$status" >> "$GITHUB_OUTPUT"
           printf 'Harbor exit status: %s\n' "$status"
 

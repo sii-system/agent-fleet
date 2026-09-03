@@ -61,6 +61,10 @@ class PrepareLocalDepsTest(unittest.TestCase):
         self.assertTrue(prepare_local_deps.tarball_ready(valid))
         self.assertFalse(prepare_local_deps.tarball_ready(corrupt))
         self.assertFalse(prepare_local_deps.tarball_ready(self.root / "missing"))
+        with mock.patch.object(
+            prepare_local_deps.tarfile, "open", side_effect=EOFError
+        ):
+            self.assertFalse(prepare_local_deps.tarball_ready(valid))
 
     @staticmethod
     def _write_npm_tarball(path: Path, version: str) -> None:
@@ -79,6 +83,12 @@ class PrepareLocalDepsTest(unittest.TestCase):
         )
         self.assertIsNone(
             prepare_local_deps.npm_tarball_version(self.root / "missing.tgz")
+        )
+        self.assertTrue(
+            prepare_local_deps.npm_version_matches_selector("1.2.3", "latest")
+        )
+        self.assertFalse(
+            prepare_local_deps.npm_version_matches_selector("9.9.9", "1.2.3")
         )
 
     def test_npm_pack_uses_exact_result_instead_of_newest_cached_archive(self):
@@ -114,13 +124,45 @@ class PrepareLocalDepsTest(unittest.TestCase):
                 config.claude_code_tgz_basename,
                 "https://registry.example.invalid/metadata",
                 config.claude_code_version,
+                "anthropic-ai-claude-code-*.tgz",
             )
 
         self.assertEqual(
             prepare_local_deps.npm_tarball_version(target), "1.2.3"
         )
+        self.assertFalse(stale.exists())
+
+    def test_atomic_download_tries_origin_after_invalid_mirror_archive(self):
+        target = self.root / "package.tgz"
+        mirror = "https://mirror.example.invalid/package.tgz"
+        origin = "https://registry.example.invalid/package.tgz"
+        calls = []
+
+        def download(url, destination, *, timeout=None):
+            calls.append(url)
+            if url == mirror:
+                destination.write_text("invalid", encoding="utf-8")
+            else:
+                self._write_npm_tarball(destination, "1.2.3")
+
+        with mock.patch.object(
+            prepare_local_deps, "_download", side_effect=download
+        ):
+            selected = prepare_local_deps._download_atomic(
+                [mirror, origin],
+                target,
+                prefix="fixture-",
+                suffix=".tgz",
+                validate=lambda path: (
+                    prepare_local_deps.npm_tarball_version(path) == "1.2.3"
+                ),
+                label="fixture",
+            )
+
+        self.assertEqual(selected, origin)
+        self.assertEqual(calls, [mirror, origin])
         self.assertEqual(
-            prepare_local_deps.npm_tarball_version(stale), "9.9.9"
+            prepare_local_deps.npm_tarball_version(target), "1.2.3"
         )
 
     def test_npm_tarball_urls_prefers_configured_mirror_then_origin(self):

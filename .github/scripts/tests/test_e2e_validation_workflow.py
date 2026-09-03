@@ -119,7 +119,7 @@ class E2eValidationWorkflowTest(unittest.TestCase):
             'timeout --signal=TERM --kill-after=5m "$BENCHMARK_TIMEOUT"',
             self.workflow,
         )
-        self.assertIn("status == 124", self.workflow)
+        self.assertIn('if [[ -f "$timeout_marker" ]]; then', self.workflow)
 
     def test_strips_the_chat_completions_suffix_from_the_gateway_url(self):
         # env.sh strips a trailing /v1 but not /chat/completions.

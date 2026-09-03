@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -146,7 +147,7 @@ def tarball_ready(path: Path) -> bool:
     try:
         with tarfile.open(path) as archive:
             archive.getmembers()
-    except (OSError, tarfile.TarError):
+    except (EOFError, OSError, tarfile.TarError):
         return False
     return True
 
@@ -168,6 +169,16 @@ def npm_tarball_version(path: Path) -> str | None:
         return None
     version = metadata.get("version")
     return version if isinstance(version, str) and version else None
+
+
+def npm_version_matches_selector(version: str | None, selector: str) -> bool:
+    if version is None:
+        return False
+    exact_version = re.fullmatch(
+        r"[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?",
+        selector,
+    )
+    return version == selector if exact_version else True
 
 
 def npm_tarball_urls(original_url: str, registry_url: str) -> list[str]:
@@ -257,17 +268,23 @@ def _download_atomic(
             for candidate in urls:
                 try:
                     _download(candidate, temporary, timeout=timeout)
-                    downloaded_url = candidate
-                    break
                 except OSError as exc:
                     last_error = exc
                     temporary.unlink(missing_ok=True)
                     temporary.touch()
+                    continue
+                if not validate(temporary):
+                    last_error = ValueError(
+                        f"downloaded archive is invalid: {candidate}"
+                    )
+                    temporary.unlink(missing_ok=True)
+                    temporary.touch()
+                    continue
+                downloaded_url = candidate
+                break
             if not downloaded_url:
                 assert last_error is not None
                 raise last_error
-            if not validate(temporary):
-                raise ValueError(f"downloaded archive is invalid: {downloaded_url}")
             os.replace(temporary, target)
             return downloaded_url
         except Exception as exc:
@@ -329,6 +346,7 @@ class DependencyPreparer:
             self.config.claude_code_tgz_basename,
             claude_meta_url,
             self.config.claude_code_version,
+            "anthropic-ai-claude-code-*.tgz",
         )
         self._prepare_claude_npm_cache()
         (self.config.wheel_dir / "npm-cache-ready").write_text(
@@ -581,10 +599,14 @@ class DependencyPreparer:
         npm_spec: str,
         target_basename: str,
         registry_meta_url: str,
-        expected_version: str,
+        version_selector: str,
+        stale_glob: str,
     ) -> None:
         target = self.config.wheel_dir / target_basename
-        if npm_tarball_version(target) == expected_version:
+        if npm_version_matches_selector(
+            npm_tarball_version(target), version_selector
+        ):
+            self._remove_stale_npm_pack_archives(stale_glob)
             print(f"[prepare] skip {target_basename} (cached)")
             return
         target.unlink(missing_ok=True)
@@ -606,10 +628,12 @@ class DependencyPreparer:
                 package_name = completed.stdout.splitlines()[-1].strip()
                 source = Path(temporary_name) / package_name
                 actual_version = npm_tarball_version(source)
-                if actual_version != expected_version:
+                if not npm_version_matches_selector(
+                    actual_version, version_selector
+                ):
                     raise RuntimeError(
                         "npm pack version mismatch: "
-                        f"expected {expected_version}, got {actual_version or '<invalid>'}"
+                        f"expected {version_selector}, got {actual_version or '<invalid>'}"
                     )
                 file_descriptor, temporary_target_name = tempfile.mkstemp(
                     prefix=f".{target.name}.", suffix=".tmp", dir=target.parent
@@ -621,23 +645,37 @@ class DependencyPreparer:
                     os.replace(temporary_target, target)
                 finally:
                     temporary_target.unlink(missing_ok=True)
+            self._remove_stale_npm_pack_archives(stale_glob)
             return
 
         metadata = _read_json(registry_meta_url)
         dist = metadata["dist"]
         if not isinstance(dist, dict):
             raise TypeError(f"invalid npm metadata from {registry_meta_url}")
+        resolved_version = metadata.get("version")
+        if not isinstance(resolved_version, str) or not npm_version_matches_selector(
+            resolved_version, version_selector
+        ):
+            raise RuntimeError(
+                "npm metadata version mismatch: "
+                f"expected {version_selector}, got {resolved_version or '<invalid>'}"
+            )
         urls = npm_tarball_urls(str(dist["tarball"]), self.config.npm_registry_url)
         downloaded = _download_atomic(
             urls,
             target,
             prefix="npm-pack-",
             suffix=".tgz",
-            validate=lambda path: npm_tarball_version(path) == expected_version,
+            validate=lambda path: npm_tarball_version(path) == resolved_version,
             label="npm package",
             timeout=120,
         )
+        self._remove_stale_npm_pack_archives(stale_glob)
         print(f"downloaded npm tarball: {downloaded}")
+
+    def _remove_stale_npm_pack_archives(self, stale_glob: str) -> None:
+        for stale in self.config.wheel_dir.glob(stale_glob):
+            stale.unlink(missing_ok=True)
 
     def _download_npm_tgz_to_cache(
         self, target_basename: str, registry_meta_url: str
@@ -705,6 +743,7 @@ class DependencyPreparer:
             self.config.pi_tgz_basename,
             pi_metadata_url,
             self.config.pi_version,
+            "earendil-works-pi-coding-agent-*.tgz",
         )
         target = self.config.pi_runtime_tarball
         if tarball_ready(target) and self._manifest_has(

@@ -182,9 +182,13 @@ class HarborEnvHelperTests(unittest.TestCase):
             mismatched = run_env_helper(
                 "npm-tarball-version-ready", archive_path, "9.9.9"
             )
+            tagged = run_env_helper(
+                "npm-tarball-version-ready", archive_path, "latest"
+            )
 
             self.assertEqual(matching.returncode, 0, matching.stderr)
             self.assertNotEqual(mismatched.returncode, 0)
+            self.assertEqual(tagged.returncode, 0, tagged.stderr)
 
     def test_portable_tar_removes_external_xz_runtime_requirement(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
