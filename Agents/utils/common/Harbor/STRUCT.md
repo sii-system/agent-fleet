@@ -19,6 +19,7 @@ Agents/utils/common/Harbor/
 ├── harboropik.sh               # Harbor CLI orchestration with Opik setup
 ├── harbor_shell_utils.py       # Event, JSON, URL, and mount helpers
 ├── qz_repository_environment_plan.py # Repository/revision final-image plan producer
+├── qz_create_limiter.py       # Runner-wide rolling QZ Sandbox create window
 ├── qz_task_instruction.py      # Exact QZ setup-prefix handoff before agent run
 ├── prepare_local_deps.sh       # Thin Python launcher
 ├── prepare_local_deps.py       # Package/cache preparation implementation
@@ -174,6 +175,7 @@ Typical dataset paths:
 | `HARBOR_REMOTE_WHEEL_SERVER_URLS` | Comma-separated fallback dependency cache URLs |
 | `HARBOR_SKIP_DOCKERHUB_PREFLIGHT` | Skip Docker Hub preflight connectivity check |
 | `HARBOR_FORCE_BUILD` | Build task images locally instead of using prebuilt images |
+| `QZ_CREATE_CONCURRENCY` | Operator-only override for the runner-wide QZ Sandbox create window; defaults to `10` and does not limit active task concurrency |
 | `HARBOR_TIMEOUT_MULTIPLIER` | General Harbor timeout multiplier |
 | `HARBOR_AGENT_TIMEOUT_MULTIPLIER` | Agent execution timeout override |
 | `HARBOR_AGENT_SETUP_TIMEOUT_MULTIPLIER` | Agent setup timeout multiplier |
