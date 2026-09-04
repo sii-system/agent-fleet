@@ -125,6 +125,82 @@ GITHUB_GIT_URL_PREFIXES = (
     "git://github.com/",
 )
 GITHUB_MIRROR_CONFIG_MOUNT_ID = "opensandbox-github-mirror-gitconfig"
+APT_MIRROR_STATE_DIR = "/var/lib/.opensandbox-apt-source-state"
+BUILD_RENDERER_VERSION = "apt-source-isolation-v4"
+SOURCE_OVERRIDE_FETCH_COMMAND = re.compile(
+    r"(?:^|\|)\s*(?:RUN\s+)?"
+    r"(?:(?:--mount=\S+|[A-Za-z_][A-Za-z0-9_]*=\S+|"
+    r"if|then|do|command|exec|sudo|env)\s+)*"
+    r"(?:[^\s;&|]+/)?(?:curl|wget)(?=\s|$)",
+    re.IGNORECASE,
+)
+RUN_EXEC_FORM = re.compile(
+    r"^(?P<prefix>\s*RUN\s+(?:(?:--mount|--network|--security)=\S+\s+)*)"
+    r"(?P<argv>\[.*\])(?P<suffix>\s*)$",
+    re.DOTALL | re.IGNORECASE,
+)
+RUN_SHELL_PREFIX = re.compile(
+    r"^\s*RUN\s+(?:(?:--mount|--network|--security)=\S+\s+)*",
+    re.IGNORECASE,
+)
+SHELL_HEREDOC_EXECUTOR = re.compile(
+    r"(?:(?:[A-Za-z_][A-Za-z0-9_]*=\S+|command|exec|sudo|env)\s+)*"
+    r"(?:[^\s;&|]+/)?(?:sh|bash)(?:\s|$)",
+    re.IGNORECASE,
+)
+PIPE_TO_SHELL = re.compile(
+    r"\|\s*(?:(?:command|exec|sudo|env)\s+)*"
+    r"(?:[^\s;&|]+/)?(?:sh|bash)(?:\s|$)",
+    re.IGNORECASE,
+)
+SHELL_WRAPPED_COMMAND = re.compile(
+    r"(?:^|[;&|])\s*(?:RUN\s+"
+    r"(?:(?:--mount|--network|--security)=\S+\s+)*)?"
+    r"(?:(?:[A-Za-z_][A-Za-z0-9_]*=\S+|command|exec|sudo|env)\s+)*"
+    r"(?:[^\s;&|]+/)?(?:sh|bash)\s+"
+    r"-[A-Za-z]*c[A-Za-z]*\s+"
+    r"(?P<command>'[^']*'|\"[^\"]*\")",
+    re.IGNORECASE | re.DOTALL,
+)
+APT_SOURCE_FILE_REFERENCE = re.compile(
+    r"/etc/apt/(?:sources\.list\.d(?:/|(?=$|[\s;&|\"']))|"
+    r"sources\.list(?=$|[\s;&|\"']))"
+)
+APT_SOURCE_RESTORE_AWK = (
+    "function replace_literal(text, needle, replacement, position) { "
+    "position = index(text, needle); "
+    "if (!position) return text; "
+    "return substr(text, 1, position - 1) replacement "
+    "substr(text, position + length(needle)) "
+    "} "
+    "FILENAME == ARGV[1] { original[FNR] = $0; next } "
+    "FILENAME == ARGV[2] { "
+    "adapted[FNR] = $0; "
+    "adapted_seen[$0]++; "
+    "restore[$0 SUBSEP adapted_seen[$0]] = original[FNR]; "
+    "next "
+    "} "
+    "{ "
+    "line = $0; "
+    "replaced = 0; "
+    "original_count = split(original[FNR], original_fields); "
+    "adapted_count = split(adapted[FNR], adapted_fields); "
+    "if (original_count == adapted_count) { "
+    "for (field = 1; field <= adapted_count; field++) { "
+    "if (original_fields[field] != adapted_fields[field] "
+    "&& index(line, adapted_fields[field])) { "
+    "line = replace_literal(line, adapted_fields[field], "
+    "original_fields[field]); "
+    "replaced = 1 "
+    "} "
+    "} "
+    "} "
+    "if (replaced) { print line; next } "
+    "current_seen[$0]++; "
+    "key = $0 SUBSEP current_seen[$0]; "
+    "if (key in restore) print restore[key]; else print "
+    "}"
+)
 BUILD_ARG_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 FROM_LINE = re.compile(
     r"^(?P<prefix>\s*FROM(?:\s+--platform=\S+)?\s+)"
@@ -137,7 +213,16 @@ HEREDOC_MARKER = re.compile(
     r"<<(?P<strip>-)?\s*(?P<quote>['\"]?)"
     r"(?P<delimiter>[A-Za-z0-9_.-]+)(?P=quote)"
 )
-APT_COMMAND = re.compile(r"\bapt(?:-get)?\b", re.IGNORECASE)
+APT_COMMAND = re.compile(
+    r"(?:"
+    r"(?:^|[;&|])\s*(?:RUN\s+)?"
+    r"(?:(?:--mount=\S+|[A-Za-z_][A-Za-z0-9_]*=\S+|"
+    r"if|then|do|command|exec|sudo|env)\s+)*"
+    r"(?:[^\s;&|]+/)?apt(?:-get)?(?=\s|$)"
+    r'|^\s*RUN\s+\[\s*"(?:[^"]*/)?apt(?:-get)?"\s*[,\]]'
+    r")",
+    re.IGNORECASE,
+)
 
 # This is deliberately a small, version-controlled adapter contract rather
 # than an inference based on service names or installed software.  It covers
@@ -153,7 +238,7 @@ OPENSANDBOX_ADAPTER_METADATA: dict[str, dict[str, dict[str, dict[str, object]]]]
     }
 }
 LEGACY_DOCKERFILE_KEEPALIVE = ["sh", "-c", "while :; do sleep 60; done"]
-LOCAL_UPLOAD_INDEX_VERSION = 1
+LOCAL_UPLOAD_INDEX_VERSION = 2
 SKOPEO_COPY_ATTEMPTS = 3
 SKOPEO_COPY_RETRY_DELAY_SECONDS = 3
 
@@ -246,26 +331,338 @@ def mirror_image_ref(image: str, mirror_prefix: str, aliases: set[str]) -> str:
     return image
 
 
+def sed_replacement(value: str) -> str:
+    """Escape a literal value for a ``#``-delimited sed replacement."""
+    return re.sub(r"([\\&#])", r"\\\1", value)
+
+
+def sed_pattern(value: str) -> str:
+    """Escape a literal value for a ``#``-delimited POSIX ERE pattern."""
+    return re.sub(r"([\\.^$*+?()\[\]{}|#])", r"\\\1", value)
+
+
+def ordered_source_overrides(
+    source_overrides: dict[str, str], *, reverse: bool = False
+) -> tuple[tuple[str, str], ...]:
+    pairs = (
+        ((target, source) for source, target in source_overrides.items())
+        if reverse
+        else source_overrides.items()
+    )
+    return tuple(sorted(pairs, key=lambda item: len(item[0]), reverse=True))
+
+
+def source_prefix_matches(prefix: str, value: str) -> bool:
+    """Return whether ``prefix`` covers ``value`` as the same URL token."""
+    return bool(re.match(re.escape(prefix) + r"(?=$|[^A-Za-z0-9._~-])", value))
+
+
+def rewrite_source_overrides(
+    source: str, source_overrides: dict[str, str], *, reverse: bool = False
+) -> str:
+    """Rewrite configured URL prefixes without matching a longer URL token."""
+    rewritten = source
+    for original, replacement in ordered_source_overrides(
+        source_overrides, reverse=reverse
+    ):
+        pattern = re.compile(
+            re.escape(original) + r"(?=$|[^A-Za-z0-9._~-])"
+        )
+        rewritten = pattern.sub(lambda _match, value=replacement: value, rewritten)
+    return rewritten
+
+
+def run_heredoc_specs(
+    source: str, *, rewrite_apt_sources: bool
+) -> list[tuple[str, bool, str]]:
+    """Return Dockerfile heredocs and whether their payload is build commands."""
+    specs: list[tuple[str, bool, str]] = []
+    for marker in HEREDOC_MARKER.finditer(source):
+        prefix = re.sub(r"\\\r?\n", " ", source[: marker.start()])
+        run_prefix = RUN_SHELL_PREFIX.match(prefix)
+        shell_body = prefix[run_prefix.end() :] if run_prefix else prefix
+        command_segment = re.split(r"&&|\|\||[;|]", shell_body)[-1].strip()
+        line_start = source.rfind("\n", 0, marker.start()) + 1
+        line_end = source.find("\n", marker.end())
+        if line_end < 0:
+            line_end = len(source)
+        declaration = source[line_start:line_end]
+        payload_is_command = (
+            not command_segment
+            or SHELL_HEREDOC_EXECUTOR.match(command_segment) is not None
+            or PIPE_TO_SHELL.search(declaration[marker.end() - line_start :])
+            is not None
+        )
+        payload_is_apt_source = (
+            rewrite_apt_sources
+            and APT_SOURCE_FILE_REFERENCE.search(declaration) is not None
+        )
+        if payload_is_apt_source:
+            rewrite_mode = "all"
+        elif payload_is_command:
+            rewrite_mode = "safe"
+        else:
+            rewrite_mode = "none"
+        specs.append(
+            (marker.group("delimiter"), bool(marker.group("strip")), rewrite_mode)
+        )
+    return specs
+
+
+def run_invokes_apt(source: str) -> bool:
+    """Recognize direct and statically visible shell-wrapped APT commands."""
+    source = re.sub(r"\\\r?\n", " ", source)
+    if APT_COMMAND.search(source):
+        return True
+
+    exec_form = RUN_EXEC_FORM.match(source)
+    if exec_form:
+        try:
+            argv = json.loads(exec_form.group("argv"))
+        except ValueError:
+            argv = None
+        if (
+            isinstance(argv, list)
+            and argv
+            and all(isinstance(argument, str) for argument in argv)
+            and argv[0].rsplit("/", 1)[-1].lower() in {"sh", "bash"}
+        ):
+            for index, argument in enumerate(argv[1:], start=1):
+                if (
+                    argument.startswith("-")
+                    and "c" in argument[1:]
+                    and index + 1 < len(argv)
+                ):
+                    return APT_COMMAND.search(argv[index + 1]) is not None
+
+    return any(
+        APT_COMMAND.search(match.group("command")[1:-1]) is not None
+        for match in SHELL_WRAPPED_COMMAND.finditer(source)
+    )
+
+
+def rewrite_run_source_overrides(
+    source: str,
+    source_overrides: dict[str, str],
+    *,
+    rewrite_apt_sources: bool,
+) -> str:
+    """Rewrite only unambiguously build-transport URL occurrences in a RUN."""
+    if not source_overrides:
+        return source
+
+    exec_form = RUN_EXEC_FORM.match(source)
+    if exec_form:
+        try:
+            argv = json.loads(exec_form.group("argv"))
+        except ValueError:
+            argv = None
+        if (
+            isinstance(argv, list)
+            and argv
+            and all(isinstance(argument, str) for argument in argv)
+            and argv[0].rsplit("/", 1)[-1].lower() in {"curl", "wget"}
+        ):
+            rewritten_argv = [
+                argv[0],
+                *(
+                    rewrite_source_overrides(argument, source_overrides)
+                    for argument in argv[1:]
+                ),
+            ]
+            return (
+                exec_form.group("prefix")
+                + json.dumps(rewritten_argv)
+                + exec_form.group("suffix")
+            )
+
+    output: list[str] = []
+    segment_start = 0
+    quote: str | None = None
+    index = 0
+
+    def append_segment(end: int) -> None:
+        segment = source[segment_start:end]
+        probe = re.sub(r"\\\r?\n", " ", segment)
+        is_fetch = SOURCE_OVERRIDE_FETCH_COMMAND.search(probe) is not None
+        is_apt_source_write = (
+            rewrite_apt_sources
+            and APT_SOURCE_FILE_REFERENCE.search(probe) is not None
+        )
+        output.append(
+            rewrite_source_overrides(segment, source_overrides)
+            if is_fetch or is_apt_source_write
+            else segment
+        )
+
+    while index < len(source):
+        character = source[index]
+        if quote == "'":
+            if character == "'":
+                quote = None
+            index += 1
+            continue
+        if quote == '"':
+            if character == "\\" and index + 1 < len(source):
+                index += 2
+                continue
+            if character == '"':
+                quote = None
+            index += 1
+            continue
+        if character in {"'", '"'}:
+            quote = character
+            index += 1
+            continue
+        if character == "\\" and index + 1 < len(source):
+            index += 2
+            continue
+
+        delimiter_length = 0
+        if source.startswith(("&&", "||"), index):
+            delimiter_length = 2
+        elif character in {";", "\n"}:
+            delimiter_length = 1
+        if not delimiter_length:
+            index += 1
+            continue
+
+        append_segment(index)
+        output.append(source[index : index + delimiter_length])
+        index += delimiter_length
+        segment_start = index
+
+    append_segment(len(source))
+    return "".join(output)
+
+
+def rewrite_dockerfile_run_source_overrides(
+    source: str,
+    source_overrides: dict[str, str],
+    apt_stages: tuple[bool, ...],
+) -> str:
+    """Apply source overrides to safe contexts in complete RUN instructions."""
+    # TODO: Support configured APT URLs that appear only inside scripts
+    # downloaded or generated while a RUN executes.
+    if not source_overrides:
+        return source
+
+    output: list[str] = []
+    run_lines: list[str] = []
+    run_rewrite_modes: list[str] = []
+    heredocs: list[tuple[str, bool, str]] = []
+    stage_index = -1
+
+    def rewrite_chunk_content(lines: list[str], mode: str) -> str:
+        content = "".join(lines)
+        if mode == "all":
+            return rewrite_source_overrides(content, source_overrides)
+        if mode == "safe":
+            return rewrite_run_source_overrides(
+                content,
+                source_overrides,
+                rewrite_apt_sources=(
+                    stage_index < len(apt_stages) and apt_stages[stage_index]
+                ),
+            )
+        return content
+
+    def flush_run() -> None:
+        chunk: list[str] = []
+        rewrite_chunk: str | None = None
+        for line, rewrite_line in zip(run_lines, run_rewrite_modes, strict=True):
+            if rewrite_chunk is not None and rewrite_line != rewrite_chunk:
+                output.append(rewrite_chunk_content(chunk, rewrite_chunk))
+                chunk.clear()
+            rewrite_chunk = rewrite_line
+            chunk.append(line)
+        if chunk:
+            output.append(rewrite_chunk_content(chunk, rewrite_chunk or "none"))
+        run_lines.clear()
+        run_rewrite_modes.clear()
+
+    for source_line in source.splitlines(keepends=True):
+        if not run_lines:
+            instruction = DOCKERFILE_INSTRUCTION.match(source_line)
+            if not instruction:
+                output.append(source_line)
+                continue
+            instruction_name = instruction.group("name").upper()
+            if instruction_name == "FROM":
+                stage_index += 1
+            if instruction_name != "RUN":
+                output.append(source_line)
+                continue
+            run_lines.append(source_line)
+            run_rewrite_modes.append("safe")
+            heredocs.extend(
+                run_heredoc_specs(
+                    "".join(run_lines),
+                    rewrite_apt_sources=(
+                        stage_index < len(apt_stages) and apt_stages[stage_index]
+                    ),
+                )
+            )
+        else:
+            if heredocs:
+                delimiter, strip_tabs, rewrite_mode = heredocs[0]
+                candidate = source_line.rstrip("\r\n")
+                if strip_tabs:
+                    candidate = candidate.lstrip("\t")
+                run_lines.append(source_line)
+                run_rewrite_modes.append(
+                    rewrite_mode if candidate != delimiter else "none"
+                )
+                if candidate == delimiter:
+                    heredocs.pop(0)
+            else:
+                run_lines.append(source_line)
+                run_rewrite_modes.append("safe")
+                heredocs.extend(
+                    run_heredoc_specs(
+                        "".join(run_lines),
+                        rewrite_apt_sources=(
+                            stage_index < len(apt_stages)
+                            and apt_stages[stage_index]
+                        ),
+                    )
+                )
+
+        if not heredocs and not source_line.rstrip().endswith("\\"):
+            flush_run()
+
+    if run_lines:
+        flush_run()
+    return "".join(output)
+
+
+def source_override_sed(
+    source_overrides: dict[str, str], *, reverse: bool = False
+) -> str:
+    expressions = []
+    for original, replacement in ordered_source_overrides(
+        source_overrides, reverse=reverse
+    ):
+        expressions.append(
+            f"s#{sed_pattern(original)}([^A-Za-z0-9._~-]|$)#"
+            f"{sed_replacement(replacement)}\\1#g"
+        )
+    return ";".join(expressions)
+
+
 def apt_mirror_command(
-    source_image: str,
     apt_mirror: str,
     *,
     stage_uses_apt: bool = False,
+    source_overrides: dict[str, str] | None = None,
 ) -> str | None:
-    if not apt_mirror:
+    if not apt_mirror or not stage_uses_apt:
         return None
-    image = source_image.lower()
-    mirror = apt_mirror.rstrip("/")
-    recognized_apt_image = "ubuntu" in image or any(
-        name in image for name in ("bookworm", "debian", "python:", "golang:")
-    )
-    if not recognized_apt_image and not stage_uses_apt:
-        return None
-    # Rebench and similar datasets commonly replace the upstream Ubuntu or
-    # Debian image with an internal overlay whose repository name no longer
-    # reveals the distribution. Rewriting both well-known source families is
-    # harmless and lets the commands in the stage, rather than the image name,
-    # prove that APT source routing is required.
+    mirror = sed_replacement(apt_mirror.rstrip("/"))
+    source_overrides = source_overrides or {}
+    # Keep an exact copy of the stage's authored source files. The matching
+    # cleanup instruction restores untouched files byte-for-byte and removes
+    # only this adapter's transport rewrite from files the task changed.
     replacements = (
         f"s#https?://(archive|security|ports)\\.ubuntu\\.com/ubuntu/?#"
         f"{mirror}/ubuntu/#g;"
@@ -273,62 +670,234 @@ def apt_mirror_command(
         f"{mirror}/debian-security/#g;"
         f"s#https?://deb\\.debian\\.org/debian/?#{mirror}/debian/#g"
     )
-    return (
-        "RUN set -eu; "
+    override_replacements = source_override_sed(source_overrides)
+    if override_replacements:
+        replacements = f"{replacements};{override_replacements}"
+    command = (
+        "set -eu; "
+        f"state={shlex.quote(APT_MIRROR_STATE_DIR)}; "
+        'rm -rf "$state"; '
+        'mkdir -p "$state/original" "$state/adapted"; '
+        "for path in sources.list sources.list.d; do "
+        'source_path="/etc/apt/$path"; '
+        'if [ -e "$source_path" ] || [ -L "$source_path" ]; then '
+        'cp -a "$source_path" "$state/original/$path"; '
+        "fi; "
+        "done; "
         "for file in /etc/apt/sources.list /etc/apt/sources.list.d/*.list "
         "/etc/apt/sources.list.d/*.sources; do "
-        "[ -f \"$file\" ] || continue; "
-        f"sed -E -i '{replacements}' \"$file\"; "
+        '[ -f "$file" ] || continue; '
+        f"sed -E -i {shlex.quote(replacements)} \"$file\"; "
+        "done; "
+        "for path in sources.list sources.list.d; do "
+        'source_path="/etc/apt/$path"; '
+        'if [ -e "$source_path" ] || [ -L "$source_path" ]; then '
+        'cp -a "$source_path" "$state/adapted/$path"; '
+        "fi; "
         "done"
     )
+    return f"RUN {json.dumps(['/bin/sh', '-c', command])}"
+
+
+def apt_mirror_cleanup_command(
+    apt_mirror: str, source_overrides: dict[str, str] | None = None
+) -> str:
+    """Restore task-visible APT sources after a mirrored build stage."""
+    mirror = apt_mirror.rstrip("/")
+    mirror_pattern = sed_pattern(mirror)
+    source_overrides = source_overrides or {}
+    target_format = (
+        "$(SOURCESENTRY)~$(IDENTIFIER)~$(RELEASE)~$(COMPONENT)~"
+        "$(ARCHITECTURE)~$(CREATED_BY)~$(METAKEY)|$(COMPONENT)|$(FILENAME)"
+    )
+    replacements = (
+        f"s#{mirror_pattern}/ubuntu/?#http://archive.ubuntu.com/ubuntu/#g;"
+        f"s#{mirror_pattern}/debian-security/?#"
+        "http://security.debian.org/debian-security/#g;"
+        f"s#{mirror_pattern}/debian/?#http://deb.debian.org/debian/#g"
+    )
+    override_replacements = source_override_sed(source_overrides, reverse=True)
+    if override_replacements:
+        replacements = f"{replacements};{override_replacements}"
+    command = (
+        "set -eu; "
+        f"state={shlex.quote(APT_MIRROR_STATE_DIR)}; "
+        '[ -d "$state" ] || exit 0; '
+        f"target_format={shlex.quote(target_format)}; "
+        "if command -v apt-get >/dev/null 2>&1; then "
+        'apt-get indextargets --no-release-info --format "$target_format" '
+        '> "$state/adapted-targets" 2>/dev/null || :; '
+        "fi; "
+        "for file in /etc/apt/sources.list /etc/apt/sources.list.d/*.list "
+        "/etc/apt/sources.list.d/*.sources; do "
+        '[ -f "$file" ] || continue; '
+        'relative="${file#/etc/apt/}"; '
+        'adapted="$state/adapted/$relative"; '
+        'original="$state/original/$relative"; '
+        'if [ -f "$adapted" ] && [ -e "$original" ] '
+        '&& cmp -s "$file" "$adapted"; then '
+        'rm -f "$file"; cp -a "$original" "$file"; '
+        "else "
+        'if [ -f "$adapted" ] && [ -e "$original" ] '
+        "&& command -v awk >/dev/null 2>&1; then "
+        f"awk {shlex.quote(APT_SOURCE_RESTORE_AWK)} "
+        '"$original" "$adapted" "$file" > "$state/merged-source"; '
+        'cat "$state/merged-source" > "$file"; '
+        "fi; "
+        f"sed -E -i {shlex.quote(replacements)} \"$file\"; "
+        "fi; "
+        "done; "
+        'if [ -s "$state/adapted-targets" ] '
+        "&& command -v apt-get >/dev/null 2>&1 "
+        "&& command -v sort >/dev/null 2>&1 "
+        "&& command -v join >/dev/null 2>&1; then "
+        'apt-get indextargets --no-release-info --format "$target_format" '
+        '> "$state/restored-targets" 2>/dev/null || :; '
+        'sort "$state/adapted-targets" -o "$state/adapted-targets"; '
+        'sort "$state/restored-targets" -o "$state/restored-targets"; '
+        'join -t "|" "$state/adapted-targets" "$state/restored-targets" '
+        '> "$state/target-moves" || :; '
+        'while IFS="|" read -r key source_component source_path '
+        "target_component target_path; do "
+        '[ "$source_path" = "$target_path" ] && continue; '
+        'for candidate in "$source_path" "$source_path".*; do '
+        '[ -f "$candidate" ] || continue; '
+        'suffix=${candidate#"$source_path"}; '
+        'cp -a "$candidate" "$target_path$suffix"; '
+        "done; "
+        'source_marker=_${source_component}_; '
+        'target_marker=_${target_component}_; '
+        'source_dist=${source_path%%"$source_marker"*}; '
+        'target_dist=${target_path%%"$target_marker"*}; '
+        "for release_file in InRelease Release Release.gpg; do "
+        '[ -f "${source_dist}_${release_file}" ] '
+        '&& cp -a "${source_dist}_${release_file}" '
+        '"${target_dist}_${release_file}"; '
+        "done; "
+        'done < "$state/target-moves"; '
+        'while IFS="|" read -r key source_component source_path '
+        "target_component target_path; do "
+        '[ "$source_path" = "$target_path" ] && continue; '
+        'rm -f "$source_path" "$source_path".*; '
+        'source_marker=_${source_component}_; '
+        'source_dist=${source_path%%"$source_marker"*}; '
+        'rm -f "${source_dist}_InRelease" "${source_dist}_Release" '
+        '"${source_dist}_Release.gpg"; '
+        'done < "$state/target-moves"; '
+        "fi; "
+        'rm -rf "$state"'
+    )
+    return f"RUN {json.dumps(['/bin/sh', '-c', command])}"
+
+
+def append_apt_mirror_cleanup(
+    output: list[str],
+    apt_mirror: str,
+    current_user_instruction: str | None,
+    source_overrides: dict[str, str],
+) -> None:
+    """Append cleanup under root, then restore an explicit task USER."""
+    restore_user = current_user_instruction
+    if restore_user is not None:
+        user_value = restore_user.split(None, 1)[1].split(":", 1)[0].lower()
+        if user_value not in {"root", "0"}:
+            output.append("USER root")
+        else:
+            restore_user = None
+    output.append(apt_mirror_cleanup_command(apt_mirror, source_overrides))
+    if restore_user is not None:
+        output.append(restore_user)
+
+
+def append_apt_mirror_refresh(
+    output: list[str],
+    apt_mirror: str,
+    current_user_instruction: str | None,
+    source_overrides: dict[str, str],
+) -> None:
+    """Restore task sources, snapshot them again, and reapply build mirrors."""
+    restore_user = current_user_instruction
+    if restore_user is not None:
+        user_value = restore_user.split(None, 1)[1].split(":", 1)[0].lower()
+        if user_value not in {"root", "0"}:
+            output.append("USER root")
+        else:
+            restore_user = None
+    output.append(apt_mirror_cleanup_command(apt_mirror, source_overrides))
+    setup = apt_mirror_command(
+        apt_mirror,
+        stage_uses_apt=True,
+        source_overrides=source_overrides,
+    )
+    if setup is None:
+        raise AssertionError("APT mirror refresh requires a configured mirror")
+    output.append(setup)
+    if restore_user is not None:
+        output.append(restore_user)
 
 
 def dockerfile_apt_stages(source: str) -> tuple[bool, ...]:
     """Identify Dockerfile stages that actually invoke apt or apt-get."""
     stages: list[bool] = []
     active_instruction: str | None = None
-    heredocs: list[tuple[str, bool]] = []
+    instruction_lines: list[str] = []
+    heredocs: list[tuple[str, bool, str]] = []
     for source_line in source.splitlines():
         if heredocs:
-            if stages and APT_COMMAND.search(source_line):
+            if (
+                stages
+                and active_instruction == "RUN"
+                and heredocs[0][2] == "safe"
+                and run_invokes_apt(source_line)
+            ):
                 stages[-1] = True
-            delimiter, strip_tabs = heredocs[0]
+            delimiter, strip_tabs, _rewrite_mode = heredocs[0]
             candidate = source_line.lstrip("\t") if strip_tabs else source_line
             if candidate == delimiter:
                 heredocs.pop(0)
                 if not heredocs:
                     active_instruction = None
+                    instruction_lines.clear()
             continue
 
-        instruction = DOCKERFILE_INSTRUCTION.match(source_line)
-        if instruction:
-            active_instruction = instruction.group("name").upper()
+        instruction = None
+        if active_instruction is None:
+            instruction = DOCKERFILE_INSTRUCTION.match(source_line)
+            if instruction:
+                active_instruction = instruction.group("name").upper()
+                instruction_lines = [source_line]
             if active_instruction == "FROM":
                 stages.append(False)
-            elif stages and APT_COMMAND.search(source_line):
-                stages[-1] = True
+        else:
+            instruction_lines.append(source_line)
+        if (
+            stages
+            and active_instruction == "RUN"
+            and run_invokes_apt("\n".join(instruction_lines))
+        ):
+            stages[-1] = True
 
         if active_instruction in {"RUN", "COPY", "ADD"}:
-            heredocs.extend(
-                (item.group("delimiter"), bool(item.group("strip")))
-                for item in HEREDOC_MARKER.finditer(source_line)
-            )
+            if active_instruction == "RUN":
+                heredocs.extend(
+                    run_heredoc_specs(
+                        "\n".join(instruction_lines),
+                        rewrite_apt_sources=False,
+                    )
+                )
+            else:
+                heredocs.extend(
+                    (
+                        item.group("delimiter"),
+                        bool(item.group("strip")),
+                        "none",
+                    )
+                    for item in HEREDOC_MARKER.finditer(source_line)
+                )
         if not heredocs and not source_line.rstrip().endswith("\\"):
             active_instruction = None
+            instruction_lines.clear()
     return tuple(stages)
-
-
-def rewrite_docker_ce_sources(source: str, apt_mirror: str) -> str:
-    """Route Docker's apt repository through the configured mirror root."""
-    if not apt_mirror:
-        return source
-    docker_ce_mirror = f"{apt_mirror.rstrip('/')}/docker-ce"
-    return re.sub(
-        r"https?://download\.docker\.com(?=/)",
-        lambda _match: docker_ce_mirror,
-        source,
-        flags=re.IGNORECASE,
-    )
 
 
 def _validate_source_url(
@@ -372,6 +941,68 @@ def validate_apt_mirror(apt_mirror: str, build_network: str) -> str:
             "APT mirror root"
         )
     return _validate_source_url(normalized, "APT mirror", build_network).rstrip("/")
+
+
+def parse_apt_source_overrides(
+    raw: str, build_network: str
+) -> dict[str, str]:
+    """Parse explicit upstream-to-build-source URL prefix mappings."""
+    if not raw.strip():
+        return {}
+    loaded = json.loads(raw)
+    if not isinstance(loaded, dict):
+        raise TypeError("APT source overrides must be a JSON object")
+    overrides: dict[str, str] = {}
+    reverse_targets: dict[str, str] = {}
+    for original, replacement in loaded.items():
+        if not isinstance(original, str) or not isinstance(replacement, str):
+            raise TypeError("APT source override keys and values must be strings")
+        normalized_original = _validate_source_url(
+            original, "APT source override origin", build_network
+        ).rstrip("/")
+        normalized_replacement = _validate_source_url(
+            replacement, "APT source override replacement", build_network
+        ).rstrip("/")
+        if normalized_original == normalized_replacement:
+            raise ValueError("APT source override must change the source URL")
+        if normalized_original in overrides:
+            raise ValueError(
+                f"duplicate normalized APT source override: {normalized_original}"
+            )
+        previous_origin = reverse_targets.get(normalized_replacement)
+        if previous_origin is not None:
+            raise ValueError(
+                "APT source override replacements must be unique for cleanup: "
+                f"{normalized_replacement} maps both {previous_origin} and "
+                f"{normalized_original}"
+            )
+        overrides[normalized_original] = normalized_replacement
+        reverse_targets[normalized_replacement] = normalized_original
+    overlap = set(overrides).intersection(reverse_targets)
+    if overlap:
+        raise ValueError(
+            "APT source override origins and replacements must be disjoint: "
+            + ", ".join(sorted(overlap))
+        )
+    cross_prefixes = sorted(
+        {
+            (origin, replacement)
+            for origin in overrides
+            for replacement in reverse_targets
+            if source_prefix_matches(origin, replacement)
+            or source_prefix_matches(replacement, origin)
+        }
+    )
+    if cross_prefixes:
+        rendered = ", ".join(
+            f"{origin} <> {replacement}"
+            for origin, replacement in cross_prefixes
+        )
+        raise ValueError(
+            "APT source override origins and replacements must not overlap "
+            f"by URL prefix: {rendered}"
+        )
+    return overrides
 
 
 def package_source_build_args(
@@ -587,35 +1218,70 @@ def render_build_dockerfile(
     *,
     dockerhub_mirror_prefix: str,
     apt_mirror: str,
+    apt_source_overrides: dict[str, str] | None = None,
     package_build_args: dict[str, str] | None = None,
     rustup_init_url: str = "",
     pytorch_index_url: str = "",
     github_mirror_config_mount_id: str = "",
 ) -> str:
     package_build_args = package_build_args or {}
+    apt_source_overrides = apt_source_overrides or {}
+    apt_stages = dockerfile_apt_stages(source)
+    source = rewrite_dockerfile_run_source_overrides(
+        source,
+        apt_source_overrides,
+        apt_stages,
+    )
     output: list[str] = []
     aliases: set[str] = set()
-    apt_stages = dockerfile_apt_stages(source)
     stage_index = -1
+    stage_mirror_active = False
+    current_user_instruction: str | None = None
     active_instruction: str | None = None
+    active_apt_source_input = False
     heredocs: list[tuple[str, bool]] = []
     for source_line in source.splitlines():
         if heredocs:
-            output.append(source_line)
+            if (
+                active_instruction in {"RUN", "COPY", "ADD"}
+                and APT_SOURCE_FILE_REFERENCE.search(source_line)
+            ):
+                active_apt_source_input = True
             delimiter, strip_tabs = heredocs[0]
             candidate = source_line.lstrip("\t") if strip_tabs else source_line
             if candidate == delimiter:
+                output.append(source_line)
                 heredocs.pop(0)
                 if not heredocs:
+                    if active_apt_source_input and stage_mirror_active:
+                        append_apt_mirror_refresh(
+                            output,
+                            apt_mirror,
+                            current_user_instruction,
+                            apt_source_overrides,
+                        )
                     active_instruction = None
+                    active_apt_source_input = False
+            else:
+                output.append(source_line)
             continue
 
-        instruction = DOCKERFILE_INSTRUCTION.match(source_line)
-        if instruction:
-            active_instruction = instruction.group("name").upper()
+        instruction = None
+        if active_instruction is None:
+            instruction = DOCKERFILE_INSTRUCTION.match(source_line)
+            if instruction:
+                active_instruction = instruction.group("name").upper()
+                active_apt_source_input = False
 
+        if (
+            active_instruction in {"RUN", "COPY", "ADD"}
+            and APT_SOURCE_FILE_REFERENCE.search(source_line)
+        ):
+            active_apt_source_input = True
+
+        line = source_line
         line = rewrite_package_source_urls(
-            rewrite_docker_ce_sources(source_line, apt_mirror),
+            line,
             rustup_init_url=rustup_init_url,
             pytorch_index_url=pytorch_index_url,
         )
@@ -632,7 +1298,16 @@ def render_build_dockerfile(
             )
         match = FROM_LINE.match(line)
         if match:
+            if stage_mirror_active:
+                append_apt_mirror_cleanup(
+                    output,
+                    apt_mirror,
+                    current_user_instruction,
+                    apt_source_overrides,
+                )
             stage_index += 1
+            stage_mirror_active = False
+            current_user_instruction = None
             source_image = match.group("image")
             mirrored_image = mirror_image_ref(
                 source_image, dockerhub_mirror_prefix, aliases
@@ -649,16 +1324,19 @@ def render_build_dockerfile(
             if alias_match:
                 aliases.add(alias_match.group("alias"))
             command = apt_mirror_command(
-                source_image,
                 apt_mirror,
                 stage_uses_apt=(
                     stage_index < len(apt_stages) and apt_stages[stage_index]
                 ),
+                source_overrides=apt_source_overrides,
             )
             if command:
                 output.append(command)
+                stage_mirror_active = True
         else:
             output.append(line)
+            if instruction and active_instruction == "USER":
+                current_user_instruction = line
 
         if active_instruction in {"RUN", "COPY", "ADD"}:
             heredocs.extend(
@@ -666,7 +1344,22 @@ def render_build_dockerfile(
                 for item in HEREDOC_MARKER.finditer(source_line)
             )
         if not heredocs and not source_line.rstrip().endswith("\\"):
+            if active_apt_source_input and stage_mirror_active:
+                append_apt_mirror_refresh(
+                    output,
+                    apt_mirror,
+                    current_user_instruction,
+                    apt_source_overrides,
+                )
             active_instruction = None
+            active_apt_source_input = False
+    if stage_mirror_active:
+        append_apt_mirror_cleanup(
+            output,
+            apt_mirror,
+            current_user_instruction,
+            apt_source_overrides,
+        )
     return "\n".join(output) + "\n"
 
 
@@ -1205,6 +1898,15 @@ def image_identity(environment_dir: Path, *, docker_image: str | None = None) ->
     )
 
 
+def build_image_identity(environment_dir: Path) -> str:
+    """Namespace a task build hash by the generated-Dockerfile contract."""
+    task_identity = image_identity(environment_dir)
+    payload = (
+        f"opensandbox-build-renderer\0{BUILD_RENDERER_VERSION}\0{task_identity}"
+    ).encode()
+    return hashlib.sha256(payload).hexdigest()
+
+
 @dataclass(frozen=True)
 class PreparedBundle:
     main_image_ref: str
@@ -1474,6 +2176,7 @@ def _transport_record(
     *,
     dockerhub_mirror_prefix: str,
     apt_mirror: str,
+    apt_source_overrides: dict[str, str],
     package_build_args: dict[str, str],
     github_mirror_url: str,
     rustup_init_url: str,
@@ -1481,6 +2184,7 @@ def _transport_record(
 ) -> dict[str, str]:
     return {
         "apt_mirror": apt_mirror,
+        "apt_source_override_origins": ",".join(sorted(apt_source_overrides)),
         "dockerhub_mirror_prefix": dockerhub_mirror_prefix,
         "github_mirror_configured": str(bool(github_mirror_url)).lower(),
         "package_source_args": ",".join(sorted(package_build_args)),
@@ -1591,10 +2295,15 @@ def _cached_bundle_matches_content(
         image = service_record.get("image")
         if not isinstance(image, dict):
             return False
-        docker_image = service.source_image if service.build is None else None
-        expected_hash = "sha256:" + image_identity(
-            bundle.environment_dir, docker_image=docker_image
-        )
+        if service.build is not None:
+            expected_hash = "sha256:" + build_image_identity(
+                bundle.environment_dir
+            )
+        else:
+            expected_hash = "sha256:" + image_identity(
+                bundle.environment_dir,
+                docker_image=service.source_image,
+            )
         if image.get("input_hash") != expected_hash:
             return False
     return True
@@ -1654,10 +2363,10 @@ def _service_image_inputs(
             **service.build.args,
             **explicit_build_args,
         }
-        # OCI Registry cache identity tracks static task intent only. Dynamic
-        # build args and source/proxy rewrites are deployment adaptations; use
-        # --force when the same task must be rebuilt against changed inputs.
-        identity = image_identity(bundle.environment_dir)
+        # Dynamic build args and source/proxy values remain deployment
+        # adaptations, but a renderer contract change must never reuse an
+        # image produced before that contract existed.
+        identity = build_image_identity(bundle.environment_dir)
         return identity, declared_build_args, effective_build_args, None, None
     if not service.source_image:
         raise ValueError(f"service {service.name!r} has no build or source image")
@@ -1766,6 +2475,7 @@ def _prepare_service_image(
                     "transport": _transport_record(
                         dockerhub_mirror_prefix=args.dockerhub_mirror_prefix,
                         apt_mirror=args.apt_mirror,
+                        apt_source_overrides=args.apt_source_overrides,
                         package_build_args=args.package_build_args,
                         github_mirror_url=args.github_mirror_url,
                         rustup_init_url=args.rustup_init_url,
@@ -1816,6 +2526,7 @@ def _prepare_service_image(
                         dockerfile_source,
                         dockerhub_mirror_prefix=args.dockerhub_mirror_prefix,
                         apt_mirror=args.apt_mirror,
+                        apt_source_overrides=args.apt_source_overrides,
                         package_build_args=args.package_build_args,
                         rustup_init_url=args.rustup_init_url,
                         pytorch_index_url=args.pytorch_index_url,
@@ -1876,6 +2587,7 @@ def _prepare_service_image(
                 "transport": _transport_record(
                     dockerhub_mirror_prefix=args.dockerhub_mirror_prefix,
                     apt_mirror=args.apt_mirror,
+                    apt_source_overrides=args.apt_source_overrides,
                     package_build_args=args.package_build_args,
                     github_mirror_url=args.github_mirror_url,
                     rustup_init_url=args.rustup_init_url,
@@ -2058,6 +2770,10 @@ def prepare_bundle(args: argparse.Namespace) -> PreparedBundle:
         getattr(args, "apt_mirror", DEFAULT_APT_MIRROR),
         build_network,
     )
+    args.apt_source_overrides = parse_apt_source_overrides(
+        getattr(args, "apt_source_overrides_json", "{}"),
+        build_network,
+    )
     args.github_mirror_url = validate_github_mirror_url(
         getattr(args, "github_mirror_url", ""), build_network
     )
@@ -2087,6 +2803,7 @@ def prepare_bundle(args: argparse.Namespace) -> PreparedBundle:
                 args.github_mirror_url,
                 args.rustup_init_url,
                 args.pytorch_index_url,
+                *args.apt_source_overrides.values(),
             ),
         )
 
@@ -2240,7 +2957,17 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--apt-mirror",
         default=os.environ.get("HARBOR_OPENSANDBOX_APT_MIRROR", DEFAULT_APT_MIRROR),
-        help="APT mirror root containing ubuntu, debian, debian-security and docker-ce",
+        help="APT mirror root containing ubuntu, debian, and debian-security",
+    )
+    parser.add_argument(
+        "--apt-source-overrides-json",
+        default=os.environ.get(
+            "HARBOR_OPENSANDBOX_APT_SOURCE_OVERRIDES_JSON", "{}"
+        ),
+        help=(
+            "JSON object mapping third-party APT URL prefixes to explicit "
+            "build-time source URL prefixes"
+        ),
     )
     parser.add_argument(
         "--pip-index-url",

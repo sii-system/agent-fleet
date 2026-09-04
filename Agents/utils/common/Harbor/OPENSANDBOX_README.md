@@ -171,6 +171,48 @@ configured package-source health probes, so a batch made entirely of local
 hits performs no per-task network request. If a real miss later fails while
 building, the existing health check and trusted-source fallback still run.
 
+APT mirror rewriting is build-stage scoped. `--apt-mirror` provides the
+Ubuntu and Debian mirror root. Third-party repositories, signing keys, and
+bootstrap downloads use an explicit provider-neutral prefix map; Agent Fleet
+does not guess mirror paths:
+
+```bash
+export HARBOR_OPENSANDBOX_APT_SOURCE_OVERRIDES_JSON='{
+  "https://packages.example.com/repository": "http://<TRUSTED_MIRROR>/apt/vendor-repository",
+  "https://packages.example.com/signing-key.gpg": "http://<TRUSTED_MIRROR>/objects/vendor-key.gpg"
+}'
+```
+
+The generated Dockerfile applies the longest matching configured prefix only
+where the URL is unambiguously build transport: direct shell- or exec-form
+`curl` or `wget` commands, APT source writes in a stage that statically invokes
+`apt` or `apt-get`, and existing APT source files in that stage. Static
+`sh -c`/`bash -c` wrappers are inspected, but downloaded or generated scripts
+are not. Other `RUN` data, including URLs written to non-APT runtime
+configuration, remains task-authored. The same rule applies to statically
+visible Dockerfile heredoc bodies: command heredocs are rewritten, while data
+heredocs persisted outside the APT source tree and `COPY <<EOF` data remain
+unchanged.
+
+At the start of a stage that statically invokes APT, Agent Fleet snapshots the
+task-visible `sources.list` and `sources.list.d`. Before the stage ends, it
+restores unchanged source files exactly and removes configured build transport
+rewrites from task-added or task-modified source files. Cached package and
+signed release indexes are renamed to match the restored source URLs, so a
+later agent-side `apt install` does not require an extra update solely because
+the build used a mirror. APT sources introduced later by `COPY`, `ADD`, or a
+statically visible `RUN` source-tree update are restored, checkpointed, and
+mirrored after that instruction, then restored by the same final cleanup. An
+explicit task `USER` is also restored after cleanup.
+Stages that only download a configured signing key or bootstrap object do not
+run the root-only APT snapshot. This is a runtime-behavior guarantee, not a
+claim that historical OCI layers are byte-for-byte free of build mirror
+strings. Unconfigured third-party URLs remain task-authored and are not
+rewritten.
+
+Other package sources such as pip, npm, Go, Cargo, and Rustup retain their
+existing Docker build-argument behavior and are not part of the APT cleanup.
+
 Prebuild performs a bounded BuildKit cache prune before starting and every 30
 minutes while it runs. Defaults are `max-used-space=500GB`,
 `min-free-space=300GB`, and `reserved-space=100GB`; all four values are
