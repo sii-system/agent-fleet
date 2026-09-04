@@ -1,0 +1,29 @@
+# Built-in Harbor aliases. Terminal-Bench is covered by the dedicated E2E
+# nightly and is intentionally excluded here.
+seta
+smith
+sweverify
+
+# Harbor Hub datasets with at least 20 tasks.
+swe-bench/swe-bench-verified
+scale-ai/swe-bench-pro
+openthoughts/openthoughts-tblite
+harveyai/lab
+datacurve/deep-swe
+scale-ai/swe-atlas-qna
+snorkel-ai/senior-swe-bench-v2026.06
+harbor-index/harbor-index-1.0
+datacurve/deep-swe-1-1
+sierra-research/tau3-bench
+benchflow/skillsbench
+abundant/swe-marathon
+maxbittker/runebench
+aider/aider-polyglot
+gabeorlanski/slopcodebench
+android-bench/android-bench
+vmax-modal/modal-port-v1-eval-patched
+orca-bench/orca-bench
+aime/aime
+tmax/TMax-15K-Harbor
+swe-rebench/swe-rebench-leaderboard
+gaia/gaia
