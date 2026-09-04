@@ -1,0 +1,194 @@
+name: Harbor Self-Hosted Nightly
+
+"on":
+  workflow_dispatch:
+    inputs:
+      agent:
+        description: claude-code or opencode
+        required: false
+        default: claude-code
+        type: string
+  schedule:
+    - cron: "47 */4 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: harbor-self-hosted-nightly
+  cancel-in-progress: false
+
+jobs:
+  benchmark:
+    name: Harbor self-hosted nightly
+    runs-on: [self-hosted, Linux, X64, bare-metal]
+    environment: self-hosted-env
+    timeout-minutes: 480
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Validate prerequisites
+        run: |
+          set -euo pipefail
+          export AGENT_FLEET_REQUIRE_DOCKER=1
+          source scripts/prerequisites.sh
+          agent_fleet_bootstrap_setup_prerequisites
+          runner_dir="$RUNNER_TEMP/harbor-self-hosted-nightly-runner"
+          no_image_dir="$RUNNER_TEMP/harbor-self-hosted-nightly-no-image"
+          HARBOR_RUNNER_IMAGE_DIR="$no_image_dir" \
+          HARBOR_RUNNER_HOST_DIR="$runner_dir" \
+            bash Agents/utils/common/Harbor/setup_runner_env.sh
+          {
+            printf 'HARBOR_RUNNER_IMAGE_DIR=%s\n' "$no_image_dir"
+            printf 'HARBOR_RUNNER_HOST_DIR=%s\n' "$runner_dir"
+            printf 'HARBOR_NIGHTLY_PYTHON=%s/bin/python\n' "$runner_dir"
+          } >> "$GITHUB_ENV"
+
+      - name: Select benchmark and tasks
+        id: params
+        env:
+          INPUT_AGENT: ${{ inputs.agent }}
+          SMITH_DATASET_PATH: ${{ vars.SMITH_DATASET_PATH }}
+          RUN_ID: harbor-self-hosted-nightly-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          mapfile -t benchmarks < <(
+            awk 'NF && $1 !~ /^#/' .github/harbor-nightly-benchmarks.txt
+          )
+          if printf '%s\n' "${benchmarks[@]}" | grep -Eiq 'terminal-?bench'; then
+            echo "::error::Terminal-Bench must remain excluded" >&2
+            exit 1
+          fi
+
+          smith_path="${SMITH_DATASET_PATH:-/workspace/harbor/datasets/swesmith}"
+          if [[ ! -d "$smith_path" ]]; then
+            benchmarks=("${benchmarks[@]/#smith/}")
+          fi
+          benchmark="$(printf '%s\n' "${benchmarks[@]}" | awk 'NF' | shuf -n 1)"
+          mapfile -t selection < <("$HARBOR_NIGHTLY_PYTHON" \
+            .github/scripts/harbor_nightly_select.py \
+            --repo-root "$GITHUB_WORKSPACE" \
+            --benchmark "$benchmark")
+          if (( ${#selection[@]} != 2 )); then
+            echo "::error::task selector returned invalid output" >&2
+            exit 1
+          fi
+          task_count="${selection[0]}"
+          tasks="${selection[1]}"
+
+          agent="${INPUT_AGENT:-claude-code}"
+          case "$agent" in
+            claude-code|opencode) ;;
+            *) echo "::error::unsupported agent: $agent" >&2; exit 1 ;;
+          esac
+          dataset_path=""
+          [[ "$benchmark" != "smith" ]] || dataset_path="$smith_path"
+          {
+            printf 'benchmark=%s\n' "$benchmark"
+            printf 'tasks=%s\n' "$tasks"
+            printf 'task_count=%s\n' "$task_count"
+            printf 'agent=%s\n' "$agent"
+            printf 'dataset_path=%s\n' "$dataset_path"
+            printf 'run_id=%s\n' "$RUN_ID"
+            printf 'output_path=%s/runs/%s\n' "$GITHUB_WORKSPACE" "$RUN_ID"
+          } >> "$GITHUB_OUTPUT"
+          printf 'Selected %s tasks from %s: %s\n' "$task_count" "$benchmark" "$tasks"
+
+      - name: Run Harbor benchmark
+        env:
+          BASE_URL_RAW: ${{ vars.LLM_REVIEW_BASE_URL }}
+          API_KEY: ${{ secrets.LLM_REVIEW_API_KEY }}
+          ANTHROPIC_AUTH_TOKEN: ${{ secrets.LLM_REVIEW_API_KEY }}
+          HARBOR_ANTHROPIC_AUTH_TOKEN: ${{ secrets.LLM_REVIEW_API_KEY }}
+          MODEL: ${{ vars.LLM_REVIEW_MODEL }}
+          OPIK_URL: ${{ vars.OPIK_URL }}
+          OPIK_API_KEY: ${{ secrets.OPIK_API_KEY }}
+          OPIK_WORKSPACE: ${{ vars.OPIK_WORKSPACE }}
+          AGENT: ${{ steps.params.outputs.agent }}
+          BENCHMARK: ${{ steps.params.outputs.benchmark }}
+          DATASET_PATH: ${{ steps.params.outputs.dataset_path }}
+          INCLUDE_TASKS: ${{ steps.params.outputs.tasks }}
+          HARBOR_INCLUDE_TASKS: ${{ steps.params.outputs.tasks }}
+          OUTPUT_PATH: ${{ steps.params.outputs.output_path }}
+          RUN_ID: ${{ steps.params.outputs.run_id }}
+          ZELLIJ_SESSION_NAME: ${{ steps.params.outputs.run_id }}
+          TOTAL_WORKERS: "10"
+          HARBOR_N_CONCURRENT: "10"
+          HARBOR_ENVIRONMENT_TYPE: docker
+          HARBOR_RUNS: "1"
+          HARBOR_LIMIT: ""
+          HARBOR_MAX_RETRIES: "0"
+          MIN_TEST: "0"
+          HARBOR_ONLINE_ANALYSIS: "0"
+          HARBOR_ZELLIJ_CLOSE_ON_COMPLETE: "1"
+          HARBOR_ZELLIJ_KEEP_ON_FAILURE: "0"
+        run: |
+          set -euo pipefail
+          if [[ -z "$API_KEY" ]]; then
+            echo "::error::LLM_REVIEW_API_KEY is empty" >&2
+            exit 1
+          fi
+          export BASE_URL="${BASE_URL_RAW%/chat/completions}"
+          export OPIK_PROJECT_NAME="$(date -u +'%Y-%m-%d-%H')-harbor-self-hosted-nightly"
+          export HARBOR_OPENSANDBOX_BENCHMARK="$BENCHMARK"
+
+          status=0
+          timeout --signal=TERM --kill-after=5m 450m \
+            script -e -q -c \
+              "$(printf '%q ' scripts/run_fleet.sh --taskset "$BENCHMARK" --agent "$AGENT" --workers "$TOTAL_WORKERS")" \
+              /dev/null || status=$?
+          if (( status == 124 || status == 137 )); then
+            echo "::error::Harbor exceeded its 450-minute budget" >&2
+          fi
+          exit "$status"
+
+      - name: Verify sampled tasks completed
+        env:
+          BENCHMARK: ${{ steps.params.outputs.benchmark }}
+          EXPECTED_TASKS: ${{ steps.params.outputs.task_count }}
+          OUTPUT_PATH: ${{ steps.params.outputs.output_path }}
+        run: |
+          set -euo pipefail
+          if [[ "$BENCHMARK" != "smith" ]]; then
+            python3 .github/scripts/e2e_harbor_gate.py \
+              --output-path "$OUTPUT_PATH" \
+              --harbor-status 0 \
+              --expected-trials "$EXPECTED_TASKS" \
+              --max-harness-failure-ratio 0.10
+            exit 0
+          fi
+
+          shopt -s nullglob
+          done_files=("$OUTPUT_PATH"/queue/*/done.txt)
+          if (( ${#done_files[@]} != 1 )); then
+            echo "::error::expected one Smith completion queue" >&2
+            exit 1
+          fi
+          queue_dir="${done_files[0]%/done.txt}"
+          done_count="$(grep -c . "${done_files[0]}" || true)"
+          failed_count="$(grep -c . "$queue_dir/failed.txt" || true)"
+          exception_count="$(awk -F '\t' '$4 != "" { count++ } END { print count + 0 }' "${done_files[0]}")"
+          accounted=$((done_count + failed_count))
+          errors=$((exception_count + failed_count))
+          if (( accounted != EXPECTED_TASKS )); then
+            echo "::error::Smith accounted for $accounted of $EXPECTED_TASKS sampled tasks" >&2
+            exit 1
+          fi
+          if (( errors * 100 > EXPECTED_TASKS * 10 )); then
+            echo "::error::Smith had $errors harness failures across $EXPECTED_TASKS tasks" >&2
+            exit 1
+          fi
+
+      - name: Clean up
+        if: always()
+        env:
+          ZELLIJ_SESSION_NAME: ${{ steps.params.outputs.run_id }}
+        run: |
+          set -euo pipefail
+          zellij kill-session "$ZELLIJ_SESSION_NAME" >/dev/null 2>&1 || true
+          zellij delete-session "$ZELLIJ_SESSION_NAME" >/dev/null 2>&1 || true
