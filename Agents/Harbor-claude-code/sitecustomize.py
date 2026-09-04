@@ -143,6 +143,21 @@ def _hook_mount_path(extra_env: dict[str, str] | None) -> str:
     )
 
 
+def _build_web_mcp_config(server_path: str) -> str:
+    return json.dumps(
+        {
+            "mcpServers": {
+                "web": {
+                    "type": "stdio",
+                    "command": "python3",
+                    "args": [server_path],
+                }
+            }
+        },
+        ensure_ascii=True,
+    )
+
+
 def _build_hook_settings_json(hook_path: str) -> str:
     def hook_command(event: str, extra_args: str = "") -> str:
         return (
@@ -589,10 +604,25 @@ def _patch_claude_code_realtime_hooks() -> None:
             # run, including when external tracing is disabled.
             patched_command = _fix_unquoted_append_system_prompt(command)
             if "claude --verbose --output-format=stream-json" in patched_command:
-                patched_command = (
-                    "export PATH=\"$HOME/.local/bin:$PATH\"; "
-                    f"{patched_command}"
-                )
+                web_mcp_path = (extra_env or {}).get("CC_WEB_MCP_PATH", "").strip()
+                prefix = 'export PATH="$HOME/.local/bin:$PATH"; '
+                if web_mcp_path:
+                    config_json = shlex.quote(_build_web_mcp_config(web_mcp_path))
+                    config_path = "$HOME/.claude/web-mcp.json"
+                    prefix = (
+                        "mkdir -p \"$HOME/.claude\"; "
+                        f"printf '%s\\n' {config_json} > \"{config_path}\"; "
+                        + prefix
+                    )
+                    patched_command = patched_command.replace(
+                        "claude --verbose",
+                        "claude --strict-mcp-config "
+                        f"--mcp-config \"{config_path}\" "
+                        "--allowedTools mcp__web__web_search,mcp__web__web_fetch "
+                        "--verbose",
+                        1,
+                    )
+                patched_command = f"{prefix}{patched_command}"
                 if hook_enabled:
                     # Harbor assigns this after constructing the agent, so it
                     # cannot be supplied by the launcher as static --ae data.

@@ -165,6 +165,56 @@ class ClaudeCommandPatchTest(unittest.TestCase):
         self.assertEqual(argv[prompt_index + 1], "Use English only for all reasoning.")
         self.assertEqual(argv[-1], "real task")
 
+    def test_external_web_mcp_is_loaded_for_claude(self) -> None:
+        module = load_module()
+        captured: list[str] = []
+
+        class FakeClaudeCode:
+            async def install(self, environment):
+                return None
+
+            async def run(self, instruction, environment, context):
+                return await self.exec_as_agent(
+                    environment,
+                    "claude --verbose --output-format=stream-json "
+                    "--permission-mode=bypassPermissions --print -- 'task'",
+                )
+
+            async def exec_as_agent(
+                self, environment, command, env=None, cwd=None, timeout_sec=None
+            ):
+                captured.append(command)
+                return command
+
+        claude_code = types.ModuleType("harbor.agents.installed.claude_code")
+        claude_code.ClaudeCode = FakeClaudeCode
+        fake_modules = {
+            name: types.ModuleType(name)
+            for name in ("harbor", "harbor.agents", "harbor.agents.installed")
+        }
+        fake_modules["harbor.agents.installed.claude_code"] = claude_code
+
+        with mock.patch.dict(sys.modules, fake_modules):
+            module._patch_claude_code_realtime_hooks()
+            agent = FakeClaudeCode()
+            agent._extra_env = {
+                "CC_OPIK_ENABLE_HOOK": "false",
+                "CC_WEB_MCP_PATH": "/opt/agent-fleet/exa_web_mcp.py",
+            }
+            asyncio.run(agent.run("task", object(), object()))
+
+        self.assertEqual(len(captured), 1)
+        self.assertIn('> "$HOME/.claude/web-mcp.json"', captured[0])
+        self.assertIn('"command": "python3"', captured[0])
+        self.assertIn('"args": ["/opt/agent-fleet/exa_web_mcp.py"]', captured[0])
+        argv = shlex.split(captured[0].split("; ")[-1])
+        self.assertIn("--strict-mcp-config", argv)
+        self.assertEqual(argv[argv.index("--mcp-config") + 1], "$HOME/.claude/web-mcp.json")
+        self.assertEqual(
+            argv[argv.index("--allowedTools") + 1],
+            "mcp__web__web_search,mcp__web__web_fetch",
+        )
+
 
 class ClaudeInstallCommandTest(unittest.TestCase):
     def _install_command(

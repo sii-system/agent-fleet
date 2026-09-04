@@ -62,6 +62,7 @@ ln -s python3.12 "$tmp/verifier-bundle/agent-fleet-swe-rebench-v2-verifier-bundl
 ln -s python3.12 "$tmp/verifier-bundle/agent-fleet-swe-rebench-v2-verifier-bundle/bin/python"
 tar -czf "$tmp/deps/wheels/agent-fleet-swe-rebench-v2-verifier-bundle.tar.gz" \
   -C "$tmp/verifier-bundle" agent-fleet-swe-rebench-v2-verifier-bundle
+printf '# fake Exa MCP\n' > "$tmp/deps/exa_web_mcp.py"
 
 run_dry() {
   local image_ref="$1"
@@ -111,6 +112,8 @@ run_dry() {
     HARBOR_LLM_KWARGS='{"temperature":1.0}' \
     HARBOR_CC_CLAUDE_TGZ_SOURCE="$tmp/deps/claude.tgz" \
     HARBOR_CC_PY_WHEEL_DIR_SOURCE="$tmp/deps/wheels" \
+    HARBOR_CC_WEB_MCP_SOURCE="${RUN_DRY_WEB_MCP_SOURCE:-}" \
+    EXA_API_KEY="${RUN_DRY_EXA_API_KEY:-}" \
     HARBOR_ENVIRONMENT_TYPE="$environment_type" \
     YICLOUD_SANDBOX_UPLOAD_BACKEND="${RUN_DRY_UPLOAD_BACKEND:-auto}" \
     YICLOUD_SANDBOX_S3_PROFILE= \
@@ -383,6 +386,21 @@ grep -F -- 'FAKE_HARBOR_ARG=CC_OPIK_CLAUDE_TGZ_PATH=' \
   <<< "$claude_opensandbox" >/dev/null
 grep -F -- 'FAKE_HARBOR_ARG=HARBOR_VERIFIER_UV_BIN_DIR=/opt/tb-uv-backup/bin' \
   <<< "$claude_opensandbox" >/dev/null
+
+claude_opensandbox_web_mcp="$(
+  RUN_DRY_WEB_MCP_SOURCE="$tmp/deps/exa_web_mcp.py" \
+  RUN_DRY_EXA_API_KEY='fake-exa-key' \
+    run_dry 'test-project/manual:immutable' "$tmp/does-not-exist.py" \
+      '{}' auto opensandbox 0 claude-code 0
+)"
+grep -F -- 'FAKE_HARBOR_ARG=CC_WEB_MCP_PATH=/opt/agent-fleet/exa_web_mcp.py' \
+  <<< "$claude_opensandbox_web_mcp" >/dev/null
+grep -F -- 'FAKE_HARBOR_ARG=EXA_API_KEY=fake-exa-key' \
+  <<< "$claude_opensandbox_web_mcp" >/dev/null
+grep -F -- "\"source\": \"$tmp/deps/exa_web_mcp.py\"" \
+  <<< "$claude_opensandbox_web_mcp" >/dev/null
+grep -F -- '"target": "/opt/agent-fleet/exa_web_mcp.py"' \
+  <<< "$claude_opensandbox_web_mcp" >/dev/null
 
 claude_opensandbox_traced="$(
   RUN_DRY_OPIK_URL='http://opik.example:5173' \
