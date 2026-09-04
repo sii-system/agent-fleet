@@ -85,12 +85,20 @@ provider derives from `BASE_URL` when `PI_PROVIDER` is unset. Rollout mode
 keeps its separate `RL_TEMPERATURE`, `RL_TOP_P`, and `RL_MAX_NEW_TOKENS`
 interface.
 
-When `OPIK_URL` is set, the Opik tracing plugin is loaded from
-the `third_party/agent-opik-plugin` submodule. Initialize it before a traced run:
+When `OPIK_URL` is set and tracing remains enabled, the Opik tracing plugin is
+loaded from the `third_party/agent-opik-plugin` submodule. Initialize it before
+a traced run:
 
 ```bash
 git submodule update --init --recursive
 ```
+
+Opik is an optional observability dependency. Its startup health, ingestion,
+or authenticated project check failing disables tracing for that task while
+the benchmark continues. Set `OPIK_PREFLIGHT_STRICT=1` for telemetry smoke
+tests that must fail before Harbor starts when Opik is unavailable. The checks
+use `OPIK_PREFLIGHT_CONNECT_TIMEOUT` and `OPIK_PREFLIGHT_MAX_TIME`, which
+default to 5 and 15 seconds.
 
 For a direct host run, first execute `./scripts/setup.sh` from the repository
 root. It creates a pinned Harbor/Opik control environment under

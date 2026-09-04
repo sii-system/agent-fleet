@@ -21,17 +21,51 @@ SH
 
   cat >"$fake_bin/curl" <<'SH'
 #!/usr/bin/env bash
+mode="${HARBOR_TEST_CURL_MODE:-ok}"
+wants_http_code=0
+check="other"
 for arg in "$@"; do
   if [[ "$arg" == "%{http_code}" ]]; then
-    printf '200'
+    wants_http_code=1
   fi
+  case "$arg" in
+    */health) check="health" ;;
+    */v1/private/spans/batch) check="ingestion" ;;
+    */v1/private/projects\?*) check="projects" ;;
+  esac
 done
+
+if [[ "$mode" == "health-transport" && "$check" == "health" ]]; then
+  exit 7
+fi
+
+status=200
+case "$mode:$check" in
+  ingestion-validation:ingestion)
+    status=422
+    ;;
+  ingestion-route:ingestion)
+    status=404
+    ;;
+  projects-auth:projects)
+    status=403
+    ;;
+esac
+
+if [[ "$wants_http_code" == "1" ]]; then
+  printf '%s' "$status"
+fi
 exit 0
 SH
 
   cat >"$fake_bin/git" <<'SH'
 #!/usr/bin/env bash
 exit 0
+SH
+
+  cat >"$fake_bin/ip" <<'SH'
+#!/usr/bin/env bash
+exit 1
 SH
 
   cat >"$fake_bin/uv" <<'SH'
@@ -54,6 +88,7 @@ SH
     "$fake_bin"/curl \
     "$fake_bin"/file \
     "$fake_bin"/git \
+    "$fake_bin"/ip \
     "$fake_bin"/uv \
     "$fake_bin"/uvx
 }
@@ -281,6 +316,9 @@ run_harboropik() {
   local min_test="${9:-0}"
   local runs="${10:-1}"
   local n_concurrent="${11:-1}"
+  local curl_mode="${12:-ok}"
+  local opik_preflight_strict="${13:-0}"
+  local expect_failure="${14:-0}"
   local opik_base="http://opik.example"
   local opik_url_override="http://opik.example/api"
   local hook_flag="1"
@@ -315,7 +353,8 @@ run_harboropik() {
   fi
 
   local log_file="$output_dir/$agent.log"
-  if ! env -i \
+  local rc=0
+  env -i \
     PATH="$fake_bin:/usr/bin:/bin:/usr/sbin:/sbin" \
     HOME="$output_dir/home" \
     AGENT="$agent" \
@@ -344,12 +383,24 @@ run_harboropik() {
     HARBOR_MAX_RETRIES="0" \
     HARBOR_CAPTURE_FILE="$capture_file" \
     HARBOR_CAPTURE_RESULT="1" \
+    HARBOR_TEST_CURL_MODE="$curl_mode" \
+    OPIK_PREFLIGHT_STRICT="$opik_preflight_strict" \
     HARBOR_OPIK_BIN="$capture_bin" \
     HARBOR_CLI_BIN="$capture_bin" \
     HARBOR_OPIK_PYTHON="$capture_bin" \
     HARBOR_RUNNER_PREPARE="0" \
     OPENCODE_CONFIG_CONTENT="{}" \
-    bash "$HARBOR_DIR/harboropik.sh" >"$log_file" 2>&1; then
+    bash "$HARBOR_DIR/harboropik.sh" >"$log_file" 2>&1 || rc=$?
+
+  if [[ "$expect_failure" == "1" ]]; then
+    if [[ "$rc" == "0" ]]; then
+      echo "harboropik unexpectedly succeeded" >&2
+      cat "$log_file" >&2
+      return 1
+    fi
+    return 0
+  fi
+  if [[ "$rc" != "0" ]]; then
     cat "$log_file" >&2
     return 1
   fi
@@ -399,7 +450,8 @@ main() {
   local tmp fake_bin default_overlay claude_capture opencode_capture pi_capture capture_bin
   local seta_capture sweverify_capture registry_capture traceoff_capture traceoff_oc_capture
   local opencode_registry_capture opencode_local_capture
-  local min_test_capture
+  local min_test_capture failed_claude_capture failed_opencode_capture
+  local project_failure_capture strict_failure_capture validation_capture validation_output
   tmp="$(mktemp -d)"
   TEST_TMP_DIR="$tmp"
   trap 'rm -rf "$TEST_TMP_DIR"' EXIT
@@ -558,6 +610,84 @@ main() {
   assert_file_content "${traceoff_oc_capture}.opik-environment" "{}"
   assert_arg_absent "$traceoff_oc_capture" "OPIK_API_KEY="
   assert_arg_absent "$traceoff_oc_capture" "OPIK_URL="
+
+  # A transport failure disables tracing without blocking Claude/Harbor.
+  failed_claude_capture="$tmp/claude-opik-failed.args"
+  run_harboropik \
+    "claude-code" "$capture_bin" "$failed_claude_capture" \
+    "$tmp/claude-opik-failed" "codepde@1.0" "" "true" "1" "0" "1" "1" \
+    "health-transport"
+  assert_file_content "${failed_claude_capture}.opik-track-disable" "true"
+  assert_file_content "${failed_claude_capture}.opik-environment" "{}"
+  assert_file_content \
+    "$tmp/claude-opik-failed/run/jobs/claude-code/.opik-preflight-disabled" \
+    "transport_error"
+  assert_arg_pair "$failed_claude_capture" "--ae" "CC_OPIK_ENABLE_HOOK=false"
+  assert_arg_absent "$failed_claude_capture" "TRACE_TO_OPIK=true"
+  assert_arg_absent "$failed_claude_capture" "OPIK_API_KEY="
+  assert_mount_source_absent "$failed_claude_capture" "claude_realtime_trace"
+  grep -q 'check=health reason=transport_error curl_exit=7' \
+    "$tmp/claude-opik-failed/claude-code.log"
+  grep -q 'realtime_hook_enabled: 0' \
+    "$tmp/claude-opik-failed/claude-code.log"
+  grep -q 'benchmark execution continues; Harbor result artifacts remain authoritative' \
+    "$tmp/claude-opik-failed/claude-code.log"
+
+  # OpenCode follows the same policy for an unhealthy ingestion route.
+  failed_opencode_capture="$tmp/opencode-opik-failed.args"
+  run_harboropik \
+    "opencode" "$capture_bin" "$failed_opencode_capture" \
+    "$tmp/opencode-opik-failed" "terminalbench21" "fix-git" "true" "1" \
+    "0" "1" "1" "ingestion-route"
+  assert_file_content "${failed_opencode_capture}.opik-track-disable" "true"
+  assert_file_content "${failed_opencode_capture}.opik-environment" "{}"
+  assert_file_content \
+    "$tmp/opencode-opik-failed/run/jobs/opencode/.opik-preflight-disabled" \
+    "route_unavailable"
+  assert_arg_absent "$failed_opencode_capture" "OPIK_API_KEY="
+  assert_arg_absent "$failed_opencode_capture" "OPIK_URL="
+  grep -q 'check=ingestion reason=route_unavailable http_status=404' \
+    "$tmp/opencode-opik-failed/opencode.log"
+  grep -q 'running OpenCode without Opik tracing' \
+    "$tmp/opencode-opik-failed/opencode.log"
+
+  # Reachable Opik with rejected credentials is trace-unavailable, not healthy.
+  project_failure_capture="$tmp/claude-opik-project-auth.args"
+  run_harboropik \
+    "claude-code" "$capture_bin" "$project_failure_capture" \
+    "$tmp/claude-opik-project-auth" "codepde@1.0" "" "true" "1" "0" \
+    "1" "1" "projects-auth"
+  assert_file_content "${project_failure_capture}.opik-track-disable" "true"
+  assert_file_content \
+    "$tmp/claude-opik-project-auth/run/jobs/claude-code/.opik-preflight-disabled" \
+    "authorization_failed"
+  grep -q 'check=projects reason=authorization_failed http_status=403' \
+    "$tmp/claude-opik-project-auth/claude-code.log"
+
+  # An empty ingestion batch may be rejected as invalid while proving that the
+  # authenticated route exists; keep tracing enabled in that case.
+  validation_capture="$tmp/claude-opik-validation.args"
+  validation_output="$tmp/claude-opik-validation"
+  mkdir -p "$validation_output/run/jobs/claude-code"
+  printf 'stale\n' \
+    > "$validation_output/run/jobs/claude-code/.opik-preflight-disabled"
+  run_harboropik \
+    "claude-code" "$capture_bin" "$validation_capture" "$validation_output" \
+    "codepde@1.0" "" "true" "1" "0" "1" "1" "ingestion-validation"
+  assert_file_content "${validation_capture}.opik-track-disable" ""
+  assert_arg_pair "$validation_capture" "--ae" "OPIK_API_KEY=fake-opik-key"
+  [[ ! -e "$validation_output/run/jobs/claude-code/.opik-preflight-disabled" ]]
+
+  # Strict mode preserves fail-closed behavior and never starts Harbor.
+  strict_failure_capture="$tmp/claude-opik-strict.args"
+  run_harboropik \
+    "claude-code" "$capture_bin" "$strict_failure_capture" \
+    "$tmp/claude-opik-strict" "codepde@1.0" "" "true" "1" "0" "1" "1" \
+    "health-transport" "1" "1"
+  [[ ! -e "$strict_failure_capture" ]]
+  [[ ! -e "$tmp/claude-opik-strict/run/jobs/claude-code/.opik-preflight-disabled" ]]
+  grep -q 'Opik preflight failed in strict mode: check=health reason=transport_error curl_exit=7' \
+    "$tmp/claude-opik-strict/claude-code.log"
 
   # The tracing control case still forwards the connection fields.
   assert_arg_pair "$claude_capture" "--ae" "OPIK_API_KEY=fake-opik-key"

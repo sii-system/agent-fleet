@@ -22,7 +22,7 @@ trap cleanup_verifier_uv_bin_dir EXIT
 #   2. Normalize the Opik API URL (ensures /api suffix is present)
 #   3. Apply minimal-test defaults when MIN_TEST=1 (fast smoke test)
 #   4. Docker Hub connectivity preflight (warn or abort if unreachable)
-#   5. Verify Opik health and ingestion endpoints when OPIK_URL is set
+#   5. Preflight Opik and disable tracing on failure unless strict mode is set
 #   6. Clone the Terminal Bench dataset if not already present locally
 #   7. Build and execute with the pinned runner's `opik harbor run` command,
 #      with PYTHONPATH pointing at Harbor-claude-code so that sitecustomize.py
@@ -141,8 +141,103 @@ configure_trace_disabled_runtime() {
   # inherit them from the parent environment.
   OPIK_TRACK_DISABLE=true
   export OPIK_TRACK_DISABLE
+  HARBOR_CC_OPIK_ENABLE_HOOK=0
+  export HARBOR_CC_OPIK_ENABLE_HOOK
   export -n OPIK_URL OPIK_URL_OVERRIDE OPIK_BASE \
     OPIK_PROJECT_NAME OPIK_API_KEY OPIK_WORKSPACE
+}
+
+OPIK_PREFLIGHT_FAILED_CHECK=""
+OPIK_PREFLIGHT_FAILURE_REASON=""
+OPIK_PREFLIGHT_HTTP_STATUS=""
+OPIK_PREFLIGHT_CURL_EXIT=""
+
+opik_preflight_marker_path() {
+  printf '%s/%s\n' "${JOBS_ROOT%/}" "$OPIK_PREFLIGHT_FAILURE_MARKER"
+}
+
+clear_opik_preflight_failure_marker() {
+  local marker
+  marker="$(opik_preflight_marker_path)"
+  if ! rm -f -- "$marker"; then
+    echo "[WARN] failed to clear stale Opik preflight marker: $marker" >&2
+  fi
+}
+
+record_opik_preflight_failure() {
+  local marker
+  marker="$(opik_preflight_marker_path)"
+  if ! printf '%s\n' "$OPIK_PREFLIGHT_FAILURE_REASON" > "$marker"; then
+    echo "[WARN] failed to record Opik preflight degradation: $marker" >&2
+  fi
+}
+
+set_opik_preflight_failure() {
+  OPIK_PREFLIGHT_FAILED_CHECK="$1"
+  OPIK_PREFLIGHT_FAILURE_REASON="$2"
+}
+
+opik_preflight_request() {
+  local url="$1"
+  shift
+  local status="" rc=0
+
+  status="$(
+    curl -sS -o /dev/null -w "%{http_code}" \
+      --connect-timeout "$OPIK_PREFLIGHT_CONNECT_TIMEOUT" \
+      --max-time "$OPIK_PREFLIGHT_MAX_TIME" \
+      "$@" "$url" 2>/dev/null
+  )" || rc=$?
+
+  OPIK_PREFLIGHT_HTTP_STATUS="${status:-000}"
+  OPIK_PREFLIGHT_CURL_EXIT="$rc"
+  [[ "$rc" == "0" && "$OPIK_PREFLIGHT_HTTP_STATUS" =~ ^[0-9]{3}$ ]]
+}
+
+opik_preflight_or_disable() {
+  if ! harbor_trace_to_opik_enabled; then
+    echo "[INFO] Opik tracing disabled, skip readiness checks"
+    return 0
+  fi
+
+  if [[ "$OPIK_PREFLIGHT_STRICT" != "0" && "$OPIK_PREFLIGHT_STRICT" != "1" ]]; then
+    echo "[ERROR] OPIK_PREFLIGHT_STRICT must be 0 or 1 (got: $OPIK_PREFLIGHT_STRICT)" >&2
+    return 1
+  fi
+
+  clear_opik_preflight_failure_marker
+  OPIK_PREFLIGHT_FAILED_CHECK=""
+  OPIK_PREFLIGHT_FAILURE_REASON=""
+  OPIK_PREFLIGHT_HTTP_STATUS=""
+  OPIK_PREFLIGHT_CURL_EXIT=""
+
+  verify_opik_reachable \
+    && verify_opik_ingestion_route \
+    && verify_opik_project_route \
+    && return 0
+
+  local detail="check=$OPIK_PREFLIGHT_FAILED_CHECK reason=$OPIK_PREFLIGHT_FAILURE_REASON"
+  if [[ -n "$OPIK_PREFLIGHT_CURL_EXIT" && "$OPIK_PREFLIGHT_CURL_EXIT" != "0" ]]; then
+    detail="$detail curl_exit=$OPIK_PREFLIGHT_CURL_EXIT"
+  else
+    detail="$detail http_status=${OPIK_PREFLIGHT_HTTP_STATUS:-000}"
+  fi
+
+  if [[ "$OPIK_PREFLIGHT_STRICT" == "1" ]]; then
+    online_env_event "preflight" "opik" "tracing_unavailable" "critical" "true" \
+      "Opik preflight failed in strict mode: $detail" || true
+    echo "[ERROR] Opik preflight failed in strict mode: $detail" >&2
+    return 1
+  fi
+
+  OPIK_TRACK_DISABLE=true
+  export OPIK_TRACK_DISABLE
+  configure_trace_disabled_runtime
+  record_opik_preflight_failure
+  online_env_event "preflight" "opik" "tracing_disabled" "warning" "false" \
+    "Opik preflight failed; tracing disabled for this task: $detail" || true
+  echo "[WARN] Opik preflight failed; tracing disabled for this task: $detail" >&2
+  echo "[WARN] benchmark execution continues; Harbor result artifacts remain authoritative" >&2
 }
 
 normalize_opik_url_override() {
@@ -778,31 +873,89 @@ prepare_local_dataset_if_needed() {
 verify_opik_reachable() {
   local health_url
   health_url="$(resolve_opik_health_url)"
-  echo "[INFO] checking Opik endpoint: ${health_url%/health}"
-  curl -fsS "$health_url" >/dev/null
+  echo "[INFO] checking Opik health endpoint"
+  if ! opik_preflight_request "$health_url"; then
+    set_opik_preflight_failure "health" "transport_error"
+    return 1
+  fi
+  case "$OPIK_PREFLIGHT_HTTP_STATUS" in
+    2*)
+      ;;
+    *)
+      set_opik_preflight_failure "health" "unexpected_http_status"
+      return 1
+      ;;
+  esac
 }
 
 verify_opik_ingestion_route() {
   local spans_url="${OPIK_URL_OVERRIDE%/}/v1/private/spans/batch"
-  local status
-  status="$(
-    curl -sS -o /dev/null -w "%{http_code}" -X POST \
+  if ! opik_preflight_request "$spans_url" -X POST \
       -H "Content-Type: application/json" \
       -H "Comet-Workspace: ${OPIK_WORKSPACE}" \
-      --data '{"spans":[]}' \
-      "$spans_url"
-  )"
+      -H "authorization: ${OPIK_API_KEY}" \
+      --data '{"spans":[]}'; then
+    set_opik_preflight_failure "ingestion" "transport_error"
+    return 1
+  fi
 
-  case "$status" in
-    2*|400|401|403|422)
+  case "$OPIK_PREFLIGHT_HTTP_STATUS" in
+    2*|400|422)
+      ;;
+    401)
+      set_opik_preflight_failure "ingestion" "authentication_failed"
+      return 1
+      ;;
+    403)
+      set_opik_preflight_failure "ingestion" "authorization_failed"
+      return 1
       ;;
     404|405)
-      echo "[ERROR] Opik ingestion endpoint returned $status: $spans_url" >&2
-      echo "[ERROR] this usually means the API prefix is wrong (expected .../api)." >&2
-      exit 1
+      set_opik_preflight_failure "ingestion" "route_unavailable"
+      return 1
+      ;;
+    429)
+      set_opik_preflight_failure "ingestion" "rate_limited"
+      return 1
       ;;
     *)
-      echo "[WARN] Opik ingestion preflight returned HTTP $status for: $spans_url" >&2
+      set_opik_preflight_failure "ingestion" "unexpected_http_status"
+      return 1
+      ;;
+  esac
+}
+
+verify_opik_project_route() {
+  local projects_url="${OPIK_URL_OVERRIDE%/}/v1/private/projects?page=1&size=1"
+  if ! opik_preflight_request "$projects_url" \
+      -H "Comet-Workspace: ${OPIK_WORKSPACE}" \
+      -H "authorization: ${OPIK_API_KEY}"; then
+    set_opik_preflight_failure "projects" "transport_error"
+    return 1
+  fi
+
+  case "$OPIK_PREFLIGHT_HTTP_STATUS" in
+    2*)
+      ;;
+    401)
+      set_opik_preflight_failure "projects" "authentication_failed"
+      return 1
+      ;;
+    403)
+      set_opik_preflight_failure "projects" "authorization_failed"
+      return 1
+      ;;
+    404|405)
+      set_opik_preflight_failure "projects" "route_unavailable"
+      return 1
+      ;;
+    429)
+      set_opik_preflight_failure "projects" "rate_limited"
+      return 1
+      ;;
+    *)
+      set_opik_preflight_failure "projects" "unexpected_http_status"
+      return 1
       ;;
   esac
 }
@@ -1067,29 +1220,6 @@ run_harbor() {
     printf '%s\n' "$out_dir" > "$HARBOR_JOB_DIR_FILE"
   fi
   mkdir -p "$out_dir"
-
-  if [[ "$HARBOR_DRY_RUN" == "1" ]]; then
-    echo "[INFO] HARBOR_DRY_RUN=1, skip Opik project preflight check"
-  elif ! harbor_trace_to_opik_enabled; then
-    echo "[INFO] Opik tracing disabled, skip project preflight check"
-  else
-    local _projects_status
-    _projects_status="$(
-      curl -sS -o /dev/null -w "%{http_code}" \
-        -H "Comet-Workspace: ${OPIK_WORKSPACE}" \
-        -H "authorization: ${OPIK_API_KEY}" \
-        "${OPIK_URL_OVERRIDE%/}/v1/private/projects?page=1&size=1"
-    )"
-    case "$_projects_status" in
-      2*|401|403)
-        ;;
-      *)
-        echo "[ERROR] Opik project preflight returned HTTP $_projects_status" >&2
-        echo "[ERROR] endpoint: ${OPIK_URL_OVERRIDE%/}/v1/private/projects" >&2
-        exit 1
-        ;;
-    esac
-  fi
 
   local normalized_llm_kwargs
   if ! normalized_llm_kwargs="$(normalize_json_or_fail "$HARBOR_LLM_KWARGS")"; then
@@ -1505,11 +1635,6 @@ run_opencode_task() {
     exit 1
   fi
 
-  if [[ "$HARBOR_DRY_RUN" != "1" ]] && harbor_trace_to_opik_enabled; then
-    verify_opik_reachable
-    verify_opik_ingestion_route
-  fi
-
   mkdir -p "$JOBS_ROOT"
   local job_name out_dir
   job_name="$(date +%Y-%m-%d__%H-%M-%S)"
@@ -1666,7 +1791,11 @@ run_opencode_task() {
   }
 
   echo "[INFO] opencode run attempts=$N_ATTEMPTS"
-  echo "[INFO] project: $OPIK_PROJECT_NAME"
+  if harbor_trace_to_opik_enabled; then
+    echo "[INFO] project: $OPIK_PROJECT_NAME"
+  else
+    echo "[INFO] running OpenCode without Opik tracing"
+  fi
   echo "[INFO] output dir: $out_dir"
   if harbor_uses_local_opensandbox_dataset; then
     echo "[INFO] path: $DATASET_PATH"
@@ -1733,20 +1862,18 @@ main() {
   if harbor_agent_is_opencode; then
     need_cmd curl
     need_cmd python3
-    ensure_trace_plugin_source_if_needed
     apply_min_test_defaults
 
     if [[ "$HARBOR_DRY_RUN" == "1" ]]; then
       echo "[INFO] HARBOR_DRY_RUN=1, skip dataset/opik readiness checks"
+      ensure_trace_plugin_source_if_needed
       run_opencode_task
       return $?
     fi
 
+    opik_preflight_or_disable
+    ensure_trace_plugin_source_if_needed
     ensure_environment_backend
-
-    if ! harbor_trace_to_opik_enabled; then
-      echo "[INFO] Opik tracing disabled, skip readiness checks"
-    fi
     prepare_local_dataset_if_needed
 
     run_opencode_task
@@ -1756,7 +1883,6 @@ main() {
   need_cmd git
   need_cmd curl
   need_cmd python3
-  ensure_trace_plugin_source_if_needed
 
   if [[ -z "$AGENT" && -z "$HARBOR_AGENT_IMPORT_PATH" ]]; then
     echo "[ERROR] at least one of AGENT or HARBOR_AGENT_IMPORT_PATH must be set" >&2
@@ -1772,6 +1898,7 @@ main() {
 
   if [[ "$HARBOR_DRY_RUN" == "1" ]]; then
     echo "[INFO] HARBOR_DRY_RUN=1, skip dataset/opik readiness checks"
+    ensure_trace_plugin_source_if_needed
     if harbor_agent_is_oracle; then
       run_oracle_task
     else
@@ -1780,6 +1907,8 @@ main() {
     return 0
   fi
 
+  opik_preflight_or_disable
+  ensure_trace_plugin_source_if_needed
   ensure_environment_backend
 
   if harbor_agent_is_oracle; then
@@ -1788,14 +1917,7 @@ main() {
     return $?
   fi
 
-  if ! harbor_trace_to_opik_enabled; then
-    echo "[INFO] Opik tracing disabled, skip readiness checks"
-  fi
   prepare_local_dataset_if_needed
-  if harbor_trace_to_opik_enabled; then
-    verify_opik_reachable
-    verify_opik_ingestion_route
-  fi
   run_harbor
 }
 

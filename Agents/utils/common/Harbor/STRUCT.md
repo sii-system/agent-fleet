@@ -168,6 +168,9 @@ Typical dataset paths:
 | `OPIK_URL_OVERRIDE` | Opik API URL forwarded into task containers |
 | `OPIK_API_KEY` | Opik API key |
 | `OPIK_PROJECT_NAME` | Opik project name; defaults to the effective agent, dataset, model, and timestamp |
+| `OPIK_PREFLIGHT_STRICT` | `1` fails before Harbor starts when Opik preflight fails; defaults to `0`, which disables tracing and continues |
+| `OPIK_PREFLIGHT_CONNECT_TIMEOUT` | Opik preflight connection timeout in seconds; defaults to `5` |
+| `OPIK_PREFLIGHT_MAX_TIME` | Maximum time for each Opik preflight request in seconds; defaults to `15` |
 | `TRACE_PLUGIN_SOURCE_DIR` | Tracing source path, defaults to `third_party/agent-opik-plugin` |
 | `OPIK_URL` | Opik API endpoint; set enables trace upload, empty disables it |
 | `CLAUDE_CODE_VERSION` | Claude Code package version used by local dependency cache |

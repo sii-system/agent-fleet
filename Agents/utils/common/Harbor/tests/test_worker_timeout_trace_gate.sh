@@ -7,6 +7,8 @@ set -euo pipefail
 # helper and the function under test instead of running the worker loop.
 HARBOR_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SCRIPT_DIR="$HARBOR_DIR"
+tmp="$(mktemp -d)"
+trap 'rm -rf -- "$tmp"' EXIT
 
 source /dev/stdin <<EOF
 $(sed -n '/^harbor_trace_to_opik_enabled()/,/^}/p' "$HARBOR_DIR/env.sh")
@@ -39,6 +41,19 @@ LOGGED=""
 finalize_timeout_trace "/tmp/trace-gate-result.json"
 [[ "$LOGGED" == *"missing logs dir"* ]] || {
   echo "trace-on path did not reach logs-dir resolution, got: $LOGGED" >&2
+  exit 1
+}
+
+# harboropik.sh runs below the worker in a child process. Its exported
+# OPIK_TRACK_DISABLE cannot flow back to the worker, so the task marker must
+# also suppress parent-side timeout replay.
+mkdir -p "$tmp/task"
+printf 'transport_error\n' > "$tmp/task/.opik-preflight-disabled"
+OPIK_TRACK_DISABLE=""
+LOGGED=""
+finalize_timeout_trace "/tmp/trace-gate-result.json" "$tmp/task"
+[[ "$LOGGED" == *"disabled by preflight"* ]] || {
+  echo "preflight marker did not stop timeout finalization, got: $LOGGED" >&2
   exit 1
 }
 

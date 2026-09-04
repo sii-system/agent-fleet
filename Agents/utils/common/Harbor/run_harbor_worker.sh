@@ -102,6 +102,12 @@ find_trial_logs_dir() {
 
 finalize_timeout_trace() {
   local result_file="$1"
+  local task_jobs_root="${2:-}"
+  if [[ -n "$task_jobs_root" \
+    && -f "$task_jobs_root/${OPIK_PREFLIGHT_FAILURE_MARKER:-.opik-preflight-disabled}" ]]; then
+    log_msg "timeout finalize skipped: Opik tracing was disabled by preflight"
+    return 0
+  fi
   # Timeout finalization replays hook backups into Opik. With tracing off
   # there is no server to write to, for either agent's fallback path.
   if ! harbor_trace_to_opik_enabled; then
@@ -261,7 +267,7 @@ while true; do
     reward="$(echo "$summary" | sed -n '1p')"
     exception_type="$(echo "$summary" | sed -n '2p')"
     if [[ "${exception_type:-}" == "AgentTimeoutError" ]]; then
-      finalize_timeout_trace "$result_file"
+      finalize_timeout_trace "$result_file" "$task_jobs_root"
     fi
     printf '%s\t%s\t%s\t%s\t%s\n' "$task_index" "$task_name" "${reward:-}" "${exception_type:-}" "$result_file" >> "$QUEUE_DIR/done.txt"
     if [[ "$(harbor_metric_mode)" == "success" ]]; then
