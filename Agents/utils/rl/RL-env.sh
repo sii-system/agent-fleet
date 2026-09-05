@@ -13,6 +13,10 @@ RL_DATASET_NAME="${RL_DATASET_NAME:-${DATASET_NAME:-seta}}"
 RL_DATASET_ROOT="${RL_DATASET_ROOT:-${DATASET_PATH:-/workspace/seta-env/Harbor-Dataset}}"
 RL_DATASET_ROOTS="${RL_DATASET_ROOTS:-}"
 RL_DISABLED_TASK_IDS="${RL_DISABLED_TASK_IDS:-}"
+# Optional trusted benchmark result processor. The listener host chooses this
+# path; /run_trial requests can never supply or override it.
+RL_BENCHMARK="${RL_BENCHMARK:-}"
+RL_RESULT_PROCESSOR="${RL_RESULT_PROCESSOR:-}"
 
 RL_TRIALS_DIR="${RL_TRIALS_DIR:-${OUTPUT_ROOT:-/workspace/runs}/rl-remote-trials}"
 RL_MAX_CONCURRENT="${RL_MAX_CONCURRENT:-16}"

@@ -248,7 +248,7 @@ class HarborEnvHelperTests(unittest.TestCase):
     ) -> subprocess.CompletedProcess[str]:
         extra = {
             "PI_PROVIDER": "sii-gateway",
-            "HARBOR_MODEL": "sii-gateway/fake-model",
+            "HARBOR_MODEL": "fake-model",
             "BASE_URL": base_url,
         }
         if max_tokens:
@@ -293,7 +293,7 @@ class HarborEnvHelperTests(unittest.TestCase):
             "pi-models-config",
             extra_env={
                 "PI_PROVIDER": "sii-gateway",
-                "HARBOR_MODEL": "sii-gateway/fake-model",
+                "HARBOR_MODEL": "fake-model",
                 "BASE_URL": "https://gateway.example:8443",
                 "PI_CONTEXT_WINDOW": "65536",
             },
@@ -321,7 +321,7 @@ class HarborEnvHelperTests(unittest.TestCase):
             "pi-models-config",
             extra_env={
                 "PI_PROVIDER": "sii-gateway",
-                "HARBOR_MODEL": "sii-gateway/fake-model",
+                "HARBOR_MODEL": "fake-model",
                 "BASE_URL": "https://gateway.example:8443",
                 "PI_CONTEXT_WINDOW": "big",
             },
@@ -347,7 +347,7 @@ class HarborEnvHelperTests(unittest.TestCase):
             "pi-models-config",
             extra_env={
                 "PI_PROVIDER": "sii-gateway",
-                "HARBOR_MODEL": "sii-gateway/fake-model",
+                "HARBOR_MODEL": "fake-model",
                 "BASE_URL": "https://gateway.example:8443",
                 "ROLLOUT": "1",
                 "RL_MAX_NEW_TOKENS": "2000",
@@ -366,7 +366,7 @@ class HarborEnvHelperTests(unittest.TestCase):
             "pi-models-config",
             extra_env={
                 "PI_PROVIDER": "sii-gateway",
-                "HARBOR_MODEL": "sii-gateway/fake-model",
+                "HARBOR_MODEL": "fake-model",
                 "BASE_URL": "https://gateway.example:8443",
                 "HARBOR_MAX_NEW_TOKENS": "65536",
             },
@@ -395,6 +395,31 @@ class HarborEnvHelperTests(unittest.TestCase):
             payload["providers"]["gateway.example.com"]["baseUrl"],
             "https://gateway.example.com:8443/v1",
         )
+
+    def test_pi_config_preserves_slashes_in_model_id(self) -> None:
+        environment = {
+            "PI_PROVIDER": "gateway.example.com",
+            "HARBOR_MODEL": "m-20260820192358-jsrtc/deepseekv4-flash-0731",
+            "BASE_URL": "https://gateway.example.com/v1",
+        }
+        models_result = run_env_helper_env(
+            "pi-models-config", extra_env=environment
+        )
+        settings_result = run_env_helper_env(
+            "pi-settings-config", extra_env=environment
+        )
+
+        self.assertEqual(models_result.returncode, 0, models_result.stderr)
+        self.assertEqual(settings_result.returncode, 0, settings_result.stderr)
+        models = json.loads(models_result.stdout)
+        settings = json.loads(settings_result.stdout)
+        expected = "m-20260820192358-jsrtc/deepseekv4-flash-0731"
+        self.assertEqual(
+            models["providers"]["gateway.example.com"]["models"][0]["id"],
+            expected,
+        )
+        self.assertEqual(settings["defaultProvider"], "gateway.example.com")
+        self.assertEqual(settings["defaultModel"], expected)
 
     def test_pi_models_config_rejects_non_numeric_max_tokens(self) -> None:
         result = self._pi_models_config(

@@ -83,7 +83,8 @@ temperature or top-p controls, so the runner rejects those two settings for
 `AGENT=claude-code` and `AGENT=pi` instead of silently ignoring them. The Pi
 provider derives from `BASE_URL` when `PI_PROVIDER` is unset. Rollout mode
 keeps its separate `RL_TEMPERATURE`, `RL_TOP_P`, and `RL_MAX_NEW_TOKENS`
-interface.
+interface. For Pi, `MODEL` is always treated as an opaque model ID; `/` remains
+part of that ID and never selects a provider.
 
 When `OPIK_URL` is set, the Opik tracing plugin is loaded from
 the `third_party/agent-opik-plugin` submodule. Initialize it before a traced run:

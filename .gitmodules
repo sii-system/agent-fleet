@@ -1,3 +1,6 @@
 [submodule "third_party/agent-opik-plugin"]
 	path = third_party/agent-opik-plugin
 	url = https://github.com/sii-system/agent-opik-plugin.git
+[submodule "third_party/BrowseComp-Plus"]
+	path = third_party/BrowseComp-Plus
+	url = https://github.com/texttron/BrowseComp-Plus.git

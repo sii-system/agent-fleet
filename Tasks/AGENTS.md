@@ -11,6 +11,7 @@ and ClawBio run against an OpenClaw fleet from `Agents/Openclaw/` (see
 | Path | Role |
 | --- | --- |
 | `SETA/`, `SWE-smith/`, `SWE-verify/`, `Terminal-bench-2/` | Harbor task lists |
+| `BrowseComp-Plus/` | Gold-free task materializer, shared MCP retriever, harness adapters, collector, and host-side judge |
 | `Pinchbench/` | PinchBench runner for the OpenClaw fleet |
 | `clawBio/` | ClawBio bioinformatics benchmark for the OpenClaw fleet |
 
@@ -28,6 +29,13 @@ The `seta`, `sweverify`, and `terminalbench21` aliases resolve to Harbor
 registry datasets by default and skip these local files. `TASK_SOURCE_FILE=<path>`
 overrides the built-in selection for local runs. Task lists are owned here —
 don't duplicate them under `Agents/`.
+
+BrowseComp-Plus is also owned here because it is a benchmark. It materializes
+query-only Harbor tasks at run time and uses the normal agents under `Agents/`;
+do not add a BrowseComp pseudo-agent beside Pi, Claude Code, or OpenCode.
+Its upstream submodule is read-only: put provisioning, MCP, retriever, judge,
+and compatibility changes under `Tasks/BrowseComp-Plus/`, never under
+`third_party/BrowseComp-Plus/`.
 
 ## PinchBench (`Pinchbench/`)
 
@@ -101,4 +109,5 @@ Run from the repo root:
 ```bash
 python3 -m unittest discover -s Tasks/Pinchbench/tests
 python3 -m unittest discover -s Tasks/clawBio/tests
+python3 -m unittest discover -s Tasks/BrowseComp-Plus/tests
 ```

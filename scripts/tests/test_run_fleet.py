@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import subprocess
 import tempfile
 import unittest
@@ -26,6 +27,7 @@ printf 'TOTAL_WORKERS=%s\\n' "${TOTAL_WORKERS-}"
 printf 'HARBOR_N_CONCURRENT=%s\\n' "${HARBOR_N_CONCURRENT-}"
 printf 'FLEET_TASKS=%s\\n' "${FLEET_TASKS-}"
 printf 'RUN_ID=%s\\n' "${RUN_ID-}"
+printf 'OUTPUT_PATH=%s\\n' "${OUTPUT_PATH-}"
 printf 'BASE_URL=%s\\n' "${BASE_URL-}"
 printf 'API_KEY=%s\\n' "${API_KEY-}"
 printf 'MODEL=%s\\n' "${MODEL-}"
@@ -63,6 +65,19 @@ printf 'runner=clawbio\\n'
 printf 'COUNT=%s\\n' "${COUNT-}"
 printf 'args=%s\\n' "$*"
 printf 'RUN_ID=%s\\n' "${RUN_ID-}"
+exit "${STUB_EXIT:-0}"
+""",
+            encoding="utf-8",
+        )
+
+        browsecomp = self.repo / "Tasks/BrowseComp-Plus/scripts/run.sh"
+        browsecomp.parent.mkdir(parents=True)
+        browsecomp.write_text(
+            """#!/usr/bin/env bash
+printf 'runner=browsecomp-plus\\n'
+printf 'args=%s\\n' "$*"
+printf 'RUN_ID=%s\\n' "${RUN_ID-}"
+printf 'OUTPUT_PATH=%s\\n' "${OUTPUT_PATH-}"
 exit "${STUB_EXIT:-0}"
 """,
             encoding="utf-8",
@@ -129,7 +144,7 @@ exit "${STUB_EXIT:-0}"
         self.assertIn("AGENT=claude-code", result.stdout)
         self.assertIn("TOTAL_WORKERS=3", result.stdout)
         self.assertIn("HARBOR_N_CONCURRENT=3", result.stdout)
-        self.assertIn("RUN_ID=\n", result.stdout)
+        self.assertRegex(result.stdout, r"RUN_ID=fleet-direct-[0-9]{8}-[0-9]{6}-[0-9]+\n")
 
     def test_explicit_local_taskset_maps_only_path_inputs(self):
         result = self.run_fleet("--taskset", "./tasks", "--agent", "opencode")
@@ -173,7 +188,67 @@ exit "${STUB_EXIT:-0}"
         self.assertIn("runner=pinchbench", result.stdout)
         self.assertIn("args=--instances 4", result.stdout)
         self.assertIn("PINCHBENCH_EXACT_TASK_SELECTION=0", result.stdout)
-        self.assertIn("RUN_ID=\n", result.stdout)
+        self.assertRegex(result.stdout, r"RUN_ID=fleet-direct-[0-9]{8}-[0-9]{6}-[0-9]+\n")
+
+    def test_browsecomp_routes_to_benchmark_runner_with_harness_concurrency(self):
+        result = self.run_fleet(
+            "--taskset", "browsecomp-plus", "--task", "q1,q2", "--agent", "pi", "--workers", "2"
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("runner=browsecomp-plus", result.stdout)
+        self.assertIn("--task q1,q2", result.stdout)
+        self.assertIn("--agent pi", result.stdout)
+        self.assertIn("--workers 2", result.stdout)
+
+    def test_direct_run_ignores_inherited_run_identity(self):
+        results = [
+            self.run_fleet(
+                "--taskset",
+                "browsecomp-plus",
+                "--agent",
+                "pi",
+                extra_env={
+                    "RUN_ID": "stale-run",
+                    "OUTPUT_PATH": "/tmp/stale-run",
+                },
+            )
+            for _ in range(2)
+        ]
+
+        run_ids = []
+        for result in results:
+            self.assertEqual(result.returncode, 0, result.stderr)
+            match = re.search(
+                r"^RUN_ID=(fleet-direct-[0-9]{8}-[0-9]{6}-[0-9]+)$",
+                result.stdout,
+                re.MULTILINE,
+            )
+            self.assertIsNotNone(match)
+            run_ids.append(match.group(1))
+            self.assertIn("OUTPUT_PATH=\n", result.stdout)
+        self.assertNotEqual(run_ids[0], run_ids[1])
+
+    def test_explicit_run_id_is_forwarded_without_inherited_output_path(self):
+        result = self.run_fleet(
+            "--taskset",
+            "browsecomp-plus",
+            "--agent",
+            "pi",
+            "--run-id",
+            "fresh-run",
+            extra_env={"OUTPUT_PATH": "/tmp/stale-run"},
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("RUN_ID=fresh-run\n", result.stdout)
+        self.assertIn("OUTPUT_PATH=\n", result.stdout)
+
+    def test_browsecomp_task_preflight_reaches_validation_mode(self):
+        result = self.run_fleet(
+            "--taskset", "browsecomp", "--task", "q1", "--validate-task-selection"
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("--validate-tasks-only", result.stdout)
 
     def test_task_selection_is_normalized_once_and_routed(self):
         result = self.run_fleet(
@@ -239,7 +314,7 @@ exit "${STUB_EXIT:-0}"
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("runner=clawbio", result.stdout)
         self.assertIn("COUNT=5", result.stdout)
-        self.assertIn("RUN_ID=\n", result.stdout)
+        self.assertRegex(result.stdout, r"RUN_ID=fleet-direct-[0-9]{8}-[0-9]{6}-[0-9]+\n")
 
     def test_openclaw_tasksets_route_without_agent(self):
         pinchbench = self.run_fleet("--taskset", "pinchbench")

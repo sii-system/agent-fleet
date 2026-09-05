@@ -235,6 +235,44 @@ append_package_environment_args() {
   append_rust_package_mirror_env --ve
 }
 
+append_agent_environment_file_args() {
+  [[ -n "${HARBOR_AGENT_ENV_FILE:-}" ]] || return 0
+  if [[ ! -f "$HARBOR_AGENT_ENV_FILE" ]]; then
+    echo "[ERROR] HARBOR_AGENT_ENV_FILE not found: $HARBOR_AGENT_ENV_FILE" >&2
+    return 1
+  fi
+
+  local line env_name env_value line_number=0
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line_number=$((line_number + 1))
+    line="${line%$'\r'}"
+    [[ -n "$line" && "$line" != \#* ]] || continue
+    if [[ "$line" != *=* ]]; then
+      echo "[ERROR] invalid agent environment entry at $HARBOR_AGENT_ENV_FILE:$line_number" >&2
+      return 1
+    fi
+    env_name="${line%%=*}"
+    env_value="${line#*=}"
+    if [[ ! "$env_name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+      echo "[ERROR] invalid agent environment name at $HARBOR_AGENT_ENV_FILE:$line_number: $env_name" >&2
+      return 1
+    fi
+    cmd+=( --ae "$env_name=$env_value" )
+  done < "$HARBOR_AGENT_ENV_FILE"
+}
+
+append_mcp_config_args() {
+  [[ -n "${HARBOR_MCP_CONFIG:-}" ]] || return 0
+  if [[ ! -f "$HARBOR_MCP_CONFIG" ]]; then
+    echo "[ERROR] HARBOR_MCP_CONFIG not found: $HARBOR_MCP_CONFIG" >&2
+    return 1
+  fi
+  # The in-repo Pi adapter receives benchmark tools from mounted TypeScript
+  # extensions. It does not consume Harbor's native mcp_servers argument.
+  harbor_agent_is_pi && return 0
+  cmd+=( --mcp-config "$HARBOR_MCP_CONFIG" )
+}
+
 append_harbor_unprivileged_docker_compose() {
   if [[ "${HARBOR_ENVIRONMENT_TYPE:-docker}" != "docker" ]]; then
     if [[ "${HARBOR_DRY_RUN:-0}" == "1" ]]; then
@@ -1361,6 +1399,8 @@ run_harbor() {
   fi
 
   append_package_environment_args
+  append_agent_environment_file_args
+  append_mcp_config_args
 
   if [[ "$HARBOR_DEBUG" == "1" ]]; then
     cmd+=( --debug )
@@ -1646,6 +1686,8 @@ run_opencode_task() {
     done
 
     append_package_environment_args
+    append_agent_environment_file_args
+    append_mcp_config_args
 
     if [[ -n "$INCLUDE_TASKS" ]]; then
       IFS=',' read -r -a include_arr <<< "$INCLUDE_TASKS"

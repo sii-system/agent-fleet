@@ -363,11 +363,15 @@ while true; do
   stop_agent_log_stream
 
   result_file="$(find_latest_trial_result "$task_jobs_root" || true)"
+  benchmark_result_file=""
+  benchmark_reward=""
+  harbor_reward=""
   reward=""
   exception_type=""
   status="failed"
   if [[ -n "${result_file:-}" ]] && summary="$(summarize_result "$result_file")"; then
-    reward="$(echo "$summary" | sed -n '1p')"
+    harbor_reward="$(echo "$summary" | sed -n '1p')"
+    reward="$harbor_reward"
     exception_type="$(echo "$summary" | sed -n '2p')"
     if [[ "${exception_type:-}" == "AgentTimeoutError" ]]; then
       finalize_timeout_trace "$result_file" "$opik_project_name" "$ray_submission_id" "$task_name"
@@ -377,7 +381,39 @@ while true; do
     fi
   fi
 
-  json_build_result "$request_file" "${result_file:-}" "$task_console_log" "$reward" "$exception_type" "$rc" "$result_out" "$status"
+  if [[ -n "${RL_RESULT_PROCESSOR:-}" && -n "${result_file:-}" ]]; then
+    benchmark_result_file="$task_jobs_root/benchmark-result.json"
+    processor_rc=0
+    if [[ ! -f "$RL_RESULT_PROCESSOR" ]]; then
+      echo "[ERROR] trusted RL_RESULT_PROCESSOR not found: $RL_RESULT_PROCESSOR" | tee -a "$WORKER_LOG"
+      processor_rc=1
+    else
+      processor_cmd=("$RL_RESULT_PROCESSOR")
+      [[ "$RL_RESULT_PROCESSOR" != *.py ]] || processor_cmd=(python3 "$RL_RESULT_PROCESSOR")
+      set +e
+      "${processor_cmd[@]}" \
+        --result-file "$result_file" \
+        --task-id "$task_name" \
+        --request-file "$request_file" \
+        --output "$benchmark_result_file" >> "$WORKER_LOG" 2>&1
+      processor_rc=$?
+      set -e
+    fi
+    if [[ "$processor_rc" -eq 0 && -s "$benchmark_result_file" ]] && \
+       benchmark_reward="$(python3 "$RL_SCRIPT_DIR/rollout_worker_utils.py" benchmark-reward "$benchmark_result_file")"; then
+      reward="$benchmark_reward"
+      log_msg "benchmark processor=${RL_BENCHMARK:-custom} reward=${reward:-none}"
+    else
+      benchmark_result_file=""
+      exception_type="BenchmarkProcessorError"
+      status="failed"
+      [[ "$rc" -ne 0 ]] || rc="$processor_rc"
+      [[ "$rc" -ne 0 ]] || rc=1
+      log_msg "benchmark processor failed: ${RL_RESULT_PROCESSOR} rc=${processor_rc}"
+    fi
+  fi
+
+  json_build_result "$request_file" "${result_file:-}" "$task_console_log" "$harbor_reward" "$exception_type" "$rc" "$result_out" "$status" "$benchmark_result_file"
   printf '{"event":"finish","timestamp":"%s","request_id":"%s","task_id":"%s","display_name":"%s","environment_type":"%s","ray_submission_id":"%s","polar_task_id":"%s","status":"%s","reward":"%s","exception_type":"%s"}\n' \
     "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$request_id" "$task_name" "$display_name" "$environment_type" "$ray_submission_id" "$polar_task_id" "$status" "$reward" "$exception_type" >> "$RL_TRACE_LOG"
   log_msg "finished request=${request_id} display=${display_name} task=${task_name} status=${status} reward=${reward:-none} exception=${exception_type:-none} rc=${rc}"

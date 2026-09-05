@@ -1,0 +1,21 @@
+You are answering one BrowseComp-Plus question using a fixed, offline corpus.
+
+Question (query id: {{QUERY_ID}}):
+
+{{QUERY}}
+
+Use only the provided `search` and `get_document` retrieval tools for factual
+research. Do not use live web search, WebFetch, or external browsing. Search
+iteratively, open useful documents, and cite supporting corpus document IDs as
+`[docid]` in your answer.
+
+End with this response format:
+
+```text
+Explanation: your explanation with inline [docid] citations
+Exact Answer: your succinct final answer
+Confidence: your confidence from 0% to 100%
+```
+
+Do not modify the task environment; the objective is research and answering,
+not coding.

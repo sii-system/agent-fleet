@@ -91,13 +91,15 @@ Known OpenClaw tasksets are pinchbench and clawbio. They use openclaw; omit
 agent unless the user explicitly requests openclaw. If another agent is
 requested for either taskset, return ready=false.
 
-Harbor tasksets include seta, smith, terminalbench21, sweverify, registry ids,
+Harbor tasksets include seta, smith, terminalbench21, sweverify,
+browsecomp-plus, registry ids,
 and explicit local paths. Supported Harbor agents are claude-code, opencode, and pi.
 If another Harbor agent, including Terminus-2, is requested, return ready=false.
 Preserve explicit registry ids and local paths exactly.
 Copy task names exactly as written. Join multiple explicit names with commas.
 Never invent or complete a task name, and never infer a taskset from task names.
 Task selection is supported only for seta, smith, terminalbench21, sweverify,
+browsecomp-plus,
 explicit local paths, pinchbench, and clawbio. If exact tasks are requested for
 another registry id, return ready=false.
 

@@ -4,11 +4,53 @@ from __future__ import annotations
 
 import os
 import shlex
+from urllib.parse import urlparse
 
 from harbor.agents.installed.base import with_prompt_template
 from harbor.agents.installed.pi import Pi
 from harbor.environments.base import BaseEnvironment
 from harbor.models.agent.context import AgentContext
+
+
+def _configured_value(extra_env: dict[str, str], name: str) -> str:
+    return (extra_env.get(name, "") or os.environ.get(name, "")).strip()
+
+
+def _resolve_provider_and_model(
+    extra_env: dict[str, str], model_name: str | None
+) -> tuple[str, str]:
+    model = (model_name or "").strip()
+    if not model:
+        raise ValueError("Model name must not be empty")
+
+    provider = _configured_value(extra_env, "PI_PROVIDER")
+    if provider:
+        # An explicit provider makes the model ID opaque. In particular, a
+        # slash can be part of a gateway model name instead of a separator.
+        return provider, model
+
+    # Preserve the adapter's legacy direct-use contract. The shared Agent Fleet
+    # launcher resolves PI_PROVIDER before importing this adapter, so its opaque
+    # slash-containing model IDs take the explicit-provider branch above.
+    if "/" in model:
+        provider, model = model.split("/", 1)
+        if not provider or not model:
+            raise ValueError("Model name must be in the format provider/model_name")
+        return provider, model
+
+    for name in ("HARBOR_ANTHROPIC_BASE_URL", "BASE_URL"):
+        base_url = _configured_value(extra_env, name)
+        if not base_url:
+            continue
+        provider = (urlparse(base_url).hostname or "").lower()
+        if not provider:
+            raise ValueError(f"{name} must be an absolute URL")
+        return provider, model
+
+    raise ValueError(
+        "PI_PROVIDER must not be empty; set PI_PROVIDER, use provider/model_name, "
+        "or configure BASE_URL"
+    )
 
 
 class AgentFleetPi(Pi):
@@ -88,12 +130,9 @@ class AgentFleetPi(Pi):
         environment: BaseEnvironment,
         context: AgentContext,
     ) -> None:
-        if not self.model_name or "/" not in self.model_name:
-            raise ValueError("Model name must be in the format provider/model_name")
-
-        provider, model = self.model_name.split("/", 1)
-        if not provider or not model:
-            raise ValueError("Model name must be in the format provider/model_name")
+        provider, model = _resolve_provider_and_model(
+            self._extra_env, self.model_name
+        )
 
         env = dict(self._extra_env)
         env.setdefault("PI_OFFLINE", "1")

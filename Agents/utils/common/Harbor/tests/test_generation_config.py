@@ -370,7 +370,7 @@ PY
             PI_THINKING_LEVEL="xhigh",
         )
 
-        self.assertEqual(config["harbor_model"], "llm.example/test-model")
+        self.assertEqual(config["harbor_model"], "test-model")
         self.assertEqual(config["agent_import_path"], "pi_harbor:AgentFleetPi")
         provider = config["pi_models_config"]["providers"]["llm.example"]
         self.assertEqual(provider["baseUrl"], "https://llm.example/v1")
@@ -408,6 +408,19 @@ PY
             },
         )
         self.assertNotIn("fake-key", json.dumps(config["pi_models_config"]))
+
+    def test_pi_preserves_slashes_in_model_id(self) -> None:
+        model = "m-20260820192358-jsrtc/deepseekv4-flash-0731"
+        config = self._load_config(
+            "pi",
+            MODEL=model,
+            BASE_URL="https://llm.example/v1/",
+        )
+
+        self.assertEqual(config["harbor_model"], model)
+        provider = config["pi_models_config"]["providers"]["llm.example"]
+        self.assertEqual(provider["models"][0]["id"], model)
+        self.assertEqual(config["pi_settings_config"]["defaultModel"], model)
 
     def test_pi_can_disable_reasoning_effort_channel(self) -> None:
         config = self._load_config(

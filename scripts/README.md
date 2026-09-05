@@ -161,17 +161,18 @@ Docker containers are checked by their own deployment/runtime paths.
 ### Fleet launch modes
 
 ```bash
-./scripts/run_fleet.sh --taskset <taskset> [--task <name>[,name...]] [--agent <agent>] [--workers <n>] [--output <file>] [--detach] [--dry-run]
+./scripts/run_fleet.sh --taskset <taskset> [--task <name>[,name...]] [--agent <agent>] [--workers <n>] [--run-id <id>] [--output <file>] [--detach] [--dry-run]
 ./scripts/run_fleet.sh --spec <file|-> [file ...] [--output <file>] [--detach] [--dry-run]
 ./scripts/run_fleet.sh --prompt <text> [--output <file>] [--detach] [--dry-run]
 ```
 
 | Option | Description |
 | --- | --- |
-| `-t, --taskset <value>` | Built-in alias (`seta`, `smith`, `terminalbench21`, `sweverify`), registry ID, explicit local path, `pinchbench`, or `clawbio` |
+| `-t, --taskset <value>` | Built-in alias (`seta`, `smith`, `terminalbench21`, `sweverify`, `browsecomp-plus`), registry ID, explicit local path, `pinchbench`, or `clawbio` |
 | `--task <name>[,name...]` | Run exact task names only; repeat the flag to append more names, or use `--task=<name>` when an ID begins with `-` |
 | `-a, --agent <name>` | Optional Harbor agent override; `openclaw` is accepted for consistent OpenClaw commands |
 | `-n, --workers <n>` | Harbor workers or OpenClaw fleet instances |
+| `--run-id <id>` | Explicitly resume or reset a named direct run; omitted means a fresh launcher-generated ID |
 | `-s, --spec <file|-> [files...]` | Read one or more FleetSpec v1 objects or arrays; multiple runs are detected automatically |
 | `-d, --detach` | Start Harbor in its detached Zellij mode; implied for multi-run spec input; ignored with a warning for OpenClaw tasksets |
 | `-p, --prompt <text>` | Translate, validate, and run a natural-language benchmark request (one or more runs, up to 16) |
@@ -184,7 +185,8 @@ Unknown task names fail together before benchmark execution. `--task` always
 requires `--taskset`; the launcher never infers a taskset from a task name.
 
 Before a non-dry run starts, the launcher loads `config.env` and then
-`config.local.env` while preserving explicit caller environment values. It
+`config.local.env` while preserving explicit caller environment values, except
+that direct-run identity and derived state paths must use `--run-id`. It
 fails before invoking a benchmark when `BASE_URL`, `API_KEY` (or
 `AUTH_TOKEN`), or `MODEL` is missing, or when tracing is enabled without
 `OPIK_URL`; run `./scripts/setup.sh` to gather and save the missing values.
@@ -194,6 +196,7 @@ Every short flag behaves exactly like its long form, for example:
 ```bash
 ./scripts/run_fleet.sh -t terminalbench21 -a claude-code -n 10 -d
 ./scripts/run_fleet.sh -t terminalbench21 --task fix-git -n 1
+MIN_TEST=1 ./scripts/run_fleet.sh -t browsecomp-plus -a pi -n 1
 ./scripts/run_fleet.sh -p "Run terminalbench21 with claude-code and 2 workers"
 ./scripts/run_fleet.sh -s claude.json opencode.json
 ```
@@ -239,7 +242,7 @@ Create `fleet-spec.json` with any text editor, for example
 | Field | Required | Value |
 | --- | --- | --- |
 | `schema_version` | Yes | Must be `1` |
-| `taskset` | Yes | Built-in alias (`seta`, `smith`, `terminalbench21`, `sweverify`), registry ID, explicit local path, `pinchbench`, or `clawbio` |
+| `taskset` | Yes | Built-in alias (`seta`, `smith`, `terminalbench21`, `sweverify`, `browsecomp-plus`), registry ID, explicit local path, `pinchbench`, or `clawbio` |
 | `task` | No | Exact task names in one comma-separated string |
 | `agent` | No | Agent passed to the selected runner |
 | `workers` | No | Integer from 1 to 4096 |
@@ -423,13 +426,14 @@ Prompt execution does not run setup or preflight checks, prepare datasets or
 images, repair configuration, create monitoring, or analyze results. Those
 responsibilities remain with the selected runner and its existing environment.
 
-In `--taskset` mode and single-spec `--spec` mode, `run_fleet.sh` only parses
-the input, maps it to the selected runner, and replaces itself with that
-runner. It does not generate run IDs, create output directories, create or
-monitor sessions, inspect task catalogs, run preflight checks, or translate
-downstream errors. It normalizes task names and passes the selection to the
-selected runner, which owns exact catalog validation and filtering. Multi-run
-`--spec` input is the documented exception: it dispatches through Batch, which
+In `--taskset` mode and single-spec `--spec` mode, `run_fleet.sh` parses the
+input, assigns a fresh direct-run ID unless `--run-id` is explicit, maps the
+request to the selected runner, and replaces itself with that runner. It does
+not create output directories, create or monitor sessions, inspect task
+catalogs, run preflight checks, or translate downstream errors. It normalizes
+task names and passes the selection to the selected runner, which owns exact
+catalog validation and filtering. Multi-run `--spec` input dispatches through
+Batch, which
 validates every exact task selection before creating artifacts or starting
 children, then generates per-run `RUN_ID`s, writes launch artifacts and logs,
 and starts detached Harbor sessions as described above.
@@ -440,9 +444,11 @@ configuration, taskset and agent validation, scheduling, Zellij lifecycle,
 tracing, run IDs, outputs, and failures. `--detach` is passed directly to
 Harbor's existing Zellij launcher.
 
-When reusing a local Harbor `RUN_ID`, omitting `--task` resumes the task list
-already recorded in `tasks.txt`. A different explicit selection is rejected;
-use `RESET_RUN=1` or a new `RUN_ID` to redefine the task list.
+Direct invocations ignore an inherited `RUN_ID` and start a fresh run. To reuse
+a local Harbor run, pass `--run-id <id>` explicitly; omitting `--task` then
+resumes the task list already recorded in `tasks.txt`. A different explicit
+selection is rejected; use `RESET_RUN=1 --run-id <id>` or a new run to redefine
+the task list.
 
 The `pinchbench` taskset calls the existing PinchBench parallel runner, maps
 workers to `--instances`, and validates selected IDs against the pinned
@@ -453,6 +459,9 @@ against its task config before setup or fleet restart. The launcher also
 loads and warns about the dedicated execution profile in
 `Tasks/clawBio/config/benchmark.env`; FleetSpec does not store environment
 variables.
+BrowseComp-Plus routes through `Tasks/BrowseComp-Plus/scripts/run.sh`, which
+automatically provisions its host-side Qwen3 retriever and materializes
+gold-free local Harbor tasks before calling the same Harbor runner.
 The ClawBio fleet remains running with that run-specific profile until it is
 stopped or regenerated. Those runners own setup, execution, outputs, and
 failures. If `--agent` conflicts with an OpenClaw taskset, the router prints the
@@ -469,7 +478,8 @@ interfaces:
   `agent`, and `workers`. Unknown fields and invalid values are rejected.
   `task` is a normalized comma-separated string; arrays, glob matching,
   taskset inference, task files, and fuzzy matching are not supported.
-- `--task` supports `seta`, `smith`, `terminalbench21`, `sweverify`, explicit
+- `--task` supports `seta`, `smith`, `terminalbench21`, `sweverify`,
+  `browsecomp-plus`, explicit
   local dataset paths, `pinchbench`, and `clawbio`. TMax and other arbitrary
   Harbor registry IDs are rejected because this MVP has no pinned local task
   catalog for them. `--task` is also rejected with `ROLLOUT=1`.
@@ -490,10 +500,9 @@ interfaces:
   recreates the running fleet's containers without warning; `pinchbench`
   reuses the running fleet and contends for its state instead of tearing it
   down. Either way, run OpenClaw tasksets one at a time per host.
-- Unique per-run `RUN_ID`s are generated only for multi-run `--spec` input.
-  Separate single-run invocations keep Harbor's default minute-resolution
-  `RUN_ID`, so concurrent manual launches must set distinct `RUN_ID` values
-  themselves.
+- Multi-run `--spec` input generates unique child `RUN_ID`s in Batch. Separate
+  single-run invocations clear inherited run state and generate a fresh direct
+  `RUN_ID`; use `--run-id <id>` only for an intentional resume or reset.
 - When rollout is enabled (`ROLLOUT=1`), a multi-run invocation may contain
   only one Harbor run, because rollout listeners share `RL_PORT`.
 - Each requested run in a Prompt must identify one unambiguous taskset;

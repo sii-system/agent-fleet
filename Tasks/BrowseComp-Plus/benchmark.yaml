@@ -1,0 +1,33 @@
+schema_version: 1
+name: browsecomp-plus
+runner: harbor
+task_format: harbor-local
+gold_location: host-only
+upstream:
+  path: third_party/BrowseComp-Plus
+  commit: 046949032b0328319cc9a02663a759ec601d9402
+data:
+  repo: Tevatron/browsecomp-plus
+  revision: 144cff8e35b5eaef7e526346aa60774a9deb941f
+  query_columns: [query_id, query, answer]
+  query_count: 830
+index:
+  repo: Tevatron/browsecomp-plus-indexes
+  revision: b3f37f70c33829eb09d04784a54277a31871fd63
+retriever:
+  protocol: mcp-streamable-http
+  tools: [search, get_document]
+  corpus:
+    repo: Tevatron/browsecomp-plus-corpus
+    revision: 1b854ae04817320c2a088c0ff9830ffcb92ca079
+  embedding_model:
+    repo: Qwen/Qwen3-Embedding-0.6B
+    revision: c54f2e6e80b2d7b7de06f51cec4959f6b3e03418
+  embedding_backends: [local, openai-compatible]
+agents:
+  claude-code: harbor-mcp
+  opencode: harbor-mcp
+  pi: extension
+evaluation:
+  modes: [local, openai, none]
+  official_run_schema: browsecomp-plus

@@ -65,6 +65,7 @@ class HarborOpikE2BSmokeTest(unittest.TestCase):
                     "QUEUE_DIR": str(root_path / "queue"),
                     "HARBOR_DIRECT_BIN": "/tmp/direct-harbor",
                     "OPIK_URL": "",
+                    "TRACE_TO_OPIK": "",
                     "API_KEY": "fake-api-key",
                     "BASE_URL": "https://model.example",
                     "MODEL": "test-model",
@@ -155,6 +156,59 @@ class HarborOpikE2BSmokeTest(unittest.TestCase):
         self.assertIn('"read_only": true', completed.stdout)
         self.assertIn("PI_EXTENSION_DIR=/opt/tb-pi/extensions", completed.stdout)
 
+    def test_benchmark_agent_env_and_native_mcp_config_reach_claude(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            agent_env = Path(root) / "agent.env"
+            agent_env.write_text(
+                "# benchmark runtime\nBROWSECOMP_MCP_URL=http://host.docker.internal:8000/mcp\nBROWSECOMP_RUN_ID=run-1\n",
+                encoding="utf-8",
+            )
+            mcp_config = Path(root) / "mcp.json"
+            mcp_config.write_text('{"mcpServers":{}}\n', encoding="utf-8")
+            completed = self.run_dry_run(
+                "docker",
+                "claude-code",
+                extra_env={
+                    "HARBOR_AGENT_ENV_FILE": str(agent_env),
+                    "HARBOR_MCP_CONFIG": str(mcp_config),
+                },
+                dry_run=False,
+            )
+
+        self.assertEqual(completed.returncode, 0, completed.stdout)
+        self.assertIn("BROWSECOMP_MCP_URL=http://host.docker.internal:8000/mcp", completed.stdout)
+        self.assertIn("BROWSECOMP_RUN_ID=run-1", completed.stdout)
+        self.assertIn("--mcp-config", completed.stdout)
+        self.assertIn(str(mcp_config), completed.stdout)
+
+    def test_pi_uses_benchmark_env_but_skips_unsupported_native_mcp_arg(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            agent_env = Path(root) / "agent.env"
+            agent_env.write_text("BROWSECOMP_MCP_URL=http://retriever/mcp\n", encoding="utf-8")
+            mcp_config = Path(root) / "mcp.json"
+            mcp_config.write_text('{"mcpServers":{}}\n', encoding="utf-8")
+            completed = self.run_dry_run(
+                "docker",
+                "pi",
+                extra_env={"HARBOR_AGENT_ENV_FILE": str(agent_env), "HARBOR_MCP_CONFIG": str(mcp_config)},
+                dry_run=False,
+            )
+
+        self.assertEqual(completed.returncode, 0, completed.stdout)
+        self.assertIn("BROWSECOMP_MCP_URL=http://retriever/mcp", completed.stdout)
+        self.assertNotIn("--mcp-config", completed.stdout)
+
+    def test_benchmark_agent_env_rejects_unsafe_names(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            agent_env = Path(root) / "agent.env"
+            agent_env.write_text("BAD-NAME=value\n", encoding="utf-8")
+            completed = self.run_dry_run(
+                "docker", "claude-code", extra_env={"HARBOR_AGENT_ENV_FILE": str(agent_env)}
+            )
+
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn("invalid agent environment name", completed.stdout)
+
     def test_pi_qz_fails_cleanly_with_clear_message(self) -> None:
         completed = self.run_dry_run("qz", "pi")
 
@@ -174,6 +228,8 @@ class HarborOpikE2BSmokeTest(unittest.TestCase):
                     "RL_AGENT": "oracle",
                     "ROLLOUT": "1",
                     "RUNTIME_DIR": root,
+                    "TRACE_TO_OPIK": "",
+                    "OPIK_URL": "",
                 }
             )
             command = (
@@ -205,6 +261,8 @@ class HarborOpikE2BSmokeTest(unittest.TestCase):
                     "RL_ENVIRONMENT_TYPE": "e2b",
                     "HARBOR_ENVIRONMENT_TYPE": "e2b",
                     "RUNTIME_DIR": root,
+                    "TRACE_TO_OPIK": "",
+                    "OPIK_URL": "",
                 }
             )
             command = (
@@ -234,6 +292,8 @@ class HarborOpikE2BSmokeTest(unittest.TestCase):
                     "DATASET_NAME": "auto",
                     "DATASET_PATH": root,
                     "OUTPUT_PATH": str(Path(root) / "output"),
+                    "TRACE_TO_OPIK": "",
+                    "OPIK_URL": "",
                 }
             )
             completed = subprocess.run(

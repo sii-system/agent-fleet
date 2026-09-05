@@ -360,12 +360,6 @@ def build_pi_models_config() -> dict[str, object]:
     base_url = _pi_base_url_from_env()
     provider = _pi_provider_from_env(base_url)
     model = os.environ.get("HARBOR_MODEL", "").strip()
-    if "/" in model:
-        model_provider, model = model.split("/", 1)
-        if model_provider != provider:
-            raise ValueError(
-                f"Pi model provider must be {provider!r}, got {model_provider!r}"
-            )
     if not provider or not model:
         raise ValueError("PI_PROVIDER and HARBOR_MODEL must not be empty")
     max_tokens_override = ""
@@ -436,8 +430,6 @@ def build_pi_settings_config() -> dict[str, object]:
     base_url = _pi_base_url_from_env()
     provider = _pi_provider_from_env(base_url)
     model = os.environ.get("HARBOR_MODEL", "").strip()
-    if "/" in model:
-        _, model = model.split("/", 1)
     if not provider or not model:
         raise ValueError("PI_PROVIDER and HARBOR_MODEL must not be empty")
     return {

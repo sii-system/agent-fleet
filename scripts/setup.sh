@@ -391,7 +391,7 @@ fi
 info "Syncing submodules..."
 if ! git -C "$REPO_DIR" submodule sync --recursive ||
    ! git -C "$REPO_DIR" submodule update --init --recursive; then
-  err "Submodule sync failed; the tracing plugin is required for Opik-enabled runs."
+  err "Submodule sync failed; pinned third-party sources are required by enabled integrations."
   exit 1
 fi
 

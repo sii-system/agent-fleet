@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import re
 import shutil
@@ -77,6 +78,7 @@ def build_result(
     exit_code: int,
     result_out: Path,
     status: str,
+    benchmark_result_file: Path | None = None,
 ) -> None:
     request = json.loads(request_file.read_text(encoding="utf-8"))
     result_data: object = {}
@@ -90,8 +92,21 @@ def build_result(
     exception_info = result_data.get("exception_info") if isinstance(result_data, dict) else None
     if not isinstance(exception_info, dict) and exception_type:
         exception_info = {"exception_type": exception_type}
+    harbor_reward = float(reward) if reward.strip() not in {"", "None"} else None
+    benchmark_result: object = None
+    benchmark_reward: float | None = None
+    if benchmark_result_file:
+        try:
+            benchmark_result = json.loads(benchmark_result_file.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            benchmark_result = None
+        if isinstance(benchmark_result, dict):
+            candidate = benchmark_result.get("reward")
+            if isinstance(candidate, (int, float)) and not isinstance(candidate, bool):
+                benchmark_reward = float(candidate)
     payload = {
         "ok": status == "completed" and not exception_type,
+        "status": status,
         "task_id": request.get("task_id"),
         "task_path": request.get("task_path"),
         "ray_submission_id": request.get("ray_submission_id"),
@@ -100,7 +115,9 @@ def build_result(
         "environment_type": request.get("environment_type"),
         "trial_name": result_file.parent.name if result_file else "",
         "trial_uri": str(result_file.parent) if result_file else "",
-        "reward": float(reward) if reward.strip() not in {"", "None"} else None,
+        "reward": benchmark_reward if benchmark_reward is not None else harbor_reward,
+        "harbor_reward": harbor_reward,
+        "benchmark_result": benchmark_result,
         "rollout_details": agent_result.get("rollout_details") if isinstance(agent_result, dict) else None,
         "num_turns": (agent_result.get("metadata") or {}).get("n_episodes") if isinstance(agent_result, dict) else None,
         "agent_result": agent_result,
@@ -122,6 +139,23 @@ def build_result(
         encoding="utf-8",
     )
     temporary.replace(result_out)
+
+
+def read_benchmark_reward(path: Path, expected_benchmark: str = "") -> float:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise TypeError("benchmark result must be a JSON object")
+    if expected_benchmark and payload.get("benchmark") != expected_benchmark:
+        raise ValueError(
+            f"benchmark result mismatch: expected {expected_benchmark!r}, got {payload.get('benchmark')!r}"
+        )
+    reward = payload.get("reward")
+    if not isinstance(reward, (int, float)) or isinstance(reward, bool):
+        raise TypeError("benchmark result reward must be numeric")
+    normalized = float(reward)
+    if not math.isfinite(normalized):
+        raise ValueError("benchmark result reward must be finite")
+    return normalized
 
 
 def render_result_stats(results_dir: Path) -> str:
@@ -277,6 +311,7 @@ def main() -> int:
             "json-get-first",
             "build-result",
             "build-llm-kwargs",
+            "benchmark-reward",
             "result-stats",
             "recent-results",
         ),
@@ -311,6 +346,7 @@ def main() -> int:
         return 0
     if args.command == "build-result":
         result_file = Path(args.arguments[1]) if args.arguments[1] else None
+        benchmark_result_file = Path(args.arguments[8]) if len(args.arguments) > 8 and args.arguments[8] else None
         build_result(
             Path(args.arguments[0]),
             result_file,
@@ -320,7 +356,11 @@ def main() -> int:
             int(args.arguments[5]),
             Path(args.arguments[6]),
             args.arguments[7],
+            benchmark_result_file,
         )
+        return 0
+    if args.command == "benchmark-reward":
+        print(read_benchmark_reward(Path(args.arguments[0]), os.environ.get("RL_BENCHMARK", "")))
         return 0
     if args.command == "build-llm-kwargs":
         print(

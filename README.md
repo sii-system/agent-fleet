@@ -58,6 +58,22 @@ Then start the full benchmark, with direct arguments or in natural language
 ./scripts/run_fleet.sh --prompt "Run terminalbench21 with claude-code and 10 workers"
 ```
 
+BrowseComp-Plus uses the same entrypoint and automatically prepares its default
+local Qwen3 embedding retriever, fixed corpus, data, and index on first use.
+The embedding step can also use an OpenAI-compatible remote API while keeping
+the corpus and FAISS index local:
+
+```bash
+MIN_TEST=1 ./scripts/run_fleet.sh \
+  --taskset browsecomp-plus \
+  --agent pi \
+  --workers 1
+```
+
+No separate BrowseComp checkout or activated Python environment is needed.
+See [Tasks/BrowseComp-Plus](./Tasks/BrowseComp-Plus/) for judging and
+multi-harness examples.
+
 The run shows live progress and final results on screen. The first run is
 slower while the taskset and Docker images download; rerun `setup.sh` only
 when configuration changes.

@@ -1,0 +1,1 @@
+"""BrowseComp retriever configuration."""

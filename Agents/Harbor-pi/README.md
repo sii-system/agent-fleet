@@ -28,6 +28,11 @@ gateway provider is derived from `BASE_URL` (matching the benchmarked
 agent's gateway); `PI_PROVIDER` only overrides it when a distinct name is
 needed. Override them in `config.local.env` or the calling environment.
 
+Direct users of the Harbor adapter retain the legacy `provider/model` form
+when `PI_PROVIDER` is absent. Set `PI_PROVIDER` explicitly when a direct-use
+model ID contains `/` as part of its opaque gateway name; the shared runner
+already derives and injects it before invoking the adapter.
+
 ## Extensions
 
 Harbor can load local Pi `.ts` extensions for a task run. Put one or more

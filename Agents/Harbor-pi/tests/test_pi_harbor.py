@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
+import os
 import shlex
 import sys
 import types
@@ -123,13 +124,14 @@ class AgentFleetPiTests(unittest.TestCase):
 
     def test_run_uses_custom_provider_and_forwards_extra_environment(self) -> None:
         agent = self.module.AgentFleetPi(
-            model_name="sii-gateway/test-model",
+            model_name="test-model",
             extra_env={"AGENT_FLEET_API_KEY": "fake-key"},
             thinking="high",
         )
 
         instruction = "- solve 'this' task"
-        asyncio.run(agent.run(instruction, object(), object()))
+        with mock.patch.dict(os.environ, {"PI_PROVIDER": "sii-gateway"}):
+            asyncio.run(agent.run(instruction, object(), object()))
 
         invocation = agent.agent_commands[-1]
         command = str(invocation["command"])
@@ -159,11 +161,66 @@ class AgentFleetPiTests(unittest.TestCase):
             {"AGENT_FLEET_API_KEY": "fake-key", "PI_OFFLINE": "1"},
         )
 
-    def test_run_rejects_model_without_provider(self) -> None:
+    def test_run_rejects_missing_provider(self) -> None:
         agent = self.module.AgentFleetPi(model_name="test-model")
 
-        with self.assertRaisesRegex(ValueError, "provider/model_name"):
+        with (
+            mock.patch.dict(
+                os.environ,
+                {
+                    "PI_PROVIDER": "",
+                    "HARBOR_ANTHROPIC_BASE_URL": "",
+                    "BASE_URL": "",
+                },
+            ),
+            self.assertRaisesRegex(ValueError, "PI_PROVIDER must not be empty"),
+        ):
             asyncio.run(agent.run("solve", object(), object()))
+
+    def test_run_supports_legacy_provider_model_name(self) -> None:
+        agent = self.module.AgentFleetPi(model_name="legacy-provider/test-model")
+
+        with mock.patch.dict(
+            os.environ,
+            {
+                "PI_PROVIDER": "",
+                "HARBOR_ANTHROPIC_BASE_URL": "",
+                "BASE_URL": "",
+            },
+        ):
+            asyncio.run(agent.run("solve", object(), object()))
+
+        command = str(agent.agent_commands[-1]["command"])
+        self.assertIn("--provider legacy-provider", command)
+        self.assertIn("--model test-model", command)
+
+    def test_run_derives_provider_from_base_url(self) -> None:
+        agent = self.module.AgentFleetPi(model_name="test-model")
+
+        with mock.patch.dict(
+            os.environ,
+            {
+                "PI_PROVIDER": "",
+                "HARBOR_ANTHROPIC_BASE_URL": "",
+                "BASE_URL": "https://Gateway.Example.com/v1",
+            },
+        ):
+            asyncio.run(agent.run("solve", object(), object()))
+
+        command = str(agent.agent_commands[-1]["command"])
+        self.assertIn("--provider gateway.example.com", command)
+        self.assertIn("--model test-model", command)
+
+    def test_run_preserves_slashes_in_model_id(self) -> None:
+        model = "m-20260820192358-jsrtc/deepseekv4-flash-0731"
+        agent = self.module.AgentFleetPi(model_name=model)
+
+        with mock.patch.dict(os.environ, {"PI_PROVIDER": "sii-gateway"}):
+            asyncio.run(agent.run("solve", object(), object()))
+
+        command = str(agent.agent_commands[-1]["command"])
+        self.assertIn("--provider sii-gateway", command)
+        self.assertIn(f"--model {model}", command)
 
     def test_build_cli_flags_is_empty(self) -> None:
         # Pi extension -e flags are built inside the container (the mount is
@@ -173,18 +230,19 @@ class AgentFleetPiTests(unittest.TestCase):
 
     def test_run_collects_extensions_inside_container(self) -> None:
         agent = self.module.AgentFleetPi(
-            model_name="sii-gateway/test-model",
+            model_name="test-model",
             extra_env={"PI_EXTENSION_DIR": "/opt/tb-pi/extensions"},
         )
 
-        asyncio.run(agent.run("- solve task", object(), object()))
+        with mock.patch.dict(os.environ, {"PI_PROVIDER": "sii-gateway"}):
+            asyncio.run(agent.run("- solve task", object(), object()))
 
         command = str(agent.agent_commands[-1]["command"])
         self.assertIn("ext_args=()", command)
         self.assertIn('"$PI_EXTENSION_DIR"/*.ts', command)
         self.assertIn('ext_args+=( -e "$ext" )', command)
         self.assertIn('"${ext_args[@]:-}"', command)
-        # provider/model still present after the pi invocation
+        # Provider and opaque model ID are still present after the pi invocation.
         self.assertIn("--provider sii-gateway", command)
         self.assertIn("--model test-model", command)
 

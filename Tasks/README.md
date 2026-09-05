@@ -4,6 +4,7 @@ Benchmarks, task lists, and automated task workflows.
 
 | Path | Role |
 | --- | --- |
+| [`BrowseComp-Plus/`](./BrowseComp-Plus/) | Harbor-based fixed-corpus research benchmark for Claude Code, OpenCode, and Pi. |
 | [`Pinchbench/`](./Pinchbench/) | PinchBench benchmark task runner for OpenClaw. |
 | [`clawBio/`](./clawBio/) | ClawBio benchmark task runner for OpenClaw. |
 | [`SWE-rebench-v2/`](./SWE-rebench-v2/) | SWE-rebench-v2 Harbor Hub entrypoint. |

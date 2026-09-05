@@ -1,0 +1,14 @@
+# Host-side retrieval and remote-judge runtime. Agent harnesses remain in
+# Harbor containers and do not install these packages. bootstrap.py installs
+# torch only for the local embedding backend or the local vLLM judge.
+datasets==4.0.0
+faiss-cpu==1.11.0.post1
+fastmcp==2.9.2
+huggingface-hub==0.34.3
+numpy==2.2.6
+openai==1.97.1
+pyarrow==25.0.1
+pydantic==2.11.7
+pydantic-settings==2.10.1
+tqdm==4.67.1
+transformers==4.53.2

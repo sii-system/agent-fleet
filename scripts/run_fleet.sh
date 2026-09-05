@@ -25,15 +25,18 @@ done
 usage() {
   cat <<EOF
 Usage:
-  $0 --taskset <taskset> [--task <name>[,name...]] [--agent <agent>] [--workers <n>] [--output <file>] [--detach] [--dry-run]
+  $0 --taskset <taskset> [--task <name>[,name...]] [--agent <agent>] [--workers <n>] [--run-id <id>] [--output <file>] [--detach] [--dry-run]
   $0 --spec <file|-> [file ...] [--output <file>] [--detach] [--dry-run]
   $0 --prompt <text> [--output <file>] [--detach] [--dry-run]
 
 Short flags: -t --taskset, -a --agent, -n --workers, -s --spec, -p --prompt,
              -o --output, -d --detach; --task has no short form
 
-Tasksets: seta, smith, terminalbench21, sweverify, a registry id, a local
-          path (./dir), or the OpenClaw tasksets: pinchbench, clawbio
+Each direct invocation starts a new run by default. Use --run-id to resume or
+reset a named run; inherited RUN_ID and run-state paths are ignored.
+
+Tasksets: seta, smith, terminalbench21, sweverify, browsecomp-plus, a registry
+          id, a local path (./dir), or the OpenClaw tasksets: pinchbench, clawbio
 Agents:   claude-code, opencode, pi; openclaw for OpenClaw tasksets
 Use --task=<name> when a task ID begins with a dash.
 
@@ -81,7 +84,7 @@ apply_fleet_spec() {
   WORKERS="$(jq -r 'if has("workers") then (.workers | tostring) else "" end' <<<"$FLEET_SPEC_JSON")"
 }
 
-TASKSET="" FLEET_TASK="" AGENT_ARG="" WORKERS="" OUTPUT="" FLEET_SPEC_JSON=""
+TASKSET="" FLEET_TASK="" AGENT_ARG="" WORKERS="" RUN_ID_ARG="" OUTPUT="" FLEET_SPEC_JSON=""
 TASK_VALUES=()
 DETACH=0 DRY_RUN=0 VALIDATE_TASK_SELECTION=0
 
@@ -112,6 +115,14 @@ while [[ $# -gt 0 ]]; do
       [[ $# -ge 2 ]] || { printf '[ERROR] %s requires a value\n' "$1" >&2; exit 2; }
       WORKERS="$2"; shift 2
       ;;
+    --run-id)
+      [[ $# -ge 2 && -n "$2" ]] || { printf '[ERROR] --run-id requires a non-empty value\n' >&2; exit 2; }
+      if fleet_spec_is_option_shaped "$2"; then
+        printf '[ERROR] --run-id requires an id, got option: %s\n' "$2" >&2
+        exit 2
+      fi
+      RUN_ID_ARG="$2"; shift 2
+      ;;
     -o|--output)
       [[ $# -ge 2 && -n "$2" ]] || { printf '[ERROR] --output requires a non-empty file path\n' >&2; exit 2; }
       if fleet_spec_is_option_shaped "$2"; then
@@ -129,6 +140,10 @@ while [[ $# -gt 0 ]]; do
 done
 
 fleet_spec_validate_output_path "$OUTPUT" || exit $?
+if [[ -n "$RUN_ID_ARG" && ! "$RUN_ID_ARG" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
+  printf '[ERROR] --run-id must contain only letters, digits, dots, underscores, and hyphens\n' >&2
+  exit 2
+fi
 
 if [[ ${#TASK_VALUES[@]} -gt 0 ]]; then
   fleet_spec_normalize_task_values "${TASK_VALUES[@]}" || exit $?
@@ -140,7 +155,7 @@ fi
 [[ -n "$TASKSET" ]] || { usage >&2; exit 2; }
 if [[ -n "$FLEET_TASK" ]]; then
   case "$TASKSET" in
-    seta|smith|terminalbench21|sweverify|pinchbench|clawbio|/*|./*|../*|.|..|\~/*) ;;
+    seta|smith|terminalbench21|sweverify|browsecomp|browsecomp-plus|pinchbench|clawbio|/*|./*|../*|.|..|\~/*) ;;
     *)
       printf '[ERROR] --task is unsupported for Harbor registry taskset: %s\n' "$TASKSET" >&2
       exit 2
@@ -159,6 +174,27 @@ if (( ! DRY_RUN && ! VALIDATE_TASK_SELECTION )); then
   fi
   validate_run_config || exit 1
 fi
+
+# A direct CLI invocation owns a fresh run unless the run identity is visible
+# in that invocation. Do not let an exported or saved RUN_ID, or one of its
+# derived paths, silently turn a normal launch into a resume. Fleet Batch is
+# the sole internal exception: it assigns unique child RUN_IDs and clears
+# these paths before invoking this router.
+if [[ -z "${FLEET_BATCH_HARBOR_RUNS:-}" ]]; then
+  if [[ -n "$RUN_ID_ARG" ]]; then
+    RUN_ID="$RUN_ID_ARG"
+  else
+    RUN_ID="fleet-direct-$(date -u '+%Y%m%d-%H%M%S')-$$"
+  fi
+  export RUN_ID
+  unset OUTPUT_PATH TASK_FILE QUEUE_DIR RUNTIME_DIR LAYOUT_FILE JOBS_ROOT
+  unset HARBOR_ONLINE_ANALYSIS_DIR HARBOR_ONLINE_ANALYSIS_PID_FILE HARBOR_ONLINE_ANALYSIS_LOG_FILE
+  unset HARBOR_MONITOR_DIR HARBOR_MONITOR_PID_FILE HARBOR_MONITOR_LOG_FILE
+  unset HARBOR_BENCHMARK_PID_FILE HARBOR_BENCHMARK_EXIT_FILE HARBOR_JOB_DIR_FILE
+  unset RL_TRACE_LOG RL_SERVER_LOG RL_SERVER_PID_FILE RL_QUEUE_DIR RL_ACTIVE_DIR
+  unset RL_JOB_QUEUE_ROOT RL_JOB_RUNTIME_ROOT
+fi
+
 if [[ -n "$OUTPUT" ]]; then
   if [[ -z "$FLEET_SPEC_JSON" ]]; then
     fleet_spec_from_taskset_args "$TASKSET" "$FLEET_TASK" "$AGENT_ARG" "$WORKERS"
@@ -180,6 +216,15 @@ if (( VALIDATE_TASK_SELECTION )) && [[ -z "$FLEET_TASK" ]]; then
 fi
 
 case "$TASKSET" in
+  browsecomp|browsecomp-plus)
+    cmd=(bash "$REPO_DIR/Tasks/BrowseComp-Plus/scripts/run.sh")
+    [[ -z "$FLEET_TASK" ]] || cmd+=(--task "$FLEET_TASK")
+    [[ -z "$AGENT_ARG" ]] || cmd+=(--agent "$AGENT_ARG")
+    [[ -z "$WORKERS" ]] || cmd+=(--workers "$WORKERS")
+    (( VALIDATE_TASK_SELECTION == 0 )) || cmd+=(--validate-tasks-only)
+    (( DETACH == 0 )) || cmd+=(--detach)
+    run_command "${cmd[@]}"
+    ;;
   pinchbench)
     pinchbench_exact_task_selection=0
     [[ -z "$FLEET_TASK" ]] || pinchbench_exact_task_selection=1
