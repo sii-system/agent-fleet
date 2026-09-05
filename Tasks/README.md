@@ -4,6 +4,7 @@ Benchmarks, task lists, and automated task workflows.
 
 | Path | Role |
 | --- | --- |
+| [`DeepSearchQA/`](./DeepSearchQA/) | DeepSearchQA Harbor Hub entrypoint and verifier setup. |
 | [`Pinchbench/`](./Pinchbench/) | PinchBench benchmark task runner for OpenClaw. |
 | [`clawBio/`](./clawBio/) | ClawBio benchmark task runner for OpenClaw. |
 | [`SWE-rebench-v2/`](./SWE-rebench-v2/) | SWE-rebench-v2 Harbor Hub entrypoint. |

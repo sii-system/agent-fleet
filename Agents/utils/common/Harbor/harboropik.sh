@@ -928,6 +928,9 @@ run_oracle_task() {
   else
     cmd+=( --path "$DATASET_PATH" )
   fi
+  if harbor_uses_deepsearchqa_dataset; then
+    cmd+=( --verifier "deepsearchqa_verifier:DeepSearchQAVerifier" )
+  fi
   append_environment_backend_args
   if opensandbox_verifier_tool_env_required; then
     local verifier_mounts_json
@@ -1232,6 +1235,9 @@ run_harbor() {
     cmd+=( --dataset "$(harbor_registry_dataset_name)" )
   else
     cmd+=( --path "$DATASET_PATH" )
+  fi
+  if harbor_uses_deepsearchqa_dataset; then
+    cmd+=( --verifier "deepsearchqa_verifier:DeepSearchQAVerifier" )
   fi
   prepare_opensandbox_image_ref "$out_dir/opensandbox-bundle.json" || return 1
   append_environment_backend_args
@@ -1597,6 +1603,9 @@ run_opencode_task() {
     else
       cmd+=( --path "$DATASET_PATH" )
     fi
+    if harbor_uses_deepsearchqa_dataset; then
+      cmd+=( --verifier "deepsearchqa_verifier:DeepSearchQAVerifier" )
+    fi
     prepare_opensandbox_image_ref "$out_dir/opensandbox-bundle.json" || return 1
     append_environment_backend_args
 
@@ -1711,6 +1720,9 @@ main() {
   harbor_validate_generation_controls
   validate_environment_backend
   configure_trace_disabled_runtime
+  if [[ "$HARBOR_DRY_RUN" != "1" ]]; then
+    harbor_validate_dataset_runtime_requirements
+  fi
   harbor_init_run_dirs
   if ! harbor_agent_is_oracle && harbor_trace_to_opik_enabled; then
     normalize_opik_url_override

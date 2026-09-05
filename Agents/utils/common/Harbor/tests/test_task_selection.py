@@ -8,6 +8,7 @@ from pathlib import Path
 
 HARBOR_DIR = Path(__file__).resolve().parents[1]
 ENV_SH = HARBOR_DIR / "env.sh"
+HARBOROPIK_SH = HARBOR_DIR / "harboropik.sh"
 START_SH = HARBOR_DIR / "start.sh"
 PREPARE_LOCAL = 'mkdir -p "$QUEUE_DIR" "$RUNTIME_DIR"; harbor_prepare_task_file'
 
@@ -20,6 +21,10 @@ class HarborTaskSelectionTest(unittest.TestCase):
     ) -> subprocess.CompletedProcess[str]:
         env = os.environ.copy()
         env.pop("RESET_RUN", None)
+        env.pop("JUDGE_BASE_URL", None)
+        env.pop("JUDGE_API_KEY", None)
+        env.pop("JUDGE_MODEL", None)
+        env.pop("HARBOR_DISALLOWED_TOOLS", None)
         env.update(overrides)
         return subprocess.run(
             ["bash", "-c", f'. "$1"; {command}', "bash", str(ENV_SH)],
@@ -104,6 +109,135 @@ class HarborTaskSelectionTest(unittest.TestCase):
             )
 
             self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_deepsearchqa_alias_enables_native_web_tools(self) -> None:
+        for dataset_name in (
+            "deepsearchqa",
+            "deepsearchqa@latest",
+            "kgmon/deepsearchqa",
+            "kgmon/deepsearchqa@latest",
+        ):
+            with self.subTest(dataset_name=dataset_name):
+                result = self.run_env(
+                    'printf "dataset=%s\\ntools=%s\\n" '
+                    '"$(harbor_registry_dataset_name)" "$HARBOR_DISALLOWED_TOOLS"',
+                    DATASET_NAME=dataset_name,
+                    OPIK_URL="",
+                )
+
+                self.assertEqual(result.returncode, 0, result.stderr)
+                expected_dataset = (
+                    dataset_name.replace("deepsearchqa", "kgmon/deepsearchqa", 1)
+                    if dataset_name.startswith("deepsearchqa")
+                    else dataset_name
+                )
+                self.assertIn(f"dataset={expected_dataset}", result.stdout)
+                self.assertIn("tools=RemoteTrigger AskUserQuestion", result.stdout)
+
+    def test_deepsearchqa_preserves_explicit_disallowed_tools(self) -> None:
+        for explicit_value in ("WebSearch Bash", ""):
+            with self.subTest(explicit_value=explicit_value):
+                result = self.run_env(
+                    'printf "[%s]\\n" "$HARBOR_DISALLOWED_TOOLS"',
+                    DATASET_NAME="deepsearchqa",
+                    HARBOR_DISALLOWED_TOOLS=explicit_value,
+                    OPIK_URL="",
+                )
+
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout.strip(), f"[{explicit_value}]")
+
+    def test_empty_disallowed_tools_keeps_safe_default_for_other_datasets(self) -> None:
+        result = self.run_env(
+            'printf "[%s]\\n" "$HARBOR_DISALLOWED_TOOLS"',
+            DATASET_NAME="terminalbench21",
+            HARBOR_DISALLOWED_TOOLS="",
+            OPIK_URL="",
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            result.stdout.strip(),
+            "[WebSearch WebFetch RemoteTrigger AskUserQuestion]",
+        )
+
+    def test_deepsearchqa_requires_every_judge_setting(self) -> None:
+        valid_settings = {
+            "JUDGE_BASE_URL": "https://judge.example/v1/chat/completions",
+            "JUDGE_API_KEY": "test-key",
+            "JUDGE_MODEL": "test-model",
+        }
+        for missing_name in valid_settings:
+            for invalid_value in ("", " \t "):
+                with self.subTest(
+                    missing_name=missing_name,
+                    invalid_value=invalid_value,
+                ):
+                    settings = valid_settings.copy()
+                    settings[missing_name] = invalid_value
+                    result = self.run_env(
+                        "harbor_validate_dataset_runtime_requirements",
+                        DATASET_NAME="deepsearchqa",
+                        OPIK_URL="",
+                        **settings,
+                    )
+
+                    self.assertEqual(result.returncode, 1)
+                    self.assertIn(missing_name, result.stderr)
+                    self.assertIn("config.local.env", result.stderr)
+
+    def test_deepsearchqa_accepts_complete_judge_settings(self) -> None:
+        result = self.run_env(
+            "harbor_validate_dataset_runtime_requirements",
+            DATASET_NAME="deepsearchqa",
+            JUDGE_BASE_URL="https://judge.example/v1/chat/completions",
+            JUDGE_API_KEY="test-key",
+            JUDGE_MODEL="test-model",
+            OPIK_URL="",
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_deepsearchqa_live_runner_fails_before_creating_run_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "run"
+            env = os.environ.copy()
+            env.update(
+                {
+                    "DATASET_NAME": "deepsearchqa",
+                    "JUDGE_BASE_URL": "",
+                    "JUDGE_API_KEY": "",
+                    "JUDGE_MODEL": "",
+                    "HARBOR_DRY_RUN": "0",
+                    "HARBOR_QUEUE_WORKER": "1",
+                    "OPIK_URL": "",
+                    "OUTPUT_PATH": str(output),
+                    "QUEUE_DIR": str(output / "queue"),
+                    "RUNTIME_DIR": str(output / "runtime"),
+                    "JOBS_ROOT": str(output / "jobs"),
+                }
+            )
+
+            result = subprocess.run(
+                ["bash", str(HARBOROPIK_SH)],
+                env=env,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("JUDGE_BASE_URL", result.stderr)
+            self.assertFalse(output.exists())
+
+    def test_other_registry_datasets_do_not_require_a_judge_key(self) -> None:
+        result = self.run_env(
+            "harbor_validate_dataset_runtime_requirements",
+            DATASET_NAME="owner/dataset",
+            OPIK_URL="",
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_local_selection_filters_and_guards_run_reuse(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

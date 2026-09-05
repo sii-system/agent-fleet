@@ -32,11 +32,17 @@ def reward_rollup(stats: dict) -> tuple[str, dict[str, int]]:
         metrics = evaluation.get("metrics")
         if isinstance(metrics, list):
             for metric in metrics:
-                mean = metric.get("mean") if isinstance(metric, dict) else None
-                if isinstance(mean, (int, float)) and not isinstance(mean, bool):
-                    weighted_total += float(mean) * weight
-                    weighted_trials += weight
-                    break
+                if not isinstance(metric, dict):
+                    continue
+                for metric_name in ("reward", "mean"):
+                    value = metric.get(metric_name)
+                    if isinstance(value, (int, float)) and not isinstance(value, bool):
+                        weighted_total += float(value) * weight
+                        weighted_trials += weight
+                        break
+                else:
+                    continue
+                break
 
         reward_stats = evaluation.get("reward_stats")
         rewards = reward_stats.get("reward") if isinstance(reward_stats, dict) else None

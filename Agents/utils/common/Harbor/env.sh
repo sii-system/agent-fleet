@@ -42,9 +42,10 @@ PI_PROVIDER="${PI_PROVIDER:-}"
 
 HARBOR_ROOT="${HARBOR_ROOT:-/workspace/harbor}"
 # Dataset selection:
-#   DATASET_NAME: auto, seta, smith, terminalbench21, sweverify,
+#   DATASET_NAME: auto, deepsearchqa, seta, smith, terminalbench21, sweverify,
 #     or a Harbor registry dataset id such as owner/name or owner/name@version.
-#     seta, terminalbench21, and sweverify are registry aliases. smith is local.
+#     deepsearchqa, seta, terminalbench21, and sweverify are registry aliases.
+#     smith is local.
 #     For a local/offline checkout, use auto so the dataset is inferred from
 #     DATASET_PATH.
 #   DATASET_PATH examples:
@@ -57,6 +58,7 @@ DATASET_NAME="${DATASET_NAME:-auto}"
 DATASET_PATH="${DATASET_PATH:-/workspace/seta-env/Harbor-Dataset}"
 METRIC_MODE="${METRIC_MODE:-auto}"
 HARBOR_TERMINALBENCH21_REGISTRY_ID="terminal-bench/terminal-bench-2-1"
+HARBOR_DEEPSEARCHQA_REGISTRY_ID="kgmon/deepsearchqa"
 
 # Host-direct runs must not assume that the caller can write to /workspace.
 # The checkout-local runs directory is ignored by git, mounted at the same path
@@ -97,6 +99,9 @@ HARBOR_MONITOR_CONFIGURED_TIMEOUT="${HARBOR_MONITOR_CONFIGURED_TIMEOUT:-}"
 
 API_KEY="${API_KEY:-xxx}"
 BASE_URL="${BASE_URL:-}"
+JUDGE_BASE_URL="${JUDGE_BASE_URL:-}"
+JUDGE_API_KEY="${JUDGE_API_KEY:-}"
+JUDGE_MODEL="${JUDGE_MODEL:-}"
 # Normalize to a versionless API root: callers may supply a value already ending
 # in /v1, but the endpoints below append /v1 (or /v1/chat/completions), so strip
 # one trailing /v1 to avoid doubling it.
@@ -272,7 +277,17 @@ HARBOR_RETRY_EXCLUDE_EXCEPTIONS="${HARBOR_RETRY_EXCLUDE_EXCEPTIONS-RewardFileNot
 HARBOR_AK_MAX_TURNS="${HARBOR_AK_MAX_TURNS:-}"
 HARBOR_AK_COLLECT_ROLLOUT_DETAILS="${HARBOR_AK_COLLECT_ROLLOUT_DETAILS:-}"
 HARBOR_AK_ENABLE_SUMMARIZE="${HARBOR_AK_ENABLE_SUMMARIZE:-}"
-HARBOR_DISALLOWED_TOOLS="${HARBOR_DISALLOWED_TOOLS:-WebSearch WebFetch RemoteTrigger AskUserQuestion}"
+_HARBOR_DEFAULT_DISALLOWED_TOOLS="WebSearch WebFetch RemoteTrigger AskUserQuestion"
+case "$DATASET_NAME" in
+  deepsearchqa|deepsearchqa@*|kgmon/deepsearchqa|kgmon/deepsearchqa@*)
+    _HARBOR_DEFAULT_DISALLOWED_TOOLS="RemoteTrigger AskUserQuestion"
+    HARBOR_DISALLOWED_TOOLS="${HARBOR_DISALLOWED_TOOLS-$_HARBOR_DEFAULT_DISALLOWED_TOOLS}"
+    ;;
+  *)
+    HARBOR_DISALLOWED_TOOLS="${HARBOR_DISALLOWED_TOOLS:-$_HARBOR_DEFAULT_DISALLOWED_TOOLS}"
+    ;;
+esac
+unset _HARBOR_DEFAULT_DISALLOWED_TOOLS
 HARBOR_APPEND_SYSTEM_PROMPT="${HARBOR_APPEND_SYSTEM_PROMPT:-Use English only for all reasoning, messages, filenames, and tool arguments. Use ASCII characters only unless reading existing non-ASCII file contents is strictly necessary.}"
 HARBOR_API_BASE="${HARBOR_API_BASE:-${HARBOR_ANTHROPIC_BASE_URL%/}/v1/chat/completions}"
 ROLLOUT="${ROLLOUT:-0}"
@@ -723,6 +738,7 @@ HARBOR_OPENSANDBOX_IMAGE_MANAGER="${HARBOR_OPENSANDBOX_IMAGE_MANAGER:-$SCRIPT_DI
 
 export SCRIPT_DIR REPO_ROOT AGENTS_DIR TASKS_DIR HARBOR_CLAUDE_CODE_DIR HARBOR_OPENCODE_DIR HARBOR_PI_DIR WORKSPACE_DIR RUN_ID TOTAL_WORKERS N_ATTEMPTS MODEL AGENT MAX_RETRIES
 export HARBOR_ROOT DATASET_PATH DATASET_NAME METRIC_MODE OUTPUT_ROOT OUTPUT_PATH TASK_SOURCE_FILE TASK_FILE FLEET_TASKS QUEUE_DIR RUNTIME_DIR LAYOUT_FILE JOBS_ROOT
+export JUDGE_BASE_URL JUDGE_API_KEY JUDGE_MODEL
 export HARBOR_ONLINE_ANALYSIS HARBOR_ONLINE_ANALYSIS_POLL_INTERVAL HARBOR_ONLINE_ANALYSIS_DIR HARBOR_ONLINE_ANALYSIS_PID_FILE HARBOR_ONLINE_ANALYSIS_LOG_FILE HARBOR_EARLY_STOP HARBOR_ZELLIJ_CLOSE_ON_COMPLETE HARBOR_ZELLIJ_KEEP_ON_FAILURE
 export HARBOR_MONITOR_ENABLED HARBOR_MONITOR_DIR HARBOR_MONITOR_PID_FILE HARBOR_MONITOR_LOG_FILE HARBOR_BENCHMARK_PID_FILE HARBOR_BENCHMARK_EXIT_FILE HARBOR_JOB_DIR_FILE HARBOR_MONITOR_RESTART_CMD HARBOR_MONITOR_STOP_CMD HARBOR_MONITOR_INTERVAL HARBOR_MONITOR_STARTUP_GRACE HARBOR_MONITOR_STALL_SECONDS HARBOR_MONITOR_MAX_RETRIES HARBOR_MONITOR_CONFIGURED_TIMEOUT
 export API_KEY BASE_URL HARBOR_ANALYZER_API_KEY HARBOR_ANALYZER_BASE_URL HARBOR_ANALYZER_MODEL HARBOR_ANALYZER_PI_PROVIDER HARBOR_ANALYZER_NO_PROXY HARBOR_ANALYZER_ENABLED HARBOR_ANALYZER_MODE HARBOR_ANALYZER_OUTPUT_DIR HARBOR_ANALYZER_PID_FILE HARBOR_ANALYZER_SUPERVISOR_PID_FILE HARBOR_ANALYZER_SUPERVISOR_ID_FILE HARBOR_ANALYZER_LOG_FILE HARBOR_ANALYZER_POLL_INTERVAL HARBOR_ANALYZER_TIMEOUT HARBOR_ANALYZER_MAX_CONCURRENCY HARBOR_FIXER_API_KEY HARBOR_FIXER_BASE_URL HARBOR_FIXER_MODEL HARBOR_FIXER_PI_BIN HARBOR_FIXER_PI_PROVIDER HARBOR_FIXER_NO_PROXY HARBOR_FIXER_AGENT_TIMEOUT HARBOR_FIXER_EXECUTION_TIMEOUT HARBOR_FIXER_SUMMARY_LIMIT HARBOR_FIXER_MAX_CONCURRENCY HARBOR_FIXER_MAX_TASK_SUMMARY_CHARS HARBOR_FIXER_MAX_TASK_SUMMARIES_CHARS OPIK_URL OPIK_URL_OVERRIDE OPIK_BASE OPIK_PROJECT_NAME OPIK_API_KEY OPIK_WORKSPACE CC_OPIK_DEBUG
@@ -1141,6 +1157,10 @@ harbor_metric_mode() {
 
 harbor_registry_dataset_name() {
   case "$DATASET_NAME" in
+    deepsearchqa|deepsearchqa@*)
+      printf '%s%s\n' "$HARBOR_DEEPSEARCHQA_REGISTRY_ID" "${DATASET_NAME#deepsearchqa}"
+      return 0
+      ;;
     seta) printf 'seta-env\n'; return 0 ;;
     terminalbench21) printf '%s\n' "$HARBOR_TERMINALBENCH21_REGISTRY_ID"; return 0 ;;
     sweverify) printf 'swebench-verified\n'; return 0 ;;
@@ -1162,6 +1182,26 @@ harbor_metadata_dataset_name() {
 
 harbor_uses_registry_dataset() {
   harbor_registry_dataset_name >/dev/null
+}
+
+harbor_uses_deepsearchqa_dataset() {
+  local registry_dataset
+  registry_dataset="$(harbor_registry_dataset_name 2>/dev/null || true)"
+  [[ "$registry_dataset" == "$HARBOR_DEEPSEARCHQA_REGISTRY_ID" \
+    || "$registry_dataset" == "$HARBOR_DEEPSEARCHQA_REGISTRY_ID"@* ]]
+}
+
+harbor_validate_dataset_runtime_requirements() {
+  harbor_uses_deepsearchqa_dataset || return 0
+  local name value
+  for name in JUDGE_BASE_URL JUDGE_API_KEY JUDGE_MODEL; do
+    value="${!name:-}"
+    if [[ -z "${value//[[:space:]]/}" ]]; then
+      printf '[ERROR] DeepSearchQA requires %s for its verifier.\n' "$name" >&2
+      echo "[ERROR] Store it in config.local.env or export it for this run." >&2
+      return 1
+    fi
+  done
 }
 
 harbor_registry_task_name() {

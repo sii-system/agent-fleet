@@ -26,7 +26,7 @@ Main `env.sh` parameters:
 
 ```bash
 AGENT="claude-code"        # claude-code, opencode, or pi
-DATASET_NAME="seta"        # seta, smith, terminalbench21, or sweverify
+DATASET_NAME="seta"        # deepsearchqa, seta, smith, terminalbench21, or sweverify
 DATASET_PATH="/workspace/seta-env/Harbor-Dataset"
 TOTAL_WORKERS="80"         # zellij worker panes
 HARBOR_N_CONCURRENT="80"       # Harbor concurrency, normally = TOTAL_WORKERS
@@ -40,6 +40,7 @@ restarting.
 
 | Dataset | `DATASET_NAME` | Typical `DATASET_PATH` | Workers |
 | --- | --- | --- | --- |
+| DeepSearchQA | `deepsearchqa` | Harbor registry | runner concurrency |
 | SETA | `seta` | `/workspace/seta-env/Harbor-Dataset` | 80 |
 | SWE-Smith | `smith` | `/workspace/harbor/datasets/swesmith` | 80 |
 | Terminal-Bench 2.1 | `terminalbench21` | `/workspace/terminal-bench-2-1/tasks` | 20 |
@@ -47,6 +48,8 @@ restarting.
 
 `DATASET_NAME` selects a task list under `Tasks/` (for example
 `Tasks/SETA/harbor_tasks.txt`); `TASK_SOURCE_FILE=<path>` overrides it.
+DeepSearchQA runs from Harbor Hub and requires an OpenAI-compatible judge endpoint; see
+[Tasks/DeepSearchQA/README.md](../Tasks/DeepSearchQA/README.md).
 
 ### Online Analysis (opt-in)
 

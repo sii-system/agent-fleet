@@ -118,8 +118,9 @@ continue to use the shell entry points documented in the README files.
 
 ## Task Resolution
 
-`DATASET_NAME` selects a built-in local dataset alias:
+`DATASET_NAME` selects a built-in dataset alias:
 
+- `deepsearchqa`: Harbor registry dataset `kgmon/deepsearchqa`
 - `seta`: `Tasks/SETA/harbor_tasks.txt`
 - `sweverify`: `Tasks/SWE-verify/harbor_tasks.txt`
 - `smith`: `Tasks/SWE-smith/harbor_tasks.txt`
@@ -135,6 +136,7 @@ Typical dataset paths:
 
 | Dataset | `DATASET_NAME` | `DATASET_PATH` | Metric | Suggested workers |
 | --- | --- | --- | --- | --- |
+| DeepSearchQA | `deepsearchqa` | unset | reward (F1) | runner concurrency |
 | SETA | `seta` | `/workspace/seta-env/Harbor-Dataset` | success rate | `80` |
 | SWE-Smith | `smith` | `/workspace/harbor/datasets/swesmith` | reward | `80` |
 | Terminal-Bench 2.1 | `terminalbench21` | `/workspace/terminal-bench-2-1/tasks` | success rate | `20` |
@@ -149,6 +151,9 @@ Typical dataset paths:
 | `MODEL` | Model name passed to Harbor |
 | `BASE_URL` | Model gateway base URL |
 | `API_KEY` | Model gateway API key |
+| `JUDGE_BASE_URL` | OpenAI-compatible judge URL for DeepSearchQA; `/v1` and `/v1/chat/completions` forms are accepted |
+| `JUDGE_API_KEY` | DeepSearchQA judge credential; passed only to the verifier |
+| `JUDGE_MODEL` | Model name used by the DeepSearchQA judge |
 | `HARBOR_TEMPERATURE` | OpenCode sampling temperature for fixed benchmark runs; unset by default |
 | `HARBOR_TOP_P` | OpenCode nucleus-sampling value for fixed benchmark runs; unset by default |
 | `HARBOR_MAX_TOKENS` | Maximum output tokens for OpenCode, Claude Code, or Pi fixed benchmark runs; defaults to existing agent limits when unset |

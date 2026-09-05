@@ -11,6 +11,7 @@ and ClawBio run against an OpenClaw fleet from `Agents/Openclaw/` (see
 | Path | Role |
 | --- | --- |
 | `SETA/`, `SWE-smith/`, `SWE-verify/`, `Terminal-bench-2/` | Harbor task lists |
+| `DeepSearchQA/` | DeepSearchQA Harbor Hub entrypoint and verifier setup |
 | `Pinchbench/` | PinchBench runner for the OpenClaw fleet |
 | `clawBio/` | ClawBio bioinformatics benchmark for the OpenClaw fleet |
 
@@ -28,6 +29,10 @@ The `seta`, `sweverify`, and `terminalbench21` aliases resolve to Harbor
 registry datasets by default and skip these local files. `TASK_SOURCE_FILE=<path>`
 overrides the built-in selection for local runs. Task lists are owned here —
 don't duplicate them under `Agents/`.
+
+`deepsearchqa` is also a registry alias, resolving to `kgmon/deepsearchqa`.
+It has no local task list; see [DeepSearchQA/README.md](DeepSearchQA/README.md)
+for its web-tool and judge-endpoint requirements.
 
 ## PinchBench (`Pinchbench/`)
 
