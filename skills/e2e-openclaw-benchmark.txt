@@ -16,8 +16,15 @@ Requirements:
 2. Create or verify an OpenClaw fleet with 10 instances unless config.local.env
    or the caller requests another count.
 3. Use isolated names, prefixes, workspaces, and result directories for the run.
-4. Run 3 PinchBench sanity tasks through the OpenClaw fleet.
-5. Run 3 ClawBio tasks through the OpenClaw fleet.
+4. Select exactly 3 available PinchBench sanity task IDs and run them once
+   against the healthy fleet. Use scripts/run_fleet.sh --taskset pinchbench
+   --task <id1,id2,id3>, or the direct runner's --suite with exact IDs. If fewer
+   than 3 sanity tasks exist, report the available subset; do not broaden to
+   the full suite. Instance count does not limit the number of tasks.
+5. Run exactly 3 ClawBio task IDs once, using the unified launcher with --tasks
+   <id1,id2,id3> and ITERATIONS=1. It prepares the ClawBio fleet and applies its
+   dedicated execution profile. Finish PinchBench first; after ClawBio, stop or
+   regenerate that fleet before using it for another purpose.
 6. Capture exact commands, result paths, success counts, failed tasks, and
    whether failures are operator/setup failures or task/agent outcomes.
 7. Do not run long full benchmarks unless explicitly requested.

@@ -11,12 +11,22 @@ Before doing anything:
 Requirements:
 1. Verify the LLM endpoint before benchmark use when BASE_URL,
    API_KEY, and MODEL are available.
-2. Prefer the configured mounted Claude Code tgz/cache over public
+2. For Claude Code runs, prefer the configured mounted tgz/cache over public
    download/install paths. If CLAUDE_CODE_VERSION, CLAUDE_CODE_TGZ_BASENAME, or
    HARBOR_CC_* cache variables are set, use them deliberately.
-3. Run 3 SETA tasks and 3 Terminal-Bench-2 tasks with TOTAL_WORKERS=3 and
-   HARBOR_N_CONCURRENT=3.
+3. Run exactly 3 SETA tasks and 3 Terminal-Bench 2.1 tasks with TOTAL_WORKERS=3,
+   HARBOR_N_CONCURRENT=3, N_ATTEMPTS=1, and HARBOR_RUNS=1. Preserve the requested
+   agent (claude-code, opencode, or pi) and backend. Select three exact task IDs
+   with scripts/run_fleet.sh --task, or bound a registry run with HARBOR_LIMIT=3.
+   Worker count alone does not limit tasks. For local runs, use a three-task
+   selection; HARBOR_LIMIT does not limit the local worker queue.
 4. Use isolated RUN_ID and OUTPUT_PATH values for each dataset.
-5. If a dataset path or task selection is unavailable, prepare dataset from Harbor hub.
-6. Record result directories, task rewards, exceptions, online-analysis output,
-   and whether failures are operator/setup failures or task/verifier outcomes.
+5. The seta and terminalbench21 aliases resolve to Harbor registry datasets
+   through the normal start.sh launcher, including --detach. A supplied local
+   dataset uses DATASET_NAME=auto and DATASET_PATH; validate its selected IDs.
+   Do not silently replace a requested local dataset revision with registry data.
+6. Check the host runner before launching; scripts/setup.sh owns dependency
+   installation. OPIK_URL controls tracing; an explicit empty value disables it.
+7. Record result directories, task rewards, exceptions, monitor/analyzer output,
+   optional online-analysis output, and whether failures are operator/setup
+   failures or task/verifier outcomes.

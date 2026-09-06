@@ -16,13 +16,16 @@ per-instance `$CONFIG_BASE/<N>/openclaw.json`, followed by Docker Compose and
 ## Workflow
 
 1. Read `Agents/AGENTS.md`, `Agents/Openclaw/GUIDE.md`, and
-   `Agents/Openclaw/SECURITY.md` before changing fleet behavior.
+   `Agents/Openclaw/SECURITY.md` before changing fleet behavior. For host
+   bootstrap and managed zellij/tool paths, use `scripts/setup.sh` and
+   [scripts/README.md](../../scripts/README.md).
 2. Load configuration in the same precedence as `setup.sh`: CLI flags and
    positional `COUNT`, caller environment, `Agents/Openclaw/config/fleet.env`,
    root `config.local.env`, then root `config.env`.
 3. Build the image when needed:
-   `./Agents/Openclaw/scripts/build-openclaw-image.sh`. Use
-   `OPIK_URL` only when Opik tracing should be built into the image.
+   `./Agents/Openclaw/scripts/build-openclaw-image.sh`. A configured `OPIK_URL`
+   also builds the Opik image; `OPIK_URL=` overrides a saved endpoint to disable
+   tracing. The API key is optional for authless Opik endpoints.
 4. Generate the fleet with `Agents/Openclaw/scripts/setup.sh`. Required model
    gateway values are `BASE_URL` and `API_KEY`; `MODEL` selects the model.
 5. Start with
@@ -32,6 +35,9 @@ per-instance `$CONFIG_BASE/<N>/openclaw.json`, followed by Docker Compose and
    `2-5`.
 7. Use `Agents/Openclaw/scripts/start-session-tui.sh` when the operator needs a
    zellij view of active sessions.
+
+`scale` stops the current Compose fleet, regenerates it, and starts the new
+count. Account for that interruption when operating an active benchmark.
 
 ## Hard Rules
 
@@ -69,7 +75,8 @@ per-instance `$CONFIG_BASE/<N>/openclaw.json`, followed by Docker Compose and
 - If a benchmark cannot access files outside the workspace, rerun setup with
   `WORKSPACE_ONLY=false` only for that benchmark path.
 - If plugin tracing is missing, verify both the image build and setup used
-  `OPIK_URL` plus `OPIK_PROJECT_NAME` were set.
+  `OPIK_URL`, setup has the required `OPIK_PROJECT_NAME`, and the selected
+  image contains the plugin.
 - If generated config paths look wrong, inspect `CONFIG_BASE`,
   `WORKSPACE_BASE`, UID/GID, and host permissions before patching code.
 

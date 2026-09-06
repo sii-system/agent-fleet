@@ -17,16 +17,24 @@ starts the fleet, and then runs skill tasks in parallel.
 
 ## Workflow
 
-1. Confirm the OpenClaw fleet exists and is healthy:
-   `./Agents/Openclaw/scripts/openclaw-fleet.sh status all`.
-2. Match benchmark instance count to fleet count unless intentionally running a
-   subset.
-3. Keep shared model gateway values in root `config.env`, private values in
-   `config.local.env`, and benchmark-specific defaults in the benchmark config.
-4. Run PinchBench with
-   `Tasks/Pinchbench/scripts/run-parallel-workers.py`.
-5. Run ClawBio with
-   `Tasks/clawBio/scripts/run-openclaw-clawbio.sh` for the normal unified flow.
+1. Read [Tasks/AGENTS.md](../../Tasks/AGENTS.md). For PinchBench, confirm the
+   existing fleet is healthy with `openclaw-fleet.sh status all` and `probe all`.
+   ClawBio's unified launcher prepares and starts its own benchmark fleet;
+   account for the existing fleet before regenerating its Compose configuration.
+2. Match PinchBench instances to available gateways, or choose an explicit
+   subset. For ClawBio, `COUNT` controls fleet generation. Instance count is
+   concurrency, not a task limit: select tasks explicitly for smoke runs.
+3. Keep `config.env` public-safe, private model gateway values in
+   `config.local.env` or the caller environment, and benchmark defaults in
+   their config files. `OPIK_URL` alone enables tracing; empty disables it.
+4. Use `scripts/run_fleet.sh --taskset <benchmark> --agent openclaw
+   --workers <count> --task <id1,id2>`, with `pinchbench` or `clawbio` as the
+   benchmark, for exact task selection. The direct runners are below.
+   `--dry-run` previews routing. `--detach` is ignored for OpenClaw tasksets;
+   both runners remain in the foreground.
+5. PinchBench calls `Tasks/Pinchbench/scripts/run-parallel-workers.py` against
+   existing gateways. ClawBio calls
+   `Tasks/clawBio/scripts/run-openclaw-clawbio.sh` for setup and execution.
 6. Inspect benchmark result summaries before rerunning. Repeated runs can spend
    substantial tokens and compute.
 
@@ -73,26 +81,25 @@ COUNT=20 ITERATIONS=3 \
   ./Tasks/clawBio/scripts/run-openclaw-clawbio.sh
 ```
 
-Manual flow, when debugging phases:
-
-```bash
-./Tasks/clawBio/scripts/prewarm-cache.sh
-set -a
-. ./Tasks/clawBio/config/benchmark.env
-set +a
-PLUGIN_CACHE_DIR=$(pwd)/Tasks/clawBio/cache \
-  ./Agents/Openclaw/scripts/setup.sh 4
-./Tasks/clawBio/scripts/patch-plugin-config.sh
-docker compose -f Agents/Openclaw/docker-compose.yml up -d
-./Tasks/clawBio/scripts/run-benchmark.py --instances 4
-```
+For a subset, pass `--tasks id1,id2` to the unified launcher. It validates
+exact IDs before changing the fleet. The phase-by-phase flow for debugging
+is in [Tasks/clawBio/README.md](../../Tasks/clawBio/README.md#quick-start);
+preserve `CONFIG_BASE` and `PLUGIN_CACHE_DIR` consistently across those phases.
 
 `patch-plugin-config.sh` must run after `setup.sh` and before Compose starts
 the fleet. Do not run `run-benchmark.py` immediately after the unified
 launcher unless an additional benchmark run is intentional. The profile is
 permissive: the launcher loads it with a warning, and the manual flow sources
-it directly. Use it only for a dedicated ClawBio fleet, then stop or regenerate
+it directly. Conflicting caller overrides are rejected before setup; the
+required values are `SANDBOX_MODE=off`, `EXEC_SECURITY=full`, `EXEC_ASK=off`,
+and `WORKSPACE_ONLY=false`. The root filesystem remains read-only by default.
+Use the profile only for a dedicated ClawBio fleet, then stop or regenerate
 that fleet before using OpenClaw for another purpose.
+
+PinchBench summaries live under
+`Tasks/Pinchbench/.pinchbench-results-docker/<timestamp>/`; ClawBio summaries
+are under `Tasks/clawBio/results/latest/`. Capture the concrete run directory
+as well as any `latest` link. Both provide `iterations-summary.{json,md}`.
 
 ## Debugging
 

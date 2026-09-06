@@ -17,7 +17,7 @@ description: Use when ...
 | --- | --- |
 | `openclaw-fleet-operations` | Generating, scaling, operating, or debugging the Dockerized OpenClaw gateway fleet. |
 | `openclaw-benchmark-runners` | Running PinchBench or ClawBio benchmarks against an OpenClaw gateway fleet. |
-| `harbor-benchmark-runner` | Configuring, launching, monitoring, or debugging Harbor benchmark runs for Claude Code or OpenCode. |
+| `harbor-benchmark-runner` | Configuring, launching, monitoring, or debugging Harbor benchmark runs for Claude Code, OpenCode, or Pi. |
 
 ## Usage Examples
 
@@ -35,8 +35,8 @@ current OpenClaw fleet and summarize pass/fail counts.
 ```
 
 ```text
-Use harbor-benchmark-runner to run 3 SETA Harbor tasks with AGENT=claude-code,
-TOTAL_WORKERS=3, HARBOR_N_CONCURRENT=3, and inspect online-analysis results.
+Use harbor-benchmark-runner to run the terminalbench21 fix-git task with Pi,
+one worker and one attempt, then inspect the run summary and trial results.
 ```
 
 You can also combine skills for end-to-end validation:
@@ -51,6 +51,10 @@ Use openclaw-fleet-operations and openclaw-benchmark-runners to regenerate a
 Run these commands from the repository root. Symlinks keep the installed skills
 updated as the checkout changes; use `cp -a` instead of `ln -sfn` when the
 runtime needs a standalone copy.
+
+`./scripts/setup.sh` already installs all three skills into
+`~/.pi/agent/skills/` as symlinks to this checkout. Use the manual installation
+sections below for other runtimes or a separate installation.
 
 ### Codex
 

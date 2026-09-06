@@ -5,7 +5,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 EXPECTED_SKILLS = {
     "harbor-benchmark-runner": {
-        "description": "Use when configuring, launching, monitoring, or debugging Harbor benchmark runs for Claude Code or OpenCode in this repository.",
+        "description": "Use when configuring, launching, monitoring, or debugging Harbor benchmark runs for Claude Code, OpenCode, or Pi in this repository.",
         "paths": [
             "Agents/utils/common/Harbor/start.sh",
             "Agents/utils/common/Harbor/env.sh",
