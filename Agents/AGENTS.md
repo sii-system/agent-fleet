@@ -1,7 +1,8 @@
 # AGENTS.md — Agents/
 
-Two runnable subsystems live here: the shared **Harbor benchmark runner**
-(`utils/common/Harbor/`) and the **OpenClaw gateway fleet** (`Openclaw/`).
+Execution code lives here: the shared **Harbor benchmark runner**
+(`utils/common/Harbor/`), **remote rollout service** (`utils/rl/`),
+agent integrations, and the **OpenClaw gateway fleet** (`Openclaw/`).
 Repo-wide setup and config rules: [root AGENTS.md](../AGENTS.md).
 
 ## Harbor Benchmark Runner (`utils/common/Harbor/`)
@@ -9,14 +10,24 @@ Repo-wide setup and config rules: [root AGENTS.md](../AGENTS.md).
 Runs Claude Code, OpenCode, or Pi against Harbor datasets in parallel zellij
 workers.
 
-Prereq: model gateway values set in `config.local.env`. For traced runs only,
-also initialize the submodule and configure Opik values.
+Prereq: run `./scripts/setup.sh` from the repo root and set model gateway
+values in `config.local.env`. `OPIK_URL` enables tracing; initialize the
+submodule for traced runs. Authless Opik endpoints do not require an API key.
+
+Setup owns the pinned host runner environment; workload startup validates it
+and must not install or repair it. Dependency pins live in
+`utils/common/Harbor/runner-requirements.txt`. Keep setup, startup validation,
+and DinD aligned on `HARBOR_RUNNER_PYTHON_VERSION`.
 
 ### Run
 
+Use `./scripts/run_fleet.sh` for the unified launcher (see
+[scripts/README.md](../scripts/README.md)). For direct Harbor runs:
+
 ```bash
 cd Agents/utils/common/Harbor
-vim env.sh                 # set the run parameters below
+export AGENT=claude-code DATASET_NAME=terminalbench21
+export TOTAL_WORKERS=1 HARBOR_N_CONCURRENT=1
 bash start.sh --detach     # detached zellij session (prints session name)
 bash start.sh              # interactive zellij session
 zellij attach <session-name>
@@ -26,8 +37,8 @@ Main `env.sh` parameters:
 
 ```bash
 AGENT="claude-code"        # claude-code, opencode, or pi
-DATASET_NAME="seta"        # seta, smith, terminalbench21, or sweverify
-DATASET_PATH="/workspace/seta-env/Harbor-Dataset"
+DATASET_NAME="seta"        # registry alias, registry ID, or auto for local data
+DATASET_PATH="/workspace/seta-env/Harbor-Dataset"  # local runs only
 TOTAL_WORKERS="80"         # zellij worker panes
 HARBOR_N_CONCURRENT="80"       # Harbor concurrency, normally = TOTAL_WORKERS
 ```
@@ -45,8 +56,46 @@ restarting.
 | Terminal-Bench 2.1 | `terminalbench21` | `/workspace/terminal-bench-2-1/tasks` | 20 |
 | SWE-bench Verified | `sweverify` | `/workspace/swebench-verified` | 20 |
 
-`DATASET_NAME` selects a task list under `Tasks/` (for example
-`Tasks/SETA/harbor_tasks.txt`); `TASK_SOURCE_FILE=<path>` overrides it.
+`seta`, `terminalbench21`, and `sweverify` resolve to registry datasets by
+default; `smith` stays local. Registry IDs such as `tmax/TMax-15K-Harbor`
+also work. Registry runs bypass local task lists. Use `DATASET_NAME=auto`
+with `DATASET_PATH` for local data; `TASK_SOURCE_FILE=<path>` overrides the
+local task list under `Tasks/`. See [Tasks/AGENTS.md](../Tasks/AGENTS.md).
+
+### Sandbox Backends
+
+`RL_ENVIRONMENT_TYPE` selects `docker` (default), `e2b`, `qz`, or
+`opensandbox`; fixed runs derive `HARBOR_ENVIRONMENT_TYPE` from it unless
+explicitly overridden. Read the relevant backend contract before changing
+image preparation, runtime delivery, or provider configuration:
+
+- [E2B](utils/common/Harbor/E2B_README.md)
+- [qz](utils/common/Harbor/QZ_SANDBOX_README.md) and
+  [template management](utils/common/Harbor/QZ_TEMPLATE_MANAGER.md)
+- [OpenSandbox](utils/common/Harbor/OPENSANDBOX_README.md) and
+  [Bundle/image management](utils/common/Harbor/OPENSANDBOX_IMAGE_MANAGER.md)
+
+Reusable Python runtime construction belongs in `python_runtime.py`;
+dataset-specific verifier composition belongs in `verifier_runtime/`.
+
+### Monitor, Analyzer, and Fixer
+
+Fixed benchmark runs start the monitor and Pi-backed analyzer by default.
+`HARBOR_MONITOR_ENABLED=0` disables monitoring;
+`HARBOR_ANALYZER_ENABLED=0` disables only the analyzer. The analyzer uses
+model gateway defaults or `HARBOR_ANALYZER_*` overrides.
+
+Keep observation (`scripts/harbor_monitor/`), decisions/execution
+(`scripts/harbor_controller/`), analysis (`scripts/harbor_analyzer/`), and
+repair (`scripts/harbor_fixer/`) separate. Monitor observations do not
+automatically restart or stop runs. Controller decisions are submitted through
+`scripts/controller.py`; its Fixer workflow plans first, then binds approval
+to the exact plan before execution and smoke verification. Preserve these
+contracts when modifying automation.
+
+Artifacts live under `$OUTPUT_PATH/{monitor,analyzer,fixer}`. Workflow commands
+and artifact contracts: [Harbor README](utils/common/Harbor/README.md) and
+[Analyzer architecture](utils/common/Harbor/ANALYZER_ARCHITECTURE.md).
 
 ### Online Analysis (opt-in)
 
@@ -78,6 +127,21 @@ Full variable table: [utils/common/Harbor/STRUCT.md](utils/common/Harbor/STRUCT.
 Agent integration internals: [Harbor-claude-code/STRUCT.md](Harbor-claude-code/STRUCT.md),
 [Harbor-opencode/STRUCT.md](Harbor-opencode/STRUCT.md),
 [Harbor-pi/STRUCT.md](Harbor-pi/STRUCT.md).
+
+## Remote Rollout (`utils/rl/`)
+
+```bash
+ROLLOUT=1 bash Agents/utils/common/Harbor/start.sh --detach
+```
+
+The shared launcher loads `utils/rl/RL-env.sh` (or `RL_ENV_FILE`) and starts
+the listener instead of a fixed benchmark. `RL_DATASET_ROOTS` maps dataset
+names to local paths; `RL_AGENT` selects the worker agent. The listener serves
+`/health`, `/datasets`, and `/run_trial`, with per-submission queues and zellij
+workers. Keep rollout implementation and `RL_*` defaults in `utils/rl/`.
+Trusted host request configuration must not become caller-controlled through
+`/run_trial` payloads. Full configuration and lifecycle:
+[Harbor rollout docs](utils/common/Harbor/README.md#rl-rollout-mode).
 
 ## OpenClaw Fleet (`Openclaw/`)
 
@@ -131,12 +195,24 @@ Security policy: [Openclaw/SECURITY.md](Openclaw/SECURITY.md).
 
 ## Development
 
-Run from the repo root:
+Run the affected suites from the repo root with Python 3.12 and the test
+dependencies in `utils/common/Harbor/runner-requirements.txt`, as in portable
+CI. Set `PYTHONPATH=.` for repository imports:
 
 ```bash
+export PYTHONPATH=.
+python3 -m unittest discover -s Agents/utils/common/Harbor/tests
+python3 -m unittest discover -s Agents/utils/rl/tests
+python3 -m unittest discover -s Agents/Harbor-claude-code/tests
+python3 -m unittest discover -s Agents/Harbor-opencode/tests
+python3 -m unittest discover -s Agents/Harbor-pi/tests
 python3 -m unittest discover -s Agents/Openclaw/tests
 bash Agents/Openclaw/tests/test_build_openclaw_image.sh
 bash Agents/Openclaw/tests/test_session_layout.sh
 bash Agents/Openclaw/tests/test_start_session_tui.sh
 bash Agents/Openclaw/tests/test_stream_openclaw_session_sh.sh
 ```
+
+Harbor and rollout also have `tests/test_*.sh` regressions; run the scripts
+covering the changed behavior with `bash`. Backend smoke runs need their
+provider infrastructure; unit tests alone do not establish backend health.

@@ -1,8 +1,9 @@
 # AGENTS.md — Tasks/
 
-Benchmark task inputs and OpenClaw benchmark runners. Harbor task lists are
-consumed by the shared runner in `Agents/utils/common/Harbor/`; PinchBench
-and ClawBio run against an OpenClaw fleet from `Agents/Openclaw/` (see
+Benchmark task inputs, Harbor task generators, and OpenClaw benchmark runners.
+Harbor task lists are consumed by the shared runner in
+`Agents/utils/common/Harbor/`; PinchBench and ClawBio run against an OpenClaw
+fleet from `Agents/Openclaw/` (see
 [Agents/AGENTS.md](../Agents/AGENTS.md)). Repo-wide config rules:
 [root AGENTS.md](../AGENTS.md).
 
@@ -11,6 +12,8 @@ and ClawBio run against an OpenClaw fleet from `Agents/Openclaw/` (see
 | Path | Role |
 | --- | --- |
 | `SETA/`, `SWE-smith/`, `SWE-verify/`, `Terminal-bench-2/` | Harbor task lists |
+| `SWE-rebench-v2/`, `TMax/` | Harbor registry dataset entrypoints and adaptation docs |
+| `WebResearchAdapter/` | BrowseComp and DeepSearchQA native Harbor task generator |
 | `Pinchbench/` | PinchBench runner for the OpenClaw fleet |
 | `clawBio/` | ClawBio bioinformatics benchmark for the OpenClaw fleet |
 
@@ -28,6 +31,34 @@ The `seta`, `sweverify`, and `terminalbench21` aliases resolve to Harbor
 registry datasets by default and skip these local files. `TASK_SOURCE_FILE=<path>`
 overrides the built-in selection for local runs. Task lists are owned here —
 don't duplicate them under `Agents/`.
+
+Other registry datasets use their full IDs, including
+`openthoughts/tasktrove-swe-rebench-v2-patched-oracle` and
+`tmax/TMax-15K-Harbor`. The unified launcher accepts these via
+`./scripts/run_fleet.sh --taskset <registry-id>`, or an explicit local dataset
+path. See [SWE-rebench-v2/README.md](SWE-rebench-v2/README.md) for qz
+final-image adaptation; task identity, repository, and revision must agree
+before an image can replace the task's setup instructions.
+
+## Web Research Adapter (`WebResearchAdapter/`)
+
+Generates Harbor tasks from official BrowseComp and DeepSearchQA CSV files:
+
+```bash
+cd Tasks/WebResearchAdapter
+uv run browsecomp-adapter --input /data/browse_comp_test_set.csv --output-dir /data/harbor/browsecomp
+uv run deepsearchqa-adapter --input /data/DSQA-full.csv --output-dir /data/harbor/deepsearchqa
+```
+
+Source count and SHA-256 validation happen before task filtering; keep each
+dataset's validation and reward semantics separate. Edit the generator and
+`src/web_research_adapter/task-template/` to change generated tasks.
+
+Register generated roots in `RL_DATASET_ROOTS` for rollout use. Search/fetch
+tools or an external MCP must be provisioned by the deployment. The verifier
+reuses the trial model gateway and returns rewards through the existing
+rollout path; do not configure `RL_RESULT_PROCESSOR`. Configuration and
+generation options: [WebResearchAdapter/README.md](WebResearchAdapter/README.md).
 
 ## PinchBench (`Pinchbench/`)
 
@@ -101,4 +132,9 @@ Run from the repo root:
 ```bash
 python3 -m unittest discover -s Tasks/Pinchbench/tests
 python3 -m unittest discover -s Tasks/clawBio/tests
+uv run --project Tasks/WebResearchAdapter python -m unittest discover -s Tasks/WebResearchAdapter/tests -v
 ```
+
+The web research adapter requires Python 3.11 or newer and its own project
+dependencies. Task-selection changes also affect the shared Harbor suite
+listed in [Agents/AGENTS.md](../Agents/AGENTS.md#development).
