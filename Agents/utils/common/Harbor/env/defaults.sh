@@ -12,12 +12,8 @@ HARBOR_PI_DIR="${HARBOR_PI_DIR:-$AGENTS_DIR/Harbor-pi}"
 WORKSPACE_DIR="${WORKSPACE_DIR:-/workspace}"
 
 RUN_ID="${RUN_ID:-$(date +%Y-%m-%d-%H%M)-harbor-tui}"
-TOTAL_WORKERS="${TOTAL_WORKERS:-10}"
 N_ATTEMPTS="${N_ATTEMPTS:-1}"
 MAX_RETRIES="${MAX_RETRIES:-${HARBOR_MAX_RETRIES:-2}}"
-# AGENT selects the runner: claude-code (default), opencode, or pi.
-AGENT="${AGENT:-claude-code}"
-MODEL="${MODEL:-minimax2.7}"
 _HARBOR_EFFECTIVE_MODEL="${HARBOR_MODEL:-$MODEL}"
 # OpenCode requires provider/model for custom providers. Keep MODEL shared with
 # claude-code, and only add this prefix when AGENT=opencode.
@@ -37,8 +33,6 @@ HARBOR_ROOT="${HARBOR_ROOT:-/workspace/harbor}"
 #     /workspace/terminal-bench-2-1/tasks
 #     /workspace/swebench-verified
 # TASK_SOURCE_FILE can override the built-in task list under Tasks/.
-DATASET_NAME="${DATASET_NAME:-auto}"
-DATASET_PATH="${DATASET_PATH:-/workspace/seta-env/Harbor-Dataset}"
 METRIC_MODE="${METRIC_MODE:-auto}"
 HARBOR_TERMINALBENCH21_REGISTRY_ID="terminal-bench/terminal-bench-2-1"
 
@@ -79,8 +73,6 @@ HARBOR_MONITOR_STALL_SECONDS="${HARBOR_MONITOR_STALL_SECONDS:-1800}"
 HARBOR_MONITOR_MAX_RETRIES="${HARBOR_MONITOR_MAX_RETRIES:-3}"
 HARBOR_MONITOR_CONFIGURED_TIMEOUT="${HARBOR_MONITOR_CONFIGURED_TIMEOUT:-}"
 
-API_KEY="${API_KEY:-xxx}"
-BASE_URL="${BASE_URL:-}"
 # Normalize to a versionless API root: callers may supply a value already ending
 # in /v1, but the endpoints below append /v1 (or /v1/chat/completions), so strip
 # one trailing /v1 to avoid doubling it.
@@ -119,7 +111,6 @@ HARBOR_FIXER_SUMMARY_LIMIT="${HARBOR_FIXER_SUMMARY_LIMIT:-4000}"
 HARBOR_FIXER_MAX_CONCURRENCY="${HARBOR_FIXER_MAX_CONCURRENCY:-4}"
 HARBOR_FIXER_MAX_TASK_SUMMARY_CHARS="${HARBOR_FIXER_MAX_TASK_SUMMARY_CHARS:-24000}"
 HARBOR_FIXER_MAX_TASK_SUMMARIES_CHARS="${HARBOR_FIXER_MAX_TASK_SUMMARIES_CHARS:-400000}"
-OPIK_URL="${OPIK_URL:-}"
 # OPIK_URL is the operator switch for running with or without Opik. The shared
 # gate also honors OPIK_TRACK_DISABLE as a runtime safety override.
 harbor_trace_to_opik_enabled() {

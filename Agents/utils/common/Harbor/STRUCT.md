@@ -91,9 +91,16 @@ locations, and error compatibility remain in `harbor_analyzer/pi.py`.
 
 `env.sh` remains the public source entry point for launchers, workers, and
 rollout. It resolves the Harbor/repository paths, loads shared configuration,
-initializes prerequisites, sources the configuration modules in order, exports
+initializes prerequisites, keeps the quick-start settings visible, sources the
+configuration modules in order, exports
 the existing variables, and loads the shell helpers. `SCRIPT_DIR` always refers
 to the Harbor directory, not `env/`; callers continue to source `env.sh`.
+
+The quick-start block owns `AGENT`, `MODEL`, `BASE_URL`, `API_KEY`,
+`DATASET_NAME`, `DATASET_PATH`, and `TOTAL_WORKERS`, plus the optional
+`MIN_TEST` and `OPIK_URL` switches. Derived settings and advanced defaults stay
+in the modules below. Runtime and saved configuration keep their existing
+precedence; credentials belong in `config.local.env` or the shell environment.
 
 | Module under `env/` | Responsibility |
 | --- | --- |
