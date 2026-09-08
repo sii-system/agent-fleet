@@ -363,6 +363,75 @@ class PiClientTest(unittest.TestCase):
         self.assertIn("offline=1", captured)
         self.assertIn(f"cwd={self.repository_root.resolve()}", captured)
 
+    def test_fetches_source_objects_without_checkout_or_persisted_credentials(self) -> None:
+        client = self._make_client()
+        github = pi_review._review.GitHubClient("example/repo", "fake-github-token")
+        head_sha = "a" * 40
+        with mock.patch("subprocess.run", side_effect=[
+            subprocess.CompletedProcess([], 1),
+            subprocess.CompletedProcess([], 0),
+            subprocess.CompletedProcess([], 0),
+        ]) as run:
+            client.prepare_source(github, head_sha)
+
+        fetch = run.call_args_list[1]
+        argv = fetch.args[0]
+        self.assertIn("fetch", argv)
+        self.assertIn("--no-write-fetch-head", argv)
+        self.assertEqual(argv[-2:], ["https://github.com/example/repo.git", head_sha])
+        self.assertNotIn("fake-github-token", " ".join(argv))
+        self.assertIn("AUTHORIZATION: basic ", fetch.kwargs["env"]["GIT_CONFIG_VALUE_0"])
+        self.assertEqual(fetch.kwargs["env"]["GIT_TERMINAL_PROMPT"], "0")
+        self.assertEqual(run.call_args_list[2].args[0][-1], f"{head_sha}^{{commit}}")
+        self.assertTrue(all("checkout" not in call.args[0] for call in run.call_args_list))
+
+    def test_fetch_failure_does_not_expose_git_stderr(self) -> None:
+        client = self._make_client()
+        github = pi_review._review.GitHubClient("example/repo", "fake-github-token")
+        with mock.patch("subprocess.run", side_effect=[
+            subprocess.CompletedProcess([], 1),
+            subprocess.CompletedProcess([], 128, stderr="private credential detail"),
+        ]), self.assertRaisesRegex(pi_review.PiReviewError, "could not fetch PR head") as error:
+            client.prepare_source(github, "a" * 40)
+        self.assertNotIn("private credential detail", str(error.exception))
+
+    def test_rejects_non_sha_source_ref_before_git(self) -> None:
+        client = self._make_client()
+        with mock.patch("subprocess.run") as run, self.assertRaises(pi_review.PiReviewError):
+            client.prepare_source(mock.Mock(), "--upload-pack=unexpected")
+        run.assert_not_called()
+
+    def test_cached_head_source_does_not_replace_trusted_base(self) -> None:
+        def git(*args: str, input_text: str = "") -> str:
+            return subprocess.run(
+                ["git", "-c", "user.name=Test", "-c", "user.email=test@example.com", *args],
+                cwd=self.repository_root,
+                input=input_text,
+                text=True,
+                capture_output=True,
+                check=True,
+            ).stdout.strip()
+
+        git("init", "-q")
+        source = self.repository_root / "manager.py"
+        source.write_text("base implementation\n")
+        git("add", "manager.py")
+        git("commit", "-qm", "base")
+        base = git("rev-parse", "HEAD")
+        blob = git("hash-object", "-w", "--stdin", input_text="new CLI options\n")
+        tree = git("mktree", input_text=f"100644 blob {blob}\tmanager.py\n")
+        head = git("commit-tree", tree, "-p", base, input_text="head\n")
+        config = self.repository_root / ".git/config"
+        original_config = config.read_bytes()
+
+        self._make_client().prepare_source(mock.Mock(), head)
+
+        self.assertEqual(git("show", f"{head}:manager.py"), "new CLI options")
+        self.assertEqual(source.read_text(), "base implementation\n")
+        self.assertEqual(git("rev-parse", "HEAD"), base)
+        self.assertEqual(config.read_bytes(), original_config)
+        self.assertFalse((self.repository_root / ".git/FETCH_HEAD").exists())
+
     def test_sends_large_diff_through_stdin_not_argv(self) -> None:
         client = self._make_client()
         model_input = "x" * 200_000
@@ -677,6 +746,11 @@ class FakePiClient:
         self.attached_diff_paths: list[Path] = []
         self.attached_diffs: list[str] = []
         self.attached_diff_modes: list[int] = []
+        self.source_manifests: list[dict] = []
+        self.prepared_heads: list[str] = []
+
+    def prepare_source(self, _github: object, head_sha: str) -> None:
+        self.prepared_heads.append(head_sha)
 
     def review(
         self,
@@ -691,6 +765,9 @@ class FakePiClient:
         self.retry_malformed.append(retry_malformed)
         self.response_validators.append(response_validator)
         for line in model_input.splitlines():
+            if line.startswith("UNTRUSTED FILE MANIFEST: "):
+                manifest_path = Path(line.removeprefix("UNTRUSTED FILE MANIFEST: "))
+                self.source_manifests.append(json.loads(manifest_path.read_text()))
             if line.startswith("UNTRUSTED DIFF FILE: "):
                 diff_path = Path(
                     line.removeprefix("UNTRUSTED DIFF FILE: ")
@@ -709,6 +786,63 @@ class FakePiClient:
 
 
 class OrchestrationTest(unittest.TestCase):
+    def test_oversized_file_remains_visible_with_exact_source_revisions(self) -> None:
+        github = FakeGitHub()
+        github.files.append({
+            "filename": "env.sh",
+            "status": "modified",
+            "patch": "@@ -1 +1 @@\n-" + "x" * 60_000 + "\n+source modules.sh",
+        })
+        pi_client = FakePiClient([])
+
+        pi_review.run_review(github, pi_client, 7, "prompt")
+
+        self.assertEqual(pi_client.prepared_heads, ["head-1"])
+        self.assertEqual(len(pi_client.source_manifests), 3)
+        for manifest in pi_client.source_manifests:
+            self.assertEqual(manifest["head_sha"], "head-1")
+            self.assertEqual(manifest["base_sha"], "base-1")
+            self.assertEqual(manifest["files"][1], {
+                "path": "env.sh", "status": "modified", "patch_status": "oversized",
+            })
+        for model_input in pi_client.inputs:
+            self.assertIn("git show head-1:", model_input)
+            self.assertIn("git show base-1:", model_input)
+            self.assertIn("not evidence of absence", model_input)
+
+    def test_manifest_keeps_renames_deletions_and_missing_patches(self) -> None:
+        github = FakeGitHub()
+        github.files = [
+            {"filename": "new.py", "previous_filename": "old.py", "status": "renamed"},
+            {"filename": "gone.py", "status": "removed", "patch": "@@ -1 +0,0 @@\n-old"},
+            {"filename": "package-lock.json", "status": "modified", "patch": "+{}"},
+        ]
+        pi_client = FakePiClient([])
+
+        pi_review.run_review(github, pi_client, 7, "prompt")
+
+        self.assertEqual(len(pi_client.source_manifests), 3)
+        files = pi_client.source_manifests[0]["files"]
+        self.assertEqual(files[0], {
+            "path": "new.py", "previous_path": "old.py", "status": "renamed",
+            "patch_status": "binary-or-missing",
+        })
+        self.assertEqual(files[1]["status"], "removed")
+        self.assertEqual(files[2]["patch_status"], "lockfile")
+
+    def test_source_failure_prevents_model_calls_and_publication(self) -> None:
+        github = FakeGitHub()
+        pi_client = FakePiClient([])
+        pi_client.prepare_source = mock.Mock(
+            side_effect=pi_review.PiReviewError("head source unavailable")
+        )
+
+        with self.assertRaisesRegex(pi_review.PiReviewError, "head source unavailable"):
+            pi_review.run_review(github, pi_client, 7, "prompt")
+
+        self.assertEqual(pi_client.inputs, [])
+        self.assertEqual(github.created, [])
+
     def test_fans_out_three_lenses_over_the_whole_diff(self) -> None:
         github = FakeGitHub()
         github.files.append(
@@ -772,6 +906,8 @@ class OrchestrationTest(unittest.TestCase):
             )
         )
         self.assertEqual(len(pi_client.attached_diffs), 3)
+        self.assertEqual(len(pi_client.source_manifests), 3)
+        self.assertTrue(all("git show head-1:" in value for value in pi_client.inputs))
         self.assertTrue(
             all(value.count("🧪") == 50_000 for value in pi_client.attached_diffs)
         )
