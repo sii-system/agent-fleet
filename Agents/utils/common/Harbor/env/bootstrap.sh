@@ -19,4 +19,3 @@ source "$SCRIPT_DIR/opensandbox_s3_profile.sh"
 source "$REPO_ROOT/scripts/prerequisites.sh"
 agent_fleet_prerequisite_init_path
 agent_fleet_prerequisite_init_runtime
-
