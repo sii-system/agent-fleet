@@ -158,6 +158,9 @@ Typical dataset paths:
 | `FLEET_TASKS` | Internal normalized exact task selection from `run_fleet.sh`; unsupported with `ROLLOUT=1` |
 | `TOTAL_WORKERS` | Number of zellij workers |
 | `HARBOR_N_CONCURRENT` | Harbor concurrency, normally the same as `TOTAL_WORKERS` |
+| `HARBOR_N_ATTEMPTS` | Attempts per task across direct and queue-worker runs; defaults to `1` |
+| `HARBOR_MAX_RETRIES` | Retries per failed attempt; defaults to `2` |
+| `HARBOR_INCLUDE_TASKS` | Comma-separated task filter |
 | `RUN_ID` | Run name |
 | `OUTPUT_ROOT` | Parent directory for runs; defaults to `<repo>/runs` |
 | `OUTPUT_PATH` | Full output directory |
@@ -165,7 +168,6 @@ Typical dataset paths:
 | `HARBOR_ZELLIJ_CLOSE_ON_COMPLETE` | `1` closes fixed benchmark sessions after summary generation; `0` keeps the final pane open |
 | `HARBOR_ZELLIJ_KEEP_ON_FAILURE` | Defaults to `1` for interactive or detached launches and `0` for noninteractive foreground runs |
 | `OPIK_URL` | Opik API URL, usually ending in `/api` |
-| `OPIK_URL_OVERRIDE` | Opik API URL forwarded into task containers |
 | `OPIK_API_KEY` | Opik API key |
 | `OPIK_PROJECT_NAME` | Opik project name; defaults to the effective agent, dataset, model, and timestamp |
 | `TRACE_PLUGIN_SOURCE_DIR` | Tracing source path, defaults to `third_party/agent-opik-plugin` |
@@ -178,6 +180,19 @@ Typical dataset paths:
 | `LOCAL_WHEEL_PORT_ATTEMPTS` | Number of local port attempts |
 | `HARBOR_REMOTE_WHEEL_SERVER_URLS` | Comma-separated fallback dependency cache URLs |
 | `HARBOR_SKIP_DOCKERHUB_PREFLIGHT` | Skip Docker Hub preflight connectivity check |
+
+`HARBOR_N_ATTEMPTS` replaces both `HARBOR_RUNS` and `N_ATTEMPTS`.
+The old names remain input aliases: the canonical value wins, then
+`HARBOR_RUNS`, then `N_ATTEMPTS`. `MAX_RETRIES` and `INCLUDE_TASKS` are
+input aliases for `HARBOR_MAX_RETRIES` and `HARBOR_INCLUDE_TASKS`. An explicitly
+empty canonical task filter suppresses a stale legacy filter. Internal
+launchers use only the canonical names; update custom scripts that read the
+old exported defaults. Rollout and Fixer verification force one attempt.
+
+`OPIK_URL` is the sole Harbor tracing endpoint setting. `OPIK_URL_OVERRIDE`
+and `OPIK_BASE` are derived for tracing-hook compatibility and dashboard
+links; supplied values no longer select separate endpoints. Move any endpoint
+configuration to `OPIK_URL`. An empty `OPIK_URL` still disables tracing.
 | `HARBOR_FORCE_BUILD` | Build task images locally instead of using prebuilt images |
 | `HARBOR_TIMEOUT_MULTIPLIER` | General Harbor timeout multiplier |
 | `HARBOR_AGENT_TIMEOUT_MULTIPLIER` | Agent execution timeout override |

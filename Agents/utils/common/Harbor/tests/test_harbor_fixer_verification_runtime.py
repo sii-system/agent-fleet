@@ -149,6 +149,7 @@ class HarborFixerVerificationRuntimeTest(FixerTestCase):
             "HARBOR_LIMIT": "1",
             "HARBOR_RUNS": "3",
             "N_ATTEMPTS": "4",
+            "HARBOR_N_ATTEMPTS": "5",
             "MIN_TEST": "1",
             "AGENT": "claude-code",
             "HARBOR_AGENT_IMPORT_PATH": "/stale/agent.py",
@@ -208,13 +209,15 @@ class HarborFixerVerificationRuntimeTest(FixerTestCase):
         self.assertNotIn("HARBOR_ANTHROPIC_DEFAULT_HAIKU_MODEL", env)
         self.assertNotIn("HARBOR_CLAUDE_CODE_SUBAGENT_MODEL", env)
         self.assertEqual(env["FLEET_TASKS"], "task-b,task-a")
-        self.assertEqual(env["INCLUDE_TASKS"], "task-b,task-a")
+        self.assertNotIn("INCLUDE_TASKS", env)
+        self.assertEqual(env["HARBOR_INCLUDE_TASKS"], "task-b,task-a")
         self.assertEqual(env["HARBOR_LIMIT"], "")
         self.assertEqual(env["DATASET_NAME"], "smith")
         self.assertEqual(env["DATASET_PATH"], "/datasets/swesmith")
         self.assertEqual(env["HARBOR_MODEL"], "source-model")
-        self.assertEqual(env["HARBOR_RUNS"], "1")
-        self.assertEqual(env["N_ATTEMPTS"], "1")
+        self.assertEqual(env["HARBOR_N_ATTEMPTS"], "1")
+        self.assertNotIn("HARBOR_RUNS", env)
+        self.assertNotIn("N_ATTEMPTS", env)
         self.assertEqual(env["MIN_TEST"], "0")
         self.assertEqual(call["cwd"], self.root / "run")
         self.assertTrue(call["start_new_session"])

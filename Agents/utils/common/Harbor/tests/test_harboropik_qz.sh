@@ -45,7 +45,7 @@ run_dry() {
     HOME="$tmp/home" \
     DATASET_NAME=auto \
     DATASET_PATH="$tmp/dataset" \
-    INCLUDE_TASKS=0 \
+    HARBOR_INCLUDE_TASKS=0 \
     OUTPUT_PATH="$tmp/output" \
     QUEUE_DIR="$tmp/queue" \
     RUNTIME_DIR="$tmp/runtime" \

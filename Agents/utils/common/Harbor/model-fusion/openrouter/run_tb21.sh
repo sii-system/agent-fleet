@@ -126,7 +126,7 @@ export HARBOR_CLAUDE_CODE_SUBAGENT_MODEL="${HARBOR_CLAUDE_CODE_SUBAGENT_MODEL:-$
 
 if [[ "$MODE" == "dry-run" ]]; then
   export HARBOR_DRY_RUN=1 MIN_TEST=1 MIN_TEST_INCLUDE_TASK="$TASK_ID"
-  export INCLUDE_TASKS="$TASK_ID" HARBOR_INCLUDE_TASKS="$TASK_ID"
+  export HARBOR_INCLUDE_TASKS="$TASK_ID"
   mkdir -p "$OUTPUT_PATH" "$RUNTIME_DIR"
   proxy_args=(harbor run)
   if harbor_uses_registry_dataset; then
@@ -143,18 +143,18 @@ if [[ "$MODE" == "smoke" ]]; then
   task_file="$(mktemp "${TMPDIR:-/tmp}/openrouter-task.XXXXXX")"
   printf '%s\n' "$TASK_ID" > "$task_file"
   export TASK_SOURCE_FILE="$task_file"
-  export INCLUDE_TASKS="$TASK_ID" HARBOR_INCLUDE_TASKS="$TASK_ID"
-  export TOTAL_WORKERS=1 HARBOR_N_CONCURRENT=1 N_ATTEMPTS=1 HARBOR_RUNS=1
-  export MAX_RETRIES=0 HARBOR_MAX_RETRIES=0
+  export HARBOR_INCLUDE_TASKS="$TASK_ID"
+  export TOTAL_WORKERS=1 HARBOR_N_CONCURRENT=1 HARBOR_N_ATTEMPTS=1
+  export HARBOR_MAX_RETRIES=0
 else
   TASK_SOURCE_FILE="${TASK_SOURCE_FILE:-$REPO_ROOT/Tasks/Terminal-bench-2/harbor_terminalbench21_tasks.txt}"
   [[ -s "$TASK_SOURCE_FILE" ]] || die "task list not found or empty: $TASK_SOURCE_FILE"
-  INCLUDE_TASKS="$(
+  HARBOR_INCLUDE_TASKS="$(
     python3 "$OPENROUTER_DIR/../router_cli_utils.py" task-list-csv "$TASK_SOURCE_FILE"
   )"
-  export TASK_SOURCE_FILE INCLUDE_TASKS HARBOR_INCLUDE_TASKS="$INCLUDE_TASKS"
-  export HARBOR_RUNS="${HARBOR_RUNS:-${N_ATTEMPTS:-1}}"
-  export HARBOR_MAX_RETRIES="${HARBOR_MAX_RETRIES:-${MAX_RETRIES:-0}}"
+  export TASK_SOURCE_FILE HARBOR_INCLUDE_TASKS
+  export HARBOR_N_ATTEMPTS="${HARBOR_N_ATTEMPTS-${HARBOR_RUNS:-${N_ATTEMPTS:-1}}}"
+  export HARBOR_MAX_RETRIES="${HARBOR_MAX_RETRIES-${MAX_RETRIES:-0}}"
 fi
 start_args=()
 [[ "${DETACH:-1}" != "1" ]] || start_args+=(--detach)

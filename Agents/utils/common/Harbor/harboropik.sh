@@ -36,7 +36,7 @@ trap cleanup_verifier_uv_bin_dir EXIT
 #   MIN_TEST=1 bash harboropik.sh                       # quick smoke test
 #   HARBOR_DRY_RUN=1  bash harboropik.sh                    # print command, skip run
 #   OPIK_URL=http://host:5173/api \
-#     HARBOR_RUNS=10 HARBOR_N_CONCURRENT=4 bash harboropik.sh   # standard remote run
+#     HARBOR_N_ATTEMPTS=10 HARBOR_N_CONCURRENT=4 bash harboropik.sh   # standard remote run
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$SCRIPT_DIR/env.sh"
@@ -358,7 +358,7 @@ validate_environment_backend() {
 }
 
 opensandbox_task_image_ref() {
-  local task_dir="${DATASET_PATH:-}/${INCLUDE_TASKS:-}"
+  local task_dir="${DATASET_PATH:-}/${HARBOR_INCLUDE_TASKS:-}"
   local task_config="$task_dir/task.toml"
   local parser_python="${HARBOR_OPIK_PYTHON:-}"
   [[ -f "$task_config" ]] || return 0
@@ -485,7 +485,7 @@ print(ref)
   local -a manager_cmd=(
     "$manager_python" "$HARBOR_OPENSANDBOX_IMAGE_MANAGER"
     --dataset-root "$DATASET_PATH"
-    --include "$INCLUDE_TASKS"
+    --include "$HARBOR_INCLUDE_TASKS"
     --registry "$YICLOUD_HARBOR_HOST"
     --project "$YICLOUD_HARBOR_PROJECT"
     --benchmark-name "$HARBOR_OPENSANDBOX_BENCHMARK"
@@ -514,7 +514,7 @@ print(ref)
     ensure_docker_daemon
   fi
 
-  echo "[INFO] preparing OpenSandbox image for task: $INCLUDE_TASKS" >&2
+  echo "[INFO] preparing OpenSandbox image for task: $HARBOR_INCLUDE_TASKS" >&2
   if ! HARBOR_OPENSANDBOX_IMAGE_REF="$("${manager_cmd[@]}")"; then
     echo "[ERROR] OpenSandbox image preparation failed" >&2
     exit 1
@@ -697,9 +697,9 @@ task_is_included() {
   local target="$1"
   local item
 
-  [[ -n "$INCLUDE_TASKS" ]] || return 1
+  [[ -n "$HARBOR_INCLUDE_TASKS" ]] || return 1
 
-  IFS=',' read -r -a include_arr <<< "$INCLUDE_TASKS"
+  IFS=',' read -r -a include_arr <<< "$HARBOR_INCLUDE_TASKS"
   for item in "${include_arr[@]}"; do
     item="${item#"${item%%[![:space:]]*}"}"
     item="${item%"${item##*[![:space:]]}"}"
@@ -868,17 +868,17 @@ apply_min_test_defaults() {
     return 0
   fi
 
-  if [[ "$HARBOR_RUNS" == "10" ]]; then
-    HARBOR_RUNS="1"
+  if [[ "$HARBOR_N_ATTEMPTS" == "10" ]]; then
+    HARBOR_N_ATTEMPTS="1"
   fi
   if [[ -z "$HARBOR_LIMIT" ]]; then
     HARBOR_LIMIT="1"
   fi
-  if [[ -z "$INCLUDE_TASKS" && -n "$MIN_TEST_INCLUDE_TASK" ]]; then
-    INCLUDE_TASKS="$MIN_TEST_INCLUDE_TASK"
+  if [[ -z "$HARBOR_INCLUDE_TASKS" && -n "$MIN_TEST_INCLUDE_TASK" ]]; then
+    HARBOR_INCLUDE_TASKS="$MIN_TEST_INCLUDE_TASK"
   fi
 
-  echo "[INFO] MIN_TEST=1 enabled (runs=$HARBOR_RUNS, limit=$HARBOR_LIMIT, include_tasks=$INCLUDE_TASKS)"
+  echo "[INFO] MIN_TEST=1 enabled (runs=$HARBOR_N_ATTEMPTS, limit=$HARBOR_LIMIT, include_tasks=$HARBOR_INCLUDE_TASKS)"
 }
 
 run_oracle_task() {
@@ -916,7 +916,7 @@ run_oracle_task() {
     --n-concurrent "$HARBOR_N_CONCURRENT"
     --max-retries "$HARBOR_MAX_RETRIES"
     -o "$out_dir"
-    -k "$HARBOR_RUNS"
+    -k "$HARBOR_N_ATTEMPTS"
     -a oracle
     --timeout-multiplier "$HARBOR_TIMEOUT_MULTIPLIER"
     --agent-setup-timeout-multiplier "$HARBOR_AGENT_SETUP_TIMEOUT_MULTIPLIER"
@@ -1010,10 +1010,10 @@ run_oracle_task() {
   if [[ -n "$HARBOR_LIMIT" ]]; then
     cmd+=( -l "$HARBOR_LIMIT" )
   fi
-  if [[ -n "$INCLUDE_TASKS" ]]; then
+  if [[ -n "$HARBOR_INCLUDE_TASKS" ]]; then
     local task_name
     local -a include_arr
-    IFS=',' read -r -a include_arr <<< "$INCLUDE_TASKS"
+    IFS=',' read -r -a include_arr <<< "$HARBOR_INCLUDE_TASKS"
     for task_name in "${include_arr[@]}"; do
       task_name="${task_name#"${task_name%%[![:space:]]*}"}"
       task_name="${task_name%"${task_name##*[![:space:]]}"}"
@@ -1112,7 +1112,7 @@ run_harbor() {
   local effective_harbor_task_id include_task
   effective_harbor_task_id="${HARBOR_TASK_ID:-}"
   if [[ -z "$effective_harbor_task_id" ]]; then
-    include_task="$(single_include_task "${INCLUDE_TASKS:-${HARBOR_INCLUDE_TASKS:-}}" || true)"
+    include_task="$(single_include_task "${HARBOR_INCLUDE_TASKS:-}" || true)"
     if [[ -n "$include_task" ]]; then
       effective_harbor_task_id="$include_task"
     fi
@@ -1144,7 +1144,7 @@ run_harbor() {
     --n-concurrent "$HARBOR_N_CONCURRENT"
     --max-retries "$HARBOR_MAX_RETRIES"
     -o "$out_dir"
-    -k "$HARBOR_RUNS"
+    -k "$HARBOR_N_ATTEMPTS"
     --ae "HARBOR_LOCAL_WHEEL_SERVER_URL=${HARBOR_LOCAL_WHEEL_SERVER_URL:-}"
     --ae "PIP_DEFAULT_TIMEOUT=$HARBOR_PIP_DEFAULT_TIMEOUT"
     --ae "PIP_RETRIES=$HARBOR_PIP_RETRIES"
@@ -1152,8 +1152,7 @@ run_harbor() {
     --ae "HARBOR_DATASET=$(harbor_metadata_dataset_name)"
     --ae "HARBOR_RUN_ID=${HARBOR_RUN_ID:-$job_name}"
     --ae "HARBOR_TASK_ID=$effective_harbor_task_id"
-    --ae "HARBOR_INCLUDE_TASKS=${HARBOR_INCLUDE_TASKS:-$INCLUDE_TASKS}"
-    --ae "INCLUDE_TASKS=$INCLUDE_TASKS"
+    --ae "HARBOR_INCLUDE_TASKS=$HARBOR_INCLUDE_TASKS"
     --timeout-multiplier "$HARBOR_TIMEOUT_MULTIPLIER"
     --agent-setup-timeout-multiplier "$HARBOR_AGENT_SETUP_TIMEOUT_MULTIPLIER"
   )
@@ -1382,8 +1381,8 @@ run_harbor() {
     cmd+=( -l "$HARBOR_LIMIT" )
   fi
 
-  if [[ -n "$INCLUDE_TASKS" ]]; then
-    IFS=',' read -r -a include_arr <<< "$INCLUDE_TASKS"
+  if [[ -n "$HARBOR_INCLUDE_TASKS" ]]; then
+    IFS=',' read -r -a include_arr <<< "$HARBOR_INCLUDE_TASKS"
     for task_name in "${include_arr[@]}"; do
       task_name="${task_name#"${task_name%%[![:space:]]*}"}"
       task_name="${task_name%"${task_name##*[![:space:]]}"}"
@@ -1428,11 +1427,11 @@ run_harbor() {
     echo "[INFO] running Harbor without Opik tracing"
   fi
   if harbor_uses_local_opensandbox_dataset; then
-    echo "[INFO] agent: $AGENT | runs: $HARBOR_RUNS | path: $DATASET_PATH"
+    echo "[INFO] agent: $AGENT | runs: $HARBOR_N_ATTEMPTS | path: $DATASET_PATH"
   elif harbor_uses_registry_dataset; then
-    echo "[INFO] agent: $AGENT | runs: $HARBOR_RUNS | dataset: $(harbor_registry_dataset_name)"
+    echo "[INFO] agent: $AGENT | runs: $HARBOR_N_ATTEMPTS | dataset: $(harbor_registry_dataset_name)"
   else
-    echo "[INFO] agent: $AGENT | runs: $HARBOR_RUNS | path: $DATASET_PATH"
+    echo "[INFO] agent: $AGENT | runs: $HARBOR_N_ATTEMPTS | path: $DATASET_PATH"
   fi
   echo "[INFO] agent_import_path: ${HARBOR_AGENT_IMPORT_PATH:-<none>}"
   echo "[INFO] output dir: $out_dir"
@@ -1522,7 +1521,7 @@ run_opencode_task() {
   local effective_harbor_task_id include_task
   effective_harbor_task_id="${HARBOR_TASK_ID:-}"
   if [[ -z "$effective_harbor_task_id" ]]; then
-    include_task="$(single_include_task "${INCLUDE_TASKS:-${HARBOR_INCLUDE_TASKS:-}}" || true)"
+    include_task="$(single_include_task "${HARBOR_INCLUDE_TASKS:-}" || true)"
     if [[ -n "$include_task" ]]; then
       effective_harbor_task_id="$include_task"
     fi
@@ -1571,8 +1570,7 @@ run_opencode_task() {
       --ae "HARBOR_DATASET=$(harbor_metadata_dataset_name)"
       --ae "HARBOR_RUN_ID=${HARBOR_RUN_ID:-$RUN_ID}"
       --ae "HARBOR_TASK_ID=$effective_harbor_task_id"
-      --ae "HARBOR_INCLUDE_TASKS=${HARBOR_INCLUDE_TASKS:-$INCLUDE_TASKS}"
-      --ae "INCLUDE_TASKS=$INCLUDE_TASKS"
+      --ae "HARBOR_INCLUDE_TASKS=$HARBOR_INCLUDE_TASKS"
       --ae "HARBOR_TRIAL_ID=$trial_id"
       --ae "NO_PROXY=$no_proxy_value"
       --ae "no_proxy=$no_proxy_value"
@@ -1647,13 +1645,13 @@ run_opencode_task() {
 
     append_package_environment_args
 
-    if [[ -n "$INCLUDE_TASKS" ]]; then
-      IFS=',' read -r -a include_arr <<< "$INCLUDE_TASKS"
+    if [[ -n "$HARBOR_INCLUDE_TASKS" ]]; then
+      IFS=',' read -r -a include_arr <<< "$HARBOR_INCLUDE_TASKS"
       for task_name in "${include_arr[@]}"; do
         task_name="${task_name#"${task_name%%[![:space:]]*}"}"
         task_name="${task_name%"${task_name##*[![:space:]]}"}"
         if [[ -n "$task_name" ]]; then
-          # Harbor selects tasks in the outer CLI. Passing INCLUDE_TASKS only as
+          # Harbor selects tasks in the outer CLI. Passing HARBOR_INCLUDE_TASKS only as
           # agent env is too late and makes one worker run many tasks.
           cmd+=( -i "$(harbor_registry_task_name "$task_name")" )
         fi
@@ -1665,7 +1663,7 @@ run_opencode_task() {
     fi
   }
 
-  echo "[INFO] opencode run attempts=$N_ATTEMPTS"
+  echo "[INFO] opencode run attempts=$HARBOR_N_ATTEMPTS"
   echo "[INFO] project: $OPIK_PROJECT_NAME"
   echo "[INFO] output dir: $out_dir"
   if harbor_uses_local_opensandbox_dataset; then
@@ -1682,10 +1680,10 @@ run_opencode_task() {
 
   local overall_rc=0
   local attempt trial_id rc
-  for ((attempt = 1; attempt <= N_ATTEMPTS; attempt++)); do
+  for ((attempt = 1; attempt <= HARBOR_N_ATTEMPTS; attempt++)); do
     trial_id="attempt-${attempt}"
     build_opencode_cmd "$trial_id"
-    echo "[INFO] attempt $attempt/$N_ATTEMPTS trial_id=$trial_id"
+    echo "[INFO] attempt $attempt/$HARBOR_N_ATTEMPTS trial_id=$trial_id"
     echo "[INFO] harbor cmd: $HARBOR_OPIK_PYTHON $HARBOR_OPENCODE_DIR/enable_track_harbor.py run ..."
 
     if [[ "$HARBOR_DRY_RUN" == "1" ]]; then

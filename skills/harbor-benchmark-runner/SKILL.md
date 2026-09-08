@@ -45,7 +45,7 @@ request, follow the rollout section of the
    concurrency, not total tasks. `--task` selects exact names for built-in
    aliases and local paths; it is unsupported for arbitrary registry IDs and
    rollout mode. For a registry run, `HARBOR_LIMIT` bounds tasks; local runs
-   require a selected task list. Set `N_ATTEMPTS=1` and `HARBOR_RUNS=1` when
+   require a selected task list. Set `HARBOR_N_ATTEMPTS=1` when
    only one attempt is intended. Keep worker and concurrency counts aligned.
 6. Launch with `scripts/run_fleet.sh --taskset ... --agent ... --workers ...`
    or `bash Agents/utils/common/Harbor/start.sh`. Both local and registry runs
@@ -60,7 +60,7 @@ request, follow the rollout section of the
 Example one-task canary from the repository root:
 
 ```bash
-N_ATTEMPTS=1 HARBOR_RUNS=1 ./scripts/run_fleet.sh \
+HARBOR_N_ATTEMPTS=1 ./scripts/run_fleet.sh \
   --taskset terminalbench21 --task fix-git --agent pi --workers 1
 ```
 

@@ -57,9 +57,9 @@ if [[ "${1:-}" == "--validate-task-selection" ]]; then
   exit 0
 fi
 {
-  printf 'DATASET_NAME=%s RUN_ID=%s ZELLIJ_SESSION_NAME=%s HARBOR_RUNS=%s FLEET_BATCH_HARBOR_RUNS=%s FLEET_TASKS=%s OUTPUT_PATH=<%s> TASK_FILE=<%s> QUEUE_DIR=<%s> RUNTIME_DIR=<%s> LAYOUT_FILE=<%s> JOBS_ROOT=<%s> args=%s\\n' \
+  printf 'DATASET_NAME=%s RUN_ID=%s ZELLIJ_SESSION_NAME=%s HARBOR_N_ATTEMPTS=%s FLEET_BATCH_HARBOR_RUNS=%s FLEET_TASKS=%s OUTPUT_PATH=<%s> TASK_FILE=<%s> QUEUE_DIR=<%s> RUNTIME_DIR=<%s> LAYOUT_FILE=<%s> JOBS_ROOT=<%s> args=%s\\n' \
     "${DATASET_NAME-}" "${RUN_ID-}" "${ZELLIJ_SESSION_NAME-}" \
-    "${HARBOR_RUNS-}" "${FLEET_BATCH_HARBOR_RUNS-}" "${FLEET_TASKS-}" \
+    "${HARBOR_N_ATTEMPTS-}" "${FLEET_BATCH_HARBOR_RUNS-}" "${FLEET_TASKS-}" \
     "${OUTPUT_PATH-<unset>}" "${TASK_FILE-<unset>}" "${QUEUE_DIR-<unset>}" \
     "${RUNTIME_DIR-<unset>}" "${LAYOUT_FILE-<unset>}" "${JOBS_ROOT-<unset>}" "$*"
 } >>"$STUB_CALLS"
@@ -250,12 +250,12 @@ fi
             "--spec",
             str(first),
             str(second),
-            env_overrides={"HARBOR_RUNS": "10"},
+            env_overrides={"HARBOR_N_ATTEMPTS": "10"},
         )
 
         self.assertEqual(result.returncode, 0, result.stderr)
         calls = self.calls.read_text(encoding="utf-8").splitlines()
-        self.assertTrue(all("HARBOR_RUNS=10" in line for line in calls))
+        self.assertTrue(all("HARBOR_N_ATTEMPTS=10" in line for line in calls))
         self.assertTrue(
             all("FLEET_BATCH_HARBOR_RUNS=2" in line for line in calls)
         )

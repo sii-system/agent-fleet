@@ -2898,7 +2898,10 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     source = parser.add_mutually_exclusive_group(required=True)
     source.add_argument("--task-dir", type=Path)
     source.add_argument("--dataset-root", type=Path)
-    parser.add_argument("--include", default=os.environ.get("INCLUDE_TASKS", ""))
+    parser.add_argument(
+        "--include",
+        default=os.environ.get("HARBOR_INCLUDE_TASKS", os.environ.get("INCLUDE_TASKS", "")),
+    )
     parser.add_argument(
         "--registry",
         default=os.environ.get("YICLOUD_HARBOR_HOST", ""),

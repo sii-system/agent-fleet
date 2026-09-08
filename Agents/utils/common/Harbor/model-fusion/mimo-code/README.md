@@ -23,8 +23,7 @@ bash Agents/utils/common/Harbor/model-fusion/mimo-code/run_tb21.sh dry-run fix-g
 bash Agents/utils/common/Harbor/model-fusion/mimo-code/run_tb21.sh smoke fix-git
 
 # Run the complete Terminal-Bench 2.1 list with five trials per task.
-N_ATTEMPTS=5 \
-HARBOR_RUNS=5 \
+HARBOR_N_ATTEMPTS=5 \
 TOTAL_WORKERS=20 \
 HARBOR_N_CONCURRENT=20 \
 bash Agents/utils/common/Harbor/model-fusion/mimo-code/run_tb21.sh full

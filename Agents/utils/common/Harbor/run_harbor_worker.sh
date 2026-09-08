@@ -154,14 +154,11 @@ run_claimed_task() {
   (
     export HARBOR_ROOT MODEL AGENT API_KEY BASE_URL OPIK_URL OPIK_URL_OVERRIDE OPIK_PROJECT_NAME OPIK_API_KEY OPIK_WORKSPACE
     # Trace naming in the Claude hook uses HARBOR_TASK_ID as the canonical
-    # per-task identifier. Keep INCLUDE_TASKS for Harbor task selection.
+    # per-task identifier. Keep HARBOR_INCLUDE_TASKS for Harbor task selection.
     export HARBOR_TASK_ID="$task_name"
     export HARBOR_INCLUDE_TASKS="$task_name"
-    export INCLUDE_TASKS="$task_name"
     export HARBOR_LIMIT=""
-    export HARBOR_RUNS="$N_ATTEMPTS"
     export HARBOR_N_CONCURRENT=1
-    export HARBOR_MAX_RETRIES="$MAX_RETRIES"
     export JOBS_ROOT="$task_jobs_root"
     export HARBOR_QUEUE_WORKER=1
 
