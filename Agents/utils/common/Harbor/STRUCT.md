@@ -105,12 +105,10 @@ precedence; credentials belong in `config.local.env` or the shell environment.
 | Module under `env/` | Responsibility |
 | --- | --- |
 | `defaults.sh` | Run paths, gateway/diagnostic/tracing defaults, and runner/cache locations |
-| `agent_config.sh` | Model routing, generation settings, and task-container configuration |
+| `agent_config.sh` | Model routing, generation settings, OpenCode configuration, and agent validation |
 | `sandbox_config.sh` | Provider connections, upload settings, and preflight defaults |
-| `opencode_config.sh` | OpenCode secrets and generated provider configuration |
 | `rollout_config.sh` | Load `RL_ENV_FILE` and derive shared rollout defaults |
 | `environment_config.sh` | Resolve the effective backend, verifier bundle, and image settings |
-| `agents.sh` | Agent predicates and validation |
 | `lifecycle.sh` | Run directories, process identity, shutdown, and reset |
 | `datasets.sh` | Dataset resolution, task filtering, and queue claims |
 | `dependencies.sh` | Cache preparation/delivery, verifier bundles, and worker readiness |

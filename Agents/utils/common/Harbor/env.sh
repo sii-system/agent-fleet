@@ -41,8 +41,6 @@ source "$SCRIPT_DIR/env/defaults.sh"
 source "$SCRIPT_DIR/env/agent_config.sh"
 # shellcheck source=env/sandbox_config.sh
 source "$SCRIPT_DIR/env/sandbox_config.sh"
-# shellcheck source=env/opencode_config.sh
-source "$SCRIPT_DIR/env/opencode_config.sh"
 
 NEXT_INDEX_FILE="${QUEUE_DIR}/next_index"
 LOCK_FILE="${QUEUE_DIR}/.queue.lock"
@@ -88,8 +86,6 @@ export RL_TEMPERATURE RL_TOP_P RL_TOP_K RL_MIN_P RL_COLLECT_ROLLOUT_DETAILS RL_E
 export PATH="/opt/tb-venv/bin:${PATH}"
 
 # Helpers share the initialized environment and do not launch work when sourced.
-# shellcheck source=env/agents.sh
-source "$SCRIPT_DIR/env/agents.sh"
 # shellcheck source=env/lifecycle.sh
 source "$SCRIPT_DIR/env/lifecycle.sh"
 # shellcheck source=env/datasets.sh
