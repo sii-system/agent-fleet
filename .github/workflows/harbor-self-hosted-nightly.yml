@@ -112,7 +112,6 @@ jobs:
           AGENT: ${{ steps.params.outputs.agent }}
           BENCHMARK: ${{ steps.params.outputs.benchmark }}
           DATASET_PATH: ${{ steps.params.outputs.dataset_path }}
-          INCLUDE_TASKS: ${{ steps.params.outputs.tasks }}
           HARBOR_INCLUDE_TASKS: ${{ steps.params.outputs.tasks }}
           OUTPUT_PATH: ${{ steps.params.outputs.output_path }}
           RUN_ID: ${{ steps.params.outputs.run_id }}
@@ -120,7 +119,7 @@ jobs:
           TOTAL_WORKERS: "10"
           HARBOR_N_CONCURRENT: "10"
           HARBOR_ENVIRONMENT_TYPE: docker
-          HARBOR_RUNS: "1"
+          HARBOR_N_ATTEMPTS: "1"
           HARBOR_LIMIT: ""
           HARBOR_MAX_RETRIES: "0"
           MIN_TEST: "0"

@@ -281,13 +281,11 @@ run_harboropik() {
   local min_test="${9:-0}"
   local runs="${10:-1}"
   local n_concurrent="${11:-1}"
-  local opik_base="http://opik.example"
   local opik_url_override="http://opik.example/api"
   local hook_flag="1"
   if [[ "$trace" == "false" ]]; then
     # No Opik configuration at all: the run must still work, and the
     # hook default must follow the disabled tracing switch.
-    opik_base=""
     opik_url_override=""
     hook_flag=""
   fi
@@ -321,12 +319,10 @@ run_harboropik() {
     AGENT="$agent" \
     DATASET_NAME="$dataset_name" \
     DATASET_PATH="$dataset_path" \
-    INCLUDE_TASKS="$include_tasks" \
+    HARBOR_INCLUDE_TASKS="$include_tasks" \
     OUTPUT_PATH="$output_dir/run" \
     HARBOR_QUEUE_WORKER="$queue_worker" \
     OPIK_URL="$opik_url_override" \
-    OPIK_BASE="$opik_base" \
-    OPIK_URL_OVERRIDE="$opik_url_override" \
     OPIK_API_KEY="fake-opik-key" \
     BASE_URL="http://llm.example" \
     API_KEY="fake-llm-key" \
@@ -337,8 +333,7 @@ run_harboropik() {
     HARBOR_CC_PY_WHEEL_DIR_SOURCE="$wheel_dir" \
     TRACE_PLUGIN_SOURCE_DIR="$trace_dir" \
     HARBOR_SKIP_DOCKERHUB_PREFLIGHT="1" \
-    HARBOR_RUNS="$runs" \
-    N_ATTEMPTS="1" \
+    HARBOR_N_ATTEMPTS="$runs" \
     HARBOR_N_CONCURRENT="$n_concurrent" \
     TOTAL_WORKERS="1" \
     HARBOR_MAX_RETRIES="0" \
@@ -496,14 +491,18 @@ main() {
   opencode_registry_capture="$tmp/opencode-registry.args"
   run_harboropik \
     "opencode" "$capture_bin" "$opencode_registry_capture" "$tmp/opencode-registry" \
-    "terminalbench21" "" "true" "0" "0" "1" "20"
+    "terminalbench21" "" "true" "0" "0" "3" "20"
   assert_arg_pair "$opencode_registry_capture" "--n-concurrent" "20"
+  assert_arg_pair "$opencode_registry_capture" "-k" "1"
+  grep -q "attempt 3/3 trial_id=attempt-3" "$tmp/opencode-registry/opencode.log"
 
   opencode_local_capture="$tmp/opencode-local.args"
   run_harboropik \
     "opencode" "$capture_bin" "$opencode_local_capture" "$tmp/opencode-local" \
-    "auto" "" "true" "0" "0" "1" "20"
+    "auto" "" "true" "0" "0" "3" "20"
   assert_arg_pair "$opencode_local_capture" "--n-concurrent" "1"
+  assert_arg_pair "$opencode_local_capture" "-k" "1"
+  grep -q "attempt 3/3 trial_id=attempt-3" "$tmp/opencode-local/opencode.log"
 
   seta_capture="$tmp/seta-default.args"
   run_harboropik \

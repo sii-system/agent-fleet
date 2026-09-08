@@ -346,9 +346,8 @@ while true; do
     )"
     export HARBOR_TASK_ID="$task_name"
     export HARBOR_INCLUDE_TASKS="$task_name"
-    export INCLUDE_TASKS="$task_name"
     export HARBOR_LIMIT=""
-    export HARBOR_RUNS=1
+    export HARBOR_N_ATTEMPTS=1
     export HARBOR_N_CONCURRENT=1
     export JOBS_ROOT="$task_jobs_root"
     case "${force_build:-${RL_FORCE_BUILD:-${HARBOR_FORCE_BUILD:-0}}}" in

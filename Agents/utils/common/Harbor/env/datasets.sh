@@ -162,9 +162,8 @@ harbor_prepare_registry_task_selection() {
     return 2
   fi
   rm -f "$selected_tasks"
-  INCLUDE_TASKS="$FLEET_TASKS"
   HARBOR_INCLUDE_TASKS="$FLEET_TASKS"
-  export INCLUDE_TASKS HARBOR_INCLUDE_TASKS
+  export HARBOR_INCLUDE_TASKS
 }
 
 harbor_validate_task_selection() {

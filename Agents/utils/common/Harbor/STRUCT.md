@@ -89,12 +89,13 @@ locations, and error compatibility remain in `harbor_analyzer/pi.py`.
 
 ## Environment Modules
 
-`env.sh` remains the public source entry point for launchers, workers, and
-rollout. It resolves the Harbor/repository paths, loads shared configuration,
-initializes prerequisites, keeps the quick-start settings visible, sources the
-configuration modules in order, exports
-the existing variables, and loads the shell helpers. `SCRIPT_DIR` always refers
-to the Harbor directory, not `env/`; callers continue to source `env.sh`.
+`env.sh` is the user-facing source entry point for launchers, workers, and
+rollout. It exposes only quick-start settings and delegates initialization to
+`env/bootstrap.sh`. The bootstrap resolves paths and loads saved configuration
+first; after the user defaults are applied, `env/runtime.sh` loads the modules,
+initializes queue paths, exports runtime settings, and loads helpers. Both are
+sourced at top level so custom rollout configuration retains shell scope.
+`SCRIPT_DIR` always refers to the Harbor directory, not `env/`.
 
 The quick-start block owns `AGENT`, `MODEL`, `BASE_URL`, `API_KEY`,
 `DATASET_NAME`, `DATASET_PATH`, and `TOTAL_WORKERS`, plus the optional
@@ -104,6 +105,8 @@ precedence; credentials belong in `config.local.env` or the shell environment.
 
 | Module under `env/` | Responsibility |
 | --- | --- |
+| `bootstrap.sh` | Paths, saved configuration, and prerequisite setup |
+| `runtime.sh` | Ordered module loading, queue paths, and runtime exports |
 | `defaults.sh` | Run paths, gateway/diagnostic/tracing defaults, and runner/cache locations |
 | `agent_config.sh` | Model routing, generation settings, OpenCode configuration, and agent validation |
 | `sandbox_config.sh` | Provider connections, upload settings, and preflight defaults |
@@ -116,7 +119,7 @@ precedence; credentials belong in `config.local.env` or the shell environment.
 Configuration module order is intentional: model/gateway defaults precede
 generated agent configuration, and rollout configuration precedes effective
 backend selection. Helper modules only define functions. Keep their public
-function names and the explicit export list in `env.sh` stable; structured
+function names and the explicit export list in `env/runtime.sh` stable; structured
 parsing and data workflows continue to live in the existing Python helpers.
 
 ## Shell and Python Boundaries
@@ -191,6 +194,9 @@ Typical dataset paths:
 | `FLEET_TASKS` | Internal normalized exact task selection from `run_fleet.sh`; unsupported with `ROLLOUT=1` |
 | `TOTAL_WORKERS` | Number of zellij workers |
 | `HARBOR_N_CONCURRENT` | Harbor concurrency, normally the same as `TOTAL_WORKERS` |
+| `HARBOR_N_ATTEMPTS` | Attempts per task across direct and queue-worker runs; defaults to `1` |
+| `HARBOR_MAX_RETRIES` | Retries per failed attempt; defaults to `2` |
+| `HARBOR_INCLUDE_TASKS` | Comma-separated task filter |
 | `RUN_ID` | Run name |
 | `OUTPUT_ROOT` | Parent directory for runs; defaults to `<repo>/runs` |
 | `OUTPUT_PATH` | Full output directory |
@@ -198,7 +204,6 @@ Typical dataset paths:
 | `HARBOR_ZELLIJ_CLOSE_ON_COMPLETE` | `1` closes fixed benchmark sessions after summary generation; `0` keeps the final pane open |
 | `HARBOR_ZELLIJ_KEEP_ON_FAILURE` | Defaults to `1` for interactive or detached launches and `0` for noninteractive foreground runs |
 | `OPIK_URL` | Opik API URL, usually ending in `/api` |
-| `OPIK_URL_OVERRIDE` | Opik API URL forwarded into task containers |
 | `OPIK_API_KEY` | Opik API key |
 | `OPIK_PROJECT_NAME` | Opik project name; defaults to the effective agent, dataset, model, and timestamp |
 | `TRACE_PLUGIN_SOURCE_DIR` | Tracing source path, defaults to `third_party/agent-opik-plugin` |
@@ -211,6 +216,21 @@ Typical dataset paths:
 | `LOCAL_WHEEL_PORT_ATTEMPTS` | Number of local port attempts |
 | `HARBOR_REMOTE_WHEEL_SERVER_URLS` | Comma-separated fallback dependency cache URLs |
 | `HARBOR_SKIP_DOCKERHUB_PREFLIGHT` | Skip Docker Hub preflight connectivity check |
+
+`HARBOR_N_ATTEMPTS` replaces both `HARBOR_RUNS` and `N_ATTEMPTS`.
+The old names remain input aliases: the canonical value wins, then
+`HARBOR_RUNS`, then `N_ATTEMPTS`. Empty attempt/retry values use the next
+fallback or default, matching the previous numeric settings. `MAX_RETRIES`
+and `INCLUDE_TASKS` are
+input aliases for `HARBOR_MAX_RETRIES` and `HARBOR_INCLUDE_TASKS`. An explicitly
+empty canonical task filter suppresses a stale legacy filter. Internal
+launchers use only the canonical names; update custom scripts that read the
+old exported defaults. Rollout and Fixer verification force one attempt.
+
+`OPIK_URL` is the sole Harbor tracing endpoint setting. `OPIK_URL_OVERRIDE`
+and `OPIK_BASE` are derived for tracing-hook compatibility and dashboard
+links; supplied values no longer select separate endpoints. Move any endpoint
+configuration to `OPIK_URL`. An empty `OPIK_URL` still disables tracing.
 | `HARBOR_FORCE_BUILD` | Build task images locally instead of using prebuilt images |
 | `HARBOR_TIMEOUT_MULTIPLIER` | General Harbor timeout multiplier |
 | `HARBOR_AGENT_TIMEOUT_MULTIPLIER` | Agent execution timeout override |

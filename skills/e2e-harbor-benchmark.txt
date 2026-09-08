@@ -15,7 +15,7 @@ Requirements:
    download/install paths. If CLAUDE_CODE_VERSION, CLAUDE_CODE_TGZ_BASENAME, or
    HARBOR_CC_* cache variables are set, use them deliberately.
 3. Run exactly 3 SETA tasks and 3 Terminal-Bench 2.1 tasks with TOTAL_WORKERS=3,
-   HARBOR_N_CONCURRENT=3, N_ATTEMPTS=1, and HARBOR_RUNS=1. Preserve the requested
+   HARBOR_N_CONCURRENT=3, and HARBOR_N_ATTEMPTS=1. Preserve the requested
    agent (claude-code, opencode, or pi) and backend. Select three exact task IDs
    with scripts/run_fleet.sh --task, or bound a registry run with HARBOR_LIMIT=3.
    Worker count alone does not limit tasks. For local runs, use a three-task

@@ -12,8 +12,9 @@ HARBOR_PI_DIR="${HARBOR_PI_DIR:-$AGENTS_DIR/Harbor-pi}"
 WORKSPACE_DIR="${WORKSPACE_DIR:-/workspace}"
 
 RUN_ID="${RUN_ID:-$(date +%Y-%m-%d-%H%M)-harbor-tui}"
-N_ATTEMPTS="${N_ATTEMPTS:-1}"
-MAX_RETRIES="${MAX_RETRIES:-${HARBOR_MAX_RETRIES:-2}}"
+# Canonical settings take precedence; old names are accepted only as inputs.
+HARBOR_N_ATTEMPTS="${HARBOR_N_ATTEMPTS:-${HARBOR_RUNS:-${N_ATTEMPTS:-1}}}"
+HARBOR_MAX_RETRIES="${HARBOR_MAX_RETRIES:-${MAX_RETRIES:-2}}"
 _HARBOR_EFFECTIVE_MODEL="${HARBOR_MODEL:-$MODEL}"
 # OpenCode requires provider/model for custom providers. Keep MODEL shared with
 # claude-code, and only add this prefix when AGENT=opencode.
@@ -117,8 +118,10 @@ harbor_trace_to_opik_enabled() {
   OPIK_URL="${OPIK_URL:-}" OPIK_TRACK_DISABLE="${OPIK_TRACK_DISABLE:-}" \
     python3 "$SCRIPT_DIR/opik_trace_gate.py"
 }
-OPIK_URL_OVERRIDE="${OPIK_URL_OVERRIDE:-$OPIK_URL}"
-OPIK_BASE="${OPIK_BASE:-${OPIK_URL_OVERRIDE%/api}}"
+# Derived compatibility values for the tracing hooks and dashboard links.
+OPIK_URL_OVERRIDE="$OPIK_URL"
+OPIK_BASE="${OPIK_URL%/}"
+OPIK_BASE="${OPIK_BASE%/api}"
 
 harbor_run_name_component() {
   local value

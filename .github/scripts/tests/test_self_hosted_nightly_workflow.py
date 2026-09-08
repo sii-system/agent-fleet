@@ -96,7 +96,6 @@ class WorkflowTest(unittest.TestCase):
         self.assertIn("harbor_nightly_select.py", self.workflow)
 
     def test_passes_the_sample_to_harbor(self):
-        self.assertIn("INCLUDE_TASKS: ${{ steps.params.outputs.tasks }}", self.workflow)
         self.assertIn("HARBOR_INCLUDE_TASKS: ${{ steps.params.outputs.tasks }}", self.workflow)
         self.assertIn('scripts/run_fleet.sh --taskset "$BENCHMARK"', self.workflow)
         self.assertIn("Verify sampled tasks completed", self.workflow)

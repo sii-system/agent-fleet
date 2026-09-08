@@ -93,7 +93,7 @@ run_dry() {
     AGENT="$agent" \
     DATASET_NAME="$dataset_name" \
     DATASET_PATH="$tmp/dataset" \
-    INCLUDE_TASKS="$include_tasks" \
+    HARBOR_INCLUDE_TASKS="$include_tasks" \
     OUTPUT_PATH="$tmp/output" \
     QUEUE_DIR="$queue_dir" \
     RUNTIME_DIR="$runtime_dir" \
