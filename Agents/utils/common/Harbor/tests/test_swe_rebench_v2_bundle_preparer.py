@@ -66,7 +66,7 @@ class SweRebenchV2BundlePreparerTest(unittest.TestCase):
         self.assertTrue(swe_rebench_v2_bundle_preparer.archive_ready(output))
 
     def test_shell_builder_uses_configured_runner_python(self):
-        env_sh = Path(__file__).parents[1] / "env.sh"
+        env_sh = Path(__file__).parents[1] / "env" / "dependencies.sh"
         runner_python = self.root / "runner-python"
         invocation_log = self.root / "runner-invocation.txt"
         preparer = self.root / "preparer.py"

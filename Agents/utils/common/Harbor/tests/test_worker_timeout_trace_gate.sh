@@ -9,7 +9,7 @@ HARBOR_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SCRIPT_DIR="$HARBOR_DIR"
 
 source /dev/stdin <<EOF
-$(sed -n '/^harbor_trace_to_opik_enabled()/,/^}/p' "$HARBOR_DIR/env.sh")
+$(sed -n '/^harbor_trace_to_opik_enabled()/,/^}/p' "$HARBOR_DIR/env/defaults.sh")
 $(sed -n '/^finalize_timeout_trace()/,/^}/p' "$HARBOR_DIR/run_harbor_worker.sh")
 EOF
 

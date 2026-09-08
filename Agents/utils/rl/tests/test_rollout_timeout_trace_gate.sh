@@ -3,11 +3,12 @@ set -euo pipefail
 
 RL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 HARBOR_DIR="$(cd "$RL_DIR/../common/Harbor" && pwd)"
+SCRIPT_DIR="$HARBOR_DIR"
 
 # Exercise the real shared predicate and rollout timeout function without
 # starting the persistent rollout worker loop.
 source /dev/stdin <<EOF
-$(sed -n '/^harbor_trace_to_opik_enabled()/,/^}/p' "$HARBOR_DIR/env.sh")
+$(sed -n '/^harbor_trace_to_opik_enabled()/,/^}/p' "$HARBOR_DIR/env/defaults.sh")
 $(sed -n '/^finalize_timeout_trace()/,/^}/p' "$RL_DIR/run_rl_rollout_worker.sh")
 EOF
 

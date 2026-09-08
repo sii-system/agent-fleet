@@ -327,7 +327,7 @@ class HarborTaskSelectionTest(unittest.TestCase):
         process.wait(timeout=2)
         self.assertLess(process.returncode, 0)
         self.assertEqual(
-            ENV_SH.read_text(encoding="utf-8").count(
+            (HARBOR_DIR / "env" / "lifecycle.sh").read_text(encoding="utf-8").count(
                 "harbor_terminate_validated_process"
             ),
             4,
