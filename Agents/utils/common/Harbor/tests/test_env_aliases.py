@@ -98,7 +98,9 @@ class HarborEnvAliasTests(unittest.TestCase):
 
     def test_queue_worker_preserves_attempts_and_retries_in_child(self) -> None:
         source = (HARBOR_DIR / "run_harbor_worker.sh").read_text()
-        worker = re.search(r"^run_claimed_task\(\) \{\n.*?^\}\n", source, re.MULTILINE | re.DOTALL)
+        worker = re.search(
+            r"^run_claimed_task\(\) \{\n.*?^\}\n", source, re.MULTILINE | re.DOTALL
+        )
         self.assertIsNotNone(worker)
         for overrides in (
             {"HARBOR_N_ATTEMPTS": "2", "HARBOR_MAX_RETRIES": "0"},
@@ -140,6 +142,45 @@ class HarborEnvAliasTests(unittest.TestCase):
                 )
                 self.assertEqual(child["HARBOR_INCLUDE_TASKS"], "task-a")
                 self.assertEqual(child["HARBOR_N_CONCURRENT"], "1")
+
+    def test_opencode_runs_each_attempt_once_for_local_and_registry_datasets(
+        self,
+    ) -> None:
+        for dataset in ("auto", "terminalbench21"):
+            with self.subTest(dataset=dataset), tempfile.TemporaryDirectory() as tmp:
+                for relative in (
+                    "dataset",
+                    "run/runtime/opencode",
+                    "run/queue/opencode",
+                ):
+                    (Path(tmp) / relative).mkdir(parents=True)
+                env = self.load_env(
+                    AGENT="opencode",
+                    DATASET_NAME=dataset,
+                    DATASET_PATH=f"{tmp}/dataset",
+                    OUTPUT_PATH=f"{tmp}/run",
+                    HARBOR_ENVIRONMENT_TYPE="e2b",
+                    HARBOR_DRY_RUN="1",
+                    HARBOR_N_ATTEMPTS="3",
+                    HARBOR_MAX_RETRIES="0",
+                    HARBOR_INCLUDE_TASKS="fix-git",
+                )
+                result = subprocess.run(
+                    ["bash", str(HARBOR_DIR / "harboropik.sh")],
+                    env={**env, "HOME": tmp},
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                )
+                self.assertEqual(result.stdout.count("[INFO] attempt "), 3)
+                self.assertEqual(result.stdout.count("  -k\n  1\n"), 3)
+                self.assertIn("attempt 3/3 trial_id=attempt-3", result.stdout)
+                task = (
+                    "terminal-bench/fix-git"
+                    if dataset == "terminalbench21"
+                    else "fix-git"
+                )
+                self.assertEqual(result.stdout.count(f"  -i\n  {task}\n"), 3)
 
 
 if __name__ == "__main__":

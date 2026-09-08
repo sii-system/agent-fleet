@@ -493,13 +493,15 @@ main() {
     "opencode" "$capture_bin" "$opencode_registry_capture" "$tmp/opencode-registry" \
     "terminalbench21" "" "true" "0" "0" "3" "20"
   assert_arg_pair "$opencode_registry_capture" "--n-concurrent" "20"
-  assert_arg_pair "$opencode_registry_capture" "-k" "3"
+  assert_arg_pair "$opencode_registry_capture" "-k" "1"
+  grep -q "attempt 3/3 trial_id=attempt-3" "$tmp/opencode-registry/opencode.log"
 
   opencode_local_capture="$tmp/opencode-local.args"
   run_harboropik \
     "opencode" "$capture_bin" "$opencode_local_capture" "$tmp/opencode-local" \
     "auto" "" "true" "0" "0" "3" "20"
   assert_arg_pair "$opencode_local_capture" "--n-concurrent" "1"
+  assert_arg_pair "$opencode_local_capture" "-k" "1"
   grep -q "attempt 3/3 trial_id=attempt-3" "$tmp/opencode-local/opencode.log"
 
   seta_capture="$tmp/seta-default.args"
