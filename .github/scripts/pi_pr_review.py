@@ -500,6 +500,7 @@ class PiClient:
         *,
         retry_malformed: bool = False,
         response_validator: Callable[[dict[str, Any]], None] | None = None,
+        no_tools: bool = False,
     ) -> dict[str, Any]:
         deadline = time.monotonic() + self.timeout
         with tempfile.TemporaryDirectory(prefix="pi-pr-review-") as tmp:
@@ -524,6 +525,10 @@ class PiClient:
                 "--no-session",
                 "--approve",
             ]
+            if no_tools:
+                command_prefix += [
+                    "--no-tools", "--no-extensions", "--no-skills", "--no-context-files",
+                ]
             command = command_prefix + ["--system-prompt", system_prompt]
             current_input = model_input
 
@@ -539,7 +544,7 @@ class PiClient:
                 try:
                     completed = subprocess.run(
                         command,
-                        cwd=self.repository_root,
+                        cwd=root if no_tools else self.repository_root,
                         env=minimal_environment(runtime_dir, self.api_key),
                         input=current_input,
                         text=True,

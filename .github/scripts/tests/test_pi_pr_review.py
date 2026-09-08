@@ -365,6 +365,14 @@ class PiClientTest(unittest.TestCase):
         self.assertIn("offline=1", captured)
         self.assertIn(f"cwd={self.repository_root.resolve()}", captured)
 
+    def test_tool_free_review_disables_context_loading_and_uses_empty_directory(self) -> None:
+        _stub_pi_script(self.bin_dir, stdout=_make_findings_response([]))
+        self._make_client().review("verify", "frozen evidence", no_tools=True)
+        captured = self.capture.read_text()
+        for flag in ("--no-tools", "--no-extensions", "--no-skills", "--no-context-files"):
+            self.assertIn(f"arg=<{flag}>", captured)
+        self.assertNotIn(f"cwd={self.repository_root.resolve()}", captured)
+
     def test_fetches_source_objects_without_checkout_or_persisted_credentials(self) -> None:
         client = self._make_client()
         github = pi_review._review.GitHubClient("example/repo", "fake-github-token")

@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "id": "pr179-attempt-mismatch",
+  "repository": "sii-system/agent-fleet",
+  "base_sha": "ed2feb90e1e4e98e2331ca100de05e173b37e710",
+  "head_sha": "2d917347f9fe80a91ccfebf210d75e55593efc93",
+  "expected_verdict": "confirmed",
+  "finding": {
+    "severity": "P2",
+    "path": "Agents/utils/common/Harbor/tests/test_harboropik_extra_compose.sh",
+    "line": 496,
+    "title": "Registry test expects three attempts per Harbor invocation",
+    "failure_scenario": "The registry test asserts -k 3, but build_opencode_cmd emits -k 1 and runs the attempts in an outer loop, so the assertion fails.",
+    "remediation": "Assert -k 1 and verify that the outer loop completes all three attempts."
+  },
+  "context": [
+    {
+      "revision": "base",
+      "path": "Agents/utils/common/Harbor/tests/test_harboropik_extra_compose.sh",
+      "start_line": 495,
+      "end_line": 518
+    },
+    {
+      "revision": "head",
+      "path": "Agents/utils/common/Harbor/tests/test_harboropik_extra_compose.sh",
+      "start_line": 489,
+      "end_line": 510
+    },
+    {
+      "revision": "head",
+      "path": "Agents/utils/common/Harbor/harboropik.sh",
+      "start_line": 1540,
+      "end_line": 1564
+    },
+    {
+      "revision": "head",
+      "path": "Agents/utils/common/Harbor/harboropik.sh",
+      "start_line": 1660,
+      "end_line": 1725
+    },
+    {
+      "revision": "head",
+      "path": "Agents/utils/common/Harbor/tests/test_harboropik_extra_compose.sh",
+      "start_line": 280,
+      "end_line": 350
+    }
+  ],
+  "label_notes": "Source-adjudicated original/fixed pair; the historical Linux integration test was not executed during labeling.",
+  "origin_url": "https://github.com/sii-system/agent-fleet/pull/179#discussion_r3953693173"
+}

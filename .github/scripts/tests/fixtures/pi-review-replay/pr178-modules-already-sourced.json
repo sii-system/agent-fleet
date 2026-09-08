@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "id": "pr178-modules-already-sourced",
+  "repository": "sii-system/agent-fleet",
+  "base_sha": "ed2feb90e1e4e98e2331ca100de05e173b37e710",
+  "head_sha": "95422f21b926e8cb3c4d51135b870388c214d7a3",
+  "expected_verdict": "rejected",
+  "finding": {
+    "severity": "P1",
+    "path": "Agents/utils/common/Harbor/env.sh",
+    "line": 25,
+    "title": "Extracted environment modules are never sourced",
+    "failure_scenario": "The refactor leaves the extracted modules disconnected from the env.sh entry point.",
+    "remediation": "Source the extracted modules from env.sh."
+  },
+  "context": [
+    {
+      "revision": "head",
+      "path": "Agents/utils/common/Harbor/env.sh",
+      "start_line": 1,
+      "end_line": 42
+    },
+    {
+      "revision": "head",
+      "path": "Agents/utils/common/Harbor/env.sh",
+      "start_line": 57,
+      "end_line": 84
+    }
+  ],
+  "label_notes": "The exact head sources its configuration and helper modules. Base source is unnecessary to refute this absence claim.",
+  "origin_url": "https://github.com/sii-system/agent-fleet/pull/178#pullrequestreview-5136362667"
+}
