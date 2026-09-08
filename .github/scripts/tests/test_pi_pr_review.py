@@ -414,6 +414,22 @@ class PiClientTest(unittest.TestCase):
         ]), mock.patch.object(pi_review, "_bounded_git_fetch", return_value=128), self.assertRaisesRegex(pi_review.PiReviewError, "could not fetch PR head"):
             client.prepare_source(github, "a" * 40, source_directory)
 
+    def test_anonymous_fetch_does_not_configure_authentication(self) -> None:
+        source_directory = self.root / "source.git"
+        (source_directory / "objects/info").mkdir(parents=True)
+        with mock.patch("subprocess.run", side_effect=[
+            subprocess.CompletedProcess([], 0, stdout=f"/trusted/objects\n{self.root / 'absent-shallow'}\n" + "b" * 40 + "\n"),
+            subprocess.CompletedProcess([], 0),
+            subprocess.CompletedProcess([], 1),
+            subprocess.CompletedProcess([], 0),
+        ]), mock.patch.object(pi_review, "_bounded_git_fetch", return_value=0) as fetch:
+            self._make_client().prepare_source(
+                pi_review._review.GitHubClient("example/repo", ""), "a" * 40, source_directory
+            )
+        _, environment = fetch.call_args.args
+        self.assertEqual(environment["GIT_CONFIG_COUNT"], "0")
+        self.assertNotIn("GIT_CONFIG_VALUE_0", environment)
+
     def test_rejects_non_sha_source_ref_before_git(self) -> None:
         client = self._make_client()
         with mock.patch("subprocess.run") as run, self.assertRaises(pi_review.PiReviewError):

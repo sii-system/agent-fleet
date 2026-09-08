@@ -143,6 +143,42 @@ class ReplayTest(unittest.TestCase):
         result = self.run_case(payload)
         self.assertEqual(result["verification"]["rationale"], "[REDACTED] [REDACTED]")
 
+    def test_dummy_keys_preserve_artifact_schema_and_provenance(self):
+        for key in ("a", "x", "completed", "confirmed", "s1", 'a"\\b'):
+            with self.subTest(key=key):
+                self.client.api_key = key
+                payload = verdict()
+                payload["rationale"] = key
+                result = self.run_case(payload)
+                self.assertEqual(result["schema_version"], 1)
+                self.assertEqual(result["status"], "completed")
+                self.assertEqual(result["verification"]["verdict"], "confirmed")
+                self.assertEqual(result["expected_verdict"], "confirmed")
+                self.assertTrue(result["matches_expected"])
+                self.assertEqual(result["head_sha"], self.case["head_sha"])
+                self.assertEqual(result["sources"][0]["revision"], "base")
+                self.assertEqual(result["sources"][0]["source_id"], "s1")
+                self.assertEqual(result["verification"]["evidence"][0]["source_id"], "s1")
+                self.assertEqual(result["verification"]["rationale"], "[REDACTED]")
+
+    def test_output_length_errors_tell_repair_the_limit(self):
+        for field in ("rationale", "failure_scenario", "quote"):
+            with self.subTest(field=field):
+                payload = verdict()
+                if field == "quote":
+                    payload["evidence"][0][field] = "a" * 2_001
+                else:
+                    payload[field] = "a" * 2_001
+                with self.assertRaisesRegex(pi._review.ModelResponseError, "2000"):
+                    replay.parse_verdict(payload)
+
+    def test_dummy_key_does_not_corrupt_failed_status(self):
+        self.client.api_key = "a"
+        _stub_pi_script(self.bin, exit_code=1)
+        result = replay.run_replay(self.case, self.client, self.github)
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["failed_stage"], "verifier")
+
     def test_fetch_failure_cleans_storage_and_skips_verifier(self):
         directories = []
 

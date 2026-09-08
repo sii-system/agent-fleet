@@ -21,6 +21,11 @@ VERDICTS = ("confirmed", "rejected", "insufficient_evidence")
 MAX_BLOB_BYTES = 2 * 1024 * 1024
 MAX_INPUT_BYTES = 100_000
 PROMPT_PATH = Path(__file__).with_name("pi_review_verification_prompt.md")
+ARTIFACT_TEXT_FIELDS = frozenset({
+    "id", "repository", "model", "path", "title", "failure_scenario", "remediation",
+    "rationale", "introduced_by_change", "counterevidence", "quote", "validation_errors",
+    "source_id",
+})
 
 
 def _text(value: Any) -> bool:
@@ -96,12 +101,12 @@ def _source(spec: dict, sha: str, directory: Path, source_id: str) -> dict:
 
 def parse_verdict(payload: dict) -> dict:
     if payload.get("verdict") not in VERDICTS or not _text(payload.get("rationale")):
-        raise pi._review.ModelResponseError("invalid verification verdict or rationale")
+        raise pi._review.ModelResponseError("invalid verdict or rationale; rationale must contain 1 to 2000 characters")
     fields = ("failure_scenario", "introduced_by_change", "counterevidence")
     for field in fields:
         value = payload.get(field)
         if not isinstance(value, str) or len(value) > 2_000:
-            raise pi._review.ModelResponseError("invalid verification explanation")
+            raise pi._review.ModelResponseError(f"{field} must be a string of at most 2000 characters")
     evidence = payload.get("evidence")
     if not isinstance(evidence, list) or len(evidence) > 8:
         raise pi._review.ModelResponseError("expected at most eight evidence citations")
@@ -114,7 +119,7 @@ def parse_verdict(payload: dict) -> dict:
             continue
         if (type(item.get("start_line")) is not int or type(item.get("end_line")) is not int
                 or not 1 <= item["start_line"] <= item["end_line"] or not _text(item.get("quote"))):
-            raise pi._review.ModelResponseError("invalid citation range or quote")
+            raise pi._review.ModelResponseError("invalid citation range or quote; quote must contain 1 to 2000 characters")
         citations.append({key: item[key] for key in ("source_id", "start_line", "end_line", "quote")})
     return {key: payload[key] for key in ("verdict", "rationale", *fields)} | {"evidence": citations}
 
@@ -162,6 +167,27 @@ def validate_evidence(payload: dict, sources: list[dict]) -> dict:
     }
 
 
+def _redact_artifact(artifact: dict, secrets: tuple[str, ...]) -> dict:
+    values = sorted({secret for secret in secrets if secret}, key=len, reverse=True)
+    if not values:
+        return artifact
+    pattern = re.compile("|".join(re.escape(secret) for secret in values))
+    source_ids = {source["source_id"] for source in artifact.get("sources", [])}
+
+    def redact(value: Any, field: str = "") -> Any:
+        if isinstance(value, dict):
+            return {key: redact(item, key) for key, item in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [redact(item, field) for item in value]
+        if isinstance(value, str) and field in ARTIFACT_TEXT_FIELDS:
+            if field == "source_id" and value in source_ids:
+                return value
+            return pattern.sub("[REDACTED]", value)
+        return value
+
+    return redact(artifact)
+
+
 def run_replay(case: dict, client: pi.PiClient, github: pi._review.GitHubClient) -> dict:
     validate_case(case)
     prompt = PROMPT_PATH.read_text()
@@ -206,11 +232,7 @@ def run_replay(case: dict, client: pi.PiClient, github: pi._review.GitHubClient)
             artifact["verification"]["verdict"] == case["expected_verdict"]
             if artifact["status"] == "completed" else None
         )
-    serialized = json.dumps(artifact)
-    for secret in (client.api_key, github.token):
-        if secret:
-            serialized = serialized.replace(json.dumps(secret)[1:-1], "[REDACTED]")
-    return json.loads(serialized)
+    return _redact_artifact(artifact, (client.api_key, github.token))
 
 
 def main(argv: list[str] | None = None) -> int:

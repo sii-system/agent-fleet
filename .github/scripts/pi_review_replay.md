@@ -50,8 +50,10 @@ notes, and origin links do not. Labels are human judgments, not model evidence.
 
 The verifier returns `confirmed`, `rejected`, or `insufficient_evidence` with a
 rationale, failure scenario, explanation of the introduced behavior, contrary
-evidence considered, and source citations. Python checks citation IDs, exact
-quotes, line ranges, and absence claims. Confirmation also requires both
+evidence considered, and source citations. Each explanation and quote is limited
+to 2000 characters; citations should use the smallest supporting line range.
+Python checks citation IDs, exact quotes, line ranges, and absence claims.
+Confirmation also requires both
 revisions and a cited changed file; rejection requires head evidence. Invalid
 citations downgrade a model verdict to `insufficient_evidence` while retaining
 `model_verdict` and `validation_errors`. Matching citations establish evidence
@@ -62,8 +64,10 @@ integrity, not the truth of the model's causal reasoning.
 Artifacts retain the candidate, revision/blob IDs, excerpt ranges, prompt/code/
 input hashes, requested model, elapsed time, and verification result. They omit
 full source excerpts and raw provider errors, and redact the supplied GitHub and
-model credentials. Reasoning and cited code are retained: keep artifacts private
-and inspect them before sharing. Record `pi --version` alongside experiment
+model credentials from free-text values. Keys, schema enums, source IDs, and
+Git/content hashes remain intact even with short dummy API keys. Reasoning and
+cited code are retained: keep artifacts private and inspect them before sharing.
+Record `pi --version` alongside experiment
 results; the artifact does not capture effective provider settings or cost.
 
 `status: failed` records a preparation or verifier failure with its stage and

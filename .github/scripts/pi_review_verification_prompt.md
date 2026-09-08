@@ -28,8 +28,11 @@ Return exactly one JSON object:
 Every quote must match the cited lines exactly, including indentation. Use
 only source IDs and line ranges present in the supplied excerpts. For a source
 explicitly marked absent, cite {"source_id": "s1", "absent": true}; never use
-an absence citation for an omitted or unavailable source. Return at most eight
-citations. A confirmed verdict requires nonempty failure_scenario,
+an absence citation for an omitted or unavailable source. Each rationale,
+explanation, and quote is limited to 2000 characters. Cite the smallest complete
+line range that supports the claim, not the entire excerpt. If necessary
+evidence cannot fit these limits, return insufficient_evidence. Return at most
+eight citations. A confirmed verdict requires nonempty failure_scenario,
 introduced_by_change, and counterevidence, evidence from both base and head,
 and evidence of a changed file. A rejected verdict requires head evidence.
 An insufficient_evidence verdict may have no citations. Do not invent evidence

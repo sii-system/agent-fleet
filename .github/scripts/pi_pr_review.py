@@ -465,16 +465,20 @@ class PiClient:
             repository = github.api_root.removeprefix("https://api.github.com/repos/")
             if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository):
                 raise PiReviewError("invalid GitHub source repository")
-            authorization = base64.b64encode(
-                f"x-access-token:{github.token}".encode()
-            ).decode()
             environment = dict(os.environ)
             environment.update({
                 "GIT_TERMINAL_PROMPT": "0",
-                "GIT_CONFIG_COUNT": "1",
-                "GIT_CONFIG_KEY_0": "http.https://github.com/.extraheader",
-                "GIT_CONFIG_VALUE_0": f"AUTHORIZATION: basic {authorization}",
+                "GIT_CONFIG_COUNT": "0",
             })
+            if github.token:
+                authorization = base64.b64encode(
+                    f"x-access-token:{github.token}".encode()
+                ).decode()
+                environment.update({
+                    "GIT_CONFIG_COUNT": "1",
+                    "GIT_CONFIG_KEY_0": "http.https://github.com/.extraheader",
+                    "GIT_CONFIG_VALUE_0": f"AUTHORIZATION: basic {authorization}",
+                })
             fetched = _bounded_git_fetch(
                 [
                     *source_git, "-c", "credential.helper=", "-c", "gc.auto=0",
