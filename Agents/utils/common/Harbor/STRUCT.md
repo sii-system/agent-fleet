@@ -183,7 +183,9 @@ Typical dataset paths:
 
 `HARBOR_N_ATTEMPTS` replaces both `HARBOR_RUNS` and `N_ATTEMPTS`.
 The old names remain input aliases: the canonical value wins, then
-`HARBOR_RUNS`, then `N_ATTEMPTS`. `MAX_RETRIES` and `INCLUDE_TASKS` are
+`HARBOR_RUNS`, then `N_ATTEMPTS`. Empty attempt/retry values use the next
+fallback or default, matching the previous numeric settings. `MAX_RETRIES`
+and `INCLUDE_TASKS` are
 input aliases for `HARBOR_MAX_RETRIES` and `HARBOR_INCLUDE_TASKS`. An explicitly
 empty canonical task filter suppresses a stale legacy filter. Internal
 launchers use only the canonical names; update custom scripts that read the

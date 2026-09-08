@@ -43,7 +43,7 @@ start_monitor() {
     HARBOR_ONLINE_ANALYSIS="$online_analysis" \
     HARBOR_ZELLIJ_CLOSE_ON_COMPLETE="$close_on_complete" \
     OPIK_PROJECT_NAME="monitor-summary-test" \
-    OPIK_URL_OVERRIDE="http://opik.example/api" \
+    OPIK_URL="http://opik.example/api" \
     bash "$HARBOR_DIR/monitor_harbor.sh" >"$log" 2>&1 &
   MONITOR_PID="$!"
 }

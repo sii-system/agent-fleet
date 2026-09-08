@@ -76,6 +76,20 @@ class HarborEnvAliasTests(unittest.TestCase):
         env = self.load_env(HARBOR_INCLUDE_TASKS="", INCLUDE_TASKS="stale-task")
         self.assertEqual(env["HARBOR_INCLUDE_TASKS"], "")
 
+    def test_empty_numeric_inputs_use_aliases_or_defaults(self) -> None:
+        for aliases, expected in (
+            ({}, ("1", "2")),
+            ({"N_ATTEMPTS": "3", "MAX_RETRIES": "0"}, ("3", "0")),
+            ({"N_ATTEMPTS": "3", "HARBOR_RUNS": "4"}, ("4", "2")),
+        ):
+            with self.subTest(aliases=aliases):
+                env = self.load_env(
+                    HARBOR_N_ATTEMPTS="", HARBOR_MAX_RETRIES="", **aliases
+                )
+                self.assertEqual(
+                    (env["HARBOR_N_ATTEMPTS"], env["HARBOR_MAX_RETRIES"]), expected
+                )
+
     def test_harbor_runs_wins_when_both_legacy_attempt_names_are_set(self) -> None:
         env = self.load_env(N_ATTEMPTS="3", HARBOR_RUNS="4")
         self.assertEqual(env["HARBOR_N_ATTEMPTS"], "4")

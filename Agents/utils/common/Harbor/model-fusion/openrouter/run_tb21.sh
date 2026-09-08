@@ -153,8 +153,8 @@ else
     python3 "$OPENROUTER_DIR/../router_cli_utils.py" task-list-csv "$TASK_SOURCE_FILE"
   )"
   export TASK_SOURCE_FILE HARBOR_INCLUDE_TASKS
-  export HARBOR_N_ATTEMPTS="${HARBOR_N_ATTEMPTS-${HARBOR_RUNS:-${N_ATTEMPTS:-1}}}"
-  export HARBOR_MAX_RETRIES="${HARBOR_MAX_RETRIES-${MAX_RETRIES:-0}}"
+  export HARBOR_N_ATTEMPTS="${HARBOR_N_ATTEMPTS:-${HARBOR_RUNS:-${N_ATTEMPTS:-1}}}"
+  export HARBOR_MAX_RETRIES="${HARBOR_MAX_RETRIES:-${MAX_RETRIES:-0}}"
 fi
 start_args=()
 [[ "${DETACH:-1}" != "1" ]] || start_args+=(--detach)

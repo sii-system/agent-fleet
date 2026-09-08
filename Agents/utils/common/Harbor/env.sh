@@ -30,8 +30,8 @@ WORKSPACE_DIR="${WORKSPACE_DIR:-/workspace}"
 RUN_ID="${RUN_ID:-$(date +%Y-%m-%d-%H%M)-harbor-tui}"
 TOTAL_WORKERS="${TOTAL_WORKERS:-10}"
 # Canonical settings take precedence; old names are accepted only as inputs.
-HARBOR_N_ATTEMPTS="${HARBOR_N_ATTEMPTS-${HARBOR_RUNS:-${N_ATTEMPTS:-1}}}"
-HARBOR_MAX_RETRIES="${HARBOR_MAX_RETRIES-${MAX_RETRIES:-2}}"
+HARBOR_N_ATTEMPTS="${HARBOR_N_ATTEMPTS:-${HARBOR_RUNS:-${N_ATTEMPTS:-1}}}"
+HARBOR_MAX_RETRIES="${HARBOR_MAX_RETRIES:-${MAX_RETRIES:-2}}"
 # AGENT selects the runner: claude-code (default), opencode, or pi.
 AGENT="${AGENT:-claude-code}"
 MODEL="${MODEL:-minimax2.7}"

@@ -119,7 +119,7 @@ jobs:
           # otherwise satisfy the gate and report a healthy fleet.
           # Harbor runs each task HARBOR_N_ATTEMPTS times (`harbor run -k`), so trials
           # are tasks x attempts. HARBOR_N_ATTEMPTS defaults to 1.
-          attempts="${HARBOR_N_ATTEMPTS-${HARBOR_RUNS:-${N_ATTEMPTS:-1}}}"
+          attempts="${HARBOR_N_ATTEMPTS:-${HARBOR_RUNS:-${N_ATTEMPTS:-1}}}"
           if [[ ! "$attempts" =~ ^[1-9][0-9]*$ ]]; then
             echo "::error::HARBOR_N_ATTEMPTS must be a positive integer, got: $attempts" >&2
             exit 1
