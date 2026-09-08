@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import resource
 import subprocess
 import sys
 import tempfile
@@ -367,38 +369,47 @@ class PiClientTest(unittest.TestCase):
         client = self._make_client()
         github = pi_review._review.GitHubClient("example/repo", "fake-github-token")
         head_sha = "a" * 40
+        source_directory = self.root / "source.git"
+        (source_directory / "objects/info").mkdir(parents=True)
         with mock.patch("subprocess.run", side_effect=[
+            subprocess.CompletedProcess([], 0, stdout=f"/trusted/objects\n{self.root / 'absent-shallow'}\n" + "b" * 40 + "\n"),
+            subprocess.CompletedProcess([], 0),
             subprocess.CompletedProcess([], 1),
             subprocess.CompletedProcess([], 0),
-            subprocess.CompletedProcess([], 0),
-        ]) as run:
-            client.prepare_source(github, head_sha)
+        ]) as run, mock.patch.object(pi_review, "_bounded_git_fetch", return_value=0) as fetch:
+            client.prepare_source(github, head_sha, source_directory)
 
-        fetch = run.call_args_list[1]
-        argv = fetch.args[0]
+        argv, environment = fetch.call_args.args
         self.assertIn("fetch", argv)
+        self.assertIn(f"--git-dir={source_directory.resolve()}", argv)
+        self.assertIn("fetch.unpackLimit=1", argv)
+        self.assertIn("--no-auto-maintenance", argv)
+        self.assertIn("--no-recurse-submodules", argv)
+        self.assertIn("--negotiation-tip=" + "b" * 40, argv)
         self.assertIn("--no-write-fetch-head", argv)
         self.assertEqual(argv[-2:], ["https://github.com/example/repo.git", head_sha])
         self.assertNotIn("fake-github-token", " ".join(argv))
-        self.assertIn("AUTHORIZATION: basic ", fetch.kwargs["env"]["GIT_CONFIG_VALUE_0"])
-        self.assertEqual(fetch.kwargs["env"]["GIT_TERMINAL_PROMPT"], "0")
-        self.assertEqual(run.call_args_list[2].args[0][-1], f"{head_sha}^{{commit}}")
+        self.assertIn("AUTHORIZATION: basic ", environment["GIT_CONFIG_VALUE_0"])
+        self.assertEqual(environment["GIT_TERMINAL_PROMPT"], "0")
+        self.assertEqual(run.call_args_list[3].args[0][-1], f"{head_sha}^{{commit}}")
         self.assertTrue(all("checkout" not in call.args[0] for call in run.call_args_list))
 
-    def test_fetch_failure_does_not_expose_git_stderr(self) -> None:
+    def test_fetch_failure_aborts_source_preparation(self) -> None:
         client = self._make_client()
         github = pi_review._review.GitHubClient("example/repo", "fake-github-token")
+        source_directory = self.root / "source.git"
+        (source_directory / "objects/info").mkdir(parents=True)
         with mock.patch("subprocess.run", side_effect=[
+            subprocess.CompletedProcess([], 0, stdout=f"/trusted/objects\n{self.root / 'absent-shallow'}\n" + "b" * 40 + "\n"),
+            subprocess.CompletedProcess([], 0),
             subprocess.CompletedProcess([], 1),
-            subprocess.CompletedProcess([], 128, stderr="private credential detail"),
-        ]), self.assertRaisesRegex(pi_review.PiReviewError, "could not fetch PR head") as error:
-            client.prepare_source(github, "a" * 40)
-        self.assertNotIn("private credential detail", str(error.exception))
+        ]), mock.patch.object(pi_review, "_bounded_git_fetch", return_value=128), self.assertRaisesRegex(pi_review.PiReviewError, "could not fetch PR head"):
+            client.prepare_source(github, "a" * 40, source_directory)
 
     def test_rejects_non_sha_source_ref_before_git(self) -> None:
         client = self._make_client()
         with mock.patch("subprocess.run") as run, self.assertRaises(pi_review.PiReviewError):
-            client.prepare_source(mock.Mock(), "--upload-pack=unexpected")
+            client.prepare_source(mock.Mock(), "--upload-pack=unexpected", self.root / "source.git")
         run.assert_not_called()
 
     def test_cached_head_source_does_not_replace_trusted_base(self) -> None:
@@ -424,13 +435,94 @@ class PiClientTest(unittest.TestCase):
         config = self.repository_root / ".git/config"
         original_config = config.read_bytes()
 
-        self._make_client().prepare_source(mock.Mock(), head)
+        source_directory = self.root / "source.git"
+        self._make_client().prepare_source(mock.Mock(), head, source_directory)
 
-        self.assertEqual(git("show", f"{head}:manager.py"), "new CLI options")
+        self.assertEqual(
+            git(f"--git-dir={source_directory}", "show", f"{head}:manager.py"),
+            "new CLI options",
+        )
         self.assertEqual(source.read_text(), "base implementation\n")
         self.assertEqual(git("rev-parse", "HEAD"), base)
         self.assertEqual(config.read_bytes(), original_config)
         self.assertFalse((self.repository_root / ".git/FETCH_HEAD").exists())
+
+    def test_fetch_enforces_file_size_limit_without_limiting_parent(self) -> None:
+        destination = self.root / "oversized.pack"
+        original_limit = resource.getrlimit(resource.RLIMIT_FSIZE)
+        with mock.patch.object(pi_review, "MAX_GIT_SOURCE_FILE_BYTES", 131_072):
+            result = pi_review._bounded_git_fetch(
+                [sys.executable, "-c", "import sys; open(sys.argv[1], 'wb').write(b'x' * 524288)", str(destination)],
+                dict(os.environ),
+            )
+        self.assertNotEqual(result, 0)
+        self.assertLessEqual(destination.stat().st_size, 131_072)
+        self.assertEqual(resource.getrlimit(resource.RLIMIT_FSIZE), original_limit)
+
+    def test_real_fetch_from_shallow_base_is_isolated_and_rejects_large_packs(self) -> None:
+        def git(root: Path, *args: str) -> str:
+            return subprocess.run(
+                ["git", "-c", "user.name=Test", "-c", "user.email=test@example.com", *args],
+                cwd=root, check=True, capture_output=True, text=True,
+            ).stdout.strip()
+
+        remote = self.root / "remote"
+        remote.mkdir()
+        git(remote, "init", "-q")
+        for revision in range(2):
+            (remote / "file").write_text(str(revision))
+            git(remote, "add", "file")
+            git(remote, "commit", "-qm", str(revision))
+        base = self.root / "shallow-base"
+        git(self.root, "clone", "--depth=1", remote.as_uri(), str(base))
+        original_objects = sorted((base / ".git/objects").rglob("*"))
+        original_config = (base / ".git/config").read_bytes()
+        original_shallow = (base / ".git/shallow").read_bytes()
+        original_head = git(base, "rev-parse", "HEAD")
+        fetch = pi_review._bounded_git_fetch
+
+        def local_fetch(command: list[str], environment: dict[str, str]) -> int:
+            command = [remote.as_uri() if arg.startswith("https://github.com/") else arg for arg in command]
+            return fetch(command, environment)
+
+        client = self._make_client(repository_root=base)
+        github = pi_review._review.GitHubClient("example/repo", "fake-github-token")
+        with (
+            mock.patch.object(pi_review, "_bounded_git_fetch", side_effect=local_fetch),
+            mock.patch.object(pi_review, "MAX_GIT_SOURCE_FILE_BYTES", 131_072),
+        ):
+            (remote / "file").write_text("head source")
+            git(remote, "commit", "-qam", "head")
+            head = git(remote, "rev-parse", "HEAD")
+            source = self.root / "small-source.git"
+            client.prepare_source(github, head, source)
+            self.assertEqual(git(self.root, f"--git-dir={source}", "show", f"{head}:file"), "head source")
+
+            (remote / "large").write_bytes(os.urandom(524_288))
+            git(remote, "add", "large")
+            git(remote, "commit", "-qm", "large head")
+            large_head = git(remote, "rev-parse", "HEAD")
+            large_source = self.root / "large-source.git"
+            with self.assertRaisesRegex(pi_review.PiReviewError, "resource limits"):
+                client.prepare_source(github, large_head, large_source)
+            for path in large_source.rglob("*"):
+                if path.is_file():
+                    self.assertLessEqual(path.stat().st_size, 131_072)
+
+        self.assertEqual(sorted((base / ".git/objects").rglob("*")), original_objects)
+        self.assertEqual((base / ".git/config").read_bytes(), original_config)
+        self.assertEqual((base / ".git/shallow").read_bytes(), original_shallow)
+        self.assertEqual(git(base, "rev-parse", "HEAD"), original_head)
+        self.assertEqual((base / "file").read_text(), "1")
+
+    def test_fetch_timeout_terminates_subprocess(self) -> None:
+        with (
+            mock.patch.object(pi_review, "GIT_FETCH_TIMEOUT_SECONDS", 0.2),
+            self.assertRaisesRegex(pi_review.PiReviewError, "timed out"),
+        ):
+            pi_review._bounded_git_fetch(
+                [sys.executable, "-c", "import time; time.sleep(30)"], dict(os.environ)
+            )
 
     def test_sends_large_diff_through_stdin_not_argv(self) -> None:
         client = self._make_client()
@@ -748,9 +840,14 @@ class FakePiClient:
         self.attached_diff_modes: list[int] = []
         self.source_manifests: list[dict] = []
         self.prepared_heads: list[str] = []
+        self.source_directories: list[Path] = []
 
-    def prepare_source(self, _github: object, head_sha: str) -> None:
+    def prepare_source(
+        self, _github: object, head_sha: str, source_directory: Path
+    ) -> None:
         self.prepared_heads.append(head_sha)
+        source_directory.mkdir()
+        self.source_directories.append(source_directory)
 
     def review(
         self,
@@ -764,6 +861,8 @@ class FakePiClient:
         self.inputs.append(model_input)
         self.retry_malformed.append(retry_malformed)
         self.response_validators.append(response_validator)
+        if self.source_directories:
+            assert self.source_directories[-1].is_dir()
         for line in model_input.splitlines():
             if line.startswith("UNTRUSTED FILE MANIFEST: "):
                 manifest_path = Path(line.removeprefix("UNTRUSTED FILE MANIFEST: "))
@@ -798,6 +897,7 @@ class OrchestrationTest(unittest.TestCase):
         pi_review.run_review(github, pi_client, 7, "prompt")
 
         self.assertEqual(pi_client.prepared_heads, ["head-1"])
+        self.assertTrue(all(not path.exists() for path in pi_client.source_directories))
         self.assertEqual(len(pi_client.source_manifests), 3)
         for manifest in pi_client.source_manifests:
             self.assertEqual(manifest["head_sha"], "head-1")
@@ -806,7 +906,8 @@ class OrchestrationTest(unittest.TestCase):
                 "path": "env.sh", "status": "modified", "patch_status": "oversized",
             })
         for model_input in pi_client.inputs:
-            self.assertIn("git show head-1:", model_input)
+            self.assertIn("--git-dir=", model_input)
+            self.assertIn("show head-1:", model_input)
             self.assertIn("git show base-1:", model_input)
             self.assertIn("not evidence of absence", model_input)
 
@@ -841,6 +942,36 @@ class OrchestrationTest(unittest.TestCase):
             pi_review.run_review(github, pi_client, 7, "prompt")
 
         self.assertEqual(pi_client.inputs, [])
+        self.assertEqual(github.created, [])
+
+    def test_source_storage_is_removed_after_fetch_failure(self) -> None:
+        github = FakeGitHub()
+        pi_client = FakePiClient([])
+        directories = []
+
+        def fail_fetch(_github: object, _head: str, directory: Path) -> None:
+            directory.mkdir()
+            (directory / "partial.pack").write_bytes(b"partial transfer")
+            directories.append(directory)
+            raise pi_review.PiReviewError("fetch failed")
+
+        pi_client.prepare_source = fail_fetch
+        with self.assertRaisesRegex(pi_review.PiReviewError, "fetch failed"):
+            pi_review.run_review(github, pi_client, 7, "prompt")
+
+        self.assertEqual(len(directories), 1)
+        self.assertFalse(directories[0].exists())
+        self.assertEqual(pi_client.inputs, [])
+        self.assertEqual(github.created, [])
+
+    def test_source_storage_is_removed_after_lens_failure(self) -> None:
+        github = FakeGitHub()
+        pi_client = FakePiClient([])
+        pi_client.review = mock.Mock(side_effect=pi_review.PiReviewError("lens failed"))
+        with self.assertRaisesRegex(pi_review.PiReviewError, "all review lenses failed"):
+            pi_review.run_review(github, pi_client, 7, "prompt")
+        self.assertEqual(len(pi_client.source_directories), 1)
+        self.assertFalse(pi_client.source_directories[0].exists())
         self.assertEqual(github.created, [])
 
     def test_fans_out_three_lenses_over_the_whole_diff(self) -> None:
@@ -907,7 +1038,7 @@ class OrchestrationTest(unittest.TestCase):
         )
         self.assertEqual(len(pi_client.attached_diffs), 3)
         self.assertEqual(len(pi_client.source_manifests), 3)
-        self.assertTrue(all("git show head-1:" in value for value in pi_client.inputs))
+        self.assertTrue(all("show head-1:" in value for value in pi_client.inputs))
         self.assertTrue(
             all(value.count("🧪") == 50_000 for value in pi_client.attached_diffs)
         )
