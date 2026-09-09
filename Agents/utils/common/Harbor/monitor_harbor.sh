@@ -213,6 +213,8 @@ write_summary() {
     fi
   } > "$tmp_file"
   mv -f "$tmp_file" "$SUMMARY_FILE"
+  python3 "$SCRIPT_DIR/scripts/write_run_summary.py" "$OUTPUT_PATH" \
+    || echo "[WARN] failed to write joint Harbor summary" >&2
 }
 
 while true; do

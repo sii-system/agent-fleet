@@ -154,6 +154,11 @@ main() {
     return 1
   fi
 
+  if ! grep -q "^## Harbor$" "$out/summary.md" || ! grep -q "| done | 2 |" "$out/summary.md"; then
+    echo "joint summary missing Harbor queue results" >&2
+    return 1
+  fi
+
   local pattern
   for pattern in \
     '^finished_at: ' \

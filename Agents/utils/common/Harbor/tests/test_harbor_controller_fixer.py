@@ -79,7 +79,7 @@ class HarborControllerFixerTest(FixerTestCase):
             assert isinstance(output_dir, Path)
             write_json(output_dir / "fix-report-latest.json", {"status": "fixed"})
             (output_dir / "fix-report-latest.md").write_text(
-                "# Harbor Fixer Report\n", encoding="utf-8"
+                "# Harbor Fixer Report\n\nSmoke verification completed.\n", encoding="utf-8"
             )
             return {"summary": {"status": "success"}}
 
@@ -134,6 +134,9 @@ class HarborControllerFixerTest(FixerTestCase):
         self.assertEqual(completed["outcome"], "fixed")
         self.assertEqual(completed["verification_status"], "fixed")
         self.assertEqual(completed["report_status"], "available")
+        joint = (self.run_dir / "summary.md").read_text(encoding="utf-8")
+        self.assertIn("Smoke verification completed.", joint)
+        self.assertIn("source-model", joint)
         self.assertEqual(completed["execution_counts"]["succeeded"], 1)
         self.assertEqual(
             completed["paths"]["exec_result"],
@@ -199,7 +202,7 @@ class HarborControllerFixerTest(FixerTestCase):
             output_dir = args[2]
             assert isinstance(output_dir, Path)
             (output_dir / "fix-report-latest.md").write_text(
-                "# Harbor Fixer Report\n", encoding="utf-8"
+                "# Harbor Fixer Report\n\nSmoke verification completed.\n", encoding="utf-8"
             )
             return {"summary": {"status": "success"}}
 

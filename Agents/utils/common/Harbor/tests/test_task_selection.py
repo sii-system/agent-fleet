@@ -215,6 +215,7 @@ class HarborTaskSelectionTest(unittest.TestCase):
             summary_dir.mkdir(parents=True)
             fixer_dir.mkdir()
             (analyzer_dir / "benchmark-summary.md").write_text("old summary\n", encoding="utf-8")
+            (output / "summary.md").write_text("old joint report\n", encoding="utf-8")
             (summary_dir / "summary-input.json").write_text("{}\n", encoding="utf-8")
             (fixer_dir / "fix-report-latest.md").write_text(
                 "old fixer report\n",
@@ -229,6 +230,7 @@ class HarborTaskSelectionTest(unittest.TestCase):
 
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertFalse((analyzer_dir / "benchmark-summary.md").exists())
+            self.assertFalse((output / "summary.md").exists())
             self.assertFalse(summary_dir.exists())
             self.assertFalse((fixer_dir / "fix-report-latest.md").exists())
             self.assertTrue(unrelated.exists())

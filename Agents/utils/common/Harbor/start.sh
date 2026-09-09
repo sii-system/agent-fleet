@@ -369,6 +369,9 @@ harbor_write_benchmark_summary() {
     "$HARBOR_ANALYZER_OUTPUT_DIR/benchmark-summary.md" "$RUN_ID" \
     "$OUTPUT_PATH/fixer/fix-report-latest.md" \
     || echo "[WARN] failed to write Harbor benchmark summary" >&2
+  python3 "$SCRIPT_DIR/scripts/write_run_summary.py" "$OUTPUT_PATH" --summarize \
+    --analyzer-summary "$HARBOR_ANALYZER_OUTPUT_DIR/benchmark-summary.md" \
+    || echo "[WARN] failed to write joint Harbor summary" >&2
 }
 
 harbor_finish_analyzer_lifecycle() {

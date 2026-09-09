@@ -35,6 +35,7 @@ from harbor_runtime import ProcessIdentity
 from harbor_runtime import json_sha256 as _json_sha256
 from harbor_runtime import utc_now as _utc_now
 from write_benchmark_summary import update_fixer_results
+from write_run_summary import write_run_summary
 
 ACTIVE_STATUSES = {
     "planning",
@@ -787,6 +788,7 @@ def _finish_execution(
             baseline_monitor_policy="auto",
         )
         update_fixer_results(summary_path, report_path)
+        write_run_summary(run_dir, summary_path, report_path, pi_config=_pi_config(config))
     except Exception as exc:
         _transition(
             run_dir,

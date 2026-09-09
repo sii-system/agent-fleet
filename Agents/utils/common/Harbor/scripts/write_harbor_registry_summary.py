@@ -9,6 +9,8 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+from write_run_summary import write_run_summary
+
 
 def format_number(value: float) -> str:
     if value.is_integer():
@@ -157,6 +159,7 @@ def main() -> None:
     tmp = summary.with_name(f"{summary.name}.tmp.{os.getpid()}")
     tmp.write_text("\n".join(lines) + "\n", encoding="utf-8")
     os.replace(tmp, summary)
+    write_run_summary(summary.parent)
 
 
 if __name__ == "__main__":

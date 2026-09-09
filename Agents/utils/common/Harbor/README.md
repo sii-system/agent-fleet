@@ -305,6 +305,16 @@ control the benchmark run. Before using the default analyzer path, configure
 `HARBOR_ANALYZER_MODEL` overrides. If no analyzer model gateway should be used
 for a run, set `HARBOR_ANALYZER_ENABLED=0`.
 
+Completed fixed runs publish `summary.md` beside `summary.txt` in `$OUTPUT_PATH`.
+The joint report combines Harbor results, the existing Analyzer summary, and
+Fixer results when available; runs without a Fixer report omit that section.
+Analyzer finalization and Controller Fixer reporting refresh the joint report
+with one additional no-tools Pi call using their existing connection settings
+and timeout. Pi writes only a brief narrative; recorded metrics and verification
+results remain report-owned. If Pi is unavailable, the deterministic report is
+still published. `summary.txt` remains unchanged. Summary inputs, output, and
+Pi diagnostics live under `$OUTPUT_PATH/run-summary/`.
+
 ## Harbor Fixer
 
 Harbor Fixer consumes Analyzer output, generates a Fix Plan, checks every
