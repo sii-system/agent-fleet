@@ -136,6 +136,8 @@ jobs:
           export BASE_URL="${BASE_URL_RAW%/chat/completions}"
           export OPIK_PROJECT_NAME="$(date -u +'%Y-%m-%d-%H')-harbor-self-hosted-nightly"
           export HARBOR_OPENSANDBOX_BENCHMARK="$BENCHMARK"
+          # Keep Analyzer artifacts and detached Pi homes inside this run.
+          export HARBOR_ANALYZER_OUTPUT_DIR="$OUTPUT_PATH/analyzer"
 
           status=0
           timeout --signal=TERM --kill-after=5m 450m \
@@ -149,9 +151,23 @@ jobs:
           printf 'status=%s\n' "$status" >> "$GITHUB_OUTPUT"
           exit "$status"
 
+      - name: Clean up
+        id: cleanup
+        if: ${{ always() && steps.params.outputs.run_id != '' }}
+        env:
+          ZELLIJ_SESSION_NAME: ${{ steps.params.outputs.run_id }}
+          RUN_ID: ${{ steps.params.outputs.run_id }}
+          OUTPUT_PATH: ${{ steps.params.outputs.output_path }}
+        run: |
+          set -euo pipefail
+          zellij kill-session "$ZELLIJ_SESSION_NAME" >/dev/null 2>&1 || true
+          zellij delete-session "$ZELLIJ_SESSION_NAME" >/dev/null 2>&1 || true
+          python3 .github/scripts/harbor_nightly_cleanup.py \
+            --run-dir "$OUTPUT_PATH" --run-id "$RUN_ID"
+
       - name: Verify sampled tasks completed
         id: health
-        if: ${{ !cancelled() && steps.harbor.outcome != 'skipped' }}
+        if: ${{ !cancelled() && steps.harbor.outcome != 'skipped' && steps.cleanup.outcome == 'success' }}
         env:
           HARBOR_STATUS: ${{ steps.harbor.outputs.status }}
           HEALTH_SUMMARY: ${{ runner.temp }}/harbor-self-hosted-health-${{ github.run_id }}-${{ github.run_attempt }}.md
@@ -210,7 +226,7 @@ jobs:
 
       - name: Stage and redact artifacts
         id: stage
-        if: ${{ !cancelled() && steps.harbor.outcome != 'skipped' }}
+        if: ${{ !cancelled() && steps.harbor.outcome != 'skipped' && steps.cleanup.outcome == 'success' }}
         env:
           API_KEY: ${{ secrets.LLM_REVIEW_API_KEY }}
           OPIK_API_KEY: ${{ secrets.OPIK_API_KEY }}
@@ -222,40 +238,11 @@ jobs:
             echo "::error::API_KEY is empty; refusing to stage artifacts unredacted" >&2
             exit 1
           fi
+          source scripts/config_loader.sh
+          agent_fleet_load_config "$GITHUB_WORKSPACE"
           staged="$(mktemp -d "${RUNNER_TEMP}/harbor-self-hosted-artifacts.XXXXXX")"
           cp -R "$OUTPUT_PATH/." "$staged/"
-          while IFS= read -r -d '' file; do
-            python3 - "$file" <<'PY'
-          import os
-          import sys
-
-          path = sys.argv[1]
-          # Redact every credential this job puts in the benchmark environment.
-          # Skip empties: an empty needle inserts the marker between every byte.
-          keys = [
-              value
-              for name in ("API_KEY", "OPIK_API_KEY")
-              for value in (os.environ.get(name, ""),)
-              if value
-          ]
-          with open(path, "rb") as handle:
-              data = handle.read()
-          replaced = data
-          for key in keys:
-              replaced = replaced.replace(key.encode(), b"***")
-          if replaced != data:
-              with open(path, "wb") as handle:
-                  handle.write(replaced)
-          PY
-          done < <(find "$staged" -type f -print0)
-          if grep -rqF -- "$API_KEY" "$staged"; then
-            echo "::error::API key still present in staged artifacts after redaction" >&2
-            exit 1
-          fi
-          if [[ -n "${OPIK_API_KEY:-}" ]] && grep -rqF -- "$OPIK_API_KEY" "$staged"; then
-            echo "::error::Opik key still present in staged artifacts after redaction" >&2
-            exit 1
-          fi
+          python3 .github/scripts/redact_harbor_artifacts.py "$staged"
           printf 'staged=%s\n' "$staged" >> "$GITHUB_ENV"
 
       - name: Upload run artifacts
@@ -267,15 +254,6 @@ jobs:
           path: ${{ env.staged }}
           retention-days: 14
           if-no-files-found: warn
-
-      - name: Clean up
-        if: always()
-        env:
-          ZELLIJ_SESSION_NAME: ${{ steps.params.outputs.run_id }}
-        run: |
-          set -euo pipefail
-          zellij kill-session "$ZELLIJ_SESSION_NAME" >/dev/null 2>&1 || true
-          zellij delete-session "$ZELLIJ_SESSION_NAME" >/dev/null 2>&1 || true
 
       - name: Publish run summary
         if: always()
@@ -301,10 +279,13 @@ jobs:
 
             has_joint=0
             if [[ "$STAGING_OUTCOME" == "success" && -s "$STAGED_ARTIFACTS/summary.md" ]]; then
-              python3 .github/scripts/e2e_harbor_summary.py "$STAGED_ARTIFACTS/summary.md" \
-                --artifact-url "$ARTIFACT_URL"
-              has_joint=1
-              printf '\n\n<details>\n<summary>CI pipeline validation: %s</summary>\n\n' "$GATE_OUTCOME"
+              if python3 .github/scripts/e2e_harbor_summary.py "$STAGED_ARTIFACTS/summary.md" \
+                --artifact-url "$ARTIFACT_URL"; then
+                has_joint=1
+                printf '\n\n<details>\n<summary>CI pipeline validation: %s</summary>\n\n' "$GATE_OUTCOME"
+              else
+                printf 'Joint summary.md could not be rendered; showing pipeline validation below.\n\n'
+              fi
             else
               printf 'Joint summary.md unavailable; showing pipeline validation below.\n\n'
             fi

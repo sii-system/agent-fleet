@@ -120,6 +120,7 @@ class WorkflowTest(unittest.TestCase):
         )
         self.assertIn('HARBOR_LIMIT: ""', self.workflow)
         self.assertIn('MIN_TEST: "0"', self.workflow)
+        self.assertIn('export HARBOR_ANALYZER_OUTPUT_DIR="$OUTPUT_PATH/analyzer"', self.workflow)
 
     def test_smith_rejects_excess_harness_failures(self):
         self.assertIn(
@@ -137,6 +138,16 @@ class WorkflowTest(unittest.TestCase):
         self.assertIn("zellij kill-session", self.workflow)
         self.assertNotIn("docker system prune", self.workflow)
         self.assertNotIn("docker image prune", self.workflow)
+        self.assertLess(
+            self.workflow.index("- name: Clean up"),
+            self.workflow.index("- name: Verify sampled tasks completed"),
+        )
+        self.assertLess(
+            self.workflow.index("- name: Clean up"),
+            self.workflow.index("- name: Stage and redact artifacts"),
+        )
+        self.assertEqual(self.workflow.count("steps.cleanup.outcome == 'success'"), 2)
+        self.assertIn("harbor_nightly_cleanup.py", self.workflow)
 
     def step_script(self, name):
         self.assertIn(f"- name: {name}", self.workflow)
@@ -216,6 +227,7 @@ class WorkflowTest(unittest.TestCase):
                     "RUNNER_TEMP": tmp,
                     "OUTPUT_PATH": str(output),
                     "GITHUB_ENV": str(env_file),
+                    "GITHUB_WORKSPACE": str(ROOT),
                     "API_KEY": "fake-api-credential",
                     "OPIK_API_KEY": "fake-opik-credential",
                 },
@@ -231,11 +243,90 @@ class WorkflowTest(unittest.TestCase):
         self.assertRegex(upload, r"actions/upload-artifact@[0-9a-f]{40}")
         self.assertIn("retention-days: 14", upload)
 
+    def test_staging_redacts_saved_credentials_and_structured_overrides(self):
+        script = self.step_script("Stage and redact artifacts")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "config.local.env").write_text(
+                "EXA_API_KEY=fake-exa-key\n"
+                "HARBOR_ANALYZER_API_KEY=fake-analyzer-key\n"
+                "HARBOR_FIXER_API_KEY=fake-fixer-key\n"
+                'HARBOR_LLM_KWARGS=\'{"api_key":"fake-llm-key"}\'\n'
+                'OPENCODE_RUNTIME_SECRETS_JSON=\'{"custom_header":"fake-header-key"}\'\n'
+            )
+            original = b"fake-exa-key fake-analyzer-key fake-fixer-key fake-llm-key fake-header-key"
+            output = root / "run"
+            output.mkdir()
+            (output / "agent.log").write_bytes(original)
+            env_file = root / "env"
+            result = subprocess.run(
+                ["bash", "-c", script],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+                env={
+                    **os.environ,
+                    "GITHUB_WORKSPACE": tmp,
+                    "RUNNER_TEMP": tmp,
+                    "OUTPUT_PATH": str(output),
+                    "GITHUB_ENV": str(env_file),
+                    "API_KEY": "fake-primary-key",
+                    "OPIK_API_KEY": "",
+                },
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            staged = Path(env_file.read_text().strip().split("=", 1)[1])
+            self.assertEqual(
+                (staged / "agent.log").read_bytes(), b"*** *** *** *** ***"
+            )
+            self.assertEqual((output / "agent.log").read_bytes(), original)
+
+    def test_summary_renderer_failure_falls_back_to_health(self):
+        script = self.step_script("Publish run summary")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "summary.md").write_bytes(b"invalid utf8: \xff")
+            health = root / "health.md"
+            health.write_text("Validation: PASS\n")
+            summary = root / "published.md"
+            result = subprocess.run(
+                ["bash", "-c", script],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+                env={
+                    **os.environ,
+                    "HEALTH_SUMMARY": str(health),
+                    "JOB_STATUS": "success",
+                    "GATE_OUTCOME": "success",
+                    "STAGING_OUTCOME": "success",
+                    "STAGED_ARTIFACTS": tmp,
+                    "ARTIFACT_OUTCOME": "success",
+                    "ARTIFACT_URL": "https://example.com/artifact",
+                    "RUN_URL": "https://example.com/run",
+                    "GITHUB_STEP_SUMMARY": str(summary),
+                },
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("Validation: PASS", summary.read_text())
+            self.assertNotIn("<details>", summary.read_text())
+
     def test_publishes_joint_summary_and_download_link_after_failures(self):
         script = self.step_script("Publish run summary")
-        fixture = (ROOT / ".github/scripts/tests/fixtures/harbor-joint-summary.md").read_text()
-        for checkout, staging in ((True, "success"), (True, "failure"), (False, "skipped")):
-            with self.subTest(checkout=checkout, staging=staging), tempfile.TemporaryDirectory() as tmp:
+        fixture = (
+            ROOT / ".github/scripts/tests/fixtures/harbor-joint-summary.md"
+        ).read_text()
+        for checkout, staging in (
+            (True, "success"),
+            (True, "failure"),
+            (False, "skipped"),
+        ):
+            with (
+                self.subTest(checkout=checkout, staging=staging),
+                tempfile.TemporaryDirectory() as tmp,
+            ):
                 report = Path(tmp) / "health.md"
                 report.write_text("## Validation: FAIL\n\nHarness failure.\n")
                 staged = Path(tmp) / "staged"
