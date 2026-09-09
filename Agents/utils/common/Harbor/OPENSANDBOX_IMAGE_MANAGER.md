@@ -85,10 +85,14 @@ fallback that could silently diverge after a Harbor runner upgrade.
 Task-declared Compose build arguments and Dockerfile defaults are already part
 of the static environment content. Runtime build-argument overrides, package
 mirrors, APT mirrors, base-image transport mirrors, proxies, fallback choices,
-build-network settings, and target platform do not participate in image
-identity. The implementation uses the Harbor benchmark framework's complete
-SHA-256 result rather than
-a provider-specific display truncation.
+build-network settings, target platform, renderer version, and APT runtime asset
+digest do not participate in image identity. The implementation uses the Harbor
+benchmark framework's complete SHA-256 result rather than a provider-specific
+display truncation.
+
+**P0 invariant:** image identity must come only from the original static task
+environment. Treat any dependency on rendering, rewriting, mounts, mirrors,
+runtime assets, resolved artifacts, or other build-time mutation as a P0 bug.
 
 For an `image:` service, the original image reference declared by the task is
 used only as the Harbor benchmark framework's empty-environment fallback seed.
@@ -178,6 +182,79 @@ for Dockerfile `RUN` commands. They apply to ordinary clone/fetch and recursive
 GitHub submodules, including HTTPS, SCP-like SSH, `ssh://`, and `git://` URLs.
 The mount exists only while each `RUN` executes, so it is not written into an
 image layer, image environment, or global `.gitconfig`.
+
+## APT build-runtime interception
+
+APT routing is runtime interception, not Dockerfile APT analysis. The renderer
+mechanically gives each shell-form `RUN` instruction the same BuildKit-only
+environment:
+
+```text
+/run/opensandbox-apt/bin/apt
+/run/opensandbox-apt/bin/apt-get
+PATH=/run/opensandbox-apt/bin:$PATH
+```
+
+The wrappers, source rewriter, and source map are mounted as BuildKit secrets;
+the invocation workspace is a tmpfs mount. Shell-form `RUN` instructions prepend
+the temporary directory to `PATH`. Shell heredocs use a small build-only launcher
+when needed. Ordinary JSON exec-form `RUN` instructions remain unchanged and do
+not receive APT runtime mounts or an added shell dependency. The renderer does
+not inspect shell command content, predict APT use, or track source mutations.
+None of the mounted files or the temporary `PATH` value is persisted in the
+resulting image.
+
+Existing `RUN --<option>=<value>` options, including `--mount`, `--network`,
+`--security`, and `--device`, remain in the instruction-options region. Runtime
+mounts are added there, while the `PATH` setup is added only to a shell-form
+command body. The independent Git `/etc/gitconfig` secret mount also coexists
+with these options and remains available to JSON exec-form RUNs.
+
+The runtime helper files are hashed as a stable set solely for their BuildKit
+secret IDs, while the source map keeps its own content-addressed secret ID.
+Changing a wrapper or rewriter therefore invalidates affected RUN cache entries
+when a build occurs, but does not change the task's static image identity.
+
+Each time `apt` or `apt-get` is found through `PATH`, the wrapper reads the
+current rootfs copies of `/etc/apt/sources.list`, `*.list`, and `*.sources`. It
+copies them into an invocation-local shadow tree, rewrites active source URIs,
+and invokes the current rootfs binary at `/usr/bin/apt` or `/usr/bin/apt-get`
+with `Dir::Etc::SourceList` and `Dir::Etc::SourceParts` pointing at that shadow.
+The real `/etc/apt` files are never changed. Updating the `apt` package during a
+build therefore naturally changes the real binary used by later invocations.
+
+After a successful `apt update` or `apt-get update`, the same invocation asks
+APT for rewritten-source and original-source index targets with `apt-get
+indextargets`. It joins targets by their stable source-entry and target metadata,
+then copies the downloaded target and any compressed variants to the filename
+APT derives from the original URI. Corresponding `InRelease`, `Release`, and
+`Release.gpg` files are reconciled as well. The gateway-named files remain in
+place for later intercepted commands in the same build. If target discovery or
+copying fails, the wrapper emits `event=index-reconciliation-failed` and fails
+the invocation instead of silently leaving an identity-mismatched image. This
+runs only after a successful update and needs no stage analysis or final cleanup
+RUN.
+
+The mapping combines the configured distro mirror with
+`HARBOR_OPENSANDBOX_APT_SOURCE_OVERRIDES_JSON`. Repository matches use the
+longest prefix, retain the suffix, and require an exact match or `/` boundary.
+An unmatched active HTTP(S) URI remains unchanged, but the wrapper emits a
+structured warning before real APT starts:
+
+```text
+[opensandbox apt] WARNING event=unmapped-source source=<uri> file=<source-file>
+```
+
+Non-HTTP(S) sources such as `file:` and `cdrom:` remain unchanged without a
+warning. Interception covers ordinary `apt` and `apt-get` lookup from shell-form
+RUNs, including nested `sh`/`bash`, dynamically downloaded scripts, and
+subprocesses that inherit the build `PATH`. It intentionally does not intercept
+JSON exec-form APT invocations, `/usr/bin/apt`, `/usr/bin/apt-get`, other
+explicit paths, or custom libapt frontends. `APT_CONFIG` and explicit custom APT
+source or config-root options are passed directly to the real binary with a
+warning.
+There is no `/usr/bin` overlay, apt-binary copy, base-stage snapshot, bind mount,
+or stage-level restore/virtualization fallback.
 
 `SkopeoPublisher` removes ambient HTTP(S) proxy variables for login, copy, and
 inspect. TLS verification is controlled by `YICLOUD_HARBOR_TLS_VERIFY`; the
