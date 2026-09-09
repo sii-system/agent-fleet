@@ -19,6 +19,7 @@ from harbor_controller.fixer import (
     reset_fixer_control,
     start_fixer,
 )
+from write_benchmark_summary import publish_benchmark_summary
 
 
 def _exec_with_repository_config() -> None:
@@ -107,7 +108,14 @@ def _fixer_start(args: argparse.Namespace) -> int:
 
 
 def _fixer_approve(run_dir: Path, request_id: str) -> int:
-    approve_fixer(run_dir, request_id)
+    result = approve_fixer(run_dir, request_id)
+    if result.get("report_status") == "available":
+        try:
+            publish_benchmark_summary(
+                run_dir, analyzer_output=Path(result["config"]["analyzer_output"]),
+            )
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            print(f"[WARN] failed to write benchmark summary: {exc}", file=sys.stderr)
     print(json.dumps(fixer_status(run_dir), ensure_ascii=False, indent=2))
     return 0
 

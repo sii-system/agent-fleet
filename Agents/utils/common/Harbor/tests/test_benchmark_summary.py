@@ -812,50 +812,7 @@ Internal command output that should remain in the full report.
                 )
 
             summary = output_path.read_text(encoding="utf-8")
-            self.assertIn("## Fixer Results", summary)
-            self.assertIn(
-                "No Fixer report has been generated for this benchmark run.",
-                summary,
-            )
-
-    def test_updates_only_the_existing_fixer_results_section(self) -> None:
-        with tempfile.TemporaryDirectory() as root:
-            root_path = Path(root)
-            output_path = root_path / "analyzer" / "benchmark-summary.md"
-            fixer_report_path = root_path / "fixer" / "fix-report-latest.md"
-            output_path.parent.mkdir(parents=True)
-            fixer_report_path.parent.mkdir(parents=True)
-            output_path.write_text(
-                "# Benchmark Summary\n\n## Run Result\n\nKeep this.\n\n"
-                "## Fixer Results\n\nOld Fixer content.\n\n"
-                "## Appendix\n\nKeep this too.\n",
-                encoding="utf-8",
-            )
-            fixer_report_path.write_text(
-                "# Fixer Report\n\n## Summary\n\nNew Fixer content.\n\n"
-                "## Changes Applied\n\n- Changed one setting.\n\n"
-                "## Remaining Issues\n\nNo remaining issues.\n",
-                encoding="utf-8",
-            )
-
-            summary_writer.update_fixer_results(output_path, fixer_report_path)
-
-            summary = output_path.read_text(encoding="utf-8")
-            self.assertIn("Keep this.", summary)
-            self.assertIn("Keep this too.", summary)
-            self.assertIn("New Fixer content.", summary)
-            self.assertNotIn("Old Fixer content.", summary)
-
-    def test_update_requires_the_existing_fixer_results_section(self) -> None:
-        with tempfile.TemporaryDirectory() as root:
-            root_path = Path(root)
-            output_path = root_path / "benchmark-summary.md"
-            fixer_report_path = root_path / "fix-report-latest.md"
-            output_path.write_text("# Benchmark Summary\n", encoding="utf-8")
-            fixer_report_path.write_text("# Fixer Report\n", encoding="utf-8")
-
-            with self.assertRaisesRegex(ValueError, "exactly one Fixer Results"):
-                summary_writer.update_fixer_results(output_path, fixer_report_path)
+            self.assertNotIn("## Fixer Results", summary)
 
     def test_supports_current_fixer_report_headings(self) -> None:
         with tempfile.TemporaryDirectory() as root:

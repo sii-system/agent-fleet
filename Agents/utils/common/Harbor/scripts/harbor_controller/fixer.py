@@ -34,8 +34,6 @@ from harbor_pi_runtime import base_url_from_env, model_from_env
 from harbor_runtime import ProcessIdentity
 from harbor_runtime import json_sha256 as _json_sha256
 from harbor_runtime import utc_now as _utc_now
-from write_benchmark_summary import update_fixer_results
-from write_run_summary import write_run_summary
 
 ACTIVE_STATUSES = {
     "planning",
@@ -279,17 +277,6 @@ def _validate_start_inputs(run_dir: Path, analyzer_output: Path) -> str:
         include_deferred_retries=True,
     ):
         raise ValueError("Analyzer still has pending benchmark handoffs")
-    summary_path = analyzer_output / "benchmark-summary.md"
-    if not summary_path.is_file():
-        raise ValueError("Analyzer has not published benchmark-summary.md")
-    fixer_sections = sum(
-        line.strip().casefold() == "## fixer results"
-        for line in summary_path.read_text(encoding="utf-8").splitlines()
-    )
-    if fixer_sections != 1:
-        raise ValueError(
-            "benchmark summary must contain exactly one Fixer Results section"
-        )
     return run_id
 
 
@@ -526,7 +513,6 @@ def _finish_policy_review(
                 "execute_approved_plan",
                 "run_smoke_verification",
                 "write_fix_report",
-                "update_benchmark_summary",
             ],
             "plans": _approval_plans(fix_plan),
         }
@@ -613,7 +599,6 @@ def start_fixer(
                 ),
                 "fix_report_json": str(output_dir / "fix-report-latest.json"),
                 "fix_report": str(output_dir / "fix-report-latest.md"),
-                "benchmark_summary": str(analyzer_output / "benchmark-summary.md"),
             },
             "available_actions": ["cancel"],
             "error": None,
@@ -712,14 +697,12 @@ def _finish_execution(
     report_json_path = output_dir / "fix-report-latest.json"
     report_path = output_dir / "fix-report-latest.md"
     config = state["config"]
-    summary_path = Path(config["analyzer_output"]) / "benchmark-summary.md"
     paths = {
         **state["paths"],
         "exec_result": str(exec_result_path),
         "verification_result": str(verification_result_path),
         "fix_report_json": str(report_json_path),
         "fix_report": str(report_path),
-        "benchmark_summary": str(summary_path),
     }
     _transition(
         run_dir,
@@ -787,8 +770,6 @@ def _finish_execution(
             baseline_run_dir=run_dir,
             baseline_monitor_policy="auto",
         )
-        update_fixer_results(summary_path, report_path)
-        write_run_summary(run_dir, summary_path, report_path, pi_config=_pi_config(config))
     except Exception as exc:
         _transition(
             run_dir,
@@ -957,7 +938,6 @@ def fixer_status(run_dir: Path) -> dict[str, Any]:
         "state": str(_state_path(run_dir)),
         "approval_request": str(_approval_request_path(run_dir)),
         "decision": str(_decision_path(run_dir)),
-        "benchmark_summary": str(run_dir / "analyzer" / "benchmark-summary.md"),
         "fix_report_json": str(_fixer_dir(run_dir) / "fix-report-latest.json"),
         "fix_report": str(_fixer_dir(run_dir) / "fix-report-latest.md"),
     }

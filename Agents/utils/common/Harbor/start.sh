@@ -363,22 +363,19 @@ harbor_wait_for_analyzer_drain() {
 }
 
 harbor_write_benchmark_summary() {
-  python3 "$SCRIPT_DIR/scripts/write_benchmark_summary.py" \
-    "$HARBOR_MONITOR_DIR/monitor-latest.json" \
-    "$HARBOR_ANALYZER_OUTPUT_DIR/analyzer-artifacts-latest.json" \
-    "$HARBOR_ANALYZER_OUTPUT_DIR/benchmark-summary.md" "$RUN_ID" \
-    "$OUTPUT_PATH/fixer/fix-report-latest.md" \
+  local summary_args=(--run-dir "$OUTPUT_PATH" --analyzer-output "$HARBOR_ANALYZER_OUTPUT_DIR" --run-id "$RUN_ID")
+  [[ "$HARBOR_ANALYZER_ENABLED" == "1" ]] || summary_args+=(--deterministic)
+  python3 "$SCRIPT_DIR/scripts/write_benchmark_summary.py" "${summary_args[@]}" \
     || echo "[WARN] failed to write Harbor benchmark summary" >&2
-  python3 "$SCRIPT_DIR/scripts/write_run_summary.py" "$OUTPUT_PATH" --summarize \
-    --analyzer-summary "$HARBOR_ANALYZER_OUTPUT_DIR/benchmark-summary.md" \
-    || echo "[WARN] failed to write joint Harbor summary" >&2
 }
 
 harbor_finish_analyzer_lifecycle() {
-  [[ "$HARBOR_ANALYZER_ENABLED" == "1" && "$ROLLOUT" != "1" ]] || return 0
+  [[ "$ROLLOUT" != "1" ]] || return 0
   harbor_wait_for_monitor_completion
-  harbor_wait_for_analyzer_drain
-  harbor_stop_analyzer || true
+  if [[ "$HARBOR_ANALYZER_ENABLED" == "1" ]]; then
+    harbor_wait_for_analyzer_drain
+    harbor_stop_analyzer || true
+  fi
   harbor_write_benchmark_summary
 }
 

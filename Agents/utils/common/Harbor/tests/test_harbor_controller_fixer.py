@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import os
 import sys
@@ -15,6 +17,8 @@ for path in (TEST_DIR, SCRIPT_DIR):
     if str(path) not in sys.path:
         sys.path.insert(0, str(path))
 
+import controller
+import write_benchmark_summary
 from fixer_test_support import (
     FixerTestCase,
     make_fix_plan,
@@ -87,15 +91,10 @@ class HarborControllerFixerTest(FixerTestCase):
             "harbor_controller.fixer.run_report_from_paths",
             side_effect=write_report,
         )
-        self.update_summary = mock.patch(
-            "harbor_controller.fixer.update_fixer_results"
-        )
         self.verify_mock = self.verify.start()
         self.write_report_mock = self.write_report.start()
-        self.update_summary_mock = self.update_summary.start()
         self.addCleanup(self.verify.stop)
         self.addCleanup(self.write_report.stop)
-        self.addCleanup(self.update_summary.stop)
 
     def _start(self) -> dict:
         return start_fixer(self.run_dir, workspace_root=self.workspace)
@@ -114,7 +113,6 @@ class HarborControllerFixerTest(FixerTestCase):
                 "execute_approved_plan",
                 "run_smoke_verification",
                 "write_fix_report",
-                "update_benchmark_summary",
             ],
         )
         self.assertEqual(
@@ -134,9 +132,8 @@ class HarborControllerFixerTest(FixerTestCase):
         self.assertEqual(completed["outcome"], "fixed")
         self.assertEqual(completed["verification_status"], "fixed")
         self.assertEqual(completed["report_status"], "available")
-        joint = (self.run_dir / "summary.md").read_text(encoding="utf-8")
-        self.assertIn("Smoke verification completed.", joint)
-        self.assertIn("source-model", joint)
+        self.assertFalse((self.run_dir / "summary.md").exists())
+        self.assertNotIn("benchmark_summary", completed["paths"])
         self.assertEqual(completed["execution_counts"]["succeeded"], 1)
         self.assertEqual(
             completed["paths"]["exec_result"],
@@ -167,10 +164,37 @@ class HarborControllerFixerTest(FixerTestCase):
             completed["paths"]["fix_report_json"],
             str(self.run_dir / "fixer" / "fix-report-latest.json"),
         )
-        self.update_summary_mock.assert_called_once_with(
-            self.run_dir / "analyzer" / "benchmark-summary.md",
-            self.run_dir / "fixer" / "fix-report-latest.md",
-        )
+
+    def test_controller_publishes_root_summary_after_fixer_report_is_available(self) -> None:
+        (self.analyzer_dir / "benchmark-summary.md").unlink()
+        manifest_path = self.analyzer_dir / "analyzer-artifacts-latest.json"
+        manifest = json.loads(manifest_path.read_text())
+        report_path = self.analyzer_dir / "benchmark-report.json"
+        write_json(report_path, {"tasks": [{
+            "task": {"task_index": 1, "task_name": "task-1"},
+            "analysis_status": "analysis_complete", "final_class": "env_fail",
+            "root_cause_summary": "A required dependency was unavailable.",
+        }]})
+        manifest["publications"][0]["artifacts"]["benchmark_report_path"] = str(report_path)
+        write_json(manifest_path, manifest)
+        state = self._start()
+
+        def publish(*args: object, **kwargs: object) -> None:
+            status = fixer_status(self.run_dir)
+            self.assertEqual(status["status"], "completed")
+            self.assertEqual(status["report_status"], "available")
+            write_benchmark_summary.publish_benchmark_summary(*args, **kwargs, summarize=False)
+
+        with mock.patch.object(controller, "publish_benchmark_summary", side_effect=publish), \
+             contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(controller._fixer_approve(self.run_dir, state["approval_request_id"]), 0)
+
+        summary = (self.run_dir / "summary.md").read_text()
+        self.assertIn("source-model", summary)
+        self.assertIn("## Analyzer", summary)
+        self.assertIn("## Fixer Results", summary)
+        self.assertIn("Smoke verification completed.", summary)
+        self.assertFalse((self.analyzer_dir / "benchmark-summary.md").exists())
 
     def test_approve_exposes_automatic_verification_and_reporting_states(self) -> None:
         state = self._start()
@@ -228,7 +252,6 @@ class HarborControllerFixerTest(FixerTestCase):
         self.assertEqual(status["verification_status"], "failed")
         self.assertEqual(status["report_status"], "not_available")
         self.write_report_mock.assert_not_called()
-        self.update_summary_mock.assert_not_called()
 
     def test_reporting_failure_is_not_replaced_with_a_fallback(self) -> None:
         state = self._start()
@@ -242,7 +265,6 @@ class HarborControllerFixerTest(FixerTestCase):
         self.assertEqual(status["outcome"], "reporting_failed")
         self.assertEqual(status["verification_status"], "fixed")
         self.assertEqual(status["report_status"], "failed")
-        self.update_summary_mock.assert_not_called()
 
     def test_status_survives_corrupt_state_and_missing_approval(self) -> None:
         state_path = self.run_dir / "fixer" / "fixer-state.json"
@@ -297,21 +319,19 @@ class HarborControllerFixerTest(FixerTestCase):
         )
         self.assertEqual(self._start()["status"], "awaiting_approval")
 
-    def test_start_requires_published_benchmark_summary(self) -> None:
+    def test_start_does_not_require_markdown_summary(self) -> None:
         (self.analyzer_dir / "benchmark-summary.md").unlink()
 
-        with self.assertRaisesRegex(ValueError, "has not published"):
-            self._start()
+        self.assertEqual(self._start()["status"], "awaiting_approval")
 
-    def test_start_requires_fixer_results_section(self) -> None:
+    def test_start_does_not_require_fixer_results_section(self) -> None:
         (self.analyzer_dir / "benchmark-summary.md").write_text(
             "# Benchmark Summary\n", encoding="utf-8"
         )
 
-        with self.assertRaisesRegex(ValueError, "exactly one Fixer Results"):
-            self._start()
+        self.assertEqual(self._start()["status"], "awaiting_approval")
 
-    def test_custom_analyzer_output_owns_the_updated_summary(self) -> None:
+    def test_custom_analyzer_output_is_read_without_updating_summary(self) -> None:
         custom_root = self.root / "custom"
         custom_analyzer = write_analyzer_fixture(custom_root)
         custom_summary = custom_analyzer / "benchmark-summary.md"
@@ -327,10 +347,12 @@ class HarborControllerFixerTest(FixerTestCase):
         )
         approve_fixer(self.run_dir, state["approval_request_id"])
 
-        self.update_summary_mock.assert_called_once_with(
-            custom_summary,
-            self.run_dir / "fixer" / "fix-report-latest.md",
+        self.assertEqual(self.write_report_mock.call_args.args[1], custom_analyzer)
+        self.assertEqual(
+            custom_summary.read_text(),
+            "# Benchmark Summary\n\n## Fixer Results\n\nNo Fixer report.\n",
         )
+        self.assertFalse((self.run_dir / "summary.md").exists())
 
     def test_second_active_workflow_is_rejected(self) -> None:
         first = self._start()

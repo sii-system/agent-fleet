@@ -63,6 +63,7 @@ grep -q '^\[RUN\] Zellij session: feedback-session$' "$SUCCESS_LOG"
 grep -Fq "[RUN] output: $SUCCESS_OUTPUT" "$SUCCESS_LOG"
 grep -Fq "[RUN] summary: $SUCCESS_OUTPUT/summary.txt" "$SUCCESS_LOG"
 grep -q '^mean_reward: 1.0$' "$SUCCESS_LOG"
+grep -Fq '| mean_reward | 1.0 |' "$SUCCESS_OUTPUT/summary.md"
 grep -q '^keep_on_failure=0$' "$SUCCESS_LOG"
 
 FAILURE_OUTPUT="$TEST_TMP_DIR/failure"

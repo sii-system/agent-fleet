@@ -306,14 +306,26 @@ control the benchmark run. Before using the default analyzer path, configure
 for a run, set `HARBOR_ANALYZER_ENABLED=0`.
 
 Completed fixed runs publish `summary.md` beside `summary.txt` in `$OUTPUT_PATH`.
-The joint report combines Harbor results, the existing Analyzer summary, and
-Fixer results when available; runs without a Fixer report omit that section.
-Analyzer finalization and Controller Fixer reporting refresh the joint report
-with one additional no-tools Pi call using their existing connection settings
-and timeout. Pi writes only a brief narrative; recorded metrics and verification
-results remain report-owned. If Pi is unavailable, the deterministic report is
-still published. `summary.txt` remains unchanged. Summary inputs, output, and
-Pi diagnostics live under `$OUTPUT_PATH/run-summary/`.
+`write_benchmark_summary.py` combines Harbor results, Analyzer findings, and the
+Fixer report when available; runs without a Fixer report omit that section.
+The launcher publishes the summary after Analyzer finishes. After Fixer writes
+its own report and reaches its final status, the Controller CLI refreshes the
+root summary separately. Fixer does not require or modify a Markdown summary.
+Each narrative refresh uses one no-tools Pi call with the existing Analyzer
+connection settings. Runs with Analyzer disabled publish deterministic results.
+Metrics and verification results remain report-owned. If Pi is unavailable, the deterministic report is still published. Summary failures do
+not change Fixer's result. `summary.txt` remains unchanged; summary inputs,
+output, and Pi diagnostics live under `$OUTPUT_PATH/benchmark-summary/`.
+
+To refresh the joint summary from an existing artifact directory:
+
+```bash
+python3 Agents/utils/common/Harbor/scripts/write_benchmark_summary.py \
+  --run-dir "$RUN_DIR"
+```
+
+Use `--deterministic` to render recorded results without calling Pi, or
+`--analyzer-output` for a custom Analyzer artifact directory.
 
 ## Harbor Fixer
 
@@ -338,8 +350,7 @@ Use `fixer cancel --workflow-id "$FIXER_WORKFLOW_ID"` to reject a plan awaiting
 approval. A cancellation requested during planning or policy review takes
 effect at the next stage boundary. Approval synchronously executes the exact
 plan, runs smoke verification, writes `fix-report-latest.json` and
-`fix-report-latest.md`, and updates the existing `benchmark-summary.md` Fixer
-section. These automatic follow-up steps
+`fix-report-latest.md`. These automatic follow-up steps
 do not require additional user decisions and cannot be safely cancelled after
 execution starts. Approval is bound to the run, workflow, approval request,
 and SHA-256 digest of the reviewed Fix Plan; a changed plan is blocked instead
@@ -474,9 +485,9 @@ Analyzer findings and Fix Plan reasoning. Smoke-test outcomes remain scoped to
 sampled tasks. The machine contract is written to `fix-report-latest.json`; the
 deterministic, secret-redacted view is written to `fix-report-latest.md`.
 
-After Controller-approved execution and verification, Controller replaces only
-the existing `## Fixer Results` section in `benchmark-summary.md`; it does not
-regenerate the Monitor or Analyzer summary.
+After Controller-approved execution, verification, and reporting finish, the
+Controller CLI calls `write_benchmark_summary.py` to refresh `$OUTPUT_PATH/summary.md`
+from all available reports. This aggregation is outside the Fixer workflow.
 
 ## More Details
 
