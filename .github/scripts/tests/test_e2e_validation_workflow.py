@@ -168,37 +168,56 @@ class E2eValidationWorkflowTest(unittest.TestCase):
     def test_publishes_redacted_joint_artifact_with_gate_fallback(self):
         script = textwrap.dedent(self.workflow.split("- name: Publish run summary")[1]
                                  .split("        run: |\n")[1])
-        joint = "# Harbor Run Summary\n\n## Harbor\n\nResults.\n\n## Analyzer\n\nDiagnosis.\n\n## Fixer\n\nVerification.\n"
-        for staging, report, gate_report in (
-            ("success", joint, "CI PASS"), ("success", joint, "CI FAIL"),
-            ("failure", joint, "CI FAIL"), ("skipped", joint, ""),
-            ("success", "", "CI PASS"), ("skipped", "", ""),
+        joint = (ROOT / ".github/scripts/tests/fixtures/harbor-joint-summary.md").read_text()
+        without_fixer = joint.split("\n## Fixer Results\n")[0] + "\n"
+        for staging, report, gate_report, upload in (
+            ("success", joint, "CI PASS", "success"),
+            ("success", without_fixer, "CI FAIL", "success"),
+            ("success", joint, "CI PASS", "failure"),
+            ("failure", joint, "CI FAIL", "skipped"),
+            ("skipped", joint, "", "skipped"),
+            ("success", "", "CI PASS", "success"),
+            ("skipped", "", "", "skipped"),
         ):
-            with self.subTest(staging=staging, report=bool(report)), tempfile.TemporaryDirectory() as tmp:
+            with self.subTest(staging=staging, report=bool(report), upload=upload), tempfile.TemporaryDirectory() as tmp:
                 staged = Path(tmp) / "staged"
                 staged.mkdir()
                 (staged / "summary.md").write_text(report)
                 gate = Path(tmp) / "gate.md"
                 gate.write_text(gate_report)
                 destination = Path(tmp) / "summary.md"
+                artifact_url = "https://example.com/artifact" if upload == "success" else ""
+                gate_outcome = {"CI PASS": "success", "CI FAIL": "failure", "": "skipped"}[gate_report]
                 result = subprocess.run(
                     ["bash", "-c", script], capture_output=True, text=True, check=False,
-                    cwd=tmp,
+                    cwd=ROOT if staging == "success" else tmp,
                     env={**os.environ, "HEALTH_SUMMARY": str(gate),
                          "GITHUB_STEP_SUMMARY": str(destination), "JOB_STATUS": "failure",
-                         "GATE_OUTCOME": "failure" if gate_report else "skipped",
+                         "GATE_OUTCOME": gate_outcome,
                          "STAGING_OUTCOME": staging, "STAGED_ARTIFACTS": str(staged),
-                         "ARTIFACT_URL": "https://example.com/artifact", "ARTIFACT_OUTCOME": "success",
+                         "ARTIFACT_URL": artifact_url, "ARTIFACT_OUTCOME": upload,
                          "RUN_URL": "https://example.com/run"},
                 )
                 self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual((staged / "summary.md").read_text(), report)
                 rendered = destination.read_text()
                 self.assertIn("[Run logs](https://example.com/run)", rendered)
-                self.assertIn("[Download run artifacts](https://example.com/artifact)", rendered)
-                if staging == "success" and report:
-                    self.assertIn(joint, rendered)
+                if upload == "success":
+                    self.assertIn("[Download run artifacts](https://example.com/artifact)", rendered)
                 else:
-                    self.assertNotIn("Diagnosis.", rendered)
+                    self.assertIn(f"Run artifacts: unavailable (upload step: {upload}).", rendered)
+                    self.assertNotIn("[Download run artifacts]", rendered)
+                if staging == "success" and report:
+                    if report == joint:
+                        location = "`fixer/fix-report-latest.md`"
+                        location += (f" ([download run artifacts]({artifact_url}))" if artifact_url
+                                     else " (artifact upload unavailable)")
+                        self.assertIn(joint.replace("[fix-report-latest.md](fixer/fix-report-latest.md)", location), rendered)
+                    else:
+                        self.assertIn(without_fixer, rendered)
+                        self.assertNotIn("## Fixer Results", rendered)
+                else:
+                    self.assertNotIn("A required dependency was unavailable.", rendered)
                     self.assertIn("Joint summary.md unavailable", rendered)
                 if gate_report:
                     self.assertIn(gate_report, rendered)

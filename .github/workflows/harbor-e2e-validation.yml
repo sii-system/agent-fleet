@@ -346,7 +346,8 @@ jobs:
 
             has_joint=0
             if [[ "$STAGING_OUTCOME" == "success" && -s "$STAGED_ARTIFACTS/summary.md" ]]; then
-              cat "$STAGED_ARTIFACTS/summary.md"
+              python3 .github/scripts/e2e_harbor_summary.py "$STAGED_ARTIFACTS/summary.md" \
+                --artifact-url "$ARTIFACT_URL"
               has_joint=1
               printf '\n\n<details>\n<summary>CI pipeline validation: %s</summary>\n\n' "$GATE_OUTCOME"
             else
