@@ -91,14 +91,13 @@ if harbor_publishes_job_dir; then
     > "$HARBOR_BENCHMARK_PID_FILE"
   record_harbor_benchmark_exit() {
     local rc="$?"
-    # The exit file is the completion contract with the native monitor;
-    # write it before the best-effort summary and analyzer teardown.
-    printf '%s\n' "$rc" > "$HARBOR_BENCHMARK_EXIT_FILE"
     if harbor_is_native_registry_main; then
       if ! write_harbor_registry_summary "$rc"; then
         echo "[WARN] failed to write registry summary: $OUTPUT_PATH/summary.txt" >&2
       fi
     fi
+    # Publish inputs before the exit signal lets the monitor and summary supervisor finish.
+    printf '%s\n' "$rc" > "$HARBOR_BENCHMARK_EXIT_FILE"
     if ! harbor_stop_online_analysis; then
       echo "[WARN] failed to stop online analyzer for $OUTPUT_PATH" >&2
     fi

@@ -324,8 +324,11 @@ python3 Agents/utils/common/Harbor/scripts/write_benchmark_summary.py \
   --run-dir "$RUN_DIR"
 ```
 
-Use `--deterministic` to render recorded results without calling Pi, or
-`--analyzer-output` for a custom Analyzer artifact directory.
+Narrative refreshes load the repository configuration, with exported runtime
+values taking precedence. Use `--deterministic` to render recorded results
+without calling Pi, or `--analyzer-output` for a custom Analyzer artifact
+directory. Analyzer Markdown is included only when its manifest matches the
+known run ID. Unfinished monitor snapshots do not supply final result counts.
 
 ## Harbor Fixer
 

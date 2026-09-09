@@ -371,8 +371,8 @@ harbor_write_benchmark_summary() {
 
 harbor_finish_analyzer_lifecycle() {
   [[ "$ROLLOUT" != "1" ]] || return 0
-  harbor_wait_for_monitor_completion
   if [[ "$HARBOR_ANALYZER_ENABLED" == "1" ]]; then
+    harbor_wait_for_monitor_completion
     harbor_wait_for_analyzer_drain
     harbor_stop_analyzer || true
   fi
