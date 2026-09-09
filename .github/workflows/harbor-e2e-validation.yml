@@ -227,18 +227,22 @@ jobs:
           printf 'Harbor exit status: %s\n' "$status"
 
       - name: Evaluate pipeline health
+        id: health
         if: ${{ !cancelled() && steps.harbor.outcome != 'skipped' }}
         env:
           HARBOR_STATUS: ${{ steps.harbor.outputs.status }}
+          HEALTH_SUMMARY: ${{ runner.temp }}/harbor-health-${{ github.run_id }}-${{ github.run_attempt }}.md
         run: |
           set -euo pipefail
           python3 .github/scripts/e2e_harbor_gate.py \
+            --step-summary "$HEALTH_SUMMARY" \
             --output-path "${{ steps.params.outputs.output_path }}" \
             --harbor-status "${HARBOR_STATUS:-1}" \
             --expected-trials "${{ steps.params.outputs.expected_trials }}" \
             --max-harness-failure-ratio 0.10
 
       - name: Stage and redact artifacts
+        id: stage
         if: ${{ !cancelled() && steps.harbor.outcome != 'skipped' }}
         env:
           API_KEY: ${{ secrets.LLM_REVIEW_API_KEY }}
@@ -290,6 +294,7 @@ jobs:
           printf 'staged=%s\n' "$staged" >> "$GITHUB_ENV"
 
       - name: Upload run artifacts
+        id: artifacts
         if: ${{ !cancelled() && steps.harbor.outcome != 'skipped' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -316,3 +321,43 @@ jobs:
           # its own trial containers; leftovers are an operator concern, not
           # something this job should guess at on a shared host.
           docker ps -a --format '{{.Names}}\t{{.Status}}' 2>/dev/null | head -20 || true
+
+      - name: Publish run summary
+        if: always()
+        env:
+          HEALTH_SUMMARY: ${{ runner.temp }}/harbor-health-${{ github.run_id }}-${{ github.run_attempt }}.md
+          JOB_STATUS: ${{ job.status }}
+          GATE_OUTCOME: ${{ steps.health.outcome }}
+          STAGING_OUTCOME: ${{ steps.stage.outcome }}
+          STAGED_ARTIFACTS: ${{ env.staged }}
+          ARTIFACT_OUTCOME: ${{ steps.artifacts.outcome }}
+          ARTIFACT_URL: ${{ steps.artifacts.outputs.artifact-url }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          {
+            printf 'Workflow status: **%s**\n\n' "$JOB_STATUS"
+            printf '[Run logs](%s)\n\n' "$RUN_URL"
+            if [[ -n "$ARTIFACT_URL" ]]; then
+              printf '[Download run artifacts](%s) (retained for 14 days)\n\n' "$ARTIFACT_URL"
+            else
+              printf 'Run artifacts: unavailable (upload step: %s).\n\n' "$ARTIFACT_OUTCOME"
+            fi
+
+            has_joint=0
+            if [[ "$STAGING_OUTCOME" == "success" && -s "$STAGED_ARTIFACTS/summary.md" ]]; then
+              cat "$STAGED_ARTIFACTS/summary.md"
+              has_joint=1
+              printf '\n\n<details>\n<summary>CI pipeline validation: %s</summary>\n\n' "$GATE_OUTCOME"
+            else
+              printf 'Joint summary.md unavailable; showing pipeline validation below.\n\n'
+            fi
+            if [[ "$GATE_OUTCOME" != "skipped" && -s "$HEALTH_SUMMARY" ]]; then
+              cat "$HEALTH_SUMMARY"
+            else
+              printf 'Pipeline validation report unavailable. Check the failed or cancelled steps in the run logs.\n'
+            fi
+            if (( has_joint )); then
+              printf '\n</details>\n'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

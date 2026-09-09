@@ -1,4 +1,8 @@
+import os
 import re
+import subprocess
+import tempfile
+import textwrap
 import unittest
 from pathlib import Path
 
@@ -153,6 +157,53 @@ class E2eValidationWorkflowTest(unittest.TestCase):
     def test_gates_on_pipeline_health(self):
         self.assertIn("e2e_harbor_gate.py", self.workflow)
         self.assertIn("--max-harness-failure-ratio 0.10", self.workflow)
+
+    def test_summary_runs_after_cleanup_even_when_checkout_fails(self):
+        self.assertIn("- name: Publish run summary\n        if: always()", self.workflow)
+        self.assertLess(self.workflow.index("- name: Clean up"),
+                        self.workflow.index("- name: Publish run summary"))
+        self.assertIn("--step-summary", self.workflow)
+        self.assertIn("steps.artifacts.outputs.artifact-url", self.workflow)
+
+    def test_publishes_redacted_joint_artifact_with_gate_fallback(self):
+        script = textwrap.dedent(self.workflow.split("- name: Publish run summary")[1]
+                                 .split("        run: |\n")[1])
+        joint = "# Harbor Run Summary\n\n## Harbor\n\nResults.\n\n## Analyzer\n\nDiagnosis.\n\n## Fixer\n\nVerification.\n"
+        for staging, report, gate_report in (
+            ("success", joint, "CI PASS"), ("success", joint, "CI FAIL"),
+            ("failure", joint, "CI FAIL"), ("skipped", joint, ""),
+            ("success", "", "CI PASS"), ("skipped", "", ""),
+        ):
+            with self.subTest(staging=staging, report=bool(report)), tempfile.TemporaryDirectory() as tmp:
+                staged = Path(tmp) / "staged"
+                staged.mkdir()
+                (staged / "summary.md").write_text(report)
+                gate = Path(tmp) / "gate.md"
+                gate.write_text(gate_report)
+                destination = Path(tmp) / "summary.md"
+                result = subprocess.run(
+                    ["bash", "-c", script], capture_output=True, text=True, check=False,
+                    cwd=tmp,
+                    env={**os.environ, "HEALTH_SUMMARY": str(gate),
+                         "GITHUB_STEP_SUMMARY": str(destination), "JOB_STATUS": "failure",
+                         "GATE_OUTCOME": "failure" if gate_report else "skipped",
+                         "STAGING_OUTCOME": staging, "STAGED_ARTIFACTS": str(staged),
+                         "ARTIFACT_URL": "https://example.com/artifact", "ARTIFACT_OUTCOME": "success",
+                         "RUN_URL": "https://example.com/run"},
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                rendered = destination.read_text()
+                self.assertIn("[Run logs](https://example.com/run)", rendered)
+                self.assertIn("[Download run artifacts](https://example.com/artifact)", rendered)
+                if staging == "success" and report:
+                    self.assertIn(joint, rendered)
+                else:
+                    self.assertNotIn("Diagnosis.", rendered)
+                    self.assertIn("Joint summary.md unavailable", rendered)
+                if gate_report:
+                    self.assertIn(gate_report, rendered)
+                else:
+                    self.assertIn("Pipeline validation report unavailable", rendered)
 
     def test_redacts_artifacts_before_upload(self):
         self.assertIn("Stage and redact artifacts", self.workflow)
