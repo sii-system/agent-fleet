@@ -215,6 +215,27 @@ def _build_hook_settings_json(hook_path: str) -> str:
     return json.dumps(payload, ensure_ascii=True)
 
 
+def _apt_mirror_bootstrap(mirror: str) -> str:
+    """Use an explicitly configured mirror for standard Debian/Ubuntu sources."""
+    import re
+
+    if not mirror:
+        return ""
+    if not re.fullmatch(r"https?://[A-Za-z0-9.-]+(?::[0-9]+)?(?:/[A-Za-z0-9._/-]*)?", mirror):
+        raise ValueError("HARBOR_CC_APT_MIRROR must be an HTTP(S) mirror URL without credentials or query")
+    replacement = (
+        r"s#https?://(deb\.debian\.org|security\.debian\.org|"
+        r"archive\.ubuntu\.com|security\.ubuntu\.com|ports\.ubuntu\.com)/#"
+        + mirror.rstrip("/") + "/#g"
+    )
+    return (
+        "for source in /etc/apt/sources.list /etc/apt/sources.list.d/*.list "
+        "/etc/apt/sources.list.d/*.sources; do "
+        '[ ! -f "$source" ] || '
+        f"sed -i -E {shlex.quote(replacement)} \"$source\"; done; "
+    )
+
+
 def _patch_claude_code_realtime_hooks() -> None:
     try:
         from harbor.agents.installed.claude_code import ClaudeCode
@@ -245,9 +266,9 @@ def _patch_claude_code_realtime_hooks() -> None:
         )
 
         # Intercept both exec_as_root and exec_as_agent during install so that:
-        #   exec_as_root: keep the task image's apt sources intact and only
-        #                 force IPv4. Rewriting http apt mirrors to https breaks
-        #                 some task containers that do not have trusted CA roots.
+        #   exec_as_root: force IPv4 and optionally use the configured regional
+        #                 apt mirror. Preserve source protocols by default;
+        #                 some task containers do not have trusted CA roots.
         #   exec_as_agent: replace the bootstrap script with the configured npm
         #                  registry path. This works with mounted caches and
         #                  managed Sandboxes without requiring one particular
@@ -433,6 +454,7 @@ def _patch_claude_code_realtime_hooks() -> None:
             "> /etc/apt/apt.conf.d/99force-ipv4; "
             "} 2>/dev/null || true; "
         )
+        _apt_fix += _apt_mirror_bootstrap(os.environ.get("HARBOR_CC_APT_MIRROR", ""))
 
         original_exec_as_root = self.exec_as_root
         original_exec_as_agent = self.exec_as_agent

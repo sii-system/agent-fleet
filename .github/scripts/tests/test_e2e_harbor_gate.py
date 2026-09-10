@@ -19,8 +19,8 @@ def summary(
     status="complete",
     exit_code="0",
     total=89,
-    completed=85,
-    errored=3,
+    completed=89,
+    errored=4,
     cancelled=1,
     retries=2,
     mean_reward="0.42",
@@ -57,7 +57,7 @@ def summary(
             lines.extend(["  reward=0.0: 50", "  reward=1.0: 35"])
         else:
             lines.append("  unavailable")
-        lines.extend(["", "Harbor stats:", "{", '  "n_completed_trials": 85', "}"])
+        lines.extend(["", "Harbor stats:", "{", f'  "n_completed_trials": {completed}', "}"])
     lines.extend(
         ["", "result paths:", "  output:          /runs/x", "  job:             /jobs/x"]
     )
@@ -115,7 +115,7 @@ class IntFieldTest(unittest.TestCase):
 
 class EvaluateTest(unittest.TestCase):
     def test_a_healthy_run_passes(self):
-        # 85 completed of 89, so 4 never completed; allowance is int(0.10*89)=8.
+        # All trials finished; four final errors are within the allowance of 8.
         verdict = gate.evaluate(summary())
         self.assertTrue(verdict.passed, verdict.reasons)
         self.assertEqual(verdict.stats["unresolved"], 4)
@@ -148,23 +148,38 @@ class EvaluateTest(unittest.TestCase):
         self.assertFalse(verdict.passed)
         self.assertTrue(any("no trials ran" in r for r in verdict.reasons))
 
-    def test_a_retried_trial_counted_twice_still_passes(self):
-        # Harbor counts a trial that errored then succeeded on retry in BOTH
-        # n_errored_trials and n_completed_trials. The repo's own fixture
-        # (test_harboropik_extra_compose.sh:118-123) is total=2, completed=2,
-        # errored=1, so accounted=3 > total=2 on a healthy run. With
-        # HARBOR_MAX_RETRIES defaulting to 2 this is the common case, not an
-        # edge case.
-        verdict = gate.evaluate(summary(total=2, completed=2, errored=1, cancelled=0, retries=1))
+    def test_a_recovered_retry_passes(self):
+        # Harbor removes the previous exception before recording a retry result.
+        verdict = gate.evaluate(summary(total=2, completed=2, errored=0, cancelled=0, retries=1))
         self.assertTrue(verdict.passed, verdict.reasons)
         self.assertEqual(verdict.stats["unresolved"], 0)
 
     def test_a_full_nightly_that_recovers_every_error_passes(self):
         # 89 trials, 12 transient errors all retried to completion.
         verdict = gate.evaluate(
-            summary(total=89, completed=89, errored=12, cancelled=0, retries=12)
+            summary(total=89, completed=89, errored=0, cancelled=0, retries=12)
         )
         self.assertTrue(verdict.passed, verdict.reasons)
+
+    def test_all_terminal_results_errored_is_not_a_healthy_run(self):
+        verdict = gate.evaluate(summary(total=20, completed=20, errored=20, cancelled=0, retries=0, counts=False))
+        self.assertFalse(verdict.passed)
+        self.assertEqual(verdict.stats["unresolved"], 20)
+
+    def test_retries_do_not_hide_remaining_errors(self):
+        verdict = gate.evaluate(summary(total=20, completed=20, errored=20, cancelled=0, retries=40, counts=False))
+        self.assertFalse(verdict.passed)
+        self.assertEqual(verdict.stats["unresolved"], 20)
+
+    def test_pending_and_errored_trials_are_both_failures(self):
+        verdict = gate.evaluate(summary(total=20, completed=18, errored=2, cancelled=0))
+        self.assertFalse(verdict.passed)
+        self.assertEqual(verdict.stats["unresolved"], 4)
+
+    def test_cancelled_errors_are_not_counted_twice(self):
+        verdict = gate.evaluate(summary(total=20, completed=20, errored=2, cancelled=2))
+        self.assertTrue(verdict.passed, verdict.reasons)
+        self.assertEqual(verdict.stats["unresolved"], 2)
 
     def test_missing_trials_fail(self):
         # A shortfall means trials vanished rather than being retried.
@@ -174,19 +189,19 @@ class EvaluateTest(unittest.TestCase):
 
     def test_never_completed_over_allowance_fails(self):
         # 9 of 89 never completed, exceeding the allowance of 8.
-        verdict = gate.evaluate(summary(completed=80, errored=9, cancelled=0))
+        verdict = gate.evaluate(summary(completed=89, errored=9, cancelled=0))
         self.assertFalse(verdict.passed)
         self.assertTrue(
-            any("9 of 89 trials never completed" in r for r in verdict.reasons)
+            any("9 of 89 trials failed or never completed" in r for r in verdict.reasons)
         )
 
     def test_never_completed_at_allowance_passes(self):
         # 8 of 89 is exactly the allowance and must not fail.
-        verdict = gate.evaluate(summary(completed=81, errored=8, cancelled=0))
+        verdict = gate.evaluate(summary(completed=89, errored=8, cancelled=0))
         self.assertTrue(verdict.passed, verdict.reasons)
 
     def test_cancelled_trials_count_as_never_completed(self):
-        verdict = gate.evaluate(summary(total=89, completed=80, errored=0, cancelled=9))
+        verdict = gate.evaluate(summary(total=89, completed=89, errored=9, cancelled=9))
         self.assertFalse(verdict.passed)
         self.assertEqual(verdict.stats["unresolved"], 9)
 
@@ -206,7 +221,7 @@ class EvaluateTest(unittest.TestCase):
 
     def test_failure_reason_quotes_counts_not_a_rounded_percentage(self):
         # 9/89 rounds to 10%, so a percentage would read "10% exceeds 10%".
-        verdict = gate.evaluate(summary(completed=80, errored=9, cancelled=0))
+        verdict = gate.evaluate(summary(completed=89, errored=9, cancelled=0))
         reason = next(r for r in verdict.reasons if "never completed" in r)
         self.assertNotIn("%", reason)
 
@@ -229,7 +244,7 @@ class EvaluateTest(unittest.TestCase):
         )
 
     def test_tolerance_is_configurable(self):
-        text = summary(completed=80, errored=9, cancelled=0)
+        text = summary(completed=89, errored=9, cancelled=0)
         self.assertTrue(
             gate.evaluate(text, max_harness_failure_ratio=0.5).passed
         )

@@ -32,6 +32,8 @@ jobs:
     runs-on: [self-hosted, Linux, X64, bare-metal]
     environment: self-hosted-env
     timeout-minutes: 480
+    env:
+      HARBOR_CC_APT_MIRROR: ${{ vars.HARBOR_CC_APT_MIRROR }}
 
     steps:
       - name: Check out repository
@@ -47,6 +49,10 @@ jobs:
           # shellcheck source=scripts/prerequisites.sh
           source scripts/prerequisites.sh
           agent_fleet_bootstrap_setup_prerequisites
+          if ! docker buildx version; then
+            echo "::error::Docker Buildx is required; install docker-buildx on this runner" >&2
+            exit 1
+          fi
           # Harbor's dependency-cache builder packages a Python 3.12 runtime
           # for task containers. The generic prerequisite check only requires
           # Python 3.9+, so check this pinned builder explicitly before Harbor

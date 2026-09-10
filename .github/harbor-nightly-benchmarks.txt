@@ -21,6 +21,8 @@ maxbittker/runebench
 aider/aider-polyglot
 gabeorlanski/slopcodebench
 android-bench/android-bench
+# Selected only when both Modal verifier credentials are configured in
+# self-hosted-env (MODAL_TOKEN_ID and MODAL_TOKEN_SECRET).
 vmax-modal/modal-port-v1-eval-patched
 orca-bench/orca-bench
 aime/aime

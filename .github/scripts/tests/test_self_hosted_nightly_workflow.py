@@ -41,6 +41,21 @@ class FakeRandom:
 
 
 class SelectorTest(unittest.TestCase):
+    def test_modal_requires_both_credentials_without_logging_values(self):
+        modal = "vmax-modal/modal-port-v1-eval-patched"
+        for environment, expected in (
+            ({}, False),
+            ({"MODAL_TOKEN_ID": "fake-id"}, False),
+            ({"MODAL_TOKEN_ID": "fake-id", "MODAL_TOKEN_SECRET": ""}, False),
+            ({"MODAL_TOKEN_ID": "fake-id", "MODAL_TOKEN_SECRET": "fake-secret"}, True),
+        ):
+            with self.subTest(environment=environment), mock.patch("sys.stderr") as stderr:
+                eligible = selector.eligible_benchmarks(ROOT, environment)
+                self.assertEqual(modal in eligible, expected)
+                self.assertIn("sweverify", eligible)
+                self.assertNotIn("fake-id", str(stderr.write.call_args_list))
+                self.assertNotIn("fake-secret", str(stderr.write.call_args_list))
+
     def test_reads_local_task_lists(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

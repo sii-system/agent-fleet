@@ -16,6 +16,8 @@ class RedactionTest(unittest.TestCase):
         values = redactor.credential_values(
             {
                 "EXA_API_KEY": "fake-exa",
+                "MODAL_TOKEN_ID": "fake-modal-id",
+                "MODAL_TOKEN_SECRET": "fake-modal-secret",
                 "HARBOR_MAX_TOKENS": "8192",
                 "HARBOR_ANALYZER_ENABLED": "1",
                 "API_KEY": "",
@@ -30,6 +32,8 @@ class RedactionTest(unittest.TestCase):
             set(values),
             {
                 b"fake-exa",
+                b"fake-modal-id",
+                b"fake-modal-secret",
                 b"fake-llm",
                 b"fake-header",
                 b"fake-opencode",
