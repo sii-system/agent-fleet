@@ -5,6 +5,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -114,6 +115,47 @@ class IntFieldTest(unittest.TestCase):
 
 
 class EvaluateTest(unittest.TestCase):
+    def test_harbor_job_stats_retry_contract(self):
+        # Run with the pinned Harbor runner as well as the portable test suite.
+        # Only Harbor itself knows whether a retry removes previous errors.
+        try:
+            from harbor.models.job.result import JobStats
+        except ModuleNotFoundError as exc:
+            if exc.name != "harbor":
+                raise
+            self.skipTest("requires the pinned Harbor runner environment")
+
+        def trial(name, error=None):
+            return SimpleNamespace(
+                trial_name=name,
+                agent_info=SimpleNamespace(name="test", model_info=None),
+                source="test",
+                verifier_result=None if error else SimpleNamespace(rewards={"reward": 1}),
+                exception_info=SimpleNamespace(exception_type=error) if error else None,
+                compute_token_cost_totals=lambda: (None, None, None, None),
+            )
+
+        for final_error in (None, "RuntimeError", "CancelledError"):
+            with self.subTest(final_error=final_error):
+                stats = JobStats()
+                stats.increment(trial("trial-1"))
+                previous = trial("trial-2", "RuntimeError")
+                stats.increment(previous)
+                self.assertEqual(stats.n_completed_trials, 2)
+                self.assertEqual(stats.n_errored_trials, 1)
+                stats.remove_trial(previous)
+                self.assertEqual(stats.n_completed_trials, 1)
+                self.assertEqual(stats.n_errored_trials, 0)
+                stats.increment(trial("trial-2", final_error))
+                verdict = gate.evaluate(summary(
+                    total=2,
+                    completed=stats.n_completed_trials,
+                    errored=stats.n_errored_trials,
+                    cancelled=stats.n_cancelled_trials,
+                    retries=1,
+                ))
+                self.assertEqual(verdict.passed, final_error is None, verdict.reasons)
+
     def test_a_healthy_run_passes(self):
         # All trials finished; four final errors are within the allowance of 8.
         verdict = gate.evaluate(summary())
@@ -186,6 +228,27 @@ class EvaluateTest(unittest.TestCase):
         verdict = gate.evaluate(summary(completed=10, errored=0, cancelled=0))
         self.assertFalse(verdict.passed)
         self.assertTrue(any("unaccounted for" in r for r in verdict.reasons))
+
+    def test_terminal_errors_cannot_hide_a_missing_trial(self):
+        for cancelled in (0, 1):
+            with self.subTest(cancelled=cancelled):
+                verdict = gate.evaluate(
+                    summary(total=20, completed=19, errored=1, cancelled=cancelled),
+                    expected_trials=20,
+                )
+                self.assertEqual(verdict.stats["unresolved"], 2)
+                self.assertEqual(verdict.stats["unresolved_allowed"], 2)
+                self.assertFalse(verdict.passed)
+                self.assertIn("trials unaccounted for: 19 of 20 recorded", verdict.reasons)
+
+    def test_final_error_after_retry_is_not_a_recovered_run(self):
+        # The compose-wrapper fixture has a final RuntimeError for trial-2,
+        # alongside trial-1's reward, even though one retry occurred.
+        verdict = gate.evaluate(
+            summary(total=2, completed=2, errored=1, cancelled=0, retries=1)
+        )
+        self.assertFalse(verdict.passed)
+        self.assertEqual(verdict.stats["unresolved"], 1)
 
     def test_never_completed_over_allowance_fails(self):
         # 9 of 89 never completed, exceeding the allowance of 8.

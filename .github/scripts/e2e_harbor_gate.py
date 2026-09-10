@@ -114,7 +114,7 @@ def evaluate(
     errored = int_field(fields, "errored") or 0
     cancelled = int_field(fields, "cancelled") or 0
     retries = int_field(fields, "retries") or 0
-    # Harbor's JobStats.increment counts every terminal result as completed,
+    # Pinned Harbor 0.18.0 JobStats.increment counts every terminal result as completed,
     # including exceptions. Retrying removes the previous result from the final
     # stats; n_retries must not be subtracted from the remaining errors.
     # CancelledError is also an errored result, so avoid counting it twice.
@@ -142,11 +142,11 @@ def evaluate(
             "task selection did not reach the benchmark"
         )
 
-    # Keep detecting missing results independently of the failure allowance.
-    accounted = completed + errored + cancelled
-    if accounted < total:
+    # Completed already includes terminal errors and cancellations. Adding them
+    # again would hide missing results within the harness-failure allowance.
+    if completed < total:
         reasons.append(
-            f"trials unaccounted for: {accounted} of {total} recorded"
+            f"trials unaccounted for: {completed} of {total} recorded"
         )
 
     # Expressed as a count, not a rounded percentage. At the default tolerance

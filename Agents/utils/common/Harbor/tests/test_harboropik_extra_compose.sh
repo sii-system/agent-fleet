@@ -112,6 +112,9 @@ if os.environ.get("HARBOR_CAPTURE_RESULT") == "1":
         Path(f"{capture}.pid-identity").write_text("valid")
     output = Path(args[args.index("-o") + 1]) / "fake-run"
     output.mkdir(parents=True, exist_ok=True)
+    # Harbor 0.18.0 counts both terminal results as completed: trial-1 has a
+    # reward and trial-2 has a final RuntimeError after a retry. This fixture
+    # tests summary serialization, not successful recovery from that error.
     result = {
         "finished_at": "2026-07-22T08:00:00Z",
         "n_total_trials": 2,
@@ -122,7 +125,7 @@ if os.environ.get("HARBOR_CAPTURE_RESULT") == "1":
             "n_retries": 1,
             "evals": {
                 "fake-eval": {
-                    "n_trials": 2,
+                    "n_trials": 1,
                     "n_errors": 1,
                     "metrics": [{"mean": 0.5}],
                     "reward_stats": {"reward": {"1.0": ["trial-1"]}},
@@ -316,6 +319,7 @@ run_harboropik() {
   if ! env -i \
     PATH="$fake_bin:/usr/bin:/bin:/usr/sbin:/sbin" \
     HOME="$output_dir/home" \
+    LOCAL_WHEEL_HOST_IP="wheels.example" \
     AGENT="$agent" \
     DATASET_NAME="$dataset_name" \
     DATASET_PATH="$dataset_path" \
@@ -480,7 +484,7 @@ main() {
   assert_arg_pair \
     "$pi_capture" \
     "--ae" \
-    "NO_PROXY=127.0.0.1,localhost,host.docker.internal,opik.example,llm.example"
+    "NO_PROXY=127.0.0.1,localhost,host.docker.internal,opik.example,wheels.example,llm.example"
   assert_arg_absent "$pi_capture" "disallowed_tools="
   assert_arg_absent "$pi_capture" "max_turns="
   assert_structured_mount_arg \
