@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import os
 import random
 import sys
 from collections.abc import Callable
@@ -18,21 +17,6 @@ LOCAL_TASK_LISTS = {
     "sweverify": Path("Tasks/SWE-verify/harbor_tasks.txt"),
 }
 SAMPLE_SIZE = 20
-REQUIRED_ENV = {
-    "vmax-modal/modal-port-v1-eval-patched": ("MODAL_TOKEN_ID", "MODAL_TOKEN_SECRET"),
-}
-
-
-def eligible_benchmarks(repo_root: Path, environment: dict[str, str]) -> list[str]:
-    catalog = repo_root / ".github/harbor-nightly-benchmarks.txt"
-    eligible = []
-    for benchmark in unique_names(catalog.read_text(encoding="utf-8").splitlines()):
-        missing = [name for name in REQUIRED_ENV.get(benchmark, ()) if not environment.get(name)]
-        if missing:
-            print(f"Skipping {benchmark}: missing {', '.join(missing)}", file=sys.stderr)
-            continue
-        eligible.append(benchmark)
-    return eligible
 
 
 def unique_names(names: list[str]) -> list[str]:
@@ -99,14 +83,9 @@ def select_tasks(
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--repo-root", type=Path, required=True)
-    mode = parser.add_mutually_exclusive_group(required=True)
-    mode.add_argument("--benchmark")
-    mode.add_argument("--eligible-benchmarks", action="store_true")
+    parser.add_argument("--benchmark", required=True)
     args = parser.parse_args(argv)
     try:
-        if args.eligible_benchmarks:
-            print("\n".join(eligible_benchmarks(args.repo_root, os.environ)))
-            return 0
         selected = select_tasks(args.repo_root, args.benchmark)
     except (OSError, RuntimeError, ValueError) as exc:
         print(f"[ERROR] {exc}", file=sys.stderr)

@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 from urllib.parse import urlsplit
 
-SECRET_NAME = re.compile(r"(?:key|token(?:_id)?|secret|password|credentials?)$", re.IGNORECASE)
+SECRET_NAME = re.compile(r"(?:key|token|secret|password|credentials?)$", re.IGNORECASE)
 JSON_CONFIGS = (
     "HARBOR_LLM_KWARGS",
     "OPENCODE_CONFIG_CONTENT",
