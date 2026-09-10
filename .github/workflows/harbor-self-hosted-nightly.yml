@@ -38,6 +38,10 @@ jobs:
           export AGENT_FLEET_REQUIRE_DOCKER=1
           source scripts/prerequisites.sh
           agent_fleet_bootstrap_setup_prerequisites
+          if ! docker buildx version; then
+            echo "::error::Docker Buildx is required; install docker-buildx on this runner" >&2
+            exit 1
+          fi
           runner_dir="$RUNNER_TEMP/harbor-self-hosted-nightly-runner"
           no_image_dir="$RUNNER_TEMP/harbor-self-hosted-nightly-no-image"
           HARBOR_RUNNER_IMAGE_DIR="$no_image_dir" \

@@ -91,6 +91,7 @@ class WorkflowTest(unittest.TestCase):
         self.assertNotIn("pull_request", self.workflow)
 
     def test_catalog_excludes_terminal_bench_and_adds_harbor_hub(self):
+        self.assertNotIn("vmax-modal/modal-port-v1-eval-patched", self.benchmarks)
         self.assertFalse(
             any("terminal-bench" in item.lower() for item in self.benchmarks)
         )

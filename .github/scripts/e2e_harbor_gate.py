@@ -114,14 +114,11 @@ def evaluate(
     errored = int_field(fields, "errored") or 0
     cancelled = int_field(fields, "cancelled") or 0
     retries = int_field(fields, "retries") or 0
-    # A trial that errored and was then retried to completion is counted in
-    # BOTH n_errored_trials and n_completed_trials (see the fixture in
-    # Agents/utils/common/Harbor/tests/test_harboropik_extra_compose.sh:118-123,
-    # where total=2, completed=2, errored=1). So errored+cancelled overcounts
-    # harness breakage whenever a retry succeeded, and HARBOR_MAX_RETRIES
-    # defaults to 2. Count trials that never completed instead: that excludes
-    # recovered retries and still catches permanent failures and cancellations.
-    unresolved = max(0, total - completed)
+    # Pinned Harbor 0.18.0 JobStats.increment counts every terminal result as completed,
+    # including exceptions. Retrying removes the previous result from the final
+    # stats; n_retries must not be subtracted from the remaining errors.
+    # CancelledError is also an errored result, so avoid counting it twice.
+    unresolved = max(0, total - completed) + max(errored, cancelled)
     stats.update(
         {
             "total": total,
@@ -145,12 +142,11 @@ def evaluate(
             "task selection did not reach the benchmark"
         )
 
-    # Over-count is normal with retries, so only a shortfall means trials went
-    # missing entirely.
-    accounted = completed + errored + cancelled
-    if accounted < total:
+    # Completed already includes terminal errors and cancellations. Adding them
+    # again would hide missing results within the harness-failure allowance.
+    if completed < total:
         reasons.append(
-            f"trials unaccounted for: {accounted} of {total} recorded"
+            f"trials unaccounted for: {completed} of {total} recorded"
         )
 
     # Expressed as a count, not a rounded percentage. At the default tolerance
@@ -160,7 +156,7 @@ def evaluate(
     stats["unresolved_allowed"] = allowed
     if unresolved > allowed:
         reasons.append(
-            f"{unresolved} of {total} trials never completed, exceeding the "
+            f"{unresolved} of {total} trials failed or never completed, exceeding the "
             f"allowance of {allowed} ({errored} errored, {cancelled} cancelled, "
             f"{retries} retried)"
         )
@@ -183,7 +179,7 @@ def render_summary(verdict: Verdict) -> str:
         f"| Cancelled | {stats.get('cancelled', 0)} |",
         f"| Retries | {stats.get('retries', 0)} |",
         (
-            "| Never completed (allowed) | "
+            "| Failed or incomplete (allowed) | "
             f"{stats.get('unresolved', 0)} "
             f"({stats.get('unresolved_allowed', 0)}) |"
         ),

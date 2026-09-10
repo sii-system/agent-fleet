@@ -4,7 +4,8 @@ seta
 smith
 sweverify
 
-# Harbor Hub datasets with at least 20 tasks.
+# Harbor Hub datasets with at least 20 tasks. Modal Port is excluded because
+# its verifier requires external Modal credentials.
 swe-bench/swe-bench-verified
 scale-ai/swe-bench-pro
 openthoughts/openthoughts-tblite
@@ -21,7 +22,6 @@ maxbittker/runebench
 aider/aider-polyglot
 gabeorlanski/slopcodebench
 android-bench/android-bench
-vmax-modal/modal-port-v1-eval-patched
 orca-bench/orca-bench
 aime/aime
 tmax/TMax-15K-Harbor
