@@ -32,8 +32,6 @@ jobs:
     runs-on: [self-hosted, Linux, X64, bare-metal]
     environment: self-hosted-env
     timeout-minutes: 480
-    env:
-      HARBOR_CC_APT_MIRROR: ${{ vars.HARBOR_CC_APT_MIRROR }}
 
     steps:
       - name: Check out repository

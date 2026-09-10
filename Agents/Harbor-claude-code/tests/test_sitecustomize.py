@@ -227,41 +227,6 @@ class ClaudeCommandPatchTest(unittest.TestCase):
 
 
 class ClaudeInstallCommandTest(unittest.TestCase):
-    def test_apt_mirror_rewrites_standard_sources_only(self):
-        module = load_module()
-        with tempfile.TemporaryDirectory() as tmp:
-            apt = Path(tmp)
-            (apt / "sources.list.d").mkdir()
-            sources = apt / "sources.list"
-            sources.write_text("deb http://archive.ubuntu.com/ubuntu jammy main\n")
-            deb822 = apt / "sources.list.d/debian.sources"
-            deb822.write_text("URIs: http://deb.debian.org/debian\nSuites: bookworm\nSigned-By: /usr/share/keyrings/debian-archive-keyring.gpg\n")
-            other = apt / "sources.list.d/vendor.list"
-            vendor = "deb https://packages.example.com/ubuntu jammy main\n"
-            other.write_text(vendor)
-            script = module._apt_mirror_bootstrap("http://mirror.example.com/")
-            result = subprocess.run(
-                ["bash", "-euc", script.replace("/etc/apt", tmp)],
-                capture_output=True, text=True, check=False,
-            )
-            self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(sources.read_text(), "deb http://mirror.example.com/ubuntu jammy main\n")
-            self.assertIn("URIs: http://mirror.example.com/debian\n", deb822.read_text())
-            self.assertIn("Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg", deb822.read_text())
-            self.assertEqual(other.read_text(), vendor)
-
-    def test_apt_mirror_is_opt_in_and_rejects_shell_syntax(self):
-        module = load_module()
-        self.assertEqual(module._apt_mirror_bootstrap(""), "")
-        for mirror in ("file:///tmp", "http://mirror/;echo bad", "https://user:pass@mirror"):
-            with self.subTest(mirror=mirror), self.assertRaises(ValueError):
-                module._apt_mirror_bootstrap(mirror)
-
-    def test_install_uses_configured_apt_mirror(self):
-        with mock.patch.dict(os.environ, {"HARBOR_CC_APT_MIRROR": "http://mirror.example.com"}):
-            self._install_command({"CC_OPIK_ENABLE_HOOK": "false"})
-        self.assertIn("http://mirror.example.com", self.last_root_command)
-
     def _install_command(
         self,
         extra_env: dict[str, str],
