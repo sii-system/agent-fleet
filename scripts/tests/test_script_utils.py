@@ -2,6 +2,7 @@ import hashlib
 import re
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 
 from scripts import script_utils
@@ -25,6 +26,23 @@ class ScriptUtilsTest(unittest.TestCase):
             "gateway.example.invalid",
         )
         self.assertEqual(script_utils.url_hostname(""), "")
+
+    def test_extract_toolchain_preserves_executable_and_rejects_escape(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "go.zip"
+            with zipfile.ZipFile(source, "w") as archive:
+                entry = zipfile.ZipInfo("toolchain/bin/go")
+                entry.external_attr = 0o100755 << 16
+                archive.writestr(entry, "fixture")
+            script_utils.extract_toolchain(source, root / "output")
+            binary = root / "output/toolchain/bin/go"
+            self.assertEqual(binary.read_text(), "fixture")
+            self.assertEqual(binary.stat().st_mode & 0o777, 0o755)
+            with zipfile.ZipFile(source, "w") as archive:
+                archive.writestr("../escape", "fixture")
+            with self.assertRaises(ValueError):
+                script_utils.extract_toolchain(source, root / "output")
 
     def test_verify_sha256(self):
         with tempfile.TemporaryDirectory() as temporary:

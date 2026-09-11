@@ -191,7 +191,7 @@ agent_fleet_download() {
   local url="$1" destination="$2" temporary="${2}.tmp.$$"
   mkdir -p "$(dirname "$destination")"
   rm -f "$temporary"
-  curl -fL --retry 3 --connect-timeout 15 -o "$temporary" "$url" || {
+  curl -fL --retry 3 --connect-timeout 15 "${@:3}" -o "$temporary" "$url" || {
     rm -f "$temporary"
     return 1
   }
@@ -303,6 +303,54 @@ agent_fleet_install_uv() {
   agent_fleet_prereq_ok "installed $("$AGENT_FLEET_BIN_DIR/uv" --version) and uvx to $AGENT_FLEET_BIN_DIR"
 }
 
+# The frontend is compiled with this exact toolchain; builds never install it.
+agent_fleet_find_frontend_go() {
+  local binary actual
+  for binary in "$AGENT_FLEET_BIN_DIR/go" "$(command -v go 2>/dev/null || true)"; do
+    [[ -n "$binary" && -x "$binary" ]] || continue
+    actual="$(GOTOOLCHAIN=local GOROOT= "$binary" version 2>/dev/null)" || continue
+    if [[ "$actual" == "go version go1.25.4 "* ]]; then
+      printf '%s\n' "$binary"
+      return 0
+    fi
+  done
+  agent_fleet_prereq_error "Go 1.25.4 required; run setup with HARBOR_OPENSANDBOX_BUILD_TOOLS_SETUP=1"
+  return 1
+}
+
+agent_fleet_install_frontend_go() {
+  agent_fleet_find_frontend_go 2>/dev/null && return 0
+  [[ "$(uname -s):$(uname -m)" == Linux:x86_64 ]] || {
+    agent_fleet_prereq_error "Automatic Go setup supports Linux amd64; provide Go 1.25.4 on this platform"
+    return 1
+  }
+  local module=golang.org/toolchain@v0.0.1-go1.25.4.linux-amd64
+  local archive="$AGENT_FLEET_CACHE_DIR/downloads/go/1.25.4/toolchain.zip" temp_dir
+  local destination="$AGENT_FLEET_BIN_DIR/../toolchains/go1.25.4"
+  mkdir -p "$(dirname "$archive")" "$(dirname "$destination")" "$AGENT_FLEET_BIN_DIR" || return 1
+  printf '%s\n' f4fa35e13952bae9836a82d8cf077710cd58fee98d31680f94edf435852b1af2 > "$archive.sha256" || return 1
+  if [[ ! -f "$archive" ]] || ! agent_fleet_verify_sha256 "$archive" "$archive.sha256"; then
+    [[ -n "${ARTIFACT_CACHE_GATEWAY_URL:-}" ]] || {
+      agent_fleet_prereq_error "ARTIFACT_CACHE_GATEWAY_URL required for Go setup"; return 1;
+    }
+    agent_fleet_prereq_info "Downloading Go 1.25.4 through Gateway; cache=$archive"
+    NO_PROXY="$(python3 "$AGENT_FLEET_PREREQ_SCRIPT_DIR/script_utils.py" url-hostname "$ARTIFACT_CACHE_GATEWAY_URL")" \
+    no_proxy="$(python3 "$AGENT_FLEET_PREREQ_SCRIPT_DIR/script_utils.py" url-hostname "$ARTIFACT_CACHE_GATEWAY_URL")" \
+      agent_fleet_download "${ARTIFACT_CACHE_GATEWAY_URL%/}/go-proxy/golang.org/toolchain/@v/${module#*@}.zip" "$archive" --max-time 120 || return 1
+    agent_fleet_verify_sha256 "$archive" "$archive.sha256" || return 1
+  fi
+  temp_dir="$(mktemp -d "$(dirname "$destination")/go.XXXXXX")" || return 1
+  if ! python3 "$AGENT_FLEET_PREREQ_SCRIPT_DIR/script_utils.py" extract-toolchain "$archive" "$temp_dir"; then
+    rm -rf "$temp_dir"; return 1
+  fi
+  if ! { rm -rf "$destination" && mv "$temp_dir/$module" "$destination" &&
+         ln -sfn "$destination/bin/go" "$AGENT_FLEET_BIN_DIR/go"; }; then
+    rm -rf "$temp_dir"; return 1
+  fi
+  rm -rf "$temp_dir"
+  agent_fleet_find_frontend_go
+}
+
 agent_fleet_check_commands() {
   local label="$1" command_name resolved failed=0
   shift
@@ -399,5 +447,25 @@ agent_fleet_bootstrap_setup_prerequisites() {
       agent_fleet_install_uv || return 1
   fi
   agent_fleet_check_harbor || return 1
+  local build_tools="${HARBOR_OPENSANDBOX_BUILD_TOOLS_SETUP:-auto}"
+  if [[ "$build_tools" == auto ]]; then
+    build_tools=0
+    [[ "${HARBOR_ENVIRONMENT_TYPE:-${RL_ENVIRONMENT_TYPE:-docker}}" != opensandbox ]] || build_tools=1
+  fi
+  case "$build_tools" in
+    1)
+      (
+        source "$AGENT_FLEET_PREREQ_SCRIPT_DIR/config_loader.sh"
+        agent_fleet_load_config "${REPO_DIR:-$AGENT_FLEET_PREREQ_SCRIPT_DIR/..}"
+        if [[ "${AGENT_FLEET_PREREQUISITES_INSTALL_MANAGED:-1}" == 1 ]]; then
+          agent_fleet_install_frontend_go
+        else
+          agent_fleet_find_frontend_go
+        fi
+      ) || return 1
+      ;;
+    0) ;;
+    *) agent_fleet_prereq_error "HARBOR_OPENSANDBOX_BUILD_TOOLS_SETUP must be auto, 1 or 0"; return 1 ;;
+  esac
   agent_fleet_save_prerequisite_paths
 }

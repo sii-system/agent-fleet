@@ -125,6 +125,30 @@ normally. If Ruff reports errors (or cannot run), the hook asks whether to
 continue; only `y` or `Y` permits the commit, so the check remains advisory
 without silently ignoring failures.
 
+### OpenSandbox frontend build tools
+
+On hosts configured with `HARBOR_ENVIRONMENT_TYPE=opensandbox` (or
+`RL_ENVIRONMENT_TYPE=opensandbox`), setup also prepares Go **1.25.4** for cold
+frontend builds. `HARBOR_OPENSANDBOX_BUILD_TOOLS_SETUP=1` explicitly enables this
+on a dedicated image builder; `0` skips it on a host that only runs existing
+images. The default is `auto`. Other backends do not install Go by default.
+
+Setup reuses a matching Go, preferring `AGENT_FLEET_BIN_DIR/go`. If missing or
+incompatible, it downloads the pinned toolchain module ZIP exclusively through
+`${ARTIFACT_CACHE_GATEWAY_URL}/go-proxy`, verifies its fixed SHA-256, and installs
+under the managed bin directory's sibling `toolchains/`. Automatic installation
+currently supports Linux amd64; other platforms must provide Go 1.25.4.
+`AGENT_FLEET_PREREQUISITES_INSTALL_MANAGED=0` performs validation only and fails
+if no matching compiler exists. Configuration uses the shared config loader.
+
+Cold builds only validate/select the installed compiler; they do not install or
+upgrade Go. Task and valid frontend cache hits still need no Go preparation.
+Example (from the repository root, Gateway already configured):
+
+```bash
+HARBOR_OPENSANDBOX_BUILD_TOOLS_SETUP=1 bash scripts/setup.sh
+```
+
 ### Prerequisite paths
 
 The same path initialization is used by setup, `run_fleet.sh`, direct Harbor

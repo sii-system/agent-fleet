@@ -34,6 +34,10 @@ Agents/utils/common/Harbor/
 │   └── router_cli_utils.py     # Shared Router build/config/launcher helpers
 ├── compose_bundle.py            # Dockerfile/Compose to provider-neutral BundleSpec
 ├── opensandbox_image_manager.py # Per-service image build/cache/publish and Bundle output
+├── opensandbox_apt_runtime/      # Build-only PATH wrappers and shadow-source rewriter
+│   ├── apt-wrapper.sh            # Runtime apt/apt-get adapter to current /usr/bin binary
+│   └── source-rewriter.awk       # Boundary-safe list and Deb822 URI mapping/warnings
+├── opensandbox_buildkit_frontend/ # Pinned upstream frontend, RUN lowering hook, OCI build and differential tests
 ├── OPENSANDBOX_IMAGE_MANAGER.md # OpenSandbox Bundle and image management contract
 ├── prebuild_opensandbox_dataset.sh # Batch prebuild/publish dataset Bundles
 └── scripts/

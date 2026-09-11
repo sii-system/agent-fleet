@@ -451,6 +451,7 @@ exit 0
             {
                 "SETUP_TEST_DOCKER_COMPOSE_DENY": "1",
                 "SETUP_TEST_DOCKER_DENY": "1",
+                "HARBOR_OPENSANDBOX_BUILD_TOOLS_SETUP": "0",
             }
         )
 

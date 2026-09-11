@@ -1,0 +1,14 @@
+--- a/frontend/dockerfile/dockerfile2llb/convert.go
++++ b/frontend/dockerfile/dockerfile2llb/convert.go
+@@ -1370,6 +1370,11 @@
+ 		}
+ 	}
+ 
++	instrumentation, err := opensandboxRunOptions(d.state, dopt.buildArgValues)
++	if err != nil {
++		return err
++	}
++	opt = append(opt, instrumentation...)
+ 	d.state = d.state.Run(opt...).Root()
+ 	return commitToHistory(&d.image, "RUN "+runCommandString(args, d.buildArgs, env), true, &d.state, d.epoch)
+ }

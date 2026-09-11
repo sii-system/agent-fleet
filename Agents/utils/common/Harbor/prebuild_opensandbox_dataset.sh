@@ -429,6 +429,8 @@ export HARBOR_OPENSANDBOX_PREBUILD_SKIP_HASH_VERIFICATION
 export HARBOR_OPENSANDBOX_IMAGE_MANAGER
 export HARBOR_OPENSANDBOX_MANAGER_PYTHON
 export run_dir
+# Scope a shared frontend failure to this batch; a new invocation can retry.
+export HARBOR_OPENSANDBOX_PREBUILD_RUN_DIR="${run_dir}"
 
 set +e
 xargs -0 -r -P "${HARBOR_OPENSANDBOX_PREBUILD_CONCURRENCY}" -n 1 \
@@ -518,6 +520,9 @@ xargs -0 -r -P "${HARBOR_OPENSANDBOX_PREBUILD_CONCURRENCY}" -n 1 \
     if image_ref="$("${command[@]}")"; then
       printf "[prebuild][ready] task=%s image_ref=%s bundle=%s\n" \
         "${task_name}" "${image_ref}" "${run_dir}/bundles/${task_name}.json"
+    elif [[ "$?" == 78 ]]; then
+      printf "[prebuild][fatal] frontend preparation failed; stopping batch; run_dir=%s\n" "${run_dir}" >&2
+      exit 255
     elif [[ -n "${HARBOR_OPENSANDBOX_PACKAGE_SOURCE_HEALTH_URL}" ]] \
       && ! package_sources_healthy; then
       printf "[prebuild][warning] task=%s configured package sources became unavailable; retrying with trusted domestic defaults\n" \
@@ -532,6 +537,9 @@ xargs -0 -r -P "${HARBOR_OPENSANDBOX_PREBUILD_CONCURRENCY}" -n 1 \
       if image_ref="$("${command[@]}")"; then
         printf "[prebuild][ready-fallback] task=%s image_ref=%s bundle=%s\n" \
           "${task_name}" "${image_ref}" "${run_dir}/bundles/${task_name}.json"
+      elif [[ "$?" == 78 ]]; then
+        printf "[prebuild][fatal] frontend preparation failed; stopping batch; run_dir=%s\n" "${run_dir}" >&2
+        exit 255
       else
         printf "[prebuild][failed] task=%s\n" "${task_name}" >&2
         exit 1
@@ -544,6 +552,11 @@ xargs -0 -r -P "${HARBOR_OPENSANDBOX_PREBUILD_CONCURRENCY}" -n 1 \
 xargs_status="${PIPESTATUS[0]}"
 set -e
 
+if [[ "${xargs_status}" == 124 ]]; then
+  print_error "[ERROR] shared frontend preparation failed; fix prerequisites and rerun to resume"
+  print_error "[ERROR] log=${run_log}"
+  exit "${xargs_status}"
+fi
 if [[ "${xargs_status}" != 0 ]]; then
   print_error "[ERROR] one or more task images failed; rerun the same command to resume"
   print_error "[ERROR] log=${run_log}"

@@ -171,10 +171,10 @@ configured package-source health probes, so a batch made entirely of local
 hits performs no per-task network request. If a real miss later fails while
 building, the existing health check and trusted-source fallback still run.
 
-APT mirror rewriting is build-stage scoped. `--apt-mirror` provides the
-Ubuntu and Debian mirror root. Third-party repositories, signing keys, and
-bootstrap downloads use an explicit provider-neutral prefix map; Agent Fleet
-does not guess mirror paths:
+APT source routing is build-runtime scoped. `--apt-mirror` provides the Ubuntu
+and Debian mirror root. Third-party repositories, signing keys, and bootstrap
+downloads use an explicit provider-neutral prefix map; Agent Fleet does not
+guess mirror paths:
 
 ```bash
 export HARBOR_OPENSANDBOX_APT_SOURCE_OVERRIDES_JSON='{
@@ -183,35 +183,66 @@ export HARBOR_OPENSANDBOX_APT_SOURCE_OVERRIDES_JSON='{
 }'
 ```
 
-The generated Dockerfile applies the longest matching configured prefix only
-where the URL is unambiguously build transport: direct shell- or exec-form
-`curl` or `wget` commands, APT source writes in a stage that statically invokes
-`apt` or `apt-get`, and existing APT source files in that stage. Static
-`sh -c`/`bash -c` wrappers are inspected, but downloaded or generated scripts
-are not. Other `RUN` data, including URLs written to non-APT runtime
-configuration, remains task-authored. The same rule applies to statically
-visible Dockerfile heredoc bodies: command heredocs are rewritten, while data
-heredocs persisted outside the APT source tree and `COPY <<EOF` data remain
-unchanged.
+The [OpenSandbox BuildKit instrumentation frontend](opensandbox_buildkit_frontend/README.md)
+adds ephemeral wrapper mounts and a `PATH` prepend to every Dockerfile `RUN`
+after official semantic lowering. Shell form, JSON exec, heredocs (including
+shebangs), and custom `SHELL` use the same hook without changing the original
+RUN argv. Ordinary `apt` and `apt-get` calls read the source files that exist
+at invocation time, create an invocation-local shadow tree, and apply the
+longest exact-or-`/`-boundary source mapping there.
+The wrapper passes the shadow paths to the current `/usr/bin/apt*` binary through
+APT's `Dir::Etc::SourceList` and `Dir::Etc::SourceParts` options. Unmatched
+active HTTP(S) sources remain usable and produce a warning containing both URI
+and source-file path; `file:`, `cdrom:`, and other non-HTTP(S) sources remain
+quiet. Real `/etc/apt` content is never changed. Runtime helper contents
+participate in content-addressed BuildKit secret IDs, so helper changes invalidate
+cached RUNs when a build occurs. They do not participate in the task's static
+image identity.
 
-At the start of a stage that statically invokes APT, Agent Fleet snapshots the
-task-visible `sources.list` and `sources.list.d`. Before the stage ends, it
-restores unchanged source files exactly and removes configured build transport
-rewrites from task-added or task-modified source files. Cached package and
-signed release indexes are renamed to match the restored source URLs, so a
-later agent-side `apt install` does not require an extra update solely because
-the build used a mirror. APT sources introduced later by `COPY`, `ADD`, or a
-statically visible `RUN` source-tree update are restored, checkpointed, and
-mirrored after that instruction, then restored by the same final cleanup. An
-explicit task `USER` is also restored after cleanup.
-Stages that only download a configured signing key or bootstrap object do not
-run the root-only APT snapshot. This is a runtime-behavior guarantee, not a
-claim that historical OCI layers are byte-for-byte free of build mirror
-strings. Unconfigured third-party URLs remain task-authored and are not
-rewritten.
+Following a successful `apt update` or `apt-get update`, the wrapper uses
+`apt-get indextargets` against the rewritten and original source views to copy
+the downloaded package and release metadata to the filenames associated with
+the original URIs. Final images can therefore consume their existing package
+lists with the unchanged `/etc/apt` sources; reconciliation failure is reported
+as `event=index-reconciliation-failed` and fails that invocation. This remains
+invocation-local and does not add static stage detection or a cleanup RUN.
+
+This includes JSON exec-form calls using ordinary command names, nested shells,
+dynamically downloaded scripts, and subprocesses that inherit the build `PATH`.
+Absolute `/usr/bin/apt` or `/usr/bin/apt-get` calls, explicit PATH resets, `env -i`,
+other explicit binary paths, and custom libapt frontends may bypass interception.
+`APT_CONFIG` and explicit custom source/config layouts also warn and bypass
+instead of being parsed. The wrapper assets, source map, frontend identity and
+shadow tree use BuildKit-only secret/tmpfs mounts. The PATH prepend affects only
+the RUN ExecOp, not the persistent stage environment or final image config.
+There is no static APT detection, source mutation tracking, snapshot, restore,
+`/usr/bin` overlay, or apt-binary mount.
+
+Dockerfile RUN options, including `--device`, are lowered by the official
+frontend before the instrumentation options are appended; builder capability
+and entitlement restrictions still apply. Git `/etc/gitconfig` mounts remain
+independent and retain their existing renderer-based injection. The frontend
+provides APT mounts and the execution-time PATH directly as RunOptions.
+
+The manager selects a verified local frontend OCI layout, building it through
+the Gateway on a cache miss; it does not pull or publish a frontend registry
+image. `BUILDKIT_SYNTAX` selects this frontend ahead of the task syntax directive.
+The task source file is unchanged, but custom frontends and syntax beyond the
+pinned version require a separate compatibility assessment. Cold frontend builds
+require ARTIFACT_CACHE_GATEWAY_URL and Go on PATH or in the project-managed tools
+directory. A shared frontend failure stops further prebuild dispatch; after
+repairing prerequisites, rerun the batch to resume using existing task images.
+
+The same explicit map remains available for direct shell- or exec-form `curl`
+and `wget` build-transport URLs, including signing keys and bootstrap objects.
+Other `RUN` data, APT source-file writes, persisted data heredocs, and
+`COPY <<EOF` data remain task-authored; command heredocs only rewrite configured
+URLs used by direct `curl` or `wget` commands. Unconfigured third-party URLs are
+never guessed or silently rewritten.
 
 Other package sources such as pip, npm, Go, Cargo, Rustup, Dart Pub, and Julia
-retain their Docker build-argument behavior and are not part of the APT cleanup.
+retain their Docker build-argument behavior and are not part of APT runtime
+interception.
 `HARBOR_OPENSANDBOX_PUB_HOSTED_URL` and
 `HARBOR_OPENSANDBOX_JULIA_PKG_SERVER` are optional provider-neutral URLs. When
 configured, the manager passes them to Dockerfile `RUN` instructions as
