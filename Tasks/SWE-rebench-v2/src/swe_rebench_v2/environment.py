@@ -18,6 +18,78 @@ CLONE_REPOSITORY_OVERRIDES = {
         "absmach/supermq",
         "1c0400d3a58409d4148d2f3cd7befd279dd97a42",
     ): "absmach/magistrala",
+    # GitHub no longer redirects the deleted petermattis/pebble path. The
+    # migrated CockroachDB repository retains these exact dataset commits.
+    (
+        "petermattis/pebble",
+        "b9be2e7eb20c3b1c04ae5760527dde2a44b3b096",
+    ): "cockroachdb/pebble",
+    (
+        "petermattis/pebble",
+        "4d7ef68ab4c9a0154948e449a185c651fc66ab9c",
+    ): "cockroachdb/pebble",
+    (
+        "petermattis/pebble",
+        "8706ee31debea13e12a82d76bae045aa863447a1",
+    ): "cockroachdb/pebble",
+    (
+        "petermattis/pebble",
+        "2d51c6eb4acc92c40b5a9dc1e518b1035ecd73ef",
+    ): "cockroachdb/pebble",
+    (
+        "petermattis/pebble",
+        "48370d7d34df112c1c8baab25299028f799257c2",
+    ): "cockroachdb/pebble",
+    (
+        "petermattis/pebble",
+        "a7ffd710039b20ac758accaf6e1d2038fe0459ab",
+    ): "cockroachdb/pebble",
+    (
+        "petermattis/pebble",
+        "965163f446adf7122c4a0a129f4d4a19cbd93c94",
+    ): "cockroachdb/pebble",
+    (
+        "petermattis/pebble",
+        "2451b8431268ebfaa39a7d6328e3ec8ae979a072",
+    ): "cockroachdb/pebble",
+    (
+        "petermattis/pebble",
+        "4aeaa2d922ed9243f500bdacec32ff4ca0b2f8ed",
+    ): "cockroachdb/pebble",
+    (
+        "petermattis/pebble",
+        "4c511ec1d202805a4c9727010a543cd763a96a3c",
+    ): "cockroachdb/pebble",
+    (
+        "petermattis/pebble",
+        "0c1c913d7f4719701317fd793861c4660562bb0f",
+    ): "cockroachdb/pebble",
+    (
+        "petermattis/pebble",
+        "fcb9ed13025a2407eb66dd0bc6b370868b52cc17",
+    ): "cockroachdb/pebble",
+    (
+        "petermattis/pebble",
+        "53f7531cb726299eb33b5849ae6935501f357442",
+    ): "cockroachdb/pebble",
+    # The deleted rickbergfalk/sqlpad path likewise has no GitHub redirect;
+    # sqlpad/sqlpad retains each exact commit used by the dataset.
+    (
+        "rickbergfalk/sqlpad",
+        "ba30b4e247a91327568b93dfb84bc0a7af2c8fc9",
+    ): "sqlpad/sqlpad",
+    (
+        "rickbergfalk/sqlpad",
+        "ff34735a1b681743a6a74b5598bfa4607666f46c",
+    ): "sqlpad/sqlpad",
+    (
+        "rickbergfalk/sqlpad",
+        "b6e793cff3d4c2f7b7458ba5a5b312b3204a062d",
+    ): "sqlpad/sqlpad",
+    (
+        "rickbergfalk/sqlpad",
+        "edd6efb03a3745dbf80e226ee7fc050c4f2c2d29",
+    ): "sqlpad/sqlpad",
 }
 
 # The published dataset names this base ``php:8.3.16``, which selects the

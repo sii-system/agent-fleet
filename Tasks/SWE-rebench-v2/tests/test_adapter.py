@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 import tomllib
 from swe_rebench_v2.adapter import SWERebenchV2Adapter
+from swe_rebench_v2.environment import CLONE_REPOSITORY_OVERRIDES
 from swe_rebench_v2.loader import LocalDatasetLoader
 
 
@@ -231,12 +232,24 @@ def test_archived_supermq_repository_clones_merged_magistrala_history(
     assert metadata["base_commit"] == record["base_commit"]
 
 
-def test_repository_override_is_limited_to_verified_commit(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("source_repo", "base_commit", "clone_repo"),
+    [(*key, clone_repo) for key, clone_repo in CLONE_REPOSITORY_OVERRIDES.items()],
+    ids=lambda value: value[:12] if len(value) == 40 else value,
+)
+def test_repository_overrides_preserve_task_identity_and_verified_commit(
+    tmp_path: Path,
+    source_repo: str,
+    base_commit: str,
+    clone_repo: str,
+) -> None:
+    project = source_repo.rsplit("/", 1)[-1]
     record = _record()
     record.update(
         {
-            "instance_id": "absmach__supermq-other",
-            "repo": "absmach/supermq",
+            "instance_id": f"{source_repo.replace('/', '__')}-verified",
+            "repo": source_repo,
+            "base_commit": base_commit,
         }
     )
     adapter = SWERebenchV2Adapter(tmp_path, source="sample.json")
@@ -244,8 +257,48 @@ def test_repository_override_is_limited_to_verified_commit(tmp_path: Path) -> No
     task_dir, _ = adapter.generate_task(record)
 
     dockerfile = (task_dir / "environment" / "Dockerfile").read_text()
-    assert "https://github.com/absmach/supermq /supermq;" in dockerfile
-    assert "https://github.com/absmach/magistrala" not in dockerfile
+    expected_clone = (
+        f"git clone -o origin https://github.com/{clone_repo} /{project};"
+    )
+    assert expected_clone in dockerfile
+    assert f"git cat-file -e '{base_commit}^{{commit}}'" in dockerfile
+    assert f"git fetch --no-tags origin '{base_commit}';" in dockerfile
+    assert f"git reset --hard {base_commit};" in dockerfile
+    assert dockerfile.endswith(f"WORKDIR /{project}\n")
+
+    metadata = json.loads((task_dir / "tests" / "config.json").read_text())
+    assert metadata["repo"] == source_repo
+    assert metadata["base_commit"] == base_commit
+
+
+@pytest.mark.parametrize(
+    ("source_repo", "clone_repo"),
+    [
+        ("absmach/supermq", "absmach/magistrala"),
+        ("petermattis/pebble", "cockroachdb/pebble"),
+        ("rickbergfalk/sqlpad", "sqlpad/sqlpad"),
+    ],
+)
+def test_repository_override_is_limited_to_verified_commit(
+    tmp_path: Path,
+    source_repo: str,
+    clone_repo: str,
+) -> None:
+    project = source_repo.rsplit("/", 1)[-1]
+    record = _record()
+    record.update(
+        {
+            "instance_id": f"{source_repo.replace('/', '__')}-other",
+            "repo": source_repo,
+        }
+    )
+    adapter = SWERebenchV2Adapter(tmp_path, source="sample.json")
+
+    task_dir, _ = adapter.generate_task(record)
+
+    dockerfile = (task_dir / "environment" / "Dockerfile").read_text()
+    assert f"https://github.com/{source_repo} /{project};" in dockerfile
+    assert f"https://github.com/{clone_repo}" not in dockerfile
 
 
 def test_task_config_matches_current_harbor_schema(tmp_path: Path) -> None:
