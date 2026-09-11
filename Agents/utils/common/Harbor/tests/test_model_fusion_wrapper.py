@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import tempfile
 import textwrap
@@ -9,10 +10,33 @@ import unittest
 from pathlib import Path
 
 HARBOR_DIR = Path(__file__).resolve().parents[1]
-WRAPPER = HARBOR_DIR / "model-fusion" / "run_one_tb21_task.sh"
+MODEL_FUSION_DIR = HARBOR_DIR / "model-fusion"
+WRAPPER = MODEL_FUSION_DIR / "run_one_tb21_task.sh"
+PROXY_COMMON = MODEL_FUSION_DIR / "proxy_common.sh"
+PROXY_WRAPPERS = (
+    MODEL_FUSION_DIR / "harboropik.sh",
+    MODEL_FUSION_DIR / "mimo-code" / "harboropik.sh",
+    MODEL_FUSION_DIR / "openrouter" / "harboropik.sh",
+)
 
 
 class ModelFusionWrapperTest(unittest.TestCase):
+    def test_proxy_wrappers_share_common_shell_helpers(self) -> None:
+        self.assertTrue(PROXY_COMMON.is_file())
+        for wrapper in PROXY_WRAPPERS:
+            with self.subTest(wrapper=wrapper):
+                script = wrapper.read_text(encoding="utf-8")
+                self.assertRegex(
+                    script,
+                    re.compile(r'^\. ".*proxy_common\.sh"$', re.MULTILINE),
+                )
+                for helper in (
+                    "model_fusion_proxy_is_injectable",
+                    "model_fusion_proxy_append_gateway_no_proxy",
+                    "model_fusion_proxy_merge_readonly_mounts",
+                ):
+                    self.assertIn(helper, script)
+
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()
         self.root = Path(self.temp_dir.name)
