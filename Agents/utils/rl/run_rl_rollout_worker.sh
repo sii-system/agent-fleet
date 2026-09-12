@@ -270,6 +270,10 @@ while true; do
       export HARBOR_ANTHROPIC_DEFAULT_SONNET_MODEL="$model_name"
       export HARBOR_ANTHROPIC_DEFAULT_HAIKU_MODEL="$model_name"
       export HARBOR_CLAUDE_CODE_SUBAGENT_MODEL="$model_name"
+      export HARBOR_CLAUDE_CODE_API_TIMEOUT_MS="$(
+        awk -v seconds="${llm_timeout:-${RL_LLM_TIMEOUT:-600}}" 'BEGIN { printf "%.0f", seconds * 1000 }'
+      )"
+      export HARBOR_CLAUDE_CODE_MAX_RETRIES="${llm_max_retries:-${RL_LLM_MAX_RETRIES:-0}}"
     elif [[ "$RL_AGENT" == "opencode" ]]; then
       # Force env.sh to rebuild the custom-provider JSON from this request's
       # model, endpoint, and key instead of reusing the listener-time snapshot.

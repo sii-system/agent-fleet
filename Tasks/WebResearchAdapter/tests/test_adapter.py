@@ -7,6 +7,7 @@ import os
 import sys
 import tempfile
 import unittest
+import urllib.error
 from pathlib import Path
 from unittest.mock import patch
 
@@ -48,6 +49,26 @@ class AdapterTest(unittest.TestCase):
         header_names = {name.lower() for name, _ in request.header_items()}
         self.assertNotIn("x-session-id", header_names)
         self.assertNotIn("proxy-x-session-id", header_names)
+
+    def test_judge_retries_transient_http_error(self):
+        env = {
+            "JUDGE_API_URL": "https://judge.test/v1/chat/completions",
+            "JUDGE_API_KEY": "key",
+            "JUDGE_MODEL": "judge",
+        }
+        body = io.StringIO('{"choices":[{"message":{"content":"ok"}}]}')
+        error = urllib.error.HTTPError(env["JUDGE_API_URL"], 504, "timeout", {}, None)
+        with (
+            patch.dict(os.environ, env, clear=True),
+            patch(
+                "web_research_adapter.grader.urllib.request.urlopen",
+                side_effect=[error, body],
+            ) as call,
+            patch("web_research_adapter.grader.time.sleep") as sleep,
+        ):
+            self.assertEqual(_chat("question"), "ok")
+        self.assertEqual(call.call_count, 2)
+        sleep.assert_called_once_with(1)
 
     def test_browsecomp(self):
         with tempfile.TemporaryDirectory() as tmp:

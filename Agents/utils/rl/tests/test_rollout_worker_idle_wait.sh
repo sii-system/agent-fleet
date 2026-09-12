@@ -17,5 +17,7 @@ queue_block="$(sed -n '/^while true; do/,/request_id=/p' "$worker")"
 [[ "$queue_block" != *'sleep '* ]]
 [[ "$queue_block" != *'$(claim_request'* ]]
 [[ "$queue_block" != *'claim_request || true'* ]]
+grep -F 'HARBOR_CLAUDE_CODE_API_TIMEOUT_MS=' "$worker" >/dev/null
+grep -F 'HARBOR_CLAUDE_CODE_MAX_RETRIES=' "$worker" >/dev/null
 
 echo "rollout worker idle wait test passed"

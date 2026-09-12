@@ -1198,14 +1198,21 @@ class YiCloudOpenSandboxTest(unittest.TestCase):
         asyncio.run(
             instance._materialize_s3_file(
                 artifact,
-                "/tmp/agent.tgz",
+                "/opt/agent/agent.tgz",
                 "755",
             )
         )
 
         call = instance.exec.await_args
         self.assertNotIn("http://ceph.example", call.args[0])
+        self.assertIn("/tmp/harbor-s3-file-", call.args[0])
+        self.assertNotIn("/opt/agent/agent.tgz.harbor-upload-", call.args[0])
+        self.assertIn("for harbor_attempt in 1 2 3", call.args[0])
         self.assertIn("chmod 755", call.args[0])
+        self.assertLess(
+            call.args[0].index("actual_digest="),
+            call.args[0].index("mkdir -p /opt/agent"),
+        )
         self.assertEqual(
             call.kwargs["env"]["HARBOR_S3_URL"],
             artifact.download_url,

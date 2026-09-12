@@ -4,6 +4,8 @@ import json
 import os
 import re
 import textwrap
+import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -140,8 +142,18 @@ def _chat(prompt: str) -> str:
         data=payload,
         headers=headers,
     )
-    with urllib.request.urlopen(request, timeout=120) as response:
-        body = json.load(response)
+    for attempt in range(3):
+        try:
+            with urllib.request.urlopen(request, timeout=120) as response:
+                body = json.load(response)
+            break
+        except urllib.error.HTTPError as exc:
+            if exc.code not in {429, 500, 502, 503, 504} or attempt == 2:
+                raise
+        except (urllib.error.URLError, TimeoutError):
+            if attempt == 2:
+                raise
+        time.sleep(2**attempt)
     return body["choices"][0]["message"]["content"].strip()
 
 

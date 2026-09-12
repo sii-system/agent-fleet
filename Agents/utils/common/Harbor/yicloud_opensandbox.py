@@ -2799,12 +2799,17 @@ class YiCloudOpenSandboxEnvironment(BaseEnvironment):
     ) -> None:
         await self._ensure_s3_downloader(artifact.download_url)
         parent = str(Path(target_path).parent)
-        temporary = f"{target_path}.harbor-upload-{time.time_ns()}.tmp"
+        temporary = f"/tmp/harbor-s3-file-{time.time_ns()}"
         command = (
-            f"mkdir -p {shlex.quote(parent)} && "
-            f"({self._s3_download_command(artifact, temporary)}) && "
+            "harbor_rc=1; "
+            "for harbor_attempt in 1 2 3; do "
+            f"if ({self._s3_download_command(artifact, temporary)}) && "
             f"chmod {mode} {shlex.quote(temporary)} && "
-            f"mv -f {shlex.quote(temporary)} {shlex.quote(target_path)}"
+            f"mkdir -p {shlex.quote(parent)} && "
+            f"mv -f {shlex.quote(temporary)} {shlex.quote(target_path)}; "
+            "then harbor_rc=0; break; "
+            f"else harbor_rc=$?; rm -f {shlex.quote(temporary)}; "
+            "sleep \"$harbor_attempt\"; fi; done; exit \"$harbor_rc\""
         )
         result = await self.exec(
             command,
@@ -2827,11 +2832,16 @@ class YiCloudOpenSandboxEnvironment(BaseEnvironment):
         await self._ensure_s3_downloader(artifact.download_url)
         temporary = f"/tmp/harbor-s3-{time.time_ns()}.tar"
         command = (
-            f"({self._s3_download_command(artifact, temporary)}) && "
+            "harbor_rc=1; "
+            "for harbor_attempt in 1 2 3; do "
+            f"if ({self._s3_download_command(artifact, temporary)}) && "
             f"mkdir -p {shlex.quote(target_dir)} && "
             f"tar xf {shlex.quote(temporary)} "
             f"-C {shlex.quote(target_dir)} && "
-            f"rm -f {shlex.quote(temporary)}"
+            f"rm -f {shlex.quote(temporary)}; "
+            "then harbor_rc=0; break; "
+            f"else harbor_rc=$?; rm -f {shlex.quote(temporary)}; "
+            "sleep \"$harbor_attempt\"; fi; done; exit \"$harbor_rc\""
         )
         result = await self.exec(
             command,
