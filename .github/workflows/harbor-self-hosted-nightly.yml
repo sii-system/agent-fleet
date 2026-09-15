@@ -270,6 +270,26 @@ jobs:
           fi
           printf 'PASS: sampled tasks completed within the harness failure allowance.\n' >> "$HEALTH_SUMMARY"
 
+      - name: Prepare run summary
+        id: summary
+        if: ${{ !cancelled() && steps.harbor.outcome != 'skipped' }}
+        env:
+          API_KEY: ${{ secrets.LLM_REVIEW_API_KEY }}
+          OPIK_API_KEY: ${{ secrets.OPIK_API_KEY }}
+          OUTPUT_PATH: ${{ steps.params.outputs.output_path }}
+        run: |
+          set -euo pipefail
+          # A full artifact copy can fail even when the joint report is readable.
+          # Prepare this small redacted copy independently for the Actions page.
+          [[ -s "$OUTPUT_PATH/summary.md" ]] || exit 0
+          : "${API_KEY:?LLM_REVIEW_API_KEY is empty}"
+          source scripts/config_loader.sh
+          agent_fleet_load_config "$GITHUB_WORKSPACE"
+          summary_dir="$(mktemp -d "${RUNNER_TEMP}/harbor-run-summary.XXXXXX")"
+          cp -P "$OUTPUT_PATH/summary.md" "$summary_dir/summary.md"
+          python3 .github/scripts/redact_harbor_artifacts.py "$summary_dir"
+          printf 'path=%s/summary.md\n' "$summary_dir" >> "$GITHUB_OUTPUT"
+
       - name: Stage and redact artifacts
         id: stage
         if: ${{ !cancelled() && steps.harbor.outcome != 'skipped' && steps.permissions.outcome == 'success' && steps.cleanup.outcome == 'success' }}
@@ -309,6 +329,7 @@ jobs:
           GATE_OUTCOME: ${{ steps.health.outcome }}
           STAGING_OUTCOME: ${{ steps.stage.outcome }}
           STAGED_ARTIFACTS: ${{ env.staged }}
+          PREPARED_SUMMARY: ${{ steps.summary.outputs.path }}
           ARTIFACT_OUTCOME: ${{ steps.artifacts.outcome }}
           ARTIFACT_URL: ${{ steps.artifacts.outputs.artifact-url }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
@@ -324,8 +345,12 @@ jobs:
             fi
 
             has_joint=0
-            if [[ "$STAGING_OUTCOME" == "success" && -s "$STAGED_ARTIFACTS/summary.md" ]]; then
-              if python3 .github/scripts/e2e_harbor_summary.py "$STAGED_ARTIFACTS/summary.md" \
+            joint_summary="${PREPARED_SUMMARY:-}"
+            if [[ -z "$joint_summary" && "$STAGING_OUTCOME" == "success" ]]; then
+              joint_summary="$STAGED_ARTIFACTS/summary.md"
+            fi
+            if [[ -n "$joint_summary" && -s "$joint_summary" ]]; then
+              if python3 .github/scripts/e2e_harbor_summary.py "$joint_summary" \
                 --artifact-url "$ARTIFACT_URL"; then
                 has_joint=1
                 printf '\n\n<details>\n<summary>CI pipeline validation: %s</summary>\n\n' "$GATE_OUTCOME"
