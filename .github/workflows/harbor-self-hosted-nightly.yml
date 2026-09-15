@@ -26,6 +26,27 @@ jobs:
     timeout-minutes: 480
 
     steps:
+      - name: Repair stale Harbor artifact permissions
+        # Checkout must recover even when a previous clean removed .git.
+        working-directory: ${{ runner.temp }}
+        env:
+          ARTIFACT_DIR: ${{ github.workspace }}/runs
+        run: |
+          set -euo pipefail
+          if [[ -L "$ARTIFACT_DIR" ]]; then
+            echo "::error::Refusing to repair a symlinked artifact directory: $ARTIFACT_DIR" >&2
+            exit 1
+          fi
+          [[ -d "$ARTIFACT_DIR" ]] || exit 0
+          # Docker agents can leave root-owned private logs on bind mounts.
+          # Do not follow symlinks or grant additional group/world access.
+          owner="$(id -u):$(id -g)"
+          if ! chown -hRP -- "$owner" "$ARTIFACT_DIR" 2>/dev/null; then
+            sudo -n chown -hRP -- "$owner" "$ARTIFACT_DIR"
+          fi
+          find -P "$ARTIFACT_DIR" -type d -exec chmod u+rwx -- {} \;
+          find -P "$ARTIFACT_DIR" -type f -exec chmod u+rw -- {} +
+
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -169,6 +190,27 @@ jobs:
           python3 .github/scripts/harbor_nightly_cleanup.py \
             --run-dir "$OUTPUT_PATH" --run-id "$RUN_ID"
 
+      - name: Repair Harbor artifact permissions
+        id: permissions
+        if: ${{ always() && steps.params.outputs.output_path != '' }}
+        env:
+          ARTIFACT_DIR: ${{ steps.params.outputs.output_path }}
+        run: |
+          set -euo pipefail
+          if [[ -L "$ARTIFACT_DIR" ]]; then
+            echo "::error::Refusing to repair a symlinked artifact directory: $ARTIFACT_DIR" >&2
+            exit 1
+          fi
+          [[ -d "$ARTIFACT_DIR" ]] || exit 0
+          # Docker agents can leave root-owned private logs on bind mounts.
+          # Do not follow symlinks or grant additional group/world access.
+          owner="$(id -u):$(id -g)"
+          if ! chown -hRP -- "$owner" "$ARTIFACT_DIR" 2>/dev/null; then
+            sudo -n chown -hRP -- "$owner" "$ARTIFACT_DIR"
+          fi
+          find -P "$ARTIFACT_DIR" -type d -exec chmod u+rwx -- {} \;
+          find -P "$ARTIFACT_DIR" -type f -exec chmod u+rw -- {} +
+
       - name: Verify sampled tasks completed
         id: health
         if: ${{ !cancelled() && steps.harbor.outcome != 'skipped' && steps.cleanup.outcome == 'success' }}
@@ -230,7 +272,7 @@ jobs:
 
       - name: Stage and redact artifacts
         id: stage
-        if: ${{ !cancelled() && steps.harbor.outcome != 'skipped' && steps.cleanup.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.harbor.outcome != 'skipped' && steps.permissions.outcome == 'success' && steps.cleanup.outcome == 'success' }}
         env:
           API_KEY: ${{ secrets.LLM_REVIEW_API_KEY }}
           OPIK_API_KEY: ${{ secrets.OPIK_API_KEY }}

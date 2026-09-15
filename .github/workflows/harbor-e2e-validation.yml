@@ -34,6 +34,27 @@ jobs:
     timeout-minutes: 480
 
     steps:
+      - name: Repair stale Harbor artifact permissions
+        # Checkout must recover even when a previous clean removed .git.
+        working-directory: ${{ runner.temp }}
+        env:
+          ARTIFACT_DIR: ${{ github.workspace }}/runs
+        run: |
+          set -euo pipefail
+          if [[ -L "$ARTIFACT_DIR" ]]; then
+            echo "::error::Refusing to repair a symlinked artifact directory: $ARTIFACT_DIR" >&2
+            exit 1
+          fi
+          [[ -d "$ARTIFACT_DIR" ]] || exit 0
+          # Docker agents can leave root-owned private logs on bind mounts.
+          # Do not follow symlinks or grant additional group/world access.
+          owner="$(id -u):$(id -g)"
+          if ! chown -hRP -- "$owner" "$ARTIFACT_DIR" 2>/dev/null; then
+            sudo -n chown -hRP -- "$owner" "$ARTIFACT_DIR"
+          fi
+          find -P "$ARTIFACT_DIR" -type d -exec chmod u+rwx -- {} \;
+          find -P "$ARTIFACT_DIR" -type f -exec chmod u+rw -- {} +
+
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -230,6 +251,46 @@ jobs:
           printf 'status=%s\n' "$status" >> "$GITHUB_OUTPUT"
           printf 'Harbor exit status: %s\n' "$status"
 
+      - name: Clean up
+        if: always()
+        env:
+          ZELLIJ_SESSION_NAME: ${{ steps.params.outputs.run_id }}
+        run: |
+          set -euo pipefail
+          # The run step pinned this name; Harbor's own default contains no RUN_ID.
+          zellij kill-session "$ZELLIJ_SESSION_NAME" >/dev/null 2>&1 || true
+          zellij delete-session "$ZELLIJ_SESSION_NAME" >/dev/null 2>&1 || true
+          # Deliberately no container pruning. `docker container prune` removes
+          # every stopped container on the shared daemon, which would delete
+          # containers the co-located code-review runners or an operator kept
+          # for restart or diagnosis. Harbor's trial containers are created by
+          # the harbor CLI rather than a compose project this workflow names, so
+          # there is no label to scope a targeted removal to. Harbor tears down
+          # its own trial containers; leftovers are an operator concern, not
+          # something this job should guess at on a shared host.
+          docker ps -a --format '{{.Names}}\t{{.Status}}' 2>/dev/null | head -20 || true
+
+      - name: Repair Harbor artifact permissions
+        id: permissions
+        if: ${{ always() && steps.params.outputs.output_path != '' }}
+        env:
+          ARTIFACT_DIR: ${{ steps.params.outputs.output_path }}
+        run: |
+          set -euo pipefail
+          if [[ -L "$ARTIFACT_DIR" ]]; then
+            echo "::error::Refusing to repair a symlinked artifact directory: $ARTIFACT_DIR" >&2
+            exit 1
+          fi
+          [[ -d "$ARTIFACT_DIR" ]] || exit 0
+          # Docker agents can leave root-owned private logs on bind mounts.
+          # Do not follow symlinks or grant additional group/world access.
+          owner="$(id -u):$(id -g)"
+          if ! chown -hRP -- "$owner" "$ARTIFACT_DIR" 2>/dev/null; then
+            sudo -n chown -hRP -- "$owner" "$ARTIFACT_DIR"
+          fi
+          find -P "$ARTIFACT_DIR" -type d -exec chmod u+rwx -- {} \;
+          find -P "$ARTIFACT_DIR" -type f -exec chmod u+rw -- {} +
+
       - name: Evaluate pipeline health
         id: health
         if: ${{ !cancelled() && steps.harbor.outcome != 'skipped' }}
@@ -247,7 +308,7 @@ jobs:
 
       - name: Stage and redact artifacts
         id: stage
-        if: ${{ !cancelled() && steps.harbor.outcome != 'skipped' }}
+        if: ${{ !cancelled() && steps.harbor.outcome != 'skipped' && steps.permissions.outcome == 'success' }}
         env:
           API_KEY: ${{ secrets.LLM_REVIEW_API_KEY }}
           OPIK_API_KEY: ${{ secrets.OPIK_API_KEY }}
@@ -299,32 +360,13 @@ jobs:
 
       - name: Upload run artifacts
         id: artifacts
-        if: ${{ !cancelled() && steps.harbor.outcome != 'skipped' }}
+        if: ${{ !cancelled() && steps.stage.outcome == 'success' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: harbor-e2e-${{ steps.params.outputs.run_id }}
           path: ${{ env.staged }}
           retention-days: 14
           if-no-files-found: warn
-
-      - name: Clean up
-        if: always()
-        env:
-          ZELLIJ_SESSION_NAME: ${{ steps.params.outputs.run_id }}
-        run: |
-          set -euo pipefail
-          # The run step pinned this name; Harbor's own default contains no RUN_ID.
-          zellij kill-session "$ZELLIJ_SESSION_NAME" >/dev/null 2>&1 || true
-          zellij delete-session "$ZELLIJ_SESSION_NAME" >/dev/null 2>&1 || true
-          # Deliberately no container pruning. `docker container prune` removes
-          # every stopped container on the shared daemon, which would delete
-          # containers the co-located code-review runners or an operator kept
-          # for restart or diagnosis. Harbor's trial containers are created by
-          # the harbor CLI rather than a compose project this workflow names, so
-          # there is no label to scope a targeted removal to. Harbor tears down
-          # its own trial containers; leftovers are an operator concern, not
-          # something this job should guess at on a shared host.
-          docker ps -a --format '{{.Names}}\t{{.Status}}' 2>/dev/null | head -20 || true
 
       - name: Publish run summary
         if: always()
