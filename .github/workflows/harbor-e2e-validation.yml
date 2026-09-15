@@ -61,6 +61,17 @@ jobs:
           submodules: recursive
           persist-credentials: false
 
+      - name: Check nightly model availability
+        timeout-minutes: 3
+        env:
+          BASE_URL_RAW: ${{ vars.LLM_REVIEW_BASE_URL }}
+          API_KEY: ${{ secrets.LLM_REVIEW_API_KEY }}
+          MODEL: ${{ vars.HARBOR_NIGHTLY_MODEL || vars.LLM_REVIEW_MODEL }}
+          INPUT_AGENT: ${{ inputs.agent }}
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/harbor_nightly_preflight.py --agent "${INPUT_AGENT:-claude-code}"
+
       - name: Validate prerequisites
         run: |
           set -euo pipefail
@@ -176,7 +187,7 @@ jobs:
         env:
           BASE_URL_RAW: ${{ vars.LLM_REVIEW_BASE_URL }}
           API_KEY: ${{ secrets.LLM_REVIEW_API_KEY }}
-          MODEL: ${{ vars.LLM_REVIEW_MODEL }}
+          MODEL: ${{ vars.HARBOR_NIGHTLY_MODEL || vars.LLM_REVIEW_MODEL }}
           OPIK_URL: ${{ vars.OPIK_URL }}
           OPIK_API_KEY: ${{ secrets.OPIK_API_KEY }}
           OPIK_WORKSPACE: ${{ vars.OPIK_WORKSPACE }}
