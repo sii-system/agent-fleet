@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prepare content-addressed service images and an OpenSandbox task bundle.
+"""Resolve task images and prepare an OpenSandbox task bundle.
 
 Flow:
 
@@ -9,21 +9,20 @@ Flow:
     Normalize Dockerfile or Compose into named services
                   |
                   v
-    Hash the original static environment files with the Harbor benchmark framework's
-    native environment-content algorithm
-                  |
-                  v
-    Resolve each service to a Registry image
+    List the task repository's existing Registry tags
                   |
                   v
          +--------------------------+
-         | Registry manifest exists?|
+         | Published task tag exists?|
          +-------------+------------+
                        |
               +--------+--------+
               | yes             | no
               v                 v
-       Reuse manifest    Attach build-only source adapters
+       Reuse newest tag  Hash static environment files
+                              |
+                              v
+                     Attach build-only source adapters
                               |
                               v
                          Build OCI archive
@@ -39,8 +38,10 @@ Flow:
     Return the main image ref for legacy callers
 
 Each benchmark is a Registry Project and each task has its own repository.
-Deterministic service tags are cache lookup keys; Registry manifest digests are
-the immutable runtime addresses.
+On-demand consumers select the newest push_time without computing or verifying
+a content hash; equal times are ordered by tag name and digest. Compose services
+retain their service-specific tags. Registry digests remain the immutable runtime
+addresses. Content-derived tags are used only for build/push and prebuild upkeep.
 Single-Dockerfile tasks are represented as one implicit ``main`` service.
 Dataset prebuild may additionally trust a persistent local uploaded-Bundle
 index, with an explicit option to skip the otherwise-default content-hash check.
@@ -58,6 +59,7 @@ import re
 import shlex
 import shutil
 import signal
+import ssl
 import subprocess
 import sys
 import tarfile
@@ -67,7 +69,9 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.error import HTTPError
+from urllib.parse import quote, urlparse
+from urllib.request import HTTPSHandler, ProxyHandler, build_opener
 
 if __package__:
     from .compose_bundle import (
@@ -1315,6 +1319,10 @@ class SkopeoPublisher:
     def login(self) -> None:
         if self._logged_in:
             return
+        if not self.username and not self.password:
+            # Keep anonymous reads independent of ambient Docker credentials.
+            Path(self._authfile).write_text('{"auths": {}}\n', encoding="utf-8")
+            return
         command = [
             "skopeo",
             "login",
@@ -1445,6 +1453,89 @@ class RegistryClient:
     def __init__(self, target: RegistryTarget, publisher: SkopeoPublisher) -> None:
         self.target = target
         self.publisher = publisher
+        self._artifacts: list[dict[str, object]] | None = None
+
+    def list_artifacts(self) -> list[dict[str, object]]:
+        """List all task artifacts anonymously; only a missing repo is a miss."""
+        context = ssl.create_default_context()
+        if not self.publisher.tls_verify:
+            context.check_hostname = False
+            context.verify_mode = ssl.CERT_NONE
+        opener = build_opener(ProxyHandler({}), HTTPSHandler(context=context))
+        url = (
+            f"https://{self.target.registry}/api/v2.0/projects/"
+            f"{quote(self.target.project, safe='')}/repositories/"
+            f"{quote(self.target.task_repository, safe='')}/artifacts"
+        )
+        artifacts: list[dict[str, object]] = []
+        page = 1
+        while True:
+            try:
+                with opener.open(
+                    f"{url}?page_size=100&with_tag=true&page={page}", timeout=30
+                ) as response:
+                    batch = json.load(response)
+            except HTTPError as exc:
+                if exc.code == 404 and page == 1:
+                    return []
+                raise
+            if not isinstance(batch, list) or any(
+                not isinstance(item, dict) for item in batch
+            ):
+                raise ValueError("Harbor artifact listing must return a list of objects")
+            artifacts.extend(batch)
+            if len(batch) < 100:
+                return artifacts
+            page += 1
+
+    def latest_image(
+        self, service: str, *, single_service: bool
+    ) -> dict[str, str] | None:
+        candidates = []
+        # Resolve all services against the same initial repository listing.
+        # A build of the first service must not hide an initially empty repo.
+        if self._artifacts is None:
+            self._artifacts = self.list_artifacts()
+        artifacts = self._artifacts
+        for artifact in artifacts:
+            for tag in artifact.get("tags") or []:
+                name = tag["name"]
+                if not single_service and not re.fullmatch(
+                    rf"{re.escape(safe_tag_component(service))}-[0-9a-f]{{20}}", name
+                ):
+                    continue
+                # Tag time distinguishes tags added to the same artifact.
+                push_time = tag.get("push_time") or artifact.get("push_time")
+                candidates.append((push_time, name, artifact))
+        if not candidates:
+            if artifacts:
+                raise RuntimeError(
+                    f"task repository {self.target.repository!r} has artifacts "
+                    f"but no usable tag for service {service!r}"
+                )
+            return None
+        if len(candidates) > 1:
+            def order(candidate):
+                pushed, name, artifact = candidate
+                timestamp = datetime.fromisoformat(pushed.replace("Z", "+00:00"))
+                if timestamp.tzinfo is None:
+                    timestamp = timestamp.replace(tzinfo=timezone.utc)
+                return timestamp, name, artifact["digest"]
+
+            selected = max(candidates, key=order)
+        else:
+            selected = candidates[0]
+        _, tag, artifact = selected
+        digest = artifact["digest"]
+        if not isinstance(digest, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
+            raise ValueError("Harbor artifact listing returned an invalid digest")
+        return {
+            "tag": tag,
+            "tag_ref": f"{self.target.registry}/{self.target.repository}:{tag}",
+            "artifact_digest": digest,
+            "digest_ref": self.target.digest_ref(digest),
+            "media_type": artifact.get("manifest_media_type") or DOCKER_MANIFEST,
+        }
 
     def manifest(self, tag: str) -> dict[str, str] | None:
         return self.publisher.inspect(f"{self.target.registry}/{self.target.repository}:{tag}")
@@ -2020,6 +2111,36 @@ def _prepare_service_image(
     publisher: SkopeoPublisher | None,
     registry: RegistryClient | None,
 ) -> dict[str, object]:
+    # Local uploaded-Bundle verification and forced prebuilds retain their
+    # maintenance contract. Normal consumers resolve by task before hashing.
+    if not args.dry_run and not args.force and not getattr(
+        args, "reuse_local_upload_cache", False
+    ):
+        if registry is None or publisher is None:
+            raise RuntimeError("Registry client is unavailable outside dry-run mode")
+        existing = registry.latest_image(
+            service.name, single_service=len(bundle.services) == 1
+        )
+        if existing is not None:
+            log(f"resolved task={bundle.task_identity} service={service.name}: {existing['tag_ref']}")
+            declared_args = (
+                {**service.build.args, **explicit_build_args}
+                if service.build is not None else {}
+            )
+            return {
+                **existing,
+                "source": "registry",
+                # The uploader's full content hash cannot be inferred from a tag.
+                "input_hash": None,
+                "platform": args.platform,
+                "build_arg_names": sorted(declared_args),
+                "config": publisher.inspect_config(existing["digest_ref"]),
+                "config_resolved": True,
+            }
+        # An empty task repository requires the original build/push flow.
+        publisher.username, publisher.password = registry_credentials(
+            args.docker_config, args.registry
+        )
     (
         identity,
         declared_build_args,
@@ -2432,7 +2553,10 @@ def prepare_bundle(args: argparse.Namespace) -> PreparedBundle:
     registry: RegistryClient | None = None
     proxy_args: dict[str, str] = {}
     if not args.dry_run:
-        username, password = registry_credentials(args.docker_config, args.registry)
+        username, password = (
+            registry_credentials(args.docker_config, args.registry)
+            if reuse_local_upload or args.force else ("", "")
+        )
         publisher = SkopeoPublisher(
             target,
             username,

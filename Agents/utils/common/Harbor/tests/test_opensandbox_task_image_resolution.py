@@ -1,0 +1,220 @@
+import io
+import json
+import os
+import sys
+import tempfile
+import unittest
+from contextlib import ExitStack
+from pathlib import Path
+from unittest.mock import Mock, patch
+from urllib.error import HTTPError
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+import opensandbox_image_manager as manager
+
+
+class TaskImageResolutionTest(unittest.TestCase):
+    def setUp(self):
+        self.stack = ExitStack()
+        self.addCleanup(self.stack.close)
+        self.root = Path(self.stack.enter_context(tempfile.TemporaryDirectory()))
+        self.task = self.root / 'task_002432_cfe8954b'
+        self.environment = self.task / 'environment'
+        self.environment.mkdir(parents=True)
+        (self.task / 'task.toml').write_text('[environment]\nbuild_timeout_sec = 60\n')
+        (self.environment / 'Dockerfile').write_text('FROM ubuntu:24.04\nRUN echo local\n')
+        self.stack.enter_context(patch.dict(os.environ, {}, clear=True))
+        self.args = manager.parse_args([
+            '--task-dir', str(self.task), '--registry', 'registry.example',
+            '--project', 'test-project', '--cache-root', str(self.root / 'cache'),
+            '--no-use-proxy',
+        ])
+        self.opener = Mock()
+        self.stack.enter_context(patch.object(manager, 'build_opener', return_value=self.opener))
+        self.config = self.stack.enter_context(patch.object(
+            manager.SkopeoPublisher, 'inspect_config', return_value={
+                'entrypoint': None, 'cmd': ['/bin/bash'], 'working_dir': None,
+                'exposed_ports': [], 'healthcheck': None,
+            },
+        ))
+        self.identity = self.stack.enter_context(patch.object(
+            manager, 'image_identity', side_effect=AssertionError('consumer must not hash'),
+        ))
+        self.credentials = self.stack.enter_context(patch.object(
+            manager, 'registry_credentials', side_effect=AssertionError('consumer must be anonymous'),
+        ))
+        self.build = self.stack.enter_context(patch.object(
+            manager, 'run_build', side_effect=AssertionError('consumer must not build'),
+        ))
+        self.copy = self.stack.enter_context(patch.object(
+            manager.SkopeoPublisher, 'copy', side_effect=AssertionError('consumer must not push'),
+        ))
+        self.inspect = self.stack.enter_context(patch.object(
+            manager.SkopeoPublisher, 'inspect', side_effect=AssertionError('no hash-derived manifest lookup'),
+        ))
+        self.stack.enter_context(patch.object(
+            manager, 'inspect_external_image', side_effect=AssertionError('no upstream image lookup'),
+        ))
+
+    def artifact(self, tag, pushed='2026-09-01T01:00:00Z', digest='a'):
+        return {'digest': 'sha256:' + digest * 64, 'push_time': pushed,
+                'tags': [{'name': tag}]}
+
+    def responses(self, *pages):
+        self.opener.open.side_effect = [
+            io.BytesIO(json.dumps(page).encode()) for page in pages
+        ]
+
+    def prepare_image(self):
+        prepared = manager.prepare_bundle(self.args)
+        return prepared.manifest['services']['main']['image']
+
+    def test_single_tag_reused_despite_changed_local_content_without_hash(self):
+        for content in ('FROM ubuntu:24.04\n', 'FROM debian:bookworm\nRUN echo changed\n'):
+            with self.subTest(content=content):
+                (self.environment / 'Dockerfile').write_text(content)
+                self.responses([self.artifact('uploaded-tag')])
+                image = self.prepare_image()
+                self.assertEqual(image['tag'], 'uploaded-tag')
+                self.assertIsNone(image['input_hash'])
+                self.assertEqual(image['digest_ref'],
+                                 'registry.example/test-project/task_002432_cfe8954b@sha256:' + 'a' * 64)
+                self.config.assert_called_with(image['digest_ref'])
+        self.identity.assert_not_called()
+        self.credentials.assert_not_called()
+        self.inspect.assert_not_called()
+        self.build.assert_not_called()
+        self.copy.assert_not_called()
+        self.opener.open.assert_called_with(
+            'https://registry.example/api/v2.0/projects/test-project/repositories/'
+            'task_002432_cfe8954b/artifacts?page_size=100&with_tag=true&page=1', timeout=30,
+        )
+
+    def test_multiple_tags_choose_newest_push_time_independent_of_listing_order(self):
+        older = self.artifact('z-older', '2026-09-01T10:00:00+08:00', 'a')
+        newer = self.artifact('a-newer', '2026-09-01T03:00:00Z', 'b')
+        for items in ([older, newer], [newer, older]):
+            with self.subTest(items=items):
+                self.responses(items)
+                image = self.prepare_image()
+                self.assertEqual(image['tag'], 'a-newer')
+                self.assertEqual(image['artifact_digest'], 'sha256:' + 'b' * 64)
+        self.identity.assert_not_called()
+        self.build.assert_not_called()
+
+    def test_tag_push_time_distinguishes_tags_on_same_artifact(self):
+        artifact = self.artifact('unused')
+        artifact['tags'] = [
+            {'name': 'z-older', 'push_time': '2026-09-01T03:00:00Z'},
+            {'name': 'a-newer', 'push_time': '2026-09-01T04:00:00Z'},
+        ]
+        self.responses([artifact])
+        self.assertEqual(self.prepare_image()['tag'], 'a-newer')
+
+    def test_equal_push_times_have_deterministic_tag_tiebreaker(self):
+        a, z = self.artifact('a'), self.artifact('z')
+        for items in ([a, z], [z, a]):
+            self.responses(items)
+            self.assertEqual(self.prepare_image()['tag'], 'z')
+
+    def test_lists_all_pages_before_selecting(self):
+        self.responses([self.artifact('old')] * 100,
+                       [self.artifact('new', '2026-09-02T00:00:00Z')])
+        self.assertEqual(self.prepare_image()['tag'], 'new')
+        self.assertEqual(self.opener.open.call_count, 2)
+        self.assertIn('page=2', self.opener.open.call_args.args[0])
+
+    def allow_build(self):
+        self.identity.side_effect = None
+        self.identity.return_value = 'c' * 64
+        self.credentials.side_effect = None
+        self.credentials.return_value = ('fake-user', 'fake-password')
+        self.inspect.side_effect = None
+        self.inspect.return_value = None
+        self.build.side_effect = None
+        self.copy.side_effect = None
+        self.copy.return_value = {'artifact_digest': 'sha256:' + 'd' * 64,
+                                  'media_type': manager.DOCKER_MANIFEST}
+        self.stack.enter_context(patch.object(manager, 'oci_archive_image_config', return_value=self.config.return_value))
+        self.stack.enter_context(patch.object(manager, 'prepare_frontend', return_value={}))
+
+    def test_empty_repository_uses_existing_hash_build_and_push_flow(self):
+        self.responses([])
+        self.allow_build()
+        image = self.prepare_image()
+        self.identity.assert_called_once_with(self.environment)
+        self.credentials.assert_called_once()
+        self.build.assert_called_once()
+        self.copy.assert_called_once()
+        self.assertTrue(self.copy.call_args.kwargs['source_is_archive'])
+        self.assertEqual(image['tag'], 'main-' + 'c' * 20)
+        self.assertEqual(image['input_hash'], 'sha256:' + 'c' * 64)
+        self.assertEqual(image['artifact_digest'], 'sha256:' + 'd' * 64)
+
+    def test_missing_repository_is_empty(self):
+        self.opener.open.side_effect = HTTPError('https://registry.example', 404, 'missing', {}, None)
+        target = manager.RegistryTarget('registry.example', 'test-project', self.task.name)
+        client = manager.RegistryClient(target, Mock(tls_verify=True))
+        self.assertIsNone(client.latest_image('main', single_service=True))
+
+    def test_query_errors_never_fall_back_to_build(self):
+        for status in (401, 403, 500):
+            with self.subTest(status=status):
+                self.opener.open.side_effect = HTTPError('https://registry.example', status, 'error', {}, None)
+                with self.assertRaises(HTTPError):
+                    self.prepare_image()
+        self.identity.assert_not_called()
+        self.build.assert_not_called()
+
+    def test_nonempty_repository_without_usable_tags_does_not_build(self):
+        artifact = self.artifact('unused')
+        artifact['tags'] = None
+        self.responses([artifact])
+        with self.assertRaisesRegex(RuntimeError, 'no usable tag'):
+            self.prepare_image()
+        self.identity.assert_not_called()
+        self.build.assert_not_called()
+
+    def test_invalid_response_is_not_an_empty_repository(self):
+        self.responses({'errors': [{'message': 'failure'}]})
+        with self.assertRaisesRegex(ValueError, 'list of objects'):
+            self.prepare_image()
+        self.build.assert_not_called()
+
+    def test_compose_services_keep_their_own_images(self):
+        (self.environment / 'Dockerfile').unlink()
+        (self.environment / 'docker-compose.yaml').write_text(
+            'services:\n  main:\n    image: ubuntu:24.04\n  worker:\n    image: redis:7\n'
+        )
+        artifacts = [self.artifact('main-' + 'a' * 20),
+                     self.artifact('worker-' + 'b' * 20, '2026-09-02T00:00:00Z', 'b')]
+        self.responses(artifacts)
+        prepared = manager.prepare_bundle(self.args)
+        services = prepared.manifest['services']
+        self.assertEqual(services['main']['image']['artifact_digest'], 'sha256:' + 'a' * 64)
+        self.assertEqual(services['worker']['image']['artifact_digest'], 'sha256:' + 'b' * 64)
+        self.identity.assert_not_called()
+
+    def test_empty_compose_repository_builds_all_services(self):
+        (self.environment / 'docker-compose.yaml').write_text(
+            'services:\n  main:\n    build: .\n  worker:\n    build: .\n'
+        )
+        # The initial empty listing applies to the entire task, even after
+        # the first service is published to the repository.
+        self.responses([])
+        self.allow_build()
+        prepared = manager.prepare_bundle(self.args)
+        self.assertEqual(set(prepared.manifest['services']), {'main', 'worker'})
+        self.assertEqual(self.build.call_count, 2)
+        self.assertEqual(self.copy.call_count, 2)
+        self.opener.open.assert_called_once()
+
+    def test_anonymous_login_uses_empty_private_authfile(self):
+        target = manager.RegistryTarget('registry.example', 'test-project', self.task.name)
+        publisher = manager.SkopeoPublisher(target, '', '', tls_verify=True)
+        self.addCleanup(publisher.close)
+        with patch.object(publisher, '_run', return_value='{"config": {}}') as run:
+            publisher.login()
+            run.assert_not_called()
+            self.assertEqual(json.loads(Path(publisher._authfile).read_text()), {'auths': {}})
