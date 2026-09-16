@@ -33,6 +33,7 @@ REPO_ROOT = ROOT.parents[1]
 HARBOR_RUNTIME_DIR = REPO_ROOT / "Agents" / "utils" / "common" / "Harbor"
 sys.path.append(str(HARBOR_RUNTIME_DIR))
 
+from agent_output import exec_logged_agent  # noqa: E402
 from opik_trace_gate import opik_tracing_enabled  # noqa: E402
 
 TRACE_PLUGIN_SOURCE_DIR = Path(
@@ -690,7 +691,8 @@ class OpikOpenCodeHarbor(OpenCode):
                 ">>/logs/agent/opencode.txt 2>&1 || true; "
             )
 
-        await self.exec_as_agent(
+        await exec_logged_agent(
+            self,
             environment,
             command=(
                 "set -o pipefail; "

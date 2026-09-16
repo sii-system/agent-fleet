@@ -72,6 +72,11 @@ class FakeOpenCode:
 class FakeEnvironment:
     def __init__(self) -> None:
         self.uploads: list[tuple[Path, str]] = []
+        self.executed_commands: list[str] = []
+
+    async def exec(self, command, **kwargs):
+        self.executed_commands.append(command)
+        return types.SimpleNamespace(return_code=0, stdout="", stderr="")
 
     async def upload_file(self, source: Path, destination: str) -> None:
         self.uploads.append((source, destination))
@@ -573,6 +578,16 @@ class OpenCodeTraceDisabledTests(unittest.TestCase):
             )
             self.assertNotIn("fake-runtime-secret", command_env.values())
 
+    def test_main_output_is_bounded_with_tracing_on_and_off(self) -> None:
+        for trace in ("false", "true"):
+            with self.subTest(trace=trace):
+                environment = FakeEnvironment()
+                asyncio.run(self.make_agent(trace).run("task", environment, object()))
+                main = environment.executed_commands[-1]
+                self.assertIn("command.stdout", main)
+                self.assertIn("tail -c", main)
+                self.assertIn('exit "$opencode_rc"', main)
+
     def test_runtime_secrets_reach_environment_exec_through_harbor_scope(self) -> None:
         try:
             from harbor.environments.base import BaseEnvironment
@@ -593,9 +608,10 @@ class OpenCodeTraceDisabledTests(unittest.TestCase):
                 )
                 self.executed_envs: list[dict[str, str]] = []
 
-            async def exec(self, command, env=None) -> None:
+            async def exec(self, command, env=None):
                 del command
                 self.executed_envs.append(self._merge_env(env) or {})
+                return types.SimpleNamespace(return_code=0, stdout="", stderr="")
 
             def with_default_user(self, user):
                 del user

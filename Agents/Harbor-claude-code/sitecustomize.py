@@ -39,6 +39,7 @@ HARBOR_RUNTIME_DIR = (
 )
 sys.path.append(str(HARBOR_RUNTIME_DIR))
 
+from agent_output import exec_logged_agent
 from opik_trace_gate import _is_true, opik_tracing_enabled
 
 _HOOK_EVENTS = [
@@ -642,6 +643,12 @@ def _patch_claude_code_realtime_hooks() -> None:
                             "HARBOR_TRIAL_ID",
                             agent_session_id[: -len(trial_suffix)],
                         )
+            if "claude --verbose --output-format=stream-json" in command:
+                return await exec_logged_agent(
+                    _self, environment, patched_command,
+                    executor=original_exec_as_agent, env=env, cwd=cwd,
+                    timeout_sec=timeout_sec,
+                )
             if not hook_enabled:
                 return await original_exec_as_agent(
                     environment,

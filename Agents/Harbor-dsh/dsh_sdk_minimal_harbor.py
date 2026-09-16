@@ -7,6 +7,7 @@ import json
 import math
 import os
 import shlex
+import sys
 import uuid
 from pathlib import Path
 from typing import Any, override
@@ -14,6 +15,11 @@ from typing import Any, override
 from harbor.agents.installed.base import BaseInstalledAgent, with_prompt_template
 from harbor.environments.base import BaseEnvironment
 from harbor.models.agent.context import AgentContext
+
+HARBOR_RUNTIME_DIR = Path(__file__).resolve().parents[1] / "utils" / "common" / "Harbor"
+sys.path.append(str(HARBOR_RUNTIME_DIR))
+
+from agent_output import exec_logged_agent  # noqa: E402
 
 
 class AgentFleetDshSdkMinimal(BaseInstalledAgent):
@@ -341,7 +347,8 @@ capture_output() {{
             env=self._runtime_env(),
         )
         try:
-            await self.exec_as_agent(
+            await exec_logged_agent(
+                self,
                 environment,
                 command=f"bash -lc {shlex.quote(script)}",
                 env=self._runtime_env(),

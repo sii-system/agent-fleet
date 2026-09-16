@@ -4,11 +4,18 @@ from __future__ import annotations
 
 import os
 import shlex
+import sys
+from pathlib import Path
 
 from harbor.agents.installed.base import with_prompt_template
 from harbor.agents.installed.pi import Pi
 from harbor.environments.base import BaseEnvironment
 from harbor.models.agent.context import AgentContext
+
+HARBOR_RUNTIME_DIR = Path(__file__).resolve().parents[1] / "utils" / "common" / "Harbor"
+sys.path.append(str(HARBOR_RUNTIME_DIR))
+
+from agent_output import exec_logged_agent  # noqa: E402
 
 
 class AgentFleetPi(Pi):
@@ -102,7 +109,8 @@ class AgentFleetPi(Pi):
         if skills_command:
             await self.exec_as_agent(environment, command=skills_command, env=env)
 
-        await self.exec_as_agent(
+        await exec_logged_agent(
+            self,
             environment,
             command=(
                 'set -o pipefail; export PATH="$HOME/.local/bin:$PATH"; '
