@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import io
 import json
 import os
@@ -27,6 +28,7 @@ from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 import requests
+from artifact_collection import artifact_download_slot
 from harbor.environments.base import BaseEnvironment, ExecResult
 from harbor.environments.capabilities import (
     EnvironmentCapabilities,
@@ -51,6 +53,8 @@ HOSTS_BLOCK_END = "# HARBOR COMPOSE END"
 # multipart metadata while avoiding thousands of tiny requests.
 UPLOAD_CHUNK_BYTES = 512 * 1024
 FAST_UPLOAD_CHUNK_BYTES = 512 * 1024
+# Bound both encoded exec responses and decoded host transfer buffers.
+DOWNLOAD_CHUNK_BYTES = 512 * 1024
 DEFAULT_EXECD_REQUEST_ATTEMPTS = 4
 SANDBOX_STATUS_REQUEST_ATTEMPTS = 5
 CONTROL_PLANE_AUTH_ATTEMPTS = 5
@@ -3049,32 +3053,94 @@ class YiCloudOpenSandboxEnvironment(BaseEnvironment):
                     f"unsupported OpenSandbox mount source type: {source}"
                 )
 
-    async def download_file(self, source_path: str, target_path: Path | str) -> None:
-        result = await self.exec(
-            f"base64 -w0 {shlex.quote(source_path)}",
-            cwd="/",
-            timeout_sec=180,
-            user="root",
+    async def _download_file_chunks(self, source_path: str, target_path: Path | str) -> None:
+        source = shlex.quote(source_path)
+        metadata = await self.exec(
+            f"set -euo pipefail; stat -L -c %s -- {source}; sha256sum < {source}",
+            cwd="/", timeout_sec=180, user="root",
         )
-        if result.return_code != 0:
-            raise RuntimeError(f"failed to download {source_path!r}: {result.stderr}")
+        if metadata.return_code != 0:
+            raise RuntimeError(f"failed to inspect download {source_path!r}: {metadata.stderr}")
+        fields = (metadata.stdout or "").split()
+        if len(fields) != 3 or not re.fullmatch(r"[0-9a-f]{64}", fields[1]):
+            raise RuntimeError("invalid download size/checksum response")
+        size = int(fields[0])
+        if size < 0:
+            raise RuntimeError("invalid download size")
+        digest = hashlib.sha256()
         target = Path(target_path)
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(base64.b64decode(result.stdout or "", validate=True))
+        temporary = None
+        try:
+            temporary = target.parent / f".harbor-download-{uuid.uuid4().hex}.part"
+            descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o666)
+            with os.fdopen(descriptor, "wb") as output:
+                if target.exists():
+                    os.fchmod(output.fileno(), stat.S_IMODE(target.stat().st_mode))
+                offset = 0
+                while offset < size:
+                    result = await self.exec(
+                        "set -o pipefail; "
+                        f"dd if={source} bs={DOWNLOAD_CHUNK_BYTES} "
+                        f"skip={offset // DOWNLOAD_CHUNK_BYTES} count=1 status=none | base64 -w0",
+                        cwd="/", timeout_sec=180, user="root",
+                    )
+                    if result.return_code != 0:
+                        raise RuntimeError(f"failed to download {source_path!r}: {result.stderr}")
+                    data = base64.b64decode(result.stdout or "", validate=True)
+                    expected = min(DOWNLOAD_CHUNK_BYTES, size - offset)
+                    if len(data) != expected:
+                        raise RuntimeError("download changed or returned a short/oversized chunk")
+                    output.write(data)
+                    digest.update(data)
+                    offset += len(data)
+                if digest.hexdigest() != fields[1]:
+                    raise RuntimeError("download checksum mismatch; source may have changed")
+            # A failed transfer never replaces a previously valid target.
+            temporary.replace(target)
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
+
+    async def download_file(self, source_path: str, target_path: Path | str) -> None:
+        async with artifact_download_slot():
+            await self._download_file_chunks(source_path, target_path)
 
     async def download_dir(self, source_dir: str, target_dir: Path | str) -> None:
-        result = await self.exec(
-            f"tar czf - -C {shlex.quote(source_dir)} . | base64 -w0",
-            cwd="/",
-            timeout_sec=300,
-            user="root",
-        )
-        if result.return_code != 0:
-            raise RuntimeError(f"failed to download directory {source_dir!r}")
-        target = Path(target_dir)
-        target.mkdir(parents=True, exist_ok=True)
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            archive = Path(tmp_dir) / "download.tar.gz"
-            archive.write_bytes(base64.b64decode(result.stdout or "", validate=True))
-            with tarfile.open(archive, "r:gz") as tar:
-                tar.extractall(target, filter="data")
+        await self._download_dir_archive(source_dir, target_dir, exclude=[])
+
+    async def download_dir_with_exclusions(
+        self, *, source_dir: str, target_dir: Path | str, exclude: list[str],
+    ) -> None:
+        await self._download_dir_archive(source_dir, target_dir, exclude=exclude)
+
+    async def _download_dir_archive(
+        self, source_dir: str, target_dir: Path | str, *, exclude: list[str],
+    ) -> None:
+        async with artifact_download_slot():
+            remote_archive = f"/tmp/harbor-download-{uuid.uuid4().hex}.tar.gz"
+            archive_q = shlex.quote(remote_archive)
+            exclude_flags = " ".join(f"--exclude={shlex.quote(item)}" for item in exclude)
+            try:
+                result = await self.exec(
+                    f"tar czf {archive_q} {exclude_flags} -C {shlex.quote(source_dir)} .",
+                    cwd="/", timeout_sec=300, user="root",
+                )
+                if result.return_code != 0:
+                    raise RuntimeError(f"failed to archive directory {source_dir!r}")
+                target = Path(target_dir)
+                target.mkdir(parents=True, exist_ok=True)
+                with tempfile.TemporaryDirectory() as tmp_dir:
+                    archive = Path(tmp_dir) / "download.tar.gz"
+                    await self._download_file_chunks(remote_archive, archive)
+                    with tarfile.open(archive, "r:gz") as tar:
+                        tar.extractall(target, filter="data")
+            finally:
+                try:
+                    cleanup = await self.exec(
+                        f"rm -f -- {archive_q}", cwd="/", timeout_sec=30, user="root",
+                    )
+                    if cleanup.return_code != 0:
+                        self.logger.warning("Failed to remove temporary download archive")
+                except Exception:
+                    self.logger.warning("Failed to remove temporary download archive", exc_info=True)

@@ -2485,5 +2485,161 @@ class YiCloudOpenSandboxTest(unittest.TestCase):
         instance.logger.warning.assert_called_once()
 
 
+class BoundedDownloadTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.root = Path(self.temporary.name)
+        self.settings = patch.dict(os.environ, {
+            "HARBOR_ARTIFACT_LOCK_DIR": str(self.root / "locks"),
+            "HARBOR_ARTIFACT_DOWNLOAD_CONCURRENCY": "2",
+        })
+        self.settings.start()
+        self.instance = object.__new__(yicloud_opensandbox.YiCloudOpenSandboxEnvironment)
+        self.instance.logger = Mock()
+        self.commands = []
+        self.response_sizes = []
+        self.instance.exec = self.local_exec
+
+    async def asyncTearDown(self):
+        self.settings.stop()
+        self.temporary.cleanup()
+
+    async def local_exec(self, command, **kwargs):
+        self.commands.append(command)
+        process = await asyncio.create_subprocess_exec(
+            "bash", "-c", command, stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await process.communicate()
+        self.response_sizes.append(len(stdout) + len(stderr))
+        return SimpleNamespace(
+            return_code=process.returncode,
+            stdout=stdout.decode(), stderr=stderr.decode(),
+        )
+
+    async def test_large_binary_download_bounds_responses_and_preserves_hash_and_mode(self):
+        import hashlib
+        source = self.root / "source ' with spaces"
+        target = self.root / "target"
+        # Incompressible data spanning multiple transfer requests.
+        source.write_bytes(os.urandom(3 * yicloud_opensandbox.DOWNLOAD_CHUNK_BYTES + 37))
+        target.write_bytes(b"old")
+        target.chmod(0o640)
+        await self.instance.download_file(str(source), target)
+        with source.open("rb") as left, target.open("rb") as right:
+            self.assertEqual(hashlib.file_digest(left, "sha256").digest(),
+                             hashlib.file_digest(right, "sha256").digest())
+        self.assertEqual(target.stat().st_mode & 0o777, 0o640)
+        self.assertLessEqual(max(self.response_sizes),
+                             4 * ((yicloud_opensandbox.DOWNLOAD_CHUNK_BYTES + 2) // 3))
+        self.assertFalse(list(self.root.glob("*.part")))
+
+    async def test_file_symlink_uses_referent_size(self):
+        source = self.root / "source"
+        source.write_bytes(b"full referent content")
+        link = self.root / "link"
+        link.symlink_to("source")
+        await self.instance.download_file(str(link), self.root / "out")
+        self.assertEqual((self.root / "out").read_bytes(), source.read_bytes())
+
+    async def test_empty_file(self):
+        source = self.root / "empty"
+        source.touch()
+        await self.instance.download_file(str(source), self.root / "out")
+        self.assertEqual((self.root / "out").read_bytes(), b"")
+        self.assertFalse(any("dd if=" in command for command in self.commands))
+
+    async def test_corrupt_short_and_changed_content_do_not_replace_target(self):
+        source = self.root / "source"
+        source.write_bytes(b"original")
+        target = self.root / "target"
+        for payload, expected in (("not-base64!", ValueError),
+                                  (base64.b64encode(b"short").decode(), RuntimeError),
+                                  (base64.b64encode(b"modified").decode(), RuntimeError)):
+            with self.subTest(payload=payload):
+                target.write_bytes(b"previous valid target")
+
+                async def corrupt(command, payload=payload, **kwargs):
+                    if "dd if=" in command:
+                        return SimpleNamespace(return_code=0, stdout=payload, stderr="")
+                    return await self.local_exec(command, **kwargs)
+
+                self.instance.exec = corrupt
+                with self.assertRaises(expected):
+                    await self.instance.download_file(str(source), target)
+                self.assertEqual(target.read_bytes(), b"previous valid target")
+                self.assertFalse(list(self.root.glob("*.part")))
+
+    async def test_directory_archive_and_cleanup(self):
+        source = self.root / "source dir"
+        source.mkdir()
+        (source / "file").write_bytes(os.urandom(1024 * 1024))
+        os.link(source / "file", source / "hardlink")
+        (source / "symlink").symlink_to("file")
+        target = self.root / "out"
+        await self.instance.download_dir(str(source), target)
+        self.assertEqual((source / "file").read_bytes(), (target / "file").read_bytes())
+        self.assertTrue((target / "symlink").is_symlink())
+        self.assertEqual((target / "file").stat().st_ino, (target / "hardlink").stat().st_ino)
+        cleanup = self.commands[-1]
+        self.assertTrue(cleanup.startswith("rm -f -- /tmp/harbor-download-"))
+        self.assertFalse(Path(shlex.split(cleanup)[-1]).exists())
+
+    async def test_excluded_directory_uses_bounded_download_and_cleanup(self):
+        source = self.root / "source"
+        source.mkdir()
+        (source / "keep").write_text("keep")
+        (source / "omit").write_text("omit")
+        target = self.root / "out"
+        await self.instance.download_dir_with_exclusions(
+            source_dir=str(source), target_dir=target, exclude=["omit"],
+        )
+        self.assertEqual((target / "keep").read_text(), "keep")
+        self.assertFalse((target / "omit").exists())
+        self.assertTrue(any("dd if=" in command for command in self.commands))
+        self.assertTrue(self.commands[-1].startswith("rm -f -- /tmp/harbor-download-"))
+
+    async def test_tar_failure_is_reported_and_remote_archive_cleaned(self):
+        with self.assertRaisesRegex(RuntimeError, "failed to archive"):
+            await self.instance.download_dir(str(self.root / "missing"), self.root / "out")
+        self.assertTrue(self.commands[-1].startswith("rm -f -- /tmp/harbor-download-"))
+
+    async def test_cancelled_transfer_cleans_part_and_remote_archive(self):
+        source = self.root / "source"
+        source.mkdir()
+        (source / "file").write_text("some data")
+
+        async def cancel_read(command, **kwargs):
+            if "dd if=" in command:
+                raise asyncio.CancelledError
+            return await self.local_exec(command, **kwargs)
+
+        self.instance.exec = cancel_read
+        with self.assertRaises(asyncio.CancelledError):
+            await self.instance.download_dir(str(source), self.root / "out")
+        self.assertTrue(self.commands[-1].startswith("rm -f -- /tmp/harbor-download-"))
+        self.assertFalse(Path(shlex.split(self.commands[-1])[-1]).exists())
+
+    async def test_unsafe_archive_rejected(self):
+        import io
+        archive = self.root / "unsafe.tar.gz"
+        with tarfile.open(archive, "w:gz") as tar:
+            member = tarfile.TarInfo("../escaped")
+            member.size = 4
+            tar.addfile(member, io.BytesIO(b"oops"))
+
+        async def unsafe_archive(command, **kwargs):
+            if command.startswith("tar czf "):
+                remote = shlex.split(command)[2]
+                shutil.copyfile(archive, remote)
+                return SimpleNamespace(return_code=0, stdout="", stderr="")
+            return await self.local_exec(command, **kwargs)
+
+        self.instance.exec = unsafe_archive
+        with self.assertRaises(tarfile.FilterError):
+            await self.instance.download_dir(str(self.root), self.root / "out")
+        self.assertFalse((self.root / "escaped").exists())
+
+
 if __name__ == "__main__":
     unittest.main()

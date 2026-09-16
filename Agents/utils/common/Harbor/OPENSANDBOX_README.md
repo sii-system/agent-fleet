@@ -254,3 +254,34 @@ creation.
 See [task image management](OPENSANDBOX_IMAGE_MANAGER.md) for image naming,
 caching, and registry internals. See [Harbor benchmark framework structure](STRUCT.md) for the full
 configuration reference.
+
+## Bounded artifact downloads
+
+File downloads read 512 KiB chunks through the existing exec transport, write
+straight to a temporary host file, and check the source size and SHA-256 before
+replacing the target. Failed, corrupt or cancelled transfers preserve an
+existing target and remove the partial file. This requires the image's existing
+GNU-style `stat`, `sha256sum`, `dd` and `base64` utilities; no S3 write credentials
+or new provider API is required.
+
+Directory downloads create one temporary sandbox tar archive, use the same
+bounded transfer, extract with Python's `data` safety filter, and remove the
+remote archive in `finally`. Excluded-directory downloads use this path too.
+Transport retries keep the existing idempotent exec behavior. A failed chunk
+aborts the download after those retries; a later download starts again, rather
+than claiming resumability across calls.
+
+`HARBOR_ARTIFACT_DOWNLOAD_CONCURRENCY` defaults to `4`. Independent worker
+processes running as the same host user share advisory-lock slots under
+`${TMPDIR:-/tmp}/agent-fleet-artifacts-<uid>`; locks release on cancellation or
+process death. `HARBOR_ARTIFACT_LOCK_DIR` can select a shared local directory.
+All cooperating workers must use the same directory and concurrency setting.
+Separate hosts/users or isolated temporary directories have separate limits.
+Do not unlink slot files while workers are running.
+
+The limit covers OpenSandbox download and extraction operations, not agent
+execution or trajectory conversion. Encoded responses and decoded buffers are
+bounded by chunk size. Archive metadata and trajectory conversion can still
+consume memory proportional to entry/event counts; filesystem writes can still
+occupy reclaimable page cache. Chunking adds requests and SHA-256 adds a remote
+read pass, so measure collection throughput on the target provider.
