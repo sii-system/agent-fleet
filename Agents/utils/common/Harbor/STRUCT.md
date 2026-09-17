@@ -19,6 +19,8 @@ Agents/utils/common/Harbor/
 ├── run_harbor_registry.sh      # Registry runner with optional final-pane hold
 ├── harboropik.sh               # Harbor CLI orchestration with Opik setup
 ├── harbor_shell_utils.py       # Event, JSON, URL, and mount helpers
+├── run_e2b_smoke.sh            # Native E2B oracle canary for cloud/self-hosted SDK endpoints
+├── e2b_smoke.py                # Canary result, artifact, and sandbox-cleanup checks
 ├── qz_repository_environment_plan.py # Repository/revision final-image plan producer
 ├── qz_task_instruction.py      # Exact QZ setup-prefix handoff before agent run
 ├── prepare_local_deps.sh       # Thin Python launcher
