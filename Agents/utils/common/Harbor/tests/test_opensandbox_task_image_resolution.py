@@ -38,6 +38,7 @@ class TaskImageResolutionTest(unittest.TestCase):
                 'exposed_ports': [], 'healthcheck': None,
             },
         ))
+        self.real_identity = manager.image_identity
         self.identity = self.stack.enter_context(patch.object(
             manager, 'image_identity', side_effect=AssertionError('consumer must not hash'),
         ))
@@ -90,6 +91,97 @@ class TaskImageResolutionTest(unittest.TestCase):
             'https://registry.example/api/v2.0/projects/test-project/repositories/'
             'task_002432_cfe8954b/artifacts?page_size=100&with_tag=true&page=1', timeout=30,
         )
+
+    def test_validation_setting_defaults_off_and_cli_overrides_environment(self):
+        argv = ['--task-dir', str(self.task), '--project', 'test-project']
+        self.assertFalse(manager.parse_args(argv).validate_image_hash)
+        self.assertTrue(manager.parse_args(argv + ['--validate-image-hash']).validate_image_hash)
+        for value, enabled in [('0', False), ('1', True), ('true', True), ('TRUE', True)]:
+            with self.subTest(value=value), patch.dict(
+                os.environ, {'HARBOR_OPENSANDBOX_VALIDATE_IMAGE_HASH': value}
+            ):
+                self.assertEqual(manager.parse_args(argv).validate_image_hash, enabled)
+                self.assertFalse(manager.parse_args(argv + ['--no-validate-image-hash']).validate_image_hash)
+                self.assertTrue(manager.parse_args(argv + ['--validate-image-hash']).validate_image_hash)
+
+    def test_skipped_validation_warns_on_stderr_without_hashing(self):
+        self.responses([self.artifact('uploaded-tag')])
+        with patch('sys.stderr', new_callable=io.StringIO) as stderr:
+            self.prepare_image()
+        warning = stderr.getvalue()
+        self.assertIn('WARNING: skipping task image hash validation', warning)
+        self.assertIn('local dataset task definition may be inconsistent', warning)
+        self.assertIn('remote repository', warning)
+        self.assertIn('uploaded-tag', warning)
+        self.identity.assert_not_called()
+
+    def test_enabled_validation_accepts_matching_tag_without_building(self):
+        self.args.validate_image_hash = True
+        self.identity.side_effect = self.real_identity
+        identity = self.real_identity(self.environment)
+        self.responses([self.artifact('main-' + identity[:20])])
+        with patch('sys.stderr', new_callable=io.StringIO) as stderr:
+            image = self.prepare_image()
+        self.assertEqual(image['tag'], 'main-' + identity[:20])
+        # The remote tag carries only a prefix, not an authoritative full hash.
+        self.assertIsNone(image['input_hash'])
+        self.assertNotIn('WARNING', stderr.getvalue())
+        self.identity.assert_called_once_with(self.environment)
+        self.build.assert_not_called()
+        self.copy.assert_not_called()
+        self.credentials.assert_not_called()
+        self.inspect.assert_not_called()
+
+    def test_enabled_validation_rejects_stale_latest_image_without_falling_back(self):
+        self.args.validate_image_hash = True
+        self.identity.side_effect = self.real_identity
+        old_hash = self.real_identity(self.environment)
+        (self.environment / 'Dockerfile').write_text('FROM debian:bookworm\nRUN echo changed\n')
+        current_hash = self.real_identity(self.environment)
+        self.assertNotEqual(old_hash[:20], current_hash[:20])
+        self.responses([
+            self.artifact('main-' + current_hash[:20], '2026-09-01T00:00:00Z'),
+            self.artifact('main-' + old_hash[:20], '2026-09-02T00:00:00Z', 'b'),
+        ])
+        with self.assertRaisesRegex(RuntimeError, 'hash validation failed'):
+            self.prepare_image()
+        self.config.assert_not_called()
+        self.build.assert_not_called()
+        self.copy.assert_not_called()
+        self.credentials.assert_not_called()
+        self.inspect.assert_not_called()
+
+    def test_enabled_validation_rejects_tags_without_hash_encoding(self):
+        self.args.validate_image_hash = True
+        self.identity.side_effect = self.real_identity
+        self.responses([self.artifact('uploaded-tag')])
+        with self.assertRaisesRegex(RuntimeError, 'tag may not encode the content hash'):
+            self.prepare_image()
+        self.build.assert_not_called()
+        self.copy.assert_not_called()
+
+    def test_enabled_validation_uses_declared_source_image_identity(self):
+        self.args.validate_image_hash = True
+        self.identity.side_effect = self.real_identity
+        (self.environment / 'Dockerfile').unlink()
+        (self.environment / 'docker-compose.yaml').write_text(
+            'services:\n  main:\n    image: ubuntu:24.04\n  worker:\n    image: redis:7\n'
+        )
+        artifacts = [self.artifact(name + '-' + self.real_identity(
+            self.environment, docker_image=source
+        )[:20]) for name, source in [('main', 'ubuntu:24.04'), ('worker', 'redis:7')]]
+        self.responses(artifacts)
+        prepared = manager.prepare_bundle(self.args)
+        self.assertEqual(set(prepared.manifest['services']), {'main', 'worker'})
+        self.assertEqual(self.identity.call_count, 2)
+        self.identity.assert_any_call(self.environment, docker_image='ubuntu:24.04')
+        self.identity.assert_any_call(self.environment, docker_image='redis:7')
+        self.build.assert_not_called()
+        self.copy.assert_not_called()
+
+    def test_enabled_validation_keeps_empty_repository_build_flow(self):
+        self.args.validate_image_hash = True
+        self.test_empty_repository_uses_existing_hash_build_and_push_flow()
 
     def test_multiple_tags_choose_newest_push_time_independent_of_listing_order(self):
         older = self.artifact('z-older', '2026-09-01T10:00:00+08:00', 'a')

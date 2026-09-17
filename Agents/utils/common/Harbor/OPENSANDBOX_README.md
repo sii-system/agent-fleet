@@ -138,6 +138,24 @@ The command prints the output and summary paths. For debugging, add
 `YICLOUD_SANDBOX_RETAIN_AFTER_TRIAL=1` and delete the retained instance after
 inspection.
 
+## Optional: Validate Task Image Hashes
+
+On-demand image preparation selects the task repository's most recently pushed
+tag without computing a local content hash by default. It emits a warning that
+the local dataset task definition may be inconsistent with the remote image.
+
+Set `HARBOR_OPENSANDBOX_VALIDATE_IMAGE_HASH=1` when starting workers, or pass
+`--validate-image-hash` to the image manager, to validate before reuse. The
+selected tag must match `<service>-<first 20 hex characters of the local hash>`.
+A mismatch or a tag without that hash encoding stops preparation; it does not
+silently select an older image or rebuild. This checks the published hash
+prefix, not the full remote hash or image contents. `--no-validate-image-hash`
+overrides the environment setting.
+
+An empty repository still uses the existing hash-based build/push flow. This
+option does not change prebuild uploaded-Bundle cache verification or
+`--skip-hash-verification`.
+
 ## Optional: Prebuild Task Images
 
 For a batch run, publish task images once before starting workers:

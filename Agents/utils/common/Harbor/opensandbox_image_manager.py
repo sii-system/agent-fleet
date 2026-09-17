@@ -38,10 +38,14 @@ Flow:
     Return the main image ref for legacy callers
 
 Each benchmark is a Registry Project and each task has its own repository.
-On-demand consumers select the newest push_time without computing or verifying
-a content hash; equal times are ordered by tag name and digest. Compose services
+On-demand consumers select the newest push_time and skip content-hash validation
+by default, warning that local task definitions may differ from remote images.
+Opt in with --validate-image-hash or HARBOR_OPENSANDBOX_VALIDATE_IMAGE_HASH=1
+to check the selected tag against the local hash prefix before reuse.
+Equal times are ordered by tag name and digest. Compose services
 retain their service-specific tags. Registry digests remain the immutable runtime
-addresses. Content-derived tags are used only for build/push and prebuild upkeep.
+addresses. Content-derived tags support build/push, prebuild upkeep, and opt-in
+consumer validation.
 Single-Dockerfile tasks are represented as one implicit ``main`` service.
 Dataset prebuild may additionally trust a persistent local uploaded-Bundle
 index, with an explicit option to skip the otherwise-default content-hash check.
@@ -2122,6 +2126,30 @@ def _prepare_service_image(
             service.name, single_service=len(bundle.services) == 1
         )
         if existing is not None:
+            if getattr(args, "validate_image_hash", False):
+                identity = (
+                    image_identity(bundle.environment_dir)
+                    if service.build is not None else image_identity(
+                        bundle.environment_dir, docker_image=service.source_image
+                    )
+                )
+                expected_tag = target.tag(service.name, identity)
+                if existing["tag"] != expected_tag:
+                    raise RuntimeError(
+                        f"task image hash validation failed for task={bundle.task_identity} "
+                        f"service={service.name}: selected {existing['tag_ref']}, "
+                        f"expected tag {expected_tag!r} from the local task definition; "
+                        "the remote image may be stale or its tag may not encode the content hash"
+                    )
+            else:
+                log(
+                    f"WARNING: skipping task image hash validation for "
+                    f"task={bundle.task_identity} service={service.name}: "
+                    "the local dataset task definition may be inconsistent with "
+                    f"the image currently available in the remote repository ({existing['tag_ref']}); "
+                    "enable --validate-image-hash or HARBOR_OPENSANDBOX_VALIDATE_IMAGE_HASH=1 "
+                    "to check the content-hash tag prefix"
+                )
             log(f"resolved task={bundle.task_identity} service={service.name}: {existing['tag_ref']}")
             declared_args = (
                 {**service.build.args, **explicit_build_args}
@@ -2851,6 +2879,16 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
         help="override task.toml build_timeout_sec for this image preparation",
     )
     parser.add_argument("--force", action="store_true")
+    parser.add_argument(
+        "--validate-image-hash",
+        action=argparse.BooleanOptionalAction,
+        default=os.environ.get("HARBOR_OPENSANDBOX_VALIDATE_IMAGE_HASH", "0").lower()
+        in {"1", "true"},
+        help=(
+            "validate the selected remote image tag against the local task content-hash "
+            "prefix before reuse (default: disabled; HARBOR_OPENSANDBOX_VALIDATE_IMAGE_HASH)"
+        ),
+    )
     parser.add_argument(
         "--reuse-local-upload-cache",
         action=argparse.BooleanOptionalAction,
