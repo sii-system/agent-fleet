@@ -1,3 +1,4 @@
+import base64
 import io
 import json
 import os
@@ -8,6 +9,7 @@ from contextlib import ExitStack
 from pathlib import Path
 from unittest.mock import Mock, patch
 from urllib.error import HTTPError
+from urllib.request import HTTPRedirectHandler
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -32,6 +34,7 @@ class TaskImageResolutionTest(unittest.TestCase):
         ])
         self.opener = Mock()
         self.stack.enter_context(patch.object(manager, 'build_opener', return_value=self.opener))
+        self.real_inspect_config = manager.SkopeoPublisher.inspect_config
         self.config = self.stack.enter_context(patch.object(
             manager.SkopeoPublisher, 'inspect_config', return_value={
                 'entrypoint': None, 'cmd': ['/bin/bash'], 'working_dir': None,
@@ -269,17 +272,83 @@ class TaskImageResolutionTest(unittest.TestCase):
     def test_missing_repository_is_empty(self):
         self.opener.open.side_effect = HTTPError('https://registry.example', 404, 'missing', {}, None)
         target = manager.RegistryTarget('registry.example', 'test-project', self.task.name)
-        client = manager.RegistryClient(target, Mock(tls_verify=True))
+        client = manager.RegistryClient(target, Mock(tls_verify=True, username='', password=''))
         self.assertIsNone(client.latest_image('main', single_service=True))
 
     def test_query_errors_never_fall_back_to_build(self):
+        self.credentials.side_effect = None
+        self.credentials.return_value = ('fake-user', 'fake-password')
         for status in (401, 403, 500):
             with self.subTest(status=status):
+                self.opener.open.reset_mock()
+                self.credentials.reset_mock()
                 self.opener.open.side_effect = HTTPError('https://registry.example', status, 'error', {}, None)
                 with self.assertRaises(HTTPError):
                     self.prepare_image()
+                self.assertEqual(self.opener.open.call_count, 2 if status in (401, 403) else 1)
+                self.assertEqual(self.credentials.call_count, 1 if status in (401, 403) else 0)
         self.identity.assert_not_called()
         self.build.assert_not_called()
+        self.copy.assert_not_called()
+        self.config.assert_not_called()
+
+    def test_private_repository_retries_with_credentials_for_all_pages_and_inspection(self):
+        self.args.validate_image_hash = True
+        self.identity.side_effect = self.real_identity
+        identity = self.real_identity(self.environment)
+        self.credentials.side_effect = None
+        self.credentials.return_value = ('fake-user', 'fake-password')
+        expected_auth = 'Basic ' + base64.b64encode(b'fake-user:fake-password').decode()
+        for status in (401, 403):
+            with self.subTest(status=status):
+                self.credentials.reset_mock()
+                self.opener.open.reset_mock()
+                self.opener.open.side_effect = [
+                    HTTPError('https://registry.example', status, 'denied', {}, None),
+                    io.BytesIO(json.dumps([self.artifact('older')] * 100).encode()),
+                    io.BytesIO(json.dumps([self.artifact(
+                        'main-' + identity[:20], '2026-09-02T00:00:00Z', 'b'
+                    )]).encode()),
+                ]
+                with patch.object(manager.SkopeoPublisher, 'inspect_config', self.real_inspect_config), patch.object(
+                    manager.SkopeoPublisher, '_run', return_value='{"config": {}}'
+                ) as run, patch('sys.stderr', new_callable=io.StringIO) as stderr:
+                    image = self.prepare_image()
+                self.assertEqual(image['artifact_digest'], 'sha256:' + 'b' * 64)
+                self.credentials.assert_called_once_with(self.args.docker_config, self.args.registry)
+                calls = self.opener.open.call_args_list
+                self.assertIsInstance(calls[0].args[0], str)  # Anonymous first attempt.
+                self.assertEqual(len(calls), 3)
+                for page, call in enumerate(calls[1:], 1):
+                    request = call.args[0]
+                    self.assertEqual(request.get_header('Authorization'), expected_auth)
+                    self.assertIn(f'page={page}', request.full_url)
+                    redirected = HTTPRedirectHandler().redirect_request(
+                        request, None, 302, 'redirect', {}, 'https://other.example/artifacts'
+                    )
+                    self.assertIsNone(redirected.get_header('Authorization'))
+                login, inspect = run.call_args_list
+                self.assertEqual(login.args[0][:2], ['skopeo', 'login'])
+                self.assertIn('fake-user', login.args[0])
+                self.assertEqual(login.kwargs['input_text'], 'fake-password')
+                self.assertEqual(inspect.args[0][:2], ['skopeo', 'inspect'])
+                self.assertIn('--config', inspect.args[0])
+                self.assertIn(image['digest_ref'], inspect.args[0][-1])
+                for secret in ('fake-user', 'fake-password', expected_auth):
+                    self.assertNotIn(secret, stderr.getvalue())
+                    self.assertNotIn(secret, json.dumps(image))
+        self.build.assert_not_called()
+        self.copy.assert_not_called()
+
+    def test_private_repository_without_credentials_fails_without_building(self):
+        self.credentials.side_effect = RuntimeError('missing configured credentials')
+        self.opener.open.side_effect = HTTPError('https://registry.example', 401, 'denied', {}, None)
+        with self.assertRaisesRegex(RuntimeError, 'missing configured credentials'):
+            self.prepare_image()
+        self.opener.open.assert_called_once()
+        self.identity.assert_not_called()
+        self.build.assert_not_called()
+        self.copy.assert_not_called()
 
     def test_nonempty_repository_without_usable_tags_does_not_build(self):
         artifact = self.artifact('unused')

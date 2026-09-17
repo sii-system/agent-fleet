@@ -75,7 +75,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.error import HTTPError
 from urllib.parse import quote, urlparse
-from urllib.request import HTTPSHandler, ProxyHandler, build_opener
+from urllib.request import HTTPSHandler, ProxyHandler, Request, build_opener
 
 if __package__:
     from .compose_bundle import (
@@ -1460,7 +1460,7 @@ class RegistryClient:
         self._artifacts: list[dict[str, object]] | None = None
 
     def list_artifacts(self) -> list[dict[str, object]]:
-        """List all task artifacts anonymously; only a missing repo is a miss."""
+        """List task artifacts using available credentials; only a missing repo is a miss."""
         context = ssl.create_default_context()
         if not self.publisher.tls_verify:
             context.check_hostname = False
@@ -1474,10 +1474,16 @@ class RegistryClient:
         artifacts: list[dict[str, object]] = []
         page = 1
         while True:
+            request = f"{url}?page_size=100&with_tag=true&page={page}"
+            if self.publisher.username and self.publisher.password:
+                request = Request(request)
+                token = base64.b64encode(
+                    f"{self.publisher.username}:{self.publisher.password}".encode()
+                ).decode("ascii")
+                # Do not forward registry credentials on HTTP redirects.
+                request.add_unredirected_header("Authorization", f"Basic {token}")
             try:
-                with opener.open(
-                    f"{url}?page_size=100&with_tag=true&page={page}", timeout=30
-                ) as response:
+                with opener.open(request, timeout=30) as response:
                     batch = json.load(response)
             except HTTPError as exc:
                 if exc.code == 404 and page == 1:
@@ -2122,9 +2128,19 @@ def _prepare_service_image(
     ):
         if registry is None or publisher is None:
             raise RuntimeError("Registry client is unavailable outside dry-run mode")
-        existing = registry.latest_image(
-            service.name, single_service=len(bundle.services) == 1
-        )
+        try:
+            existing = registry.latest_image(
+                service.name, single_service=len(bundle.services) == 1
+            )
+        except HTTPError as exc:
+            if exc.code not in {401, 403} or publisher.username or publisher.password:
+                raise
+            publisher.username, publisher.password = registry_credentials(
+                args.docker_config, args.registry
+            )
+            existing = registry.latest_image(
+                service.name, single_service=len(bundle.services) == 1
+            )
         if existing is not None:
             if getattr(args, "validate_image_hash", True):
                 identity = (

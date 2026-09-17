@@ -138,6 +138,14 @@ The command prints the output and summary paths. For debugging, add
 `YICLOUD_SANDBOX_RETAIN_AFTER_TRIAL=1` and delete the retained instance after
 inspection.
 
+Image preparation first lists the task repository anonymously. If Harbor
+returns 401 or 403, it retries once using the existing registry credentials
+(`YICLOUD_HARBOR_USERNAME` / `YICLOUD_HARBOR_PASSWORD`, with the existing
+local registry configuration fallback). Subsequent image inspection uses the
+same credentials. Missing credentials or a failed authenticated query stop
+preparation; they do not trigger a rebuild. Public projects remain usable
+without credentials.
+
 ## Task Image Hash Validation
 
 On-demand image preparation selects the task repository's most recently pushed
