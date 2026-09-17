@@ -38,13 +38,13 @@ Flow:
     Return the main image ref for legacy callers
 
 Each benchmark is a Registry Project and each task has its own repository.
-On-demand consumers select the newest push_time and skip content-hash validation
-by default, warning that local task definitions may differ from remote images.
-Opt in with --validate-image-hash or HARBOR_OPENSANDBOX_VALIDATE_IMAGE_HASH=1
-to check the selected tag against the local hash prefix before reuse.
+On-demand consumers select the newest push_time and validate the selected tag
+against the local content-hash prefix by default. Opt out with
+--no-validate-image-hash or HARBOR_OPENSANDBOX_VALIDATE_IMAGE_HASH=0 to skip
+hashing, warning that local task definitions may differ from remote images.
 Equal times are ordered by tag name and digest. Compose services
 retain their service-specific tags. Registry digests remain the immutable runtime
-addresses. Content-derived tags support build/push, prebuild upkeep, and opt-in
+addresses. Content-derived tags support build/push, prebuild upkeep, and
 consumer validation.
 Single-Dockerfile tasks are represented as one implicit ``main`` service.
 Dataset prebuild may additionally trust a persistent local uploaded-Bundle
@@ -2126,7 +2126,7 @@ def _prepare_service_image(
             service.name, single_service=len(bundle.services) == 1
         )
         if existing is not None:
-            if getattr(args, "validate_image_hash", False):
+            if getattr(args, "validate_image_hash", True):
                 identity = (
                     image_identity(bundle.environment_dir)
                     if service.build is not None else image_identity(
@@ -2882,11 +2882,11 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--validate-image-hash",
         action=argparse.BooleanOptionalAction,
-        default=os.environ.get("HARBOR_OPENSANDBOX_VALIDATE_IMAGE_HASH", "0").lower()
+        default=os.environ.get("HARBOR_OPENSANDBOX_VALIDATE_IMAGE_HASH", "1").lower()
         in {"1", "true"},
         help=(
             "validate the selected remote image tag against the local task content-hash "
-            "prefix before reuse (default: disabled; HARBOR_OPENSANDBOX_VALIDATE_IMAGE_HASH)"
+            "prefix before reuse (default: enabled; HARBOR_OPENSANDBOX_VALIDATE_IMAGE_HASH)"
         ),
     )
     parser.add_argument(

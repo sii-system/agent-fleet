@@ -28,7 +28,7 @@ class TaskImageResolutionTest(unittest.TestCase):
         self.args = manager.parse_args([
             '--task-dir', str(self.task), '--registry', 'registry.example',
             '--project', 'test-project', '--cache-root', str(self.root / 'cache'),
-            '--no-use-proxy',
+            '--no-use-proxy', '--no-validate-image-hash',
         ])
         self.opener = Mock()
         self.stack.enter_context(patch.object(manager, 'build_opener', return_value=self.opener))
@@ -92,9 +92,9 @@ class TaskImageResolutionTest(unittest.TestCase):
             'task_002432_cfe8954b/artifacts?page_size=100&with_tag=true&page=1', timeout=30,
         )
 
-    def test_validation_setting_defaults_off_and_cli_overrides_environment(self):
+    def test_validation_setting_defaults_on_and_cli_overrides_environment(self):
         argv = ['--task-dir', str(self.task), '--project', 'test-project']
-        self.assertFalse(manager.parse_args(argv).validate_image_hash)
+        self.assertTrue(manager.parse_args(argv).validate_image_hash)
         self.assertTrue(manager.parse_args(argv + ['--validate-image-hash']).validate_image_hash)
         for value, enabled in [('0', False), ('1', True), ('true', True), ('TRUE', True)]:
             with self.subTest(value=value), patch.dict(
@@ -115,8 +115,26 @@ class TaskImageResolutionTest(unittest.TestCase):
         self.assertIn('uploaded-tag', warning)
         self.identity.assert_not_called()
 
-    def test_enabled_validation_accepts_matching_tag_without_building(self):
-        self.args.validate_image_hash = True
+    def test_environment_opt_out_reuses_without_hashing_and_warns(self):
+        with patch.dict(os.environ, {'HARBOR_OPENSANDBOX_VALIDATE_IMAGE_HASH': '0'}):
+            self.args = manager.parse_args([
+                '--task-dir', str(self.task), '--registry', 'registry.example',
+                '--project', 'test-project', '--cache-root', str(self.root / 'cache'),
+                '--no-use-proxy',
+            ])
+        self.responses([self.artifact('uploaded-tag')])
+        with patch('sys.stderr', new_callable=io.StringIO) as stderr:
+            self.assertEqual(self.prepare_image()['tag'], 'uploaded-tag')
+        self.assertIn('WARNING: skipping task image hash validation', stderr.getvalue())
+        self.identity.assert_not_called()
+        self.build.assert_not_called()
+
+    def test_default_validation_accepts_matching_tag_without_building(self):
+        self.args = manager.parse_args([
+            '--task-dir', str(self.task), '--registry', 'registry.example',
+            '--project', 'test-project', '--cache-root', str(self.root / 'cache'),
+            '--no-use-proxy',
+        ])
         self.identity.side_effect = self.real_identity
         identity = self.real_identity(self.environment)
         self.responses([self.artifact('main-' + identity[:20])])
@@ -132,8 +150,12 @@ class TaskImageResolutionTest(unittest.TestCase):
         self.credentials.assert_not_called()
         self.inspect.assert_not_called()
 
-    def test_enabled_validation_rejects_stale_latest_image_without_falling_back(self):
-        self.args.validate_image_hash = True
+    def test_default_validation_rejects_stale_latest_image_without_falling_back(self):
+        self.args = manager.parse_args([
+            '--task-dir', str(self.task), '--registry', 'registry.example',
+            '--project', 'test-project', '--cache-root', str(self.root / 'cache'),
+            '--no-use-proxy',
+        ])
         self.identity.side_effect = self.real_identity
         old_hash = self.real_identity(self.environment)
         (self.environment / 'Dockerfile').write_text('FROM debian:bookworm\nRUN echo changed\n')
