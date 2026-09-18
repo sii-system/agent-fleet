@@ -249,6 +249,53 @@ class E2eValidationWorkflowTest(unittest.TestCase):
         # setup.sh prompts for missing credentials and would persist the key.
         self.assertNotIn("scripts/setup.sh", self.workflow)
 
+    def test_prepares_and_exports_runner_before_launch_or_fails_early(self):
+        step_name = "- name: Prepare pinned Harbor runner"
+        self.assertLess(self.workflow.index(step_name),
+                        self.workflow.index("- name: Resolve run parameters"))
+        step = self.workflow.split(step_name + "\n", 1)[1].split(
+            "\n      - name:", 1
+        )[0]
+        script = textwrap.dedent(step.split("        run: |\n", 1)[1])
+        for setup_status in (0, 1):
+            with self.subTest(setup_status=setup_status), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                setup = root / "Agents/utils/common/Harbor/setup_runner_env.sh"
+                setup.parent.mkdir(parents=True)
+                setup.write_text(textwrap.dedent("""\
+                    #!/usr/bin/env bash
+                    set -euo pipefail
+                    printf '%s\\n' "$HARBOR_RUNNER_IMAGE_DIR" "$HARBOR_RUNNER_HOST_DIR" > "$SETUP_PATHS"
+                    exit "$SETUP_STATUS"
+                    """))
+                runner_temp = root / "runner temp"
+                runner_temp.mkdir()
+                github_env = root / "github-env"
+                setup_paths = root / "setup-paths"
+                result = subprocess.run(
+                    ["bash", "-c", script], cwd=root, capture_output=True,
+                    text=True, check=False,
+                    env={**os.environ, "RUNNER_TEMP": str(runner_temp),
+                         "GITHUB_ENV": str(github_env),
+                         "SETUP_PATHS": str(setup_paths),
+                         "SETUP_STATUS": str(setup_status),
+                         "HARBOR_RUNNER_IMAGE_DIR": str(root / "stale-image"),
+                         "HARBOR_RUNNER_HOST_DIR": str(root / "stale-host")},
+                )
+                self.assertEqual(result.returncode, setup_status, result.stderr)
+                image_dir, host_dir = setup_paths.read_text().splitlines()
+                self.assertEqual(Path(image_dir).parent, runner_temp)
+                self.assertEqual(Path(host_dir).parent, runner_temp)
+                self.assertNotEqual(image_dir, host_dir)
+                self.assertFalse(Path(image_dir).exists())
+                if setup_status:
+                    self.assertFalse(github_env.exists())
+                else:
+                    self.assertEqual(github_env.read_text().splitlines(), [
+                        f"HARBOR_RUNNER_IMAGE_DIR={image_dir}",
+                        f"HARBOR_RUNNER_HOST_DIR={host_dir}",
+                    ])
+
     def test_canary_tasks_exist_in_the_terminalbench21_task_list(self):
         available = set(TASK_LIST.read_text(encoding="utf-8").split())
         for task in CANARY_TASKS:
