@@ -523,6 +523,7 @@ print(ref)
     --platform "$HARBOR_OPENSANDBOX_IMAGE_PLATFORM"
     --tag-prefix "$HARBOR_OPENSANDBOX_IMAGE_TAG_PREFIX"
     --dockerhub-mirror-prefix "$HARBOR_OPENSANDBOX_DOCKERHUB_MIRROR_PREFIX"
+    --base-image-registry "$HARBOR_OPENSANDBOX_BASE_IMAGE_REGISTRY"
     --build-args-json "$HARBOR_OPENSANDBOX_BUILD_ARGS_JSON"
     --build-network "$HARBOR_OPENSANDBOX_BUILD_NETWORK"
     --bundle-manifest-output "$automatic_bundle_manifest"

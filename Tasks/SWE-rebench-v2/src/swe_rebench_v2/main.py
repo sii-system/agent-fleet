@@ -39,11 +39,6 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
-        "--base-image-registry",
-        default="",
-        help="Optional registry/repository prefix for builder base images",
-    )
-    parser.add_argument(
         "--language",
         action="append",
         help="Filter --all by language; repeat or use comma-separated values",
@@ -83,7 +78,6 @@ def run(args: argparse.Namespace) -> int:
     adapter = SWERebenchV2Adapter(
         args.output_dir,
         source=args.dataset_source,
-        base_image_registry=args.base_image_registry,
         max_timeout_sec=args.timeout,
     )
     summary = adapter.generate_many(records, overwrite=args.overwrite)

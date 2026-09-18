@@ -106,18 +106,13 @@ def _resolved_base_image_name(spec: InstanceSpec) -> str:
     return BASE_IMAGE_NAME_OVERRIDES.get(spec.base_image_name, spec.base_image_name)
 
 
-def resolve_base_image(spec: InstanceSpec, registry_prefix: str = "") -> str:
-    image_name = _resolved_base_image_name(spec)
-    prefix = registry_prefix.strip().rstrip("/")
-    if not prefix:
-        return image_name
-    return f"{prefix}/{image_name}"
+def resolve_base_image(spec: InstanceSpec) -> str:
+    return _resolved_base_image_name(spec)
 
 
 def render_environment_dockerfile(
     spec: InstanceSpec,
     template_path: Path,
-    registry_prefix: str = "",
 ) -> str:
     raw = deepcopy(spec.raw)
     install_config = dict(raw.get("install_config") or {})
@@ -137,6 +132,5 @@ def render_environment_dockerfile(
     template = env.get_template(template_path.name)
     return template.render(
         spec=raw,
-        base_image_registry=registry_prefix.strip().rstrip("/"),
         platform="linux/amd64",
     )

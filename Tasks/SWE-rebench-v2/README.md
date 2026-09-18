@@ -38,15 +38,14 @@ base-image mapping for every materialization.
 
 ## Prepare dependencies
 
-Keep the virtual environment and uv cache outside the source checkout. On
-YiCloud, route Python dependencies through the platform-provided artifact
-cache gateway:
+Keep the virtual environment and uv cache outside the source checkout.
+Python dependencies resolve through an external package index; on YiCloud the
+domestic PyPI mirror works without extra configuration:
 
 ```bash
-: "${ARTIFACT_CACHE_GATEWAY_URL:?ARTIFACT_CACHE_GATEWAY_URL is required}"
 export UV_PROJECT_ENVIRONMENT=/data/harbor-envs/swe-rebench-v2-adapter
 export UV_CACHE_DIR=/data/harbor-caches/uv
-export UV_DEFAULT_INDEX="${ARTIFACT_CACHE_GATEWAY_URL}/pypi-simple"
+export UV_DEFAULT_INDEX="https://pypi.tuna.tsinghua.edu.cn/simple"
 uv sync --project Tasks/SWE-rebench-v2
 ```
 
@@ -59,8 +58,7 @@ uv run --project Tasks/SWE-rebench-v2 swe-rebench-v2 \
   --dataset-path <official-dataset-directory> \
   --instance-id unidata__netcdf-c-1692 \
   --output-dir <generated-harbor-dataset> \
-  --dataset-source nebius/SWE-rebench-V2@<dataset-revision> \
-  --base-image-registry <internal-base-image-project>
+  --dataset-source nebius/SWE-rebench-V2@<dataset-revision>
 ```
 
 Use `--task-ids` for an explicit sample. Full conversion requires `--all`:
@@ -71,12 +69,16 @@ uv run --project Tasks/SWE-rebench-v2 swe-rebench-v2 \
   --all \
   --output-dir <generated-harbor-dataset> \
   --summary-json <conversion-summary.json> \
-  --dataset-source nebius/SWE-rebench-V2@<dataset-revision> \
-  --base-image-registry <internal-base-image-project>
+  --dataset-source nebius/SWE-rebench-V2@<dataset-revision>
 ```
 
 The summary reports converted and failed tasks plus resolved base-image names.
 Generated task directories are runtime data and must not be committed here.
+Generated Dockerfiles retain logical builder image names. Configure
+`HARBOR_OPENSANDBOX_BASE_IMAGE_REGISTRY` when prebuilding or running
+through OpenSandbox so the image manager resolves those names through the
+configured base Registry without embedding an environment-specific Registry
+in the dataset.
 
 The published dataset contains records with an empty
 `install_config.install`; those records preserve the official empty-loop

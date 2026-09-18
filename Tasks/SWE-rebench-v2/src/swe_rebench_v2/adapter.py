@@ -62,14 +62,12 @@ class SWERebenchV2Adapter:
         output_dir: Path,
         *,
         source: str,
-        base_image_registry: str = "",
         max_timeout_sec: float = 3000.0,
         template_dir: Path | None = None,
     ) -> None:
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.source = source
-        self.base_image_registry = base_image_registry
         self.max_timeout_sec = max_timeout_sec
         self.template_dir = template_dir or (Path(__file__).parent / "task-template")
 
@@ -139,13 +137,10 @@ class SWERebenchV2Adapter:
             dockerfile = render_environment_dockerfile(
                 spec,
                 self.template_dir / "environment" / "combine.Dockerfile.j2",
-                self.base_image_registry,
             )
             paths.dockerfile_path.write_text(dockerfile, encoding="utf-8")
 
             patch = (spec.patch or "").rstrip("\n")
-            if patch:
-                patch += "\n"
             solve_script = render_literal(
                 read_text(self.template_dir / "solution" / "solve.sh"),
                 patch=patch,
@@ -158,7 +153,7 @@ class SWERebenchV2Adapter:
                 shutil.rmtree(task_dir)
             raise
 
-        return task_dir, resolve_base_image(spec, self.base_image_registry)
+        return task_dir, resolve_base_image(spec)
 
     def generate_many(
         self,

@@ -32,10 +32,14 @@ from opensandbox_image_manager import (
     apt_gateway_root_content,
     apt_runtime_asset_digest,
     apt_runtime_secret_ids,
+    base_image_lookup_ref,
+    base_image_registry_host,
     check_task_repository,
+    dockerfile_external_base_images,
     environment_content_hash,
     github_mirror_config_content,
     mirror_image_ref,
+    normalize_base_image_registry,
     normalize_oci_image_config,
     oci_archive_image_config,
     package_source_build_args,
@@ -45,6 +49,7 @@ from opensandbox_image_manager import (
     prepare_bundle,
     proxy_build_args,
     render_build_dockerfile,
+    resolve_base_image_contexts,
     run_build,
     schema2_manifest,
     validate_download_source_url,
@@ -91,6 +96,38 @@ class OpenSandboxImageManagerTest(unittest.TestCase):
 
         self.assertEqual(args.build_timeout_sec, 7200.0)
         self.assertTrue(args.retry_no_cache_on_apt_404)
+
+    def test_cli_accepts_single_base_image_registry(self) -> None:
+        args = parse_args(
+            [
+                "--task-dir",
+                "/tmp/example-task",
+                "--project",
+                "test-project",
+                "--base-image-registry",
+                "registry.example/base/",
+                "--dry-run",
+            ]
+        )
+
+        self.assertEqual(args.base_image_registry, "registry.example/base/")
+        self.assertEqual(
+            normalize_base_image_registry(args.base_image_registry),
+            "registry.example/base",
+        )
+
+    def test_cli_defaults_base_image_registry_to_empty(self) -> None:
+        args = parse_args(
+            [
+                "--task-dir",
+                "/tmp/example-task",
+                "--project",
+                "test-project",
+                "--dry-run",
+            ]
+        )
+
+        self.assertEqual(args.base_image_registry, "")
 
     def test_skip_hash_verification_requires_local_upload_cache(self) -> None:
         with patch("sys.stderr", new=io.StringIO()), self.assertRaises(SystemExit):
@@ -580,6 +617,213 @@ networks:
         self.assertNotIn("docker.io/library/builder", rendered)
         self.assertEqual(rendered.count("ARG NPM_CONFIG_REGISTRY"), 2)
         self.assertEqual(rendered.count("ARG PIP_INDEX_URL"), 2)
+
+    def test_logical_base_image_uses_immutable_named_context(self) -> None:
+        source = (
+            "FROM --platform=linux/amd64 go_1.19.13 AS builder\n"
+            "RUN cat <<'EOF' >/tmp/example\n"
+            "FROM ignored_1.0\n"
+            "EOF\n"
+            "FROM builder\n"
+        )
+        with patch(
+            "opensandbox_image_manager.inspect_external_image",
+            return_value=(
+                "registry.example/base/go_1.19.13",
+                "sha256:" + "a" * 64,
+            ),
+        ) as inspect:
+            replacements, contexts = resolve_base_image_contexts(
+                source,
+                "registry.example/base/",
+                "linux/amd64",
+            )
+
+        self.assertEqual(dockerfile_external_base_images(source), ("go_1.19.13",))
+        self.assertEqual(
+            base_image_registry_host("registry.example/base"), "registry.example"
+        )
+        inspect.assert_called_once_with(
+            "registry.example/base/go_1.19.13",
+            dockerhub_mirror_prefix="",
+            platform="linux/amd64",
+            dry_run=False,
+            direct_host="registry.example",
+        )
+        context_name = replacements["go_1.19.13"]
+        self.assertRegex(context_name, r"^opensandbox-base-[0-9a-f]{20}$")
+        self.assertEqual(
+            contexts[context_name],
+            "docker-image://registry.example/base/go_1.19.13@sha256:"
+            + "a" * 64,
+        )
+
+        rendered = render_build_dockerfile(
+            source,
+            dockerhub_mirror_prefix="m.daocloud.io/docker.io",
+            base_image_replacements=replacements,
+        )
+
+        self.assertIn(
+            f"FROM --platform=linux/amd64 {context_name} AS builder", rendered
+        )
+        self.assertIn("FROM ignored_1.0\n", rendered)
+        self.assertIn("FROM builder\n", rendered)
+        self.assertNotIn("m.daocloud.io/docker.io/library/go_1.19.13", rendered)
+
+    def test_base_image_lookup_normalization(self) -> None:
+        cases = {
+            "go_1.19.13": "registry.example/base/go_1.19.13",
+            "ubuntu:22.04": "registry.example/base/ubuntu:22.04",
+            "docker.io/library/ubuntu:22.04": (
+                "registry.example/base/ubuntu:22.04"
+            ),
+            "index.docker.io/library/ubuntu:22.04": (
+                "registry.example/base/ubuntu:22.04"
+            ),
+            "docker.io/rocker/r-ver:4.4.1": (
+                "registry.example/base/rocker/r-ver:4.4.1"
+            ),
+            "rocker/r-ver:4.4.1": "registry.example/base/rocker/r-ver:4.4.1",
+        }
+        for image, expected in cases.items():
+            with self.subTest(image=image):
+                self.assertEqual(
+                    base_image_lookup_ref(image, "registry.example/base"),
+                    expected,
+                )
+
+    def test_docker_io_qualified_from_enters_resolution_channel(self) -> None:
+        source = (
+            "FROM ubuntu:22.04\n"
+            "FROM docker.io/library/ubuntu:22.04\n"
+            "FROM docker.io/rocker/r-ver:4.4.1\n"
+            "FROM rocker/r-ver:4.4.1 AS rstage\n"
+            "FROM mcr.microsoft.com/dotnet/sdk:8.0\n"
+            "FROM scratch\n"
+            "FROM $BASE_IMAGE\n"
+            "FROM rstage\n"
+        )
+
+        self.assertEqual(
+            dockerfile_external_base_images(source),
+            ("ubuntu:22.04", "rocker/r-ver:4.4.1"),
+        )
+        self.assertEqual(
+            dockerfile_external_base_images(source, include_docker_io=True),
+            (
+                "ubuntu:22.04",
+                "docker.io/library/ubuntu:22.04",
+                "docker.io/rocker/r-ver:4.4.1",
+                "rocker/r-ver:4.4.1",
+            ),
+        )
+
+        inspected: list[str] = []
+
+        def fake_inspect(image_ref: str, **kwargs: object) -> tuple[str, str]:
+            inspected.append(image_ref)
+            return image_ref, "sha256:" + "b" * 64
+
+        with patch(
+            "opensandbox_image_manager.inspect_external_image",
+            side_effect=fake_inspect,
+        ):
+            replacements, contexts = resolve_base_image_contexts(
+                source,
+                "registry.example/base",
+                "linux/amd64",
+            )
+
+        self.assertEqual(
+            inspected,
+            [
+                "registry.example/base/ubuntu:22.04",
+                "registry.example/base/ubuntu:22.04",
+                "registry.example/base/rocker/r-ver:4.4.1",
+                "registry.example/base/rocker/r-ver:4.4.1",
+            ],
+        )
+        self.assertEqual(
+            sorted(replacements),
+            [
+                "docker.io/library/ubuntu:22.04",
+                "docker.io/rocker/r-ver:4.4.1",
+                "rocker/r-ver:4.4.1",
+                "ubuntu:22.04",
+            ],
+        )
+        self.assertNotEqual(
+            replacements["ubuntu:22.04"],
+            replacements["docker.io/library/ubuntu:22.04"],
+        )
+        self.assertEqual(len(contexts), 4)
+        for context_ref in contexts.values():
+            self.assertTrue(context_ref.startswith("docker-image://"))
+            self.assertIn("@sha256:" + "b" * 64, context_ref)
+
+        rendered = render_build_dockerfile(
+            source,
+            dockerhub_mirror_prefix="m.daocloud.io/docker.io",
+            base_image_replacements=replacements,
+        )
+
+        self.assertIn(f"FROM {replacements['ubuntu:22.04']}\n", rendered)
+        self.assertIn(
+            f"FROM {replacements['docker.io/library/ubuntu:22.04']}\n", rendered
+        )
+        self.assertIn("FROM mcr.microsoft.com/dotnet/sdk:8.0\n", rendered)
+        self.assertIn("FROM m.daocloud.io/docker.io/library/scratch\n", rendered)
+        self.assertIn("FROM $BASE_IMAGE\n", rendered)
+        self.assertIn("FROM rstage\n", rendered)
+
+    def test_missing_base_image_fails_without_fallback(self) -> None:
+        source = "FROM go_1.19.13\n"
+        with (
+            patch(
+                "opensandbox_image_manager.inspect_external_image",
+                side_effect=RuntimeError(
+                    "failed to inspect external image "
+                    "'registry.example/base/go_1.19.13'"
+                ),
+            ),
+            self.assertRaises(RuntimeError),
+        ):
+            resolve_base_image_contexts(
+                source,
+                "registry.example/base",
+                "linux/amd64",
+            )
+
+    def test_empty_base_image_registry_keeps_mirror_behavior(self) -> None:
+        source = (
+            "FROM ubuntu:22.04\n"
+            "FROM go_1.19.13 AS builder\n"
+            "FROM docker.io/library/golang:1.22\n"
+        )
+
+        replacements, contexts = resolve_base_image_contexts(
+            source,
+            "",
+            "linux/amd64",
+        )
+
+        self.assertEqual(replacements, {})
+        self.assertEqual(contexts, {})
+
+        rendered = render_build_dockerfile(
+            source,
+            dockerhub_mirror_prefix="m.daocloud.io/docker.io",
+        )
+
+        self.assertIn(
+            "FROM m.daocloud.io/docker.io/library/ubuntu:22.04\n", rendered
+        )
+        self.assertIn(
+            "FROM m.daocloud.io/docker.io/library/go_1.19.13 AS builder\n",
+            rendered,
+        )
+        self.assertIn("FROM m.daocloud.io/docker.io/library/golang:1.22\n", rendered)
 
     def test_http_pip_index_is_explicitly_trusted(self) -> None:
         http_args = package_source_build_args(

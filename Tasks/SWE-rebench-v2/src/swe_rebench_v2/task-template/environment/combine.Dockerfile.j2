@@ -1,9 +1,5 @@
 {% set project_dir = "/{}".format(spec.repo.split("/")[1]) %}{# Adapted from https://github.com/SWE-rebench/SWE-rebench-V2/blob/c71902a8cf8d2b725f63d51f199f4d3e56f68d2d/combine.Dockerfile.j2 #}
-{% set base_image = spec.install_config.image_name %}
-{% if base_image_registry %}
-{% set base_image = base_image_registry ~ "/" ~ base_image %}
-{% endif %}
-FROM --platform=linux/amd64 {{ base_image }}
+FROM --platform=linux/amd64 {{ spec.install_config.image_name }}
 
 RUN <<-DOCKER_RUN_EOF
     set -eux;

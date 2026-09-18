@@ -183,6 +183,19 @@ GitHub submodules, including HTTPS, SCP-like SSH, `ssh://`, and `git://` URLs.
 The mount exists only while each `RUN` executes, so it is not written into an
 image layer, image environment, or global `.gitconfig`.
 
+When a dataset deliberately uses logical, unqualified builder image names such
+as `FROM go_1.19.13`, point `HARBOR_OPENSANDBOX_BASE_IMAGE_REGISTRY` at the
+single OCI registry/repository prefix that owns those images. The manager
+resolves each logical name (and each `docker.io`-qualified `FROM`, whose host
+and any leading `library/` segment are stripped before lookup), pins its
+current manifest digest, and supplies it as a BuildKit named context. The
+source Dockerfile and its environment-content identity stay registry-neutral.
+When the variable is empty, behavior is unchanged: unqualified public images
+continue through the configured Docker Hub mirror. When it is set, an image
+missing from that registry fails the build outright — there is no fallback to
+the mirror. Because one prefix applies to every resolvable external `FROM` in
+the build, configure it only when all such base images live under it.
+
 ## APT build-runtime interception
 
 After official Dockerfile lowering, the OpenSandbox frontend adds the same

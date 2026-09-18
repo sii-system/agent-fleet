@@ -185,6 +185,21 @@ bash Agents/utils/common/Harbor/prebuild_opensandbox_dataset.sh \
   /absolute/path/to/Harbor-Dataset seta
 ```
 
+Datasets that intentionally keep internal builder locations out of their
+Dockerfiles may use logical base names and resolve them only during image
+preparation:
+
+```bash
+HARBOR_OPENSANDBOX_BASE_IMAGE_REGISTRY=harbor.example.internal/agent-fleet-task-base \
+bash Agents/utils/common/Harbor/prebuild_opensandbox_dataset.sh \
+  /absolute/path/to/Harbor-Dataset benchmark-project
+```
+
+The manager pins each resolved base manifest and passes it as a BuildKit named
+context. With the variable unset, unqualified `FROM` entries keep ordinary
+Docker Hub mirror resolution; with it set, an image that cannot be found under
+the prefix fails the build instead of falling back to the mirror.
+
 Every successful Registry resolution also updates a target-scoped local
 uploaded-Bundle index under `HARBOR_OPENSANDBOX_IMAGE_CACHE_ROOT`. On restart,
 prebuild recomputes each task's static environment hash and, when it still

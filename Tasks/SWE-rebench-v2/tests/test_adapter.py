@@ -70,17 +70,17 @@ def test_generated_task_uses_builder_base_image(tmp_path: Path) -> None:
     adapter = SWERebenchV2Adapter(
         output,
         source="sample.json",
-        base_image_registry="registry.example/base",
     )
 
     task_dir, base_image = adapter.generate_task(_record())
 
-    assert base_image == "registry.example/base/python_3.11_base:latest"
+    assert base_image == "python_3.11_base:latest"
     dockerfile = (task_dir / "environment" / "Dockerfile").read_text()
     assert (
-        "FROM --platform=linux/amd64 registry.example/base/python_3.11_base:latest"
+        "FROM --platform=linux/amd64 python_3.11_base:latest"
         in dockerfile
     )
+    assert "registry.example" not in dockerfile
     assert dockerfile.count("FROM ") == 1
     assert " AS base" not in dockerfile
     assert "AS owner__project-1" not in dockerfile
@@ -165,7 +165,9 @@ def test_oracle_patch_preserves_trailing_blank_context_line(tmp_path: Path) -> N
     rendered_patch = solution_script.split(
         "cat > /tmp/solution_patch.diff << '__SOLUTION__'\n", 1
     )[1].split("\n__SOLUTION__\n", 1)[0]
-    assert rendered_patch.endswith("+new\n \n")
+    # Keep the real blank context line, drop the extra trailing newline.
+    assert rendered_patch.endswith("+new\n ")
+    assert not rendered_patch.endswith("+new\n \n")
 
 
 def test_php_base_typo_uses_upstream_builder_artifact(tmp_path: Path) -> None:
@@ -174,14 +176,13 @@ def test_php_base_typo_uses_upstream_builder_artifact(tmp_path: Path) -> None:
     adapter = SWERebenchV2Adapter(
         tmp_path,
         source="sample.json",
-        base_image_registry="registry.example/base",
     )
 
     task_dir, base_image = adapter.generate_task(record)
 
-    assert base_image == "registry.example/base/php_8.3.16"
+    assert base_image == "php_8.3.16"
     dockerfile = (task_dir / "environment" / "Dockerfile").read_text()
-    assert "FROM --platform=linux/amd64 registry.example/base/php_8.3.16" in dockerfile
+    assert "FROM --platform=linux/amd64 php_8.3.16" in dockerfile
     metadata = json.loads((task_dir / "tests" / "config.json").read_text())
     assert metadata["install_config"]["base_image_name"] == "php:8.3.16"
 
