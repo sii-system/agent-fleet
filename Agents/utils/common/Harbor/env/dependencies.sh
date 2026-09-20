@@ -111,7 +111,7 @@ harbor_npm_tarball_version_ready() {
 
 harbor_verifier_bundle_archive_ready() {
   local path="$1"
-  [[ -f "$path" && -f "$VERIFIER_RUNTIME_BUNDLE_PREPARER" ]] \
+  [[ -f "$path" && -e "$VERIFIER_RUNTIME_BUNDLE_PREPARER" ]] \
     && python3 "$VERIFIER_RUNTIME_BUNDLE_PREPARER" \
       check --archive "$path" >/dev/null 2>&1
 }
@@ -295,7 +295,7 @@ harbor_build_verifier_runtime_bundle() {
   verifier_runtime_bundle_ready && return 0
 
   echo "preparing verifier runtime bundle: $VERIFIER_RUNTIME_BUNDLE_ID"
-  if [[ ! -f "$VERIFIER_RUNTIME_BUNDLE_PREPARER" ]] \
+  if [[ ! -e "$VERIFIER_RUNTIME_BUNDLE_PREPARER" ]] \
     || [[ ! -x "$HARBOR_OPIK_PYTHON" ]] \
     || ! PYTHON_BIN="$HARBOR_OPIK_PYTHON" \
       "$HARBOR_OPIK_PYTHON" "$VERIFIER_RUNTIME_BUNDLE_PREPARER" build \

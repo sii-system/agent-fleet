@@ -149,6 +149,16 @@ local task file from `DATASET_PATH`.
 The previous TaskTrove SWE-rebench-V2 registry dataset is retained as an
 explicitly [third-party integration](../../../../Tasks/SWE-rebench-v2-TaskTrove/).
 
+### SWE-rebench-V2 verifier runtime
+
+The Rebench alias selects the portable verifier runtime bundle. Its pinned
+static Python source, cache contract, and failure semantics are documented in
+[verifier_runtime/README.md](verifier_runtime/README.md); the bundle layout and
+self-check contract live in
+[verifier_runtime/swe_rebench_v2_bundle_preparer/README.md](verifier_runtime/swe_rebench_v2_bundle_preparer/README.md).
+Keep this README at the dataset-selection level and put runtime implementation
+details in those directory-local documents.
+
 ## RL Rollout Mode
 
 Rollout mode exposes a Polar-compatible remote Harbor service instead of

@@ -25,7 +25,14 @@ Agents/utils/common/Harbor/
 ├── prepare_local_deps.py       # Package/cache preparation implementation
 ├── python_runtime.py           # Shared portable Python runtime builder
 ├── verifier_runtime/
-│   └── swe_rebench_v2_bundle_preparer.py # Dataset-specific bundle preparer
+│   ├── README.md               # Portable verifier runtime contract
+│   ├── python_runtime.py       # Reusable static verifier-runtime primitive
+│   └── swe_rebench_v2_bundle_preparer/
+│       ├── README.md           # Bundle and self-check contract
+│       ├── __init__.py         # Bundle builder and validator
+│       ├── __main__.py         # Direct package-directory entrypoint
+│       ├── self_check.py       # Python verifier runtime self-check
+│       └── self_check.sh       # Fixed executable self-check dispatcher
 ├── runner-requirements.txt     # Exact direct dependencies for the runner image
 ├── setup_runner_env.sh         # Explicit host setup / image validation
 ├── harbor_prepare_runner_cli.py # Startup validation for the configured CLI
@@ -135,8 +142,9 @@ including external commands required to complete them:
 | Shell caller | Python helper | Delegated responsibility |
 | --- | --- | --- |
 | `prepare_local_deps.sh` | `prepare_local_deps.py` | Downloads, runtime archives, npm caches, and manifest generation |
-| `prepare_local_deps.py` and `env.sh` | `python_runtime.py` | Builds and validates the reusable Python runtime primitive |
-| `env.sh` | `verifier_runtime/swe_rebench_v2_bundle_preparer.py` | Composes and validates the SWE-rebench-V2 verifier bundle |
+| `prepare_local_deps.py` and `env.sh` | `python_runtime.py` | Builds and validates the reusable Agent-side Python runtime primitive |
+| `env.sh` | `verifier_runtime/python_runtime.py` | Builds and validates the reusable static verifier-runtime primitive |
+| `env.sh` | `verifier_runtime/swe_rebench_v2_bundle_preparer/` | Composes and validates the SWE-rebench-V2 verifier bundle |
 | `harboropik.sh` and model-fusion wrappers | `harbor_shell_utils.py` | Structured events, JSON normalization, URL parsing, and read-only mount JSON |
 | `monitor_harbor.sh` | `harbor_monitor_utils.py` | Reward, success, exception, and environment statistics |
 | `Agents/utils/rl/run_rl_rollout_server.sh`, `run_rl_rollout_worker.sh`, `monitor_rl_rollout.sh` | `Agents/utils/rl/rollout_worker_utils.py` | Request headers/JSON, LLM kwargs, result assembly, and monitor rendering |

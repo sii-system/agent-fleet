@@ -89,7 +89,7 @@ resolve_verifier_runtime_bundle() {
       VERIFIER_RUNTIME_BUNDLE_ARCHIVE_SOURCE="$VERIFIER_RUNTIME_BUNDLE_CACHE_DIR/$VERIFIER_RUNTIME_BUNDLE_ID.tar.gz"
       VERIFIER_RUNTIME_BUNDLE_ARCHIVE_MOUNT_PATH="/opt/agent-fleet/verifier-runtimes/$VERIFIER_RUNTIME_BUNDLE_ID.tar.gz"
       VERIFIER_RUNTIME_BUNDLE_ROOT="/tmp/harbor-verifier-bundles/$VERIFIER_RUNTIME_BUNDLE_ID"
-      VERIFIER_RUNTIME_BUNDLE_PREPARER="$SCRIPT_DIR/verifier_runtime/swe_rebench_v2_bundle_preparer.py"
+      VERIFIER_RUNTIME_BUNDLE_PREPARER="$SCRIPT_DIR/verifier_runtime/swe_rebench_v2_bundle_preparer"
       ;;
     *)
       echo "[ERROR] unknown verifier runtime bundle: $VERIFIER_RUNTIME_BUNDLE_ID" >&2
