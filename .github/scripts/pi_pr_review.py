@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import hashlib
 import json
 import os
 import re
@@ -16,8 +17,8 @@ import tempfile
 import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import suppress
-from dataclasses import replace
+from contextlib import nullcontext, suppress
+from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -80,8 +81,8 @@ LENS_INSTRUCTIONS = {
         "and unsafe data flow. Use at most 16 tool calls."
     ),
     "tests/regression": (
-        "Focus on behavioral regressions and missing tests that would let a "
-        "concrete defect escape. Use at most 16 tool calls."
+        "Focus on concrete behavioral regressions across callers, configuration, "
+        "and tests. Missing coverage alone is not a defect. Use at most 16 tool calls."
     ),
 }
 INLINE_ROUTING_INSTRUCTION = (
@@ -617,10 +618,18 @@ def run_review(
     *,
     expected_head_sha: str | None = None,
     expected_base_sha: str | None = None,
+    verification_mode: str = "off",
+    publish: bool = True,
+    report: dict | None = None,
 ) -> str:
+    if verification_mode not in ("off", "shadow", "enforce"):
+        raise ValueError("invalid verification mode")
+    if verification_mode != "off":
+        review_id = f"{review_id}-{verification_mode}"
     try:
         pull = github.get_pull(pull_number)
         head_sha = pull["head"]["sha"]
+        base_sha = pull["base"]["sha"]
         if expected_head_sha is not None and head_sha != expected_head_sha:
             return "stale"
         if (
@@ -628,7 +637,7 @@ def run_review(
             and pull["base"]["sha"] != expected_base_sha
         ):
             return "stale"
-        if _review.has_existing_review(
+        if publish and _review.has_existing_review(
             github.list_reviews(pull_number),
             head_sha,
             review_id,
@@ -683,6 +692,7 @@ def run_review(
                     response_validator=validate_lens_response,
                 )
 
+        payloads: list[dict] = []
         findings: list[_review.Finding] = []
         rejected = 0
         incomplete_lenses = 0
@@ -712,6 +722,7 @@ def run_review(
             except (PiReviewError, _review.ModelResponseError):
                 failed_lenses.append(lens)
                 continue
+            payloads.append(payload)
             findings.extend(
                 _attribute_lens(finding, lens)
                 for finding in lens_findings
@@ -723,6 +734,34 @@ def run_review(
 
         partial = bool(incomplete_lenses or failed_lenses)
         findings = merge_lens_findings(findings)
+        verification_records = []
+        verification_counts = dict.fromkeys(
+            ("confirmed", "rejected", "insufficient_evidence", "failed", "skipped"), 0
+        )
+        withheld = 0
+        if verification_mode != "off":
+            from pi_review_verification import verify_candidates
+
+            verification_records = verify_candidates(github, pi_client, pull, findings, payloads, raw_files)
+            for record in verification_records:
+                verdict = (record["verification"]["verdict"]
+                           if record["status"] == "completed" else record["status"])
+                verification_counts[verdict] += 1
+            if verification_mode == "enforce":
+                candidates = findings
+                findings = [finding for finding, record in zip(candidates, verification_records)
+                            if record.get("verification", {}).get("verdict") == "confirmed"]
+                withheld = len(candidates) - len(findings)
+            partial |= any(verification_counts[key] for key in ("insufficient_evidence", "failed", "skipped"))
+        if report is not None:
+            report.update(
+                schema_version=1, head_sha=head_sha, base_sha=base_sha,
+                verification_mode=verification_mode, verification=verification_records,
+                verification_counts=verification_counts, withheld=withheld,
+                findings=[asdict(finding) for finding in findings],
+                failed_lenses=failed_lenses, tool_calls_by_lens=tool_calls_by_lens,
+                coverage="partial" if partial or skipped or truncated else "complete",
+            )
         reported_findings = findings
         summary_findings: list[_review.Finding] = []
         if shared_routing:
@@ -735,10 +774,7 @@ def run_review(
             inline_findings = findings[: _review.MAX_COMMENTS]
             reported_findings = inline_findings
         current = github.get_pull(pull_number)
-        if current["head"]["sha"] != head_sha or (
-            expected_base_sha is not None
-            and current["base"]["sha"] != expected_base_sha
-        ):
+        if current["head"]["sha"] != head_sha or current["base"]["sha"] != base_sha:
             return "stale"
 
         summary_options: dict[str, Any] = {
@@ -758,6 +794,20 @@ def run_review(
             truncated,
             **summary_options,
         )
+        if verification_mode != "off":
+            if verification_mode == "shadow":
+                summary = summary.replace("actionable finding(s)", "candidate finding(s)", 1)
+            if partial and not reported_findings:
+                summary = summary.replace(
+                    "Automated review found no actionable findings.",
+                    "No confirmed findings to publish; review coverage or candidates remain unresolved.", 1,
+                )
+            counts = ", ".join(f"{key}={value}" for key, value in verification_counts.items())
+            summary += f"\n\nIndependent verification ({verification_mode}): {counts}."
+            if verification_mode == "shadow":
+                summary += " Shadow results do not filter candidates; findings are not all verified."
+            else:
+                summary += f" Withheld candidates: {withheld}."
         tool_call_counts = ", ".join(
             f"{lens}={tool_calls_by_lens.get(lens, 'unavailable')}"
             for lens in LENS_INSTRUCTIONS
@@ -776,6 +826,8 @@ def run_review(
             )
         if failed_lenses:
             summary += f"\n\nFailed lenses: {', '.join(failed_lenses)}"
+        if not publish:
+            return "not-published"
         github.create_review(pull_number, head_sha, summary, inline_findings)
         return "published"
     except _review.ModelResponseError as exc:
@@ -791,7 +843,13 @@ def parse_args() -> argparse.Namespace:
         default="pi",
         help="path or name of the pi binary (default: pi)",
     )
-    return parser.parse_args()
+    parser.add_argument("--verification-mode", choices=("off", "shadow", "enforce"), default="off")
+    parser.add_argument("--no-publish", action="store_true", help="evaluate without writing GitHub reviews")
+    parser.add_argument("--output", type=Path, help="private JSON report; must not already exist")
+    args = parser.parse_args()
+    if args.no_publish and args.output is None:
+        parser.error("--no-publish requires --output")
+    return args
 
 
 def require_env(name: str) -> str:
@@ -819,22 +877,42 @@ def main() -> int:
     )
     prompt = args.prompt_path.read_text()
     review_id = os.environ.get("LLM_REVIEW_ID", PI_REVIEW_ID)
+    report = {
+        "repository": repository, "model": pi_client.model,
+        "head_sha": event_pull["head"]["sha"], "base_sha": event_pull["base"]["sha"],
+        "prompt_sha256": hashlib.sha256(prompt.encode()).hexdigest(),
+        "reviewer_code_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+    }
+    started = time.monotonic()
     try:
-        result = run_review(
-            github,
-            pi_client,
-            pull_number,
-            prompt,
-            review_id=review_id,
-            expected_head_sha=event_pull["head"]["sha"],
-            expected_base_sha=event_pull["base"]["sha"],
-        )
-    except PiReviewError as exc:
-        print(f"pi PR review failed: {exc}", file=sys.stderr)
+        with (os.fdopen(os.open(args.output, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w")
+              if args.output else nullcontext()) as output:
+            try:
+                result = run_review(
+                    github, pi_client, pull_number, prompt, review_id=review_id,
+                    expected_head_sha=event_pull["head"]["sha"],
+                    expected_base_sha=event_pull["base"]["sha"],
+                    verification_mode=args.verification_mode, publish=not args.no_publish, report=report,
+                )
+                report["result"] = result
+            except (PiReviewError, OSError) as exc:
+                report.update(result="failed", error_type=type(exc).__name__)
+                raise
+            finally:
+                if output is not None:
+                    from pi_review_replay import _redact_artifact
+
+                    report["elapsed_seconds"] = round(time.monotonic() - started, 3)
+                    json.dump(_redact_artifact(report, (pi_client.api_key, github.token)), output, indent=2)
+                    output.write("\n")
+    except (PiReviewError, OSError) as exc:
+        print(f"pi PR review failed: {type(exc).__name__}", file=sys.stderr)
         return 1
     print(f"pi PR review result: {result}")
     return 0
 
 
 if __name__ == "__main__":
+    # Verification helpers import this module; retain the CLI's exception identity.
+    sys.modules["pi_pr_review"] = sys.modules[__name__]
     raise SystemExit(main())

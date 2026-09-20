@@ -9,6 +9,15 @@ name: Self-Hosted LLM PR Review
         description: Open pull request number to review
         required: true
         type: number
+      verification_mode:
+        description: Independent candidate verification mode
+        type: choice
+        options: [shadow, enforce, off]
+        default: shadow
+      publish_review:
+        description: Publish review comments (false produces only a report)
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -23,7 +32,7 @@ jobs:
     name: Self-hosted review
     runs-on: [self-hosted, Linux, X64, container, code-review]
     environment: self-hosted-env
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - name: Resolve review target
         id: target
@@ -109,8 +118,21 @@ jobs:
           LLM_REVIEW_API_KEY: ${{ secrets.LLM_REVIEW_API_KEY }}
           LLM_REVIEW_BASE_URL: ${{ vars.LLM_REVIEW_BASE_URL }}
           LLM_REVIEW_MODEL: ${{ vars.LLM_REVIEW_MODEL }}
+          VERIFICATION_MODE: ${{ inputs.verification_mode || vars.LLM_REVIEW_VERIFICATION || 'shadow' }}
           LLM_REVIEW_ID: self-hosted-pi-pr-review${{ github.event_name == 'workflow_dispatch' && format('-canary-{0}-{1}', github.run_id, github.run_attempt) || '' }}
         run: >-
           python3 .github/scripts/pi_pr_review.py
           --event-path "${{ steps.target.outputs.event_path }}"
           --prompt-path .github/scripts/pi_review_prompt.md
+          --verification-mode "$VERIFICATION_MODE"
+          --output "${{ runner.temp }}/pi-review-${{ github.run_id }}-${{ github.run_attempt }}.json"
+          ${{ github.event_name == 'workflow_dispatch' && !inputs.publish_review && '--no-publish' || '' }}
+
+      - name: Save review evaluation report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: pi-review-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/pi-review-${{ github.run_id }}-${{ github.run_attempt }}.json
+          if-no-files-found: ignore
+          retention-days: 3

@@ -1795,6 +1795,7 @@ class PiWorkflowContractTest(unittest.TestCase):
                 event_path=event_path,
                 prompt_path=prompt_path,
                 pi_bin="pi",
+                verification_mode="off", no_publish=False, output=None,
             )
             environment = {
                 "GITHUB_REPOSITORY": "owner/repository",
@@ -1826,6 +1827,7 @@ class PiWorkflowContractTest(unittest.TestCase):
                 "review_id": pi_review.PI_REVIEW_ID,
                 "expected_head_sha": "event-head",
                 "expected_base_sha": "event-base",
+                "verification_mode": "off", "publish": True, "report": mock.ANY,
             },
         )
 

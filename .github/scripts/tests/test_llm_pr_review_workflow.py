@@ -51,7 +51,7 @@ class PiPrReviewWorkflowTest(unittest.TestCase):
 
     def test_self_hosted_keeps_the_review_execution_policy(self):
         expected = (
-            "timeout-minutes: 20",
+            "timeout-minutes: 30",
             "pull_request.base.sha",
             "persist-credentials: false",
             "LLM_REVIEW_API_KEY: ${{ secrets.LLM_REVIEW_API_KEY }}",

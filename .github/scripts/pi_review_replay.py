@@ -172,7 +172,17 @@ def _redact_artifact(artifact: dict, secrets: tuple[str, ...]) -> dict:
     if not values:
         return artifact
     pattern = re.compile("|".join(re.escape(secret) for secret in values))
-    source_ids = {source["source_id"] for source in artifact.get("sources", [])}
+    def source_identifiers(value: Any) -> set[str]:
+        if isinstance(value, dict):
+            identifiers = {source["source_id"] for source in value.get("sources", [])}
+            for item in value.values():
+                identifiers.update(source_identifiers(item))
+            return identifiers
+        if isinstance(value, (list, tuple)):
+            return set().union(*(source_identifiers(item) for item in value))
+        return set()
+
+    source_ids = source_identifiers(artifact)
 
     def redact(value: Any, field: str = "") -> Any:
         if isinstance(value, dict):

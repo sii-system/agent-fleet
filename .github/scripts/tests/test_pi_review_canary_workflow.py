@@ -35,6 +35,12 @@ class PiReviewCanaryWorkflowTest(unittest.TestCase):
             ),
         )
 
+    def test_verification_and_no_publish_canary_options(self) -> None:
+        for value in ("verification_mode:", "options: [shadow, enforce, off]", "publish_review:",
+                      "default: false", "--verification-mode", "--no-publish", "--output",
+                      "actions/upload-artifact@", "retention-days: 3", "timeout-minutes: 30"):
+            self.assertIn(value, self.workflow)
+
     def test_resolves_and_validates_the_manual_target(self) -> None:
         expected = (
             "name: Resolve review target",

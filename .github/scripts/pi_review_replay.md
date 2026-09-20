@@ -2,9 +2,10 @@
 
 `pi_review_replay.py` evaluates one frozen review candidate against explicitly
 selected base/head source excerpts. It writes a local JSON artifact and never
-calls GitHub publication APIs. The existing review workflow is unchanged.
-Discovery, live publication gates, automatic context expansion, cross-finding
-deduplication, and model comparison are outside this first replay implementation.
+calls GitHub publication APIs. The live review action also reuses its source
+reader and citation validator through the separate
+[discovery and verification pipeline](pi_review_verification.md). This frozen
+replay remains independent of live publication and automatic context selection.
 
 ## Run a case
 
