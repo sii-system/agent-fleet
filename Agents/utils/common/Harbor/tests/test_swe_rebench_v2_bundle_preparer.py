@@ -1,12 +1,16 @@
 import io
+import json
 import os
+import struct
 import subprocess
+import sys
 import tarfile
 import tempfile
 import unittest
 from pathlib import Path
 
 from Agents.utils.common.Harbor.verifier_runtime import (
+    python_runtime,
     swe_rebench_v2_bundle_preparer,
 )
 
@@ -17,22 +21,36 @@ class SweRebenchV2BundlePreparerTest(unittest.TestCase):
         self.root = Path(self.temporary.name)
         self.python_runtime = self.root / "python3.12-runtime.tar.gz"
         with tarfile.open(self.python_runtime, "w:gz") as archive:
-            for name in (
-                "python3.12-runtime/bin/python3.12",
-                "python3.12-runtime/bin/python3.12.real",
+            wrapper = python_runtime.STATIC_WRAPPER.encode()
+            wrapper_info = tarfile.TarInfo("python3.12-runtime/bin/python3.12")
+            wrapper_info.mode = 0o755
+            wrapper_info.size = len(wrapper)
+            archive.addfile(wrapper_info, io.BytesIO(wrapper))
+
+            elf = bytearray(64 + 56)
+            elf[:6] = b"\x7fELF\x02\x01"
+            struct.pack_into("<H", elf, 18, 62)
+            struct.pack_into("<Q", elf, 32, 64)
+            struct.pack_into("<HH", elf, 54, 56, 1)
+            real_info = tarfile.TarInfo("python3.12-runtime/bin/python3.12.real")
+            real_info.mode = 0o755
+            real_info.size = len(elf)
+            archive.addfile(real_info, io.BytesIO(elf))
+
+            for relative in (
+                "encodings/__init__.py",
+                "json/__init__.py",
+                "xml/etree/ElementTree.py",
             ):
-                payload = b"#!/bin/sh\nexit 0\n"
+                name = f"python3.12-runtime/lib/python3.12/{relative}"
+                payload = b"# fixture\n"
                 info = tarfile.TarInfo(name)
-                info.mode = 0o755
                 info.size = len(payload)
                 archive.addfile(info, io.BytesIO(payload))
-            stdlib = tarfile.TarInfo("python3.12-runtime/lib/python3.12")
-            stdlib.type = tarfile.DIRTYPE
-            archive.addfile(stdlib)
-            marker_payload = b"target-system-libraries\n"
-            marker = tarfile.TarInfo("python3.12-runtime/.harbor-python-runtime-v2")
-            marker.size = len(marker_payload)
-            archive.addfile(marker, io.BytesIO(marker_payload))
+            manifest = json.dumps(python_runtime.static_manifest()).encode() + b"\n"
+            manifest_info = tarfile.TarInfo("python3.12-runtime/static-runtime.json")
+            manifest_info.size = len(manifest)
+            archive.addfile(manifest_info, io.BytesIO(manifest))
 
     def tearDown(self):
         self.temporary.cleanup()
@@ -46,24 +64,44 @@ class SweRebenchV2BundlePreparerTest(unittest.TestCase):
         root = swe_rebench_v2_bundle_preparer.BUNDLE_ID
         with tarfile.open(output) as archive:
             members = {member.name.rstrip("/"): member for member in archive}
+            self.assertEqual(
+                archive.extractfile(f"{root}/bin/self_check.py").read(),
+                swe_rebench_v2_bundle_preparer.SELF_CHECK_PY_SOURCE.read_bytes(),
+            )
         self.assertIn(f"{root}/bin/python3.12.real", members)
         self.assertEqual(members[f"{root}/bin/python3"].linkname, "python3.12")
         self.assertEqual(members[f"{root}/bin/python"].linkname, "python3.12")
         self.assertTrue(
             members[f"{root}/bin/harbor-verifier-bundle-check"].mode & 0o111
         )
-        self.assertIn(f"{root}/.harbor-python-runtime-v2", members)
+        self.assertIn(f"{root}/static-runtime.json", members)
 
     def test_preparer_owns_runtime_source_selection(self):
         cache_dir = self.root / "cache"
         cache_dir.mkdir()
-        cached_runtime = cache_dir / "python3.12-runtime.tar.gz"
+        cached_runtime = cache_dir / "python3.12-static-runtime.tar.gz"
         self.python_runtime.replace(cached_runtime)
         output = self.root / "bundle.tar.gz"
 
         swe_rebench_v2_bundle_preparer.prepare(cache_dir, output)
 
         self.assertTrue(swe_rebench_v2_bundle_preparer.archive_ready(output))
+
+    def test_standalone_self_check_with_real_parser(self):
+        repository = Path(__file__).resolve().parents[5]
+        parser = repository / (
+            "Tasks/SWE-rebench-v2/src/swe_rebench_v2/task-template/tests/parser.py"
+        )
+        completed = subprocess.run(
+            [sys.executable, str(swe_rebench_v2_bundle_preparer.SELF_CHECK_PY_SOURCE),
+             str(parser)],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertIn("parser_fixture=passed", completed.stdout)
 
     def test_shell_builder_uses_configured_runner_python(self):
         env_sh = Path(__file__).parents[1] / "env" / "dependencies.sh"

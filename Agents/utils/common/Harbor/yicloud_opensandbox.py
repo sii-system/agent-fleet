@@ -217,7 +217,7 @@ def _prepare_exec_runtime(
                 (
                     "harbor_verifier_runtime_fail() { "
                     "message=$1; printf '%s\\n' \"$message\" >&2; "
-                    f"printf '%s\\n' \"$message\" > {bootstrap_log} "
+                    f"printf '%s\\n' \"$message\" >> {bootstrap_log} "
                     "2>/dev/null || true; exit 127; }"
                 ),
                 (
@@ -247,12 +247,15 @@ def _prepare_exec_runtime(
                     "'verifier runtime bundle is missing its self-check'"
                 ),
                 (
-                    f"{check} >/dev/null 2>&1 || harbor_verifier_runtime_fail "
-                    "'verifier runtime bundle failed its self-check'"
+                    f"if runtime_check_output=$({check} 2>&1); then "
+                    f"printf '%s\\n' \"$runtime_check_output\" >> {bootstrap_log} 2>/dev/null || true; "
+                    "else printf '%s\\n' \"$runtime_check_output\" >&2; "
+                    f"printf '%s\\n' \"$runtime_check_output\" >> {bootstrap_log} 2>/dev/null || true; "
+                    "harbor_verifier_runtime_fail 'verifier runtime bundle failed its self-check'; fi"
                 ),
                 (
                     f"printf '%s\\n' {ready_message} "
-                    f"> {bootstrap_log} 2>/dev/null || true"
+                    f">> {bootstrap_log} 2>/dev/null || true"
                 ),
             ]
         )
