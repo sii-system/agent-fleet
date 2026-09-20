@@ -1,4 +1,4 @@
-name: Harbor E2E Validation
+name: Harbor Terminal-Bench 2.1 Nightly
 
 "on":
   workflow_dispatch:

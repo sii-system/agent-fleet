@@ -1,4 +1,4 @@
-name: Harbor Self-Hosted Nightly
+name: Harbor Random Bench Nightly
 
 "on":
   workflow_dispatch:
