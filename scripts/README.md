@@ -243,6 +243,26 @@ so the error remains visible; press `Ctrl-q` after reviewing it.
 Noninteractive foreground failures return immediately. Detached mode prints
 the same run receipt plus the `zellij attach` command.
 
+### Summarize a Harbor run
+
+```bash
+./scripts/run_fleet.sh summary                 # latest run
+./scripts/run_fleet.sh summary <run-id>        # specific run
+./scripts/run_fleet.sh summary /path/to/run    # custom output directory
+```
+
+The command prints the Markdown report and saves `summary.md` in the run
+directory. It resolves the input files automatically and works for completed or
+stopped runs with monitoring results. Existing analyzer and Fixer results are
+included when available; it does not rerun analysis or benchmarks. If the
+summary model is unavailable, it still generates a deterministic report.
+
+The default selects the most recently started Harbor run under `OUTPUT_ROOT`
+(default `<repo>/runs`), using the recorded start time or directory modification
+time when unavailable. It reports a still-running latest run instead of falling
+back to an older result. After a forced stop, the monitor must finish updating
+the run status before a summary can be generated.
+
 ### FleetSpec JSON
 
 Create `fleet-spec.json` with any text editor, for example

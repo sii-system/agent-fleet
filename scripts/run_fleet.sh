@@ -11,6 +11,16 @@ source "$SCRIPT_DIR/config_loader.sh"
 # shellcheck source=fleet_spec_io.sh
 source "$SCRIPT_DIR/fleet_spec_io.sh"
 case "${1:-}" in
+  summary)
+    shift
+    agent_fleet_load_config "$REPO_DIR"
+    agent_fleet_apply_auth_token_fallback
+    export OUTPUT_ROOT="${OUTPUT_ROOT:-$REPO_DIR/runs}"
+    export HARBOR_ANALYZER_BASE_URL="${HARBOR_ANALYZER_BASE_URL-${BASE_URL-}}"
+    export HARBOR_ANALYZER_API_KEY="${HARBOR_ANALYZER_API_KEY-${API_KEY-}}"
+    export HARBOR_ANALYZER_MODEL="${HARBOR_ANALYZER_MODEL-${MODEL-}}"
+    exec python3 "$SCRIPT_DIR/../Agents/utils/common/Harbor/scripts/summarize_run.py" "$@"
+    ;;
   -s|--spec) exec bash "$SCRIPT_DIR/fleet_spec.sh" "$@" ;;
   -p|--prompt) exec bash "$SCRIPT_DIR/fleet_prompt.sh" "$@" ;;
 esac
@@ -28,6 +38,7 @@ Usage:
   $0 --taskset <taskset> [--task <name>[,name...]] [--agent <agent>] [--workers <n>] [--output <file>] [--detach] [--dry-run]
   $0 --spec <file|-> [file ...] [--output <file>] [--detach] [--dry-run]
   $0 --prompt <text> [--output <file>] [--detach] [--dry-run]
+  $0 summary [run-id|run-directory]  # defaults to the latest Harbor run
 
 Short flags: -t --taskset, -a --agent, -n --workers, -s --spec, -p --prompt,
              -o --output, -d --detach; --task has no short form
