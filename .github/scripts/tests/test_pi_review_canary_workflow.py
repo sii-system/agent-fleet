@@ -41,6 +41,14 @@ class PiReviewCanaryWorkflowTest(unittest.TestCase):
                       "actions/upload-artifact@", "retention-days: 3", "timeout-minutes: 30"):
             self.assertIn(value, self.workflow)
 
+    def test_report_upload_is_bounded_and_does_not_override_review_outcome(self) -> None:
+        upload = self.workflow.split("      - name: Save review evaluation report\n", 1)[1].split("\n      - name:", 1)[0]
+        self.assertIn("        continue-on-error: true\n", upload)
+        self.assertIn("        timeout-minutes: 2\n", upload)
+        self.assertIn("        if: always()\n", upload)
+        review = self.workflow.split("      - name: Review pull request with pi agent\n", 1)[1].split("\n      - name:", 1)[0]
+        self.assertNotIn("continue-on-error", review)
+
     def test_resolves_and_validates_the_manual_target(self) -> None:
         expected = (
             "name: Resolve review target",

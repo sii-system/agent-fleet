@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import io
 import json
 import os
 import resource
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from dataclasses import dataclass
 from pathlib import Path
@@ -244,6 +246,7 @@ class StreamValidationTest(unittest.TestCase):
         with self.assertRaises(pi_review.PiReviewError) as ctx:
             pi_review._validate_pi_stream(raw)
         self.assertIn("gateway timeout", str(ctx.exception))
+        self.assertEqual(getattr(ctx.exception, "category", None), "provider")
 
     def test_stop_reason_aborted_raises(self) -> None:
         raw = _make_findings_response(stop_reason="aborted")
@@ -614,6 +617,7 @@ class PiClientTest(unittest.TestCase):
             client.review("prompt", "diff")
         self.assertIn("exited with code 1", str(ctx.exception))
         self.assertIn("fatal error", str(ctx.exception))
+        self.assertEqual(getattr(ctx.exception, "category", None), "process_exit")
 
     def test_timeout_raises(self) -> None:
         client = self._make_client(timeout=30)
@@ -627,6 +631,7 @@ class PiClientTest(unittest.TestCase):
             with self.assertRaises(pi_review.PiReviewError) as ctx:
                 client.review("prompt", "diff")
             self.assertIn("timed out", str(ctx.exception))
+            self.assertEqual(getattr(ctx.exception, "category", None), "timeout")
         run_mock.assert_called_once()
 
     def test_pi_not_found_raises(self) -> None:
@@ -635,6 +640,7 @@ class PiClientTest(unittest.TestCase):
         with self.assertRaises(pi_review.PiReviewError) as ctx:
             client.review("prompt", "diff")
         self.assertIn("could not launch pi", str(ctx.exception))
+        self.assertEqual(getattr(ctx.exception, "category", None), "launch")
 
     def test_invalid_jsonl_raises(self) -> None:
         _stub_pi_script(self.bin_dir, stdout="not-jsonl\n")
@@ -909,6 +915,72 @@ class FakePiClient:
 
 
 class OrchestrationTest(unittest.TestCase):
+    def test_all_lens_failures_preserve_safe_categories_and_worker_timing(self) -> None:
+        github = FakeGitHub()
+        client = FakePiClient([])
+        sensitive = "fake-api-key https://private.example/response provider body"
+        errors = {
+            "correctness": pi_review.PiReviewError(sensitive),
+            "security": pi_review.PiResponseFormatError(sensitive),
+            "tests/regression": pi_review._review.ModelResponseError(sensitive),
+        }
+
+        def fail(prompt, *args, **kwargs):
+            for lens, instruction in pi_review.LENS_INSTRUCTIONS.items():
+                if instruction in prompt:
+                    raise errors[lens]
+            self.fail("missing lens instruction")
+
+        clock = threading.local()
+
+        def now():
+            clock.value = getattr(clock, "value", 0) + 2.5
+            return clock.value
+
+        client.review = fail
+        report = {}
+        stderr = io.StringIO()
+        with (
+            mock.patch.object(pi_review.time, "monotonic", side_effect=now),
+            mock.patch.object(pi_review.sys, "stderr", stderr),
+            self.assertRaisesRegex(pi_review.PiReviewError, "all review lenses failed"),
+        ):
+            pi_review.run_review(github, client, 7, "prompt", report=report)
+        self.assertIn("lens_diagnostics", report)
+        expected_categories = {"correctness": "review", "security": "response_format", "tests/regression": "schema"}
+        for lens, category in expected_categories.items():
+            self.assertEqual(report["lens_diagnostics"][lens], {
+                "status": "failed", "error_category": category, "elapsed_seconds": 2.5,
+            })
+        self.assertEqual(report["failed_lenses"], list(pi_review.LENS_INSTRUCTIONS))
+        self.assertEqual(github.created, [])
+        logged = [json.loads(line.removeprefix("pi review lens: ")) for line in stderr.getvalue().splitlines()]
+        self.assertEqual({item["lens"] for item in logged}, set(expected_categories))
+        for item in logged:
+            self.assertEqual(item, {"lens": item["lens"], **report["lens_diagnostics"][item["lens"]]})
+        self.assertNotIn(sensitive, stderr.getvalue() + json.dumps(report))
+
+    def test_partial_lens_failure_retains_diagnostics_and_publishes(self) -> None:
+        github = FakeGitHub()
+        client = FakePiClient([])
+
+        def review(prompt, *args, **kwargs):
+            if pi_review.LENS_INSTRUCTIONS["security"] in prompt:
+                raise pi_review.PiResponseFormatError("fake-sensitive-response")
+            return {"findings": []}
+
+        client.review = review
+        report = {}
+        with mock.patch.object(pi_review.sys, "stderr", io.StringIO()):
+            result = pi_review.run_review(github, client, 7, "prompt", report=report)
+        self.assertEqual(result, "published")
+        self.assertEqual(report["coverage"], "partial")
+        self.assertIn("lens_diagnostics", report)
+        for lens, diagnostic in report["lens_diagnostics"].items():
+            self.assertGreaterEqual(diagnostic["elapsed_seconds"], 0)
+            self.assertEqual(diagnostic["status"], "failed" if lens == "security" else "completed")
+        self.assertEqual(report["lens_diagnostics"]["security"]["error_category"], "response_format")
+
     def test_oversized_file_remains_visible_with_exact_source_revisions(self) -> None:
         github = FakeGitHub()
         github.files.append({
@@ -1773,6 +1845,45 @@ class PiWorkflowContractTest(unittest.TestCase):
         self.assertIn("added RIGHT-side line", prompt)
         self.assertNotIn("{{ROUTING}}", prompt)
         self.assertNotIn("{{LENS}}", prompt)
+
+    def test_cli_provider_failure_saves_diagnostics_without_response_text(self) -> None:
+        github = FakeGitHub()
+        github.token = "fake-github-token"
+        events = [json.loads(line) for line in _make_findings_response([]).splitlines()]
+        sensitive = "fake-model-key https://private.example/provider-response"
+        events.insert(-1, {"type": "auto_retry_end", "finalError": sensitive})
+        stderr = io.StringIO()
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            binary = _stub_pi_script(root, stdout="\n".join(json.dumps(event) for event in events))
+            event_path, prompt_path, output = root / "event.json", root / "prompt.md", root / "report.json"
+            event_path.write_text(json.dumps({"pull_request": {"number": 7, **github.pull}}))
+            prompt_path.write_text("review prompt")
+            args = mock.Mock(event_path=event_path, prompt_path=prompt_path, pi_bin=str(binary),
+                             verification_mode="off", no_publish=False, output=output)
+            environment = {
+                "GITHUB_REPOSITORY": "example/repo", "GITHUB_TOKEN": github.token,
+                "GITHUB_WORKSPACE": str(root), "LLM_REVIEW_API_KEY": "fake-model-key",
+                "LLM_REVIEW_BASE_URL": "https://example.com/v1", "LLM_REVIEW_MODEL": "test-model",
+            }
+            with (
+                mock.patch.object(pi_review, "parse_args", return_value=args),
+                mock.patch.object(pi_review, "require_env", side_effect=environment.__getitem__),
+                mock.patch.object(pi_review._review, "GitHubClient", return_value=github),
+                mock.patch.object(pi_review.PiClient, "prepare_source"),
+                mock.patch.object(pi_review.sys, "stderr", stderr),
+            ):
+                self.assertEqual(pi_review.main(), 1)
+            report = json.loads(output.read_text())
+            self.assertEqual(report["result"], "failed")
+            self.assertEqual(report["failed_lenses"], list(pi_review.LENS_INSTRUCTIONS))
+            for diagnostic in report["lens_diagnostics"].values():
+                self.assertEqual(diagnostic["error_category"], "provider")
+                self.assertGreaterEqual(diagnostic["elapsed_seconds"], 0)
+            self.assertEqual(output.stat().st_mode & 0o777, 0o600)
+            for secret in ("fake-model-key", "private.example", "provider-response"):
+                self.assertNotIn(secret, output.read_text() + stderr.getvalue())
+            self.assertEqual(github.created, [])
 
     def test_main_binds_review_to_event_revisions(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

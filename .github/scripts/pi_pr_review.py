@@ -109,6 +109,10 @@ FORMAT_REPAIR_INSTRUCTION = (
 class PiReviewError(RuntimeError):
     """pi subprocess failed and the review could not be completed."""
 
+    def __init__(self, message: str, *, category: str = "review") -> None:
+        super().__init__(message)
+        self.category = category
+
 
 class PiResponseFormatError(PiReviewError):
     """pi completed but its final response was not one JSON object."""
@@ -120,7 +124,7 @@ class PiResponseFormatError(PiReviewError):
         tool_calls: int = 0,
         response_text: str | None = None,
     ) -> None:
-        super().__init__(message)
+        super().__init__(message, category="response_format")
         self.tool_calls = tool_calls
         self.response_text = response_text
 
@@ -353,7 +357,7 @@ def _validate_pi_stream(raw_stdout: str) -> dict[str, Any]:
 
     err = provider_error(events)
     if err:
-        raise PiReviewError(f"pi provider request failed: {err}")
+        raise PiReviewError(f"pi provider request failed: {err}", category="provider")
 
     message = final_assistant_message(events)
     if message is None:
@@ -544,7 +548,7 @@ class PiClient:
                 remaining_timeout = deadline - time.monotonic()
                 if remaining_timeout <= 0:
                     raise PiReviewError(
-                        f"pi timed out after {self.timeout:g}s"
+                        f"pi timed out after {self.timeout:g}s", category="timeout"
                     )
                 try:
                     completed = subprocess.run(
@@ -559,18 +563,18 @@ class PiClient:
                     )
                 except subprocess.TimeoutExpired as exc:
                     raise PiReviewError(
-                        f"pi timed out after {self.timeout:g}s"
+                        f"pi timed out after {self.timeout:g}s", category="timeout"
                     ) from exc
                 except OSError as exc:
                     raise PiReviewError(
-                        f"could not launch pi: {exc}"
+                        f"could not launch pi: {exc}", category="launch"
                     ) from exc
 
                 if completed.returncode != 0:
                     detail = (completed.stderr or "").strip().splitlines()
                     suffix = f": {detail[-1]}" if detail else ""
                     raise PiReviewError(
-                        f"pi exited with code {completed.returncode}{suffix}"
+                        f"pi exited with code {completed.returncode}{suffix}", category="process_exit"
                     )
 
                 try:
@@ -666,6 +670,20 @@ def run_review(
                     limit=sys.maxsize,
                 )
 
+        lens_elapsed_seconds: dict[str, float] = {}
+
+        def review_lens(lens: str, instruction: str, model_input: str) -> dict:
+            started = time.monotonic()
+            try:
+                return pi_client.review(
+                    f"{prompt.rstrip()}\n\n{routing_instruction}\n\n{instruction}",
+                    model_input,
+                    retry_malformed=True,
+                    response_validator=validate_lens_response,
+                )
+            finally:
+                lens_elapsed_seconds[lens] = round(time.monotonic() - started, 3)
+
         with (
             tempfile.TemporaryDirectory(
                 prefix="pi-pr-review-input-", dir=os.environ.get("RUNNER_TEMP")
@@ -685,11 +703,7 @@ def run_review(
             futures = {}
             for lens, instruction in LENS_INSTRUCTIONS.items():
                 futures[lens] = executor.submit(
-                    pi_client.review,
-                    f"{prompt.rstrip()}\n\n{routing_instruction}\n\n{instruction}",
-                    model_input,
-                    retry_malformed=True,
-                    response_validator=validate_lens_response,
+                    review_lens, lens, instruction, model_input,
                 )
 
         payloads: list[dict] = []
@@ -698,7 +712,10 @@ def run_review(
         incomplete_lenses = 0
         failed_lenses: list[str] = []
         tool_calls_by_lens: dict[str, int] = {}
+        lens_diagnostics: dict[str, dict] = {}
         for lens, future in futures.items():
+            diagnostic = {"status": "completed", "elapsed_seconds": lens_elapsed_seconds[lens]}
+            lens_diagnostics[lens] = diagnostic
             try:
                 payload = future.result()
                 raw_tool_calls = payload.get("_pi_tool_calls", 0)
@@ -719,9 +736,15 @@ def run_review(
                         by_path,
                         limit=sys.maxsize,
                     )
-            except (PiReviewError, _review.ModelResponseError):
+            except (PiReviewError, _review.ModelResponseError) as exc:
+                diagnostic.update(
+                    status="failed",
+                    error_category=exc.category if isinstance(exc, PiReviewError) else "schema",
+                )
                 failed_lenses.append(lens)
                 continue
+            finally:
+                print(f"pi review lens: {json.dumps({'lens': lens, **diagnostic})}", file=sys.stderr)
             payloads.append(payload)
             findings.extend(
                 _attribute_lens(finding, lens)
@@ -729,6 +752,8 @@ def run_review(
             )
             rejected += lens_rejected
 
+        if report is not None:
+            report.update(lens_diagnostics=lens_diagnostics, failed_lenses=failed_lenses)
         if len(failed_lenses) == len(LENS_INSTRUCTIONS):
             raise PiReviewError("all review lenses failed")
 
