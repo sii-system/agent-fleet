@@ -657,7 +657,9 @@ def write_benchmark_summary(
                 continue
             report = report.partition("\n## Fixer Results\n")[0]
         if report:
-            reports[name] = redact_sensitive_text(report)
+            # The Fixer report is already redacted at generation time
+            # (harbor_fixer/report/markdown.py); do not re-redact it here.
+            reports[name] = report if name == "fixer" else redact_sensitive_text(report)
     payload.update(reports=reports, monitor_available=bool(monitor),
                    manifest_available=manifest_available)
     if not monitor:
