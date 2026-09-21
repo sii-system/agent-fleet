@@ -10,6 +10,13 @@ from pathlib import Path
 from harbor_analyzer.io import load_json
 from write_benchmark_summary import publish_benchmark_summary
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+from rl.summary import (
+    build_rollout_summary,
+    find_rollout_queues,
+    render_rollout_summary,
+)
+
 
 def _run_start(run_dir: Path) -> tuple[float, str]:
     try:
@@ -37,6 +44,7 @@ def resolve_run(run: str | None, output_root: Path) -> Path:
             (path / "monitor").is_dir()
             or (path / "tasks.txt").is_file()
             or (path / "harbor-layout.kdl").is_file()
+            or find_rollout_queues(path)
         )
     ]
     if not candidates:
@@ -48,6 +56,12 @@ def resolve_run(run: str | None, output_root: Path) -> Path:
 
 
 def summarize_run(run_dir: Path) -> str:
+    queues = find_rollout_queues(run_dir)
+    if queues:
+        rollout = build_rollout_summary(queues)
+        rollout["report"] = render_rollout_summary(rollout)
+        publish_benchmark_summary(run_dir, expected_run_id=run_dir.name, rollout_summary=rollout)
+        return (run_dir / "summary.md").read_text(encoding="utf-8")
     monitor_path = run_dir / "monitor" / "monitor-latest.json"
     if not monitor_path.is_file():
         raise ValueError(f"Run {run_dir.name} has no monitoring results to summarize yet.")
@@ -65,7 +79,7 @@ def summarize_run(run_dir: Path) -> str:
 def main() -> int:
     parser = argparse.ArgumentParser(
         prog="run_fleet.sh summary",
-        description="Generate and print a summary of the latest Harbor run.",
+        description="Generate and print a summary of the latest Harbor benchmark or RL rollout run.",
     )
     parser.add_argument(
         "run", nargs="?", metavar="RUN",

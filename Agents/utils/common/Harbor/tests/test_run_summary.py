@@ -21,6 +21,33 @@ from harbor_pi_runtime import PiProcessResult
 
 
 class RunSummaryTest(unittest.TestCase):
+    def test_rollout_uses_shared_model_and_ignores_benchmark_monitor(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            monitor = root / "monitor" / "monitor-latest.json"
+            monitor.parent.mkdir()
+            monitor.write_text(json.dumps({"benchmark_status": "running"}))
+            rollout = {"finished": 2, "execution_failed": 1,
+                       "report": "## RL Rollout\n\nRecorded queue snapshot.\n"}
+            model_output = {"summary": "One request had an execution error.",
+                            "analysis_summary": [], "recommended_actions": []}
+            with mock.patch.dict(os.environ, {}, clear=True), mock.patch.object(
+                writer, "run_pi_json_process",
+                return_value=PiProcessResult(model_output, "", {}, None, ""),
+            ) as model:
+                writer.publish_benchmark_summary(
+                    root, expected_run_id="rl-run", rollout_summary=rollout,
+                )
+            prompt = model.call_args.kwargs["prompt"]
+            self.assertIn('"execution_failed": 1', prompt)
+            result = (root / "summary.md").read_text()
+            self.assertIn("# RL Rollout Summary", result)
+            self.assertIn("One request had an execution error.", result)
+            self.assertIn("Recorded queue snapshot.", result)
+            self.assertNotIn("Monitor results unavailable", result)
+            self.assertNotIn("| Success rate |", result)
+            self.assertTrue((root / "benchmark-summary" / "summary-output.json").is_file())
+
     def test_cli_combines_available_reports_without_changing_sources(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

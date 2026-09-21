@@ -28,6 +28,9 @@ Summarize Harbor outcomes, Analyzer diagnoses, and Fixer results together.
 When reports.fixer is absent, omit Fixer from the narrative. Distinguish smoke
 verification from a full benchmark rerun, and unavailable data from zero.
 Do not invent task names, counts, causes, or actions.
+When rollout is present, describe a live queue snapshot, not a completed benchmark.
+Rollout execution success (ok) is separate from task reward; zero and fractional
+rewards are valid. Do not infer model or infrastructure failure from ok alone.
 Return exactly one JSON object with this shape:
 {
   "summary": "Two to four concise sentences.",
@@ -390,7 +393,7 @@ def _render_markdown(
         for item in model_output["analysis_summary"]
     }
     lines = [
-        "# Benchmark Run Summary",
+        "# RL Rollout Summary" if "rollout" in payload else "# Benchmark Run Summary",
         "",
         f"Run ID: `{run['run_id']}`",
         "",
@@ -399,9 +402,11 @@ def _render_markdown(
         " ".join(model_output["summary"].split()),
         "",
     ]
-    if joint:
+    if "rollout" in payload:
+        lines.extend([payload["rollout"]["report"], ""])
+    elif joint:
         lines.extend(["## Harbor", "", harbor_report(payload["reports"].get("harbor", "")), ""])
-    if not joint or payload["monitor_available"]:
+    if "rollout" not in payload and (not joint or payload["monitor_available"]):
         lines.extend([
             "### Run Overview" if joint else "## Run Overview", "",
             "| Metric | Value |", "| --- | ---: |",
@@ -409,7 +414,7 @@ def _render_markdown(
             f"| Success rate | {run['success_rate']} ({run['successful_tasks']}/{run['total_tasks']}) |",
             f"| Failure rate | {run['failure_rate']} ({run['failed_tasks']}/{run['total_tasks']}) |", "",
         ])
-    else:
+    elif "rollout" not in payload:
         lines.extend(["Monitor results unavailable.", ""])
     if joint:
         lines.extend(["## Analyzer", ""])
@@ -607,6 +612,16 @@ def harbor_report(raw: str) -> str:
     return "\n".join(lines)
 
 
+def _redact_summary_data(value: Any) -> Any:
+    if isinstance(value, str):
+        return redact_sensitive_text(value)
+    if isinstance(value, dict):
+        return {redact_sensitive_text(key): _redact_summary_data(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_redact_summary_data(item) for item in value]
+    return value
+
+
 def write_benchmark_summary(
     monitor_path: Path,
     manifest_path: Path,
@@ -617,8 +632,9 @@ def write_benchmark_summary(
     harbor_summary_path: Path | None = None,
     analyzer_summary_path: Path | None = None,
     summarize: bool = True,
+    rollout_summary: dict[str, Any] | None = None,
 ) -> None:
-    monitor = _load_json(monitor_path) if monitor_path.is_file() else {}
+    monitor = _load_json(monitor_path) if rollout_summary is None and monitor_path.is_file() else {}
     if monitor.get("benchmark_status") == "running":
         if summarize:
             raise ValueError("monitor still reports benchmark_status=running")
@@ -633,6 +649,8 @@ def write_benchmark_summary(
     reports = {}
     for name, path in (("harbor", harbor_summary_path), ("analyzer", analyzer_summary_path),
                        ("fixer", fixer_report_path)):
+        if name == "harbor" and rollout_summary is not None:
+            continue
         report = read_report(path) if path is not None else ""
         if name == "analyzer":
             if expected_run_id and not manifest_available:
@@ -646,6 +664,8 @@ def write_benchmark_summary(
         payload["run"].update(runtime="unavailable", total_tasks=None, successful_tasks=None,
                               failed_tasks=None, success_rate="unavailable", failure_rate="unavailable")
         payload["analyzer_result_status"] = "available" if payload["analysis_groups"] else "unavailable"
+    if rollout_summary is not None:
+        payload["rollout"] = _redact_summary_data(rollout_summary)
     summary_dir = output_path.parent / "benchmark-summary"
     summary_output_path = summary_dir / "summary-output.json"
     write_json_atomic(summary_dir / "summary-input.json", payload)
@@ -675,6 +695,7 @@ def write_benchmark_summary(
 def publish_benchmark_summary(
     run_dir: Path, *, analyzer_output: Path | None = None,
     expected_run_id: str | None = None, summarize: bool = True,
+    rollout_summary: dict[str, Any] | None = None,
 ) -> None:
     analyzer_output = analyzer_output or Path(
         os.environ.get("HARBOR_ANALYZER_OUTPUT_DIR") or run_dir / "analyzer"
@@ -688,6 +709,7 @@ def publish_benchmark_summary(
         harbor_summary_path=run_dir / "summary.txt",
         analyzer_summary_path=analyzer_output / "benchmark-summary.md",
         summarize=summarize,
+        rollout_summary=rollout_summary,
     )
 
 

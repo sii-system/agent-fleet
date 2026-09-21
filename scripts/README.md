@@ -257,11 +257,28 @@ stopped runs with monitoring results. Existing analyzer and Fixer results are
 included when available; it does not rerun analysis or benchmarks. If the
 summary model is unavailable, it still generates a deterministic report.
 
-The default selects the most recently started Harbor run under `OUTPUT_ROOT`
+RL rollout runs are also supported. The same command discovers listener and
+per-submission queues under `runtime/*/rl-queue`, then summarizes queued,
+active, and finished requests, execution outcomes, reward distributions and
+means, and exception types. These reports are live snapshots, not confirmation
+that the listener has stopped. Execution success is distinct from task reward;
+zero and fractional rewards remain valid, and missing rewards are excluded from
+the mean. Exception types alone do not establish model or infrastructure causes.
+
+RL reports reuse the shared summary publisher, including available Analyzer
+findings and Fixer reports. Summary generation does not start Analyzer or Fixer.
+It reads retained queue result JSON, so pruning trial logs does not remove the
+reported outcomes. For queues stored outside the run directory, pass the queue
+directory (containing `pending`, `active`, and `results`) explicitly; the report
+is saved there. Malformed artifacts produce an error without replacing the
+previous report.
+
+The default selects the most recently started Harbor or RL run under `OUTPUT_ROOT`
 (default `<repo>/runs`), using the recorded start time or directory modification
-time when unavailable. It reports a still-running latest run instead of falling
-back to an older result. After a forced stop, the monitor must finish updating
-the run status before a summary can be generated.
+time when unavailable (including RL runs). For fixed benchmarks, it reports a
+still-running latest run instead of falling back to an older result. After a
+forced stop, the monitor must finish updating the run status before a summary
+can be generated.
 
 ### FleetSpec JSON
 
