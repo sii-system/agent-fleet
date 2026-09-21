@@ -53,3 +53,7 @@ OpenClaw benchmark runners call `Agents/Openclaw` for fleet setup and Docker Com
 
 Opik tracing code is linked as a Git submodule at
 `third_party/agent-opik-plugin`, pinned by the repository gitlink.
+
+The dependency gateway (build-time dependency cache consumed by the image
+prebuild pipeline through URL injection) is likewise linked as a Git submodule
+at `third_party/dependency-gateway`, pinned by the repository gitlink.

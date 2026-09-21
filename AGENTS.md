@@ -23,7 +23,7 @@ Shared launchers support direct arguments, FleetSpec JSON, and prompt mode.
 | `Tasks/` | Harbor task inputs/adapters; PinchBench and ClawBio runners | `Tasks/AGENTS.md` |
 | `skills/` | Repository operation skills and end-to-end prompts | `skills/README.md` |
 | `.github/` | CI workflows, review automation, and validation helpers | `.github/workflows/`, `.github/scripts/tests/` |
-| `third_party/agent-opik-plugin/` | Opik tracing plugin (git submodule) | — |
+| `third_party/` | Vendored git submodules (`agent-opik-plugin`, `dependency-gateway`) | submodule's own docs |
 
 ## First-Time Setup
 
