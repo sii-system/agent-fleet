@@ -80,6 +80,16 @@ Scale up the worker count after a single task passes. The launcher accepts
 `AGENT=oracle` (reference solutions), `AGENT=claude-code`, and
 `AGENT=opencode` (real agents) on qz.
 
+QZ create traffic is shaped automatically. Benchmark users choose only the
+normal worker count: the adapter keeps at most 10 `Sandbox.create` calls in
+flight across all local worker processes, releases each slot as soon as one
+create returns, and continues until the requested workers are active. This
+does not cap active task concurrency. `QZ_CREATE_CONCURRENCY` is an
+operator-only override for deployments where QZ has confirmed a different
+safe create window, for example after adding nodes to the type group. It is
+not a fleet CLI or task setting, and normal benchmark runs need no additional
+configuration.
+
 The same OpenCode run is available through the repository-level fleet entry
 point; the backend, key, and current Template come from `config.local.env`:
 
@@ -174,7 +184,7 @@ exactly this loop (oracle reward 1.0 in ~6 s, pi reward 1.0 in ~47 s against
 | --- | --- |
 | `template 'xxx' not found` | Name misspelled, or the Template is bound to a different key |
 | `Timeout cannot be greater than 4 hours` | Lower `QZ_SANDBOX_TIMEOUT_SEC` to 14400 or below |
-| `No available resources` | Platform pool is full; retry later, contact the platform if it persists |
+| `No available resources` | The pool may be full, or external create traffic may exceed the type group's instantaneous create window. Agent Fleet shapes its own create calls automatically; contact QZ if the error persists. |
 | Connection timeout / DNS failure | The machine is not on the SII internal network |
 | 401 | The key is invalid or deleted; check the「Sandbox Key」page |
 
