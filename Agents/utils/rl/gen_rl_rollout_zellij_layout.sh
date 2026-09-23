@@ -5,6 +5,10 @@ RL_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HARBOR_SCRIPT_DIR="${HARBOR_SCRIPT_DIR:-$(cd "$RL_SCRIPT_DIR/../common/Harbor" && pwd)}"
 . "$HARBOR_SCRIPT_DIR/env.sh"
 
+if [[ "$HARBOR_NATIVE_CONCURRENCY" == "1" ]]; then
+  RL_WORKERS=1
+fi
+
 OUT="${1:-$LAYOUT_FILE}"
 mkdir -p "$(dirname "$OUT")"
 

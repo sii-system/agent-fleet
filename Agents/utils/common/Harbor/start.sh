@@ -487,9 +487,13 @@ harbor_rollback_analyzer_startup() {
 harbor_validate_task_selection
 
 if [[ "$HARBOR_NATIVE_CONCURRENCY" != "0" ]]; then
-  if [[ "$HARBOR_NATIVE_CONCURRENCY" != "1" || "$ROLLOUT" == "1" \
+  if [[ "$HARBOR_NATIVE_CONCURRENCY" != "1" \
     || ! "$HARBOR_N_CONCURRENT" =~ ^[1-9][0-9]*$ ]]; then
-    echo "[ERROR] HARBOR_NATIVE_CONCURRENCY=1 requires benchmark mode and positive HARBOR_N_CONCURRENT" >&2
+    echo "[ERROR] HARBOR_NATIVE_CONCURRENCY=1 requires positive HARBOR_N_CONCURRENT" >&2
+    exit 2
+  fi
+  if [[ "$ROLLOUT" == "1" && ! -f "${RL_NATIVE_TRIAL_CONFIG:-}" ]]; then
+    echo "[ERROR] native rollout requires RL_NATIVE_TRIAL_CONFIG" >&2
     exit 2
   fi
 fi

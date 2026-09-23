@@ -5,6 +5,13 @@ RL_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HARBOR_SCRIPT_DIR="${HARBOR_SCRIPT_DIR:-$(cd "$RL_SCRIPT_DIR/../common/Harbor" && pwd)}"
 . "$HARBOR_SCRIPT_DIR/env.sh"
 
+if [[ "$HARBOR_NATIVE_CONCURRENCY" == "1" ]]; then
+  : "${RL_NATIVE_TRIAL_CONFIG:?prepared Harbor TrialConfig is required}"
+  export HARBOR_N_CONCURRENT="$RL_MAX_CONCURRENT"
+  export PYTHONPATH="$HARBOR_SCRIPT_DIR${PYTHONPATH:+:$PYTHONPATH}"
+  exec "$HARBOR_OPIK_PYTHON" "$RL_SCRIPT_DIR/native_rollout_worker.py"
+fi
+
 WORKER_ID="${1:?worker id required}"
 PENDING_DIR="$RL_QUEUE_DIR/pending"
 ACTIVE_QUEUE_DIR="$RL_QUEUE_DIR/active"

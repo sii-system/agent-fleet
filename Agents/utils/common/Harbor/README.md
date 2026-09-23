@@ -65,9 +65,30 @@ For OpenSandbox, every task must already specify its own prebuilt
 overrides and force-build are rejected to prevent applying one image to all
 tasks. Agent Fleet supplies a shared command thread pool sized to the trial
 concurrency so long-running commands cannot block Harbor's control/file I/O.
-No Harbor source changes are required. This first mode supports fixed
-benchmarks only; `ROLLOUT=1` with the switch is rejected rather than silently
-falling back to per-request worker processes.
+No Harbor source changes are required.
+
+### Native RL Queue (Experimental)
+
+For Claude Code with YiCloud OpenSandbox, the same switch also selects one
+native `TrialQueue` worker per submission instead of per-request Harbor
+processes. The existing `/run_trial` API and result files are unchanged.
+
+Set `ROLLOUT=1`, `RL_MAX_CONCURRENT=500`, and `RL_NATIVE_TRIAL_CONFIG` to a
+host-prepared Harbor `TrialConfig` JSON with validated agent settings, cached
+runtime mounts, and verifier configuration. A completed trial's `config.json`
+can serve as the starting point; review paths, secrets/placeholders and runtime
+settings before reuse. Requests override task identity, model endpoint/session
+headers, sampling and budgets on independent copies. They do not change the
+worker's environment. One worker serves one prepared dataset/backend and one
+Opik project. Use a fresh queue after a crash; reconcile unfinished trials and
+sandboxes before restarting. Native retries are disabled.
+
+Harbor-side Opik tracing uses the same `track_harbor()` integration as
+`opik harbor run`. Set `OPIK_URL` and `OPIK_PROJECT_NAME`; keep
+`CC_OPIK_ENABLE_HOOK=false` in the trial template. Container-side realtime
+hook replay is not yet supported by the native queue. Benchmark tracing is
+unchanged. Native RL logs/results live under the submission's `$JOBS_ROOT`;
+they do not use the fixed-benchmark aggregate monitor or summary.
 
 ## Minimal Setup
 
