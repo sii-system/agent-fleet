@@ -63,16 +63,17 @@ def summarize_run(run_dir: Path) -> str:
         publish_benchmark_summary(run_dir, expected_run_id=run_dir.name, rollout_summary=rollout)
         return (run_dir / "summary.md").read_text(encoding="utf-8")
     monitor_path = run_dir / "monitor" / "monitor-latest.json"
-    if not monitor_path.is_file():
+    completed = (run_dir / "summary.txt").is_file()
+    if not monitor_path.is_file() and not completed:
         raise ValueError(f"Run {run_dir.name} has no monitoring results to summarize yet.")
-    monitor = load_json(monitor_path)
+    monitor = load_json(monitor_path) if monitor_path.is_file() else {}
     if monitor.get("benchmark_status") == "running":
         raise ValueError(
             f"Run {run_dir.name} is still reported as running. "
             "Retry after benchmark shutdown and analysis finish."
         )
     output_path = run_dir / "summary.md"
-    publish_benchmark_summary(run_dir, expected_run_id=run_dir.name)
+    publish_benchmark_summary(run_dir, expected_run_id=run_dir.name, completed=completed)
     return output_path.read_text(encoding="utf-8")
 
 

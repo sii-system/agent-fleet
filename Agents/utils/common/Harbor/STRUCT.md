@@ -297,7 +297,8 @@ configuration to `OPIK_URL`. An empty `OPIK_URL` still disables tracing.
 | `YICLOUD_SANDBOX_S3CMD` | s3cmd executable used by the Harbor runner; defaults to the pinned runner environment |
 | `HARBOR_ONLINE_ANALYSIS` | Enables console-only online analysis, default `0` |
 | `HARBOR_EARLY_STOP` | Stops the current SETA task on matching task-blocking online-analysis events when set to `1`, default `0` |
-| `HARBOR_ANALYZER_ENABLED` | Starts the Pi-backed analyzer from `start.sh` after the monitor is ready, defaults to `HARBOR_MONITOR_ENABLED` |
+| `HARBOR_SUMMARY_ENABLED` | Automatically publishes `summary.md` after fixed benchmark completion; defaults to `1`, set `0` to disable |
+| `HARBOR_ANALYZER_ENABLED` | Starts the Pi-backed analyzer from `start.sh` after the monitor is ready, defaults to `0` (opt-in) |
 | `HARBOR_ANALYZER_MODE` | Analyzer launch mode, currently only `handover-follow` |
 | `HARBOR_ANALYZER_OUTPUT_DIR` | Analyzer output directory, defaults to `<OUTPUT_PATH>/analyzer` |
 | `HARBOR_ANALYZER_POLL_INTERVAL` | Analyzer handover polling interval in seconds, default `5` |

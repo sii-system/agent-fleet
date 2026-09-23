@@ -18,6 +18,7 @@ CONFIG_NAMES = (
     "HARBOR_API_BASE",
     "HARBOR_ANTHROPIC_BASE_URL",
     "HARBOR_ANTHROPIC_AUTH_TOKEN",
+    "HARBOR_ANALYZER_API_KEY",
     "HARBOR_ANALYZER_BASE_URL",
     "HARBOR_ANALYZER_MODEL",
     "ROLLOUT",
@@ -152,11 +153,12 @@ class ConfigLoaderTest(unittest.TestCase):
                 "bash",
                 "-c",
                 (
-                    'source "$1"; printf "%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s" '
+                    'source "$1"; printf "%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s" '
                     '"$BASE_URL" "$API_KEY" "$MODEL" '
                     '"$HARBOR_ANTHROPIC_BASE_URL" "$HARBOR_ANTHROPIC_AUTH_TOKEN" '
                     '"$HARBOR_MODEL" "$HARBOR_API_BASE" '
                     '"$HARBOR_ANALYZER_BASE_URL" "$HARBOR_ANALYZER_MODEL" '
+                    '"$HARBOR_ANALYZER_API_KEY" '
                     '"$RL_API_BASE" "$RL_API_KEY" "$RL_MODEL_NAME"'
                 ),
                 "bash",
@@ -174,7 +176,9 @@ class ConfigLoaderTest(unittest.TestCase):
             "|xxx|minimax2.7"
             "|https://runtime.example.invalid|fake-runtime-key|runtime-model"
             "|https://runtime.example.invalid/v1/chat/completions"
-            "|https://runtime.example.invalid/v1|runtime-model"
+            # Summary/Analyzer use the shared gateway, not Anthropic aliases.
+            # With no shared BASE_URL, their endpoint stays unconfigured.
+            "||runtime-model|xxx"
             "|https://runtime.example.invalid/v1|fake-runtime-key|runtime-model",
         )
 

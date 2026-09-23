@@ -325,11 +325,11 @@ without a matching explicit user decision.
 
 ## Harbor Analyzer
 
-`start.sh` starts the Pi-backed analyzer under the same Harbor run lifecycle by
-default when the monitor is enabled. Set `HARBOR_ANALYZER_ENABLED=0` to disable it:
+`start.sh` can start the Pi-backed analyzer under the same Harbor run lifecycle.
+It is disabled by default. Set `HARBOR_ANALYZER_ENABLED=1` to enable it:
 
 ```bash
-HARBOR_ANALYZER_ENABLED=0 ./start.sh --detach
+HARBOR_ANALYZER_ENABLED=1 ./start.sh --detach
 ```
 
 For a foreground run without zellij, pass the Harbor command to `start.sh`:
@@ -341,23 +341,34 @@ bash start.sh ./harboropik.sh
 The analyzer depends on the monitor. It follows
 `monitor/analyzer-handover-latest.json` and `monitor/analyzer-handoffs/`, writes
 reports under `$OUTPUT_PATH/analyzer`, and does not restart, stop, or otherwise
-control the benchmark run. Before using the default analyzer path, configure
+control the benchmark run. Before enabling the analyzer, configure
 `BASE_URL`, `API_KEY`, and `MODEL`, or set the analyzer-specific
 `HARBOR_ANALYZER_BASE_URL`, `HARBOR_ANALYZER_API_KEY`, and
 `HARBOR_ANALYZER_MODEL` overrides. If no analyzer model gateway should be used
 for a run, set `HARBOR_ANALYZER_ENABLED=0`.
 
-Completed fixed runs publish `summary.md` beside `summary.txt` in `$OUTPUT_PATH`.
-`write_benchmark_summary.py` combines Harbor results, Analyzer findings, and the
-Fixer report when available; runs without a Fixer report omit that section.
-The launcher publishes the summary after Analyzer finishes. After Fixer writes
-its own report and reaches its final status, the Controller CLI refreshes the
-root summary separately. Fixer does not require or modify a Markdown summary.
-Each narrative refresh uses one no-tools Pi call with the existing Analyzer
-connection settings. Runs with Analyzer disabled publish deterministic results.
-Metrics and verification results remain report-owned. If Pi is unavailable, the deterministic report is still published. Summary failures do
-not change Fixer's result. `summary.txt` remains unchanged; summary inputs,
-output, and Pi diagnostics live under `$OUTPUT_PATH/benchmark-summary/`.
+## Benchmark Summary
+
+Completed fixed runs automatically publish `summary.md` beside `summary.txt` in
+`$OUTPUT_PATH`, for both foreground and detached runs. Set
+`HARBOR_SUMMARY_ENABLED=0` to disable automatic generation; manual generation
+with `./scripts/run_fleet.sh summary <run-id-or-directory>` remains available,
+including when monitoring is disabled.
+
+Without Analyzer or Fixer, the summary reports only Harbor results. Analyzer is
+opt-in with `HARBOR_ANALYZER_ENABLED=1`; when enabled, publication waits for its
+analysis to finish. Fixer remains an explicit Controller workflow, and its report
+is included only when available. After Fixer completes, the Controller CLI
+refreshes the root summary separately.
+
+Each narrative uses one no-tools Pi call with `HARBOR_ANALYZER_*` connection
+settings or the shared model gateway; this does not start Analyzer. A per-run
+lock prevents duplicate automatic model calls, and `RESET_RUN=1` clears the
+completion marker. If Pi is unavailable, recorded Harbor results are still
+published. Summary failures do not change benchmark or Fixer results.
+`summary.txt` remains unchanged; summary inputs, output, and Pi diagnostics live
+under `$OUTPUT_PATH/benchmark-summary/`. RL rollout and Fixer verification runs
+do not trigger automatic summaries.
 
 To refresh the joint summary from an existing artifact directory:
 

@@ -134,6 +134,10 @@ if harbor_publishes_job_dir; then
     if ! harbor_stop_online_analysis; then
       echo "[WARN] failed to stop online analyzer for $OUTPUT_PATH" >&2
     fi
+    if harbor_is_native_registry_main && [[ "${HARBOR_DRY_RUN:-0}" != "1" ]]; then
+      python3 "$SCRIPT_DIR/scripts/auto_summary.py" --run-dir "$OUTPUT_PATH" --defer-analyzer \
+        || echo "[WARN] failed to write automatic benchmark summary" >&2
+    fi
     if harbor_is_fixer_verification_main; then
       cleanup_verifier_uv_bin_dir
     fi

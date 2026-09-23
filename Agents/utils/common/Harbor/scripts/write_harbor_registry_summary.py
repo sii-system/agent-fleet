@@ -9,8 +9,6 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from write_benchmark_summary import publish_benchmark_summary
-
 
 def format_number(value: float) -> str:
     if value.is_integer():
@@ -159,10 +157,7 @@ def main() -> None:
     tmp = summary.with_name(f"{summary.name}.tmp.{os.getpid()}")
     tmp.write_text("\n".join(lines) + "\n", encoding="utf-8")
     os.replace(tmp, summary)
-    try:
-        publish_benchmark_summary(summary.parent, summarize=False)
-    except (OSError, ValueError, KeyError, TypeError) as exc:
-        print(f"[WARN] failed to write benchmark summary: {exc}", file=sys.stderr)
+
 
 
 if __name__ == "__main__":

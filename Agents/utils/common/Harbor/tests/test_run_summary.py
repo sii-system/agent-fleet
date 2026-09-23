@@ -82,7 +82,7 @@ class RunSummaryTest(unittest.TestCase):
             writer.publish_benchmark_summary(root, summarize=False)
             result = (root / "summary.md").read_text()
             self.assertIn("Harbor report unavailable", result)
-            self.assertIn("Analyzer report unavailable", result)
+            self.assertNotIn("## Analyzer", result)
             self.assertNotIn("0.00%", result)
             self.assertNotIn("No failed task required", result)
             self.assertNotIn("## Fixer Results", result)
@@ -168,6 +168,8 @@ write_harbor_registry_summary() {
 }
 harbor_stop_online_analysis() { return 0; }
 harbor_is_fixer_verification_main() { return 1; }
+python3() { [[ -f "$HARBOR_BENCHMARK_EXIT_FILE" ]] || echo early; return 1; }
+SCRIPT_DIR=/fixture
 trap record_harbor_benchmark_exit EXIT
 exit 7
 """], env={**os.environ, "OUTPUT_PATH": tmp, "HARBOR_BENCHMARK_EXIT_FILE": str(Path(tmp) / "exit"), "SUMMARY_RC": summary_rc}, capture_output=True, text=True, check=False)
@@ -215,7 +217,7 @@ else:
                 self.assertIn(expected, summary, result.stderr)
                 self.assertIn("https://saved.invalid/v1", summary)
 
-    def test_registry_summary_producer_also_publishes_joint_report(self):
+    def test_registry_summary_producer_only_publishes_raw_report(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             result = subprocess.run(
@@ -225,7 +227,8 @@ else:
                 env={**os.environ, "HARBOR_ANALYZER_OUTPUT_DIR": str(root / "analyzer")},
             )
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertIn("| status | failed |", (root / "summary.md").read_text())
+            self.assertIn("status:      failed", (root / "summary.txt").read_text())
+            self.assertFalse((root / "summary.md").exists())
 
     def test_single_pi_call_receives_all_reports_and_preserves_metrics(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -83,9 +83,10 @@ dataset-specific verifier composition belongs in `verifier_runtime/`.
 
 ### Monitor, Analyzer, and Fixer
 
-Fixed benchmark runs start the monitor and Pi-backed analyzer by default.
-`HARBOR_MONITOR_ENABLED=0` disables monitoring;
-`HARBOR_ANALYZER_ENABLED=0` disables only the analyzer. The analyzer uses
+Fixed benchmark runs start the monitor and publish a Pi-backed summary by default.
+`HARBOR_MONITOR_ENABLED=0` disables monitoring; `HARBOR_SUMMARY_ENABLED=0`
+disables automatic summaries. Analyzer is opt-in with `HARBOR_ANALYZER_ENABLED=1`;
+Fixer remains an explicit controller workflow. The analyzer uses
 model gateway defaults or `HARBOR_ANALYZER_*` overrides.
 
 Keep observation (`scripts/harbor_monitor/`), decisions/execution

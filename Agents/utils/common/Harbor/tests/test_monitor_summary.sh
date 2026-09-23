@@ -40,6 +40,8 @@ start_monitor() {
     CLAUDE_CODE_TGZ_BASENAME="claude-code-test.tgz" \
     HARBOR_REMOTE_WHEEL_SERVER_URLS="http://127.0.0.1:$WHEEL_PORT" \
     HARBOR_RUNNER_PREPARE="0" \
+    HARBOR_ENVIRONMENT_TYPE="opensandbox" \
+    YICLOUD_SANDBOX_UPLOAD_BACKEND="http" \
     HARBOR_ONLINE_ANALYSIS="$online_analysis" \
     HARBOR_ZELLIJ_CLOSE_ON_COMPLETE="$close_on_complete" \
     OPIK_PROJECT_NAME="monitor-summary-test" \
@@ -182,7 +184,7 @@ main() {
   local keep_log="$TEST_TMP_DIR/monitor-keep.log"
   start_monitor "$out" "0" "0" "$keep_log"
   local keep_deadline=$((SECONDS + 10))
-  while [[ ! -f "$summary" ]]; do
+  while [[ ! -f "$summary" ]] || ! grep -q "keeping final monitor pane open" "$keep_log"; do
     if ! kill -0 "$MONITOR_PID" 2>/dev/null; then
       cat "$keep_log" >&2
       echo "monitor exited despite HARBOR_ZELLIJ_CLOSE_ON_COMPLETE=0" >&2

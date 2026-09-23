@@ -48,6 +48,29 @@ class HarborEnvAliasTests(unittest.TestCase):
         for old in ("N_ATTEMPTS", "HARBOR_RUNS", "MAX_RETRIES", "INCLUDE_TASKS"):
             self.assertNotIn(old, env)
 
+    def test_summary_and_analyzer_have_independent_opt_in_defaults(self) -> None:
+        env = self.load_env()
+        self.assertEqual(env["HARBOR_SUMMARY_ENABLED"], "1")
+        self.assertEqual(env["HARBOR_ANALYZER_ENABLED"], "0")
+        env = self.load_env(HARBOR_MONITOR_ENABLED="0", HARBOR_SUMMARY_ENABLED="0")
+        self.assertEqual(env["HARBOR_SUMMARY_ENABLED"], "0")
+        self.assertEqual(env["HARBOR_ANALYZER_ENABLED"], "0")
+        env = self.load_env(HARBOR_ANALYZER_ENABLED="1")
+        self.assertEqual(env["HARBOR_ANALYZER_ENABLED"], "1")
+        self.assertEqual(env["HARBOR_SUMMARY_ENABLED"], "1")
+
+    def test_summary_uses_shared_gateway_not_agent_proxy_credentials(self) -> None:
+        overrides = {"API_KEY": "shared-key", "BASE_URL": "https://gateway.invalid/v1",
+                     "ANTHROPIC_AUTH_TOKEN": "agent-placeholder",
+                     "ANTHROPIC_BASE_URL": "https://agent-proxy.invalid"}
+        env = self.load_env(**overrides)
+        self.assertEqual(env["HARBOR_ANALYZER_API_KEY"], "shared-key")
+        self.assertEqual(env["HARBOR_ANALYZER_BASE_URL"], "https://gateway.invalid/v1")
+        env = self.load_env(**overrides, HARBOR_ANALYZER_API_KEY="summary-key",
+                            HARBOR_ANALYZER_BASE_URL="https://summary.invalid/v1")
+        self.assertEqual(env["HARBOR_ANALYZER_API_KEY"], "summary-key")
+        self.assertEqual(env["HARBOR_ANALYZER_BASE_URL"], "https://summary.invalid/v1")
+
     def test_custom_rollout_declarations_survive_sourcing(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             rollout_env = Path(tmp) / "rollout.env"

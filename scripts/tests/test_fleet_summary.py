@@ -171,7 +171,7 @@ class FleetSummaryTest(unittest.TestCase):
         self.assertIn("submission-a", result.stdout)
         self.assertIn("submission-b", result.stdout)
         self.assertNotIn("| Failure rate |", result.stdout)
-        self.assertIn("Analyzer report unavailable", result.stdout)
+        self.assertNotIn("## Analyzer", result.stdout)
         self.assertNotIn("## Fixer Results", result.stdout)
         payload = json.loads((run / "benchmark-summary" / "summary-input.json").read_text())
         self.assertEqual(payload["rollout"]["finished"], 5)
