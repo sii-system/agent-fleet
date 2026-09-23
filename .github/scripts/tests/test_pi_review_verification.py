@@ -51,8 +51,9 @@ class VerificationTest(unittest.TestCase):
         evidence = []
         for source in self.sources:
             if source["status"] == "available":
+                self.assertEqual(source["text_format"], "numbered_lines")
                 evidence.append({"source_id": source["source_id"], "start_line": 2, "end_line": 2,
-                                 "quote": source["text"].split("\n")[1]})
+                                 "quote": source["text"].split("\n")[1].split(": ", 1)[1]})
         return {"verdict": "confirmed", "rationale": "Zero reaches the removed guard",
                 "failure_scenario": "Caller passes zero and crashes", "introduced_by_change": "Guard removed",
                 "counterevidence": "No caller guard", "evidence": evidence, "_pi_tool_calls": 0}
@@ -181,8 +182,22 @@ runpy.run_path(os.environ['REVIEW_SCRIPTS'] + '/pi_pr_review.py', run_name='__ma
         self.assertEqual(record["verification"]["rationale"], "[REDACTED] secret")
 
     def test_provider_failure_is_distinct_from_rejection(self):
-        result = self.run_verification(mock.Mock(side_effect=pi.PiReviewError("fake-api-key")))
+        result = self.run_verification(mock.Mock(side_effect=pi.PiReviewError("fake-api-key", category="provider")))
         self.assertEqual(result[0]["status"], "failed")
+        self.assertEqual(result[0]["failed_stage"], "verifier")
+        self.assertEqual(result[0]["error_category"], "provider")
+        self.assertNotIn("fake-api-key", json.dumps(result))
+
+    def test_schema_failure_preserves_code_through_pi_format_wrapper(self):
+        def respond(*args, **kwargs):
+            try:
+                verification.replay.parse_verdict({"verdict": "fake-api-key"})
+            except pi._review.ModelResponseError as exc:
+                raise pi.PiResponseFormatError("fake-api-key", response_text="fake-api-key") from exc
+        result = self.run_verification(respond)[0]
+        self.assertEqual(result["error_category"], "schema")
+        self.assertEqual(result["validation_code"], "invalid_verdict")
+        self.assertEqual(result["failed_stage"], "verifier")
         self.assertNotIn("fake-api-key", json.dumps(result))
 
     def test_verifier_tool_use_cannot_confirm(self):
@@ -196,6 +211,16 @@ runpy.run_path(os.environ['REVIEW_SCRIPTS'] + '/pi_pr_review.py', run_name='__ma
         with mock.patch.object(pi.PiClient, "prepare_source", side_effect=pi.PiReviewError("fetch failed")):
             result = self.run_verification()
         self.assertEqual(result[0]["status"], "failed")
+        self.assertEqual(result[0]["failed_stage"], "source")
+        self.assertEqual(self.clients, [])
+
+    def test_excerpt_failure_reports_source_stage_and_safe_subprocess_category(self):
+        with mock.patch.object(verification.replay, "_source",
+                               side_effect=subprocess.CalledProcessError(1, ["git", "fake-api-key"])):
+            result = self.run_verification()[0]
+        self.assertEqual(result["failed_stage"], "source")
+        self.assertEqual(result["error_category"], "subprocess")
+        self.assertNotIn("fake-api-key", json.dumps(result))
         self.assertEqual(self.clients, [])
 
     def test_oversized_input_abstains_before_model(self):

@@ -1,0 +1,72 @@
+{
+  "origin_url": "https://github.com/sii-system/agent-fleet/actions/runs/35827083130",
+  "notes": "Frozen citations and Git source excerpts from candidate 3. Explanations omitted; this tests evidence integrity, not the candidate verdict.",
+  "sources": [
+    {
+      "source_id": "s1",
+      "revision": "base",
+      "path": "Agents/utils/rl/native_rollout_worker.py",
+      "start_line": 25,
+      "end_line": 224,
+      "commit_sha": "65f4d21837504465b1a4c5775431c466e7a3cde2",
+      "status": "absent"
+    },
+    {
+      "source_id": "s3",
+      "revision": "head",
+      "path": "Agents/utils/rl/native_rollout_worker.py",
+      "start_line": 96,
+      "end_line": 107,
+      "commit_sha": "d50c830bcc33e05e2db3022fd856398627fd687b",
+      "blob_sha": "7ac153ae096a33a4d35cda15bba746f8a0711e77",
+      "status": "available",
+      "text": "            result_file = trials / config.trial_name / \"result.json\"\n            if not result_file.is_file():\n                raise RuntimeError(\"Harbor returned without persisting the trial result\")\n            if result.verifier_result and result.verifier_result.rewards:\n                reward = str(result.verifier_result.rewards.get(\"reward\", \"\"))\n            if result.exception_info:\n                error = result.exception_info.exception_type\n        except Exception as exc:\n            LOG.exception(\"Native rollout request failed: %s\", request[\"request_id\"])\n            error, code = type(exc).__name__, 1\n        build_result(path, result_file, str(trials / request[\"request_file_id\"] / \"trial.log\"),\n                     reward, error, code, output, \"failed\" if error else \"completed\")"
+    },
+    {
+      "source_id": "s4",
+      "revision": "head",
+      "path": "Agents/utils/common/Harbor/harbor_worker_utils.py",
+      "start_line": 49,
+      "end_line": 59,
+      "commit_sha": "d50c830bcc33e05e2db3022fd856398627fd687b",
+      "blob_sha": "378e4c0d16f8cdbc427cc0aee80a17c3fd69a292",
+      "status": "available",
+      "text": "    reward = None\n    verifier = data.get(\"verifier_result\") or {}\n    if isinstance(verifier, dict):\n        rewards = verifier.get(\"rewards\") or {}\n        if isinstance(rewards, dict):\n            reward = rewards.get(\"reward\")\n        if reward is None and \"is_resolved\" in verifier:\n            reward = 1.0 if verifier.get(\"is_resolved\") else 0.0\n    if reward is None and \"is_resolved\" in data:\n        reward = 1.0 if data.get(\"is_resolved\") else 0.0\n"
+    },
+    {
+      "source_id": "s5",
+      "revision": "head",
+      "path": "Agents/utils/common/Harbor/harbor_worker_utils.py",
+      "start_line": 26,
+      "end_line": 37,
+      "commit_sha": "d50c830bcc33e05e2db3022fd856398627fd687b",
+      "blob_sha": "378e4c0d16f8cdbc427cc0aee80a17c3fd69a292",
+      "status": "available",
+      "text": "\ndef latest_result(root: Path) -> int:\n    # Harbor also writes job-level result.json files. Prefer trial-level files\n    # that carry verifier_result or is_resolved fields.\n    for path in sorted(root.rglob(\"result.json\"), reverse=True):\n        try:\n            data = json.loads(path.read_text(encoding=\"utf-8\"))\n        except (OSError, json.JSONDecodeError):\n            continue\n        if isinstance(data, dict) and (\n            \"verifier_result\" in data or \"is_resolved\" in data\n        ):"
+    }
+  ],
+  "evidence": [
+    {
+      "source_id": "s3",
+      "start_line": 100,
+      "end_line": 101,
+      "quote": "            if result.verifier_result and result.verifier_result.rewards:\n                reward = str(result.verifier_result.rewards.get(\"reward\", \"\"))"
+    },
+    {
+      "source_id": "s4",
+      "start_line": 53,
+      "end_line": 57,
+      "quote": "        if reward is None and \"is_resolved\" in verifier:\n            reward = 1.0 if verifier.get(\"is_resolved\") else 0.0\n    if reward is None and \"is_resolved\" in data:\n        reward = 1.0 if data.get(\"is_resolved\") else 0.0"
+    },
+    {
+      "source_id": "s5",
+      "start_line": 30,
+      "end_line": 36,
+      "quote": "        if isinstance(data, dict) and (\n            \"verifier_result\" in data or \"is_resolved\" in data\n        )"
+    },
+    {
+      "source_id": "s1",
+      "absent": true
+    }
+  ]
+}

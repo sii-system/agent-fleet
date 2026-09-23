@@ -60,6 +60,9 @@ caller/guard/test ranges, up to 20 excerpts of 200 lines and 100 KB total.
 Renames include both paths. Changed line numbers may differ across revisions;
 discovery should request the correct ranges explicitly. Truncated context must
 lead to abstention when the omitted code is needed to decide the claim.
+The model receives absolute line numbers on each excerpt line; citation quotes
+must omit that added prefix and still match the original source exactly. The
+numbered input counts toward the same 100 KB budget.
 
 Workflow timeout increases from 20 to 30 minutes to accommodate the additional
 pass. Shadow and enforce add up to six model invocations, with one bounded JSON
@@ -71,6 +74,15 @@ Reports include revisions, discovery prompt/reviewer hashes, model, elapsed
 time, coverage, failed lenses, tool counts, original candidate records,
 verification verdicts, source metadata, citations, and findings selected for
 publication. Status `failed` or `skipped` is distinct from a rejected candidate.
+Failed verifier records include `failed_stage` (`source` or `verifier`),
+`error_type`, and a fixed `error_category`. Invalid JSON/response framing uses
+`response_format`; invalid verdict fields use `schema` with a `validation_code`
+such as `invalid_rationale` or `invalid_citation_range`. These describe the final
+failure after the existing repair attempt, without retaining its raw response.
+Citation validation retains `validation_errors` and adds `citation_diagnostics`
+with a zero-based `citation_index`, `source_id`, and code: `unknown_source`,
+`false_absence`, `source_unavailable`, `range_outside_excerpt`, or `quote_mismatch`.
+Mismatched citations are never relocated or accepted by approximate matching.
 Full source excerpts and raw provider errors are omitted. Credential values are
 redacted from free-text fields. Reports still contain source citations and
 review text; GitHub artifacts inherit the repository's access controls and are

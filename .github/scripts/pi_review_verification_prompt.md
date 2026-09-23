@@ -25,10 +25,18 @@ Return exactly one JSON object:
   ]
 }
 
+Available excerpts use text_format "numbered_lines": each line begins with
+its absolute source line number followed by ": ". Use those numbers for
+start_line/end_line. Exclude only that added prefix from quotes; preserve the
+original content, indentation, blank lines, and punctuation. For example,
+"99:     return reward" must be cited at line 99 with quote "    return reward".
 Every quote must match the cited lines exactly, including indentation. Use
 only source IDs and line ranges present in the supplied excerpts. For a source
 explicitly marked absent, cite {"source_id": "s1", "absent": true}; never use
-an absence citation for an omitted or unavailable source. Each rationale,
+an absence citation for an omitted or unavailable source. Verified base absence
+with an available head file establishes that the path is new, not that base
+evidence is missing. It does not by itself prove a reachable defect: still
+check supplied callers, contracts, and any rename/move evidence. Each rationale,
 explanation, and quote is limited to 2000 characters. Cite the smallest complete
 line range that supports the claim, not the entire excerpt. If necessary
 evidence cannot fit these limits, return insufficient_evidence. Return at most

@@ -54,10 +54,14 @@ rationale, failure scenario, explanation of the introduced behavior, contrary
 evidence considered, and source citations. Each explanation and quote is limited
 to 2000 characters; citations should use the smallest supporting line range.
 Python checks citation IDs, exact quotes, line ranges, and absence claims.
+Excerpts shown to the model carry absolute line-number prefixes; quotes must
+exclude those prefixes and preserve the original source text. Verified base
+absence establishes a new path, but reachable behavior still needs evidence.
 Confirmation also requires both
 revisions and a cited changed file; rejection requires head evidence. Invalid
 citations downgrade a model verdict to `insufficient_evidence` while retaining
-`model_verdict` and `validation_errors`. Matching citations establish evidence
+`model_verdict`, `validation_errors`, and structured `citation_diagnostics`.
+Matching citations establish evidence
 integrity, not the truth of the model's causal reasoning.
 
 ## Results and evaluation limits
@@ -72,7 +76,9 @@ Record `pi --version` alongside experiment
 results; the artifact does not capture effective provider settings or cost.
 
 `status: failed` records a preparation or verifier failure with its stage and
-exception class. It is distinct from a rejected finding or a completed empty
+exception class, plus the same sanitized `error_category` and schema
+`validation_code` used in [live reports](pi_review_verification.md#bounds-and-reports).
+It is distinct from a rejected finding or a completed empty
 review. Exit 0 means a completed replay, including an insufficient-evidence
 result; exit 1 means the run failed. `matches_expected` is a comparison with the
 optional label, not a CI pass/fail gate, and is null for failed runs.
@@ -84,3 +90,12 @@ revision of one PR/root cause in the same evaluation partition, repeat stochasti
 runs, and report confirmed-bug retention alongside precision, abstentions,
 failures, and latency. Fixed findings must stop reproducing. Inspect unseen
 verifier output as well as known cases to avoid overfitting these fixtures.
+
+The deterministic regression fixture
+`tests/fixtures/pi-review-verification/pr215-citation-mismatches.json` freezes
+three invalid citations from [run 35827083130](https://github.com/sii-system/agent-fleet/actions/runs/35827083130)
+with exact Git source excerpts. It tests citation diagnostics, not a labeled
+bug verdict, and is not a CLI replay case. Format/schema failure tests use
+synthetic responses: [run 35832847898](https://github.com/sii-system/agent-fleet/actions/runs/35832847898)
+retained only `PiResponseFormatError`, so its exact response failure cannot be
+reconstructed.

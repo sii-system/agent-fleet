@@ -28,6 +28,44 @@ ARTIFACT_TEXT_FIELDS = frozenset({
 })
 
 
+class VerdictSchemaError(pi._review.ModelResponseError):
+    def __init__(self, message: str, code: str):
+        super().__init__(message)
+        self.code = code
+
+
+def verification_failure(exc: Exception, stage: str) -> dict:
+    result = {"failed_stage": stage, "error_type": type(exc).__name__}
+    cause = exc.__cause__ if isinstance(exc, pi.PiResponseFormatError) else exc
+    if isinstance(cause, pi._review.ModelResponseError):
+        result["error_category"] = "schema"
+        if isinstance(cause, VerdictSchemaError):
+            result["validation_code"] = cause.code
+    elif isinstance(exc, pi.PiReviewError):
+        categories = {"review", "response_format", "timeout", "launch", "process_exit", "provider"}
+        result["error_category"] = exc.category if exc.category in categories else "review"
+    elif isinstance(exc, subprocess.TimeoutExpired):
+        result["error_category"] = "timeout"
+    elif isinstance(exc, subprocess.SubprocessError):
+        result["error_category"] = "subprocess"
+    elif isinstance(exc, OSError):
+        result["error_category"] = "io"
+    else:
+        result["error_category"] = "input"
+    return result
+
+
+def verifier_input(finding: dict, sources: list[dict]) -> str:
+    numbered = []
+    for source in sources:
+        if source["status"] == "available":
+            text = "\n".join(f"{line}: {text}" for line, text in
+                             enumerate(source["text"].split("\n"), source["start_line"]))
+            source = {**source, "text": text, "text_format": "numbered_lines"}
+        numbered.append(source)
+    return json.dumps({"candidate": finding, "sources": numbered}, ensure_ascii=False)
+
+
 def _text(value: Any) -> bool:
     return isinstance(value, str) and bool(value.strip()) and len(value) <= 2_000
 
@@ -100,26 +138,30 @@ def _source(spec: dict, sha: str, directory: Path, source_id: str) -> dict:
 
 
 def parse_verdict(payload: dict) -> dict:
-    if payload.get("verdict") not in VERDICTS or not _text(payload.get("rationale")):
-        raise pi._review.ModelResponseError("invalid verdict or rationale; rationale must contain 1 to 2000 characters")
+    if payload.get("verdict") not in VERDICTS:
+        raise VerdictSchemaError("invalid verdict", "invalid_verdict")
+    if not _text(payload.get("rationale")):
+        raise VerdictSchemaError("rationale must contain 1 to 2000 characters", "invalid_rationale")
     fields = ("failure_scenario", "introduced_by_change", "counterevidence")
     for field in fields:
         value = payload.get(field)
         if not isinstance(value, str) or len(value) > 2_000:
-            raise pi._review.ModelResponseError(f"{field} must be a string of at most 2000 characters")
+            raise VerdictSchemaError(f"{field} must be a string of at most 2000 characters", f"invalid_{field}")
     evidence = payload.get("evidence")
     if not isinstance(evidence, list) or len(evidence) > 8:
-        raise pi._review.ModelResponseError("expected at most eight evidence citations")
+        raise VerdictSchemaError("expected at most eight evidence citations", "invalid_evidence")
     citations = []
     for item in evidence:
         if not isinstance(item, dict) or not _text(item.get("source_id")):
-            raise pi._review.ModelResponseError("invalid citation source ID")
+            raise VerdictSchemaError("invalid citation source ID", "invalid_source_id")
         if item.get("absent") is True:
             citations.append({"source_id": item["source_id"], "absent": True})
             continue
         if (type(item.get("start_line")) is not int or type(item.get("end_line")) is not int
-                or not 1 <= item["start_line"] <= item["end_line"] or not _text(item.get("quote"))):
-            raise pi._review.ModelResponseError("invalid citation range or quote; quote must contain 1 to 2000 characters")
+                or not 1 <= item["start_line"] <= item["end_line"]):
+            raise VerdictSchemaError("invalid citation range", "invalid_citation_range")
+        if not _text(item.get("quote")):
+            raise VerdictSchemaError("quote must contain 1 to 2000 characters", "invalid_quote")
         citations.append({key: item[key] for key in ("source_id", "start_line", "end_line", "quote")})
     return {key: payload[key] for key in ("verdict", "rationale", *fields)} | {"evidence": citations}
 
@@ -127,23 +169,31 @@ def parse_verdict(payload: dict) -> dict:
 def validate_evidence(payload: dict, sources: list[dict]) -> dict:
     result = parse_verdict(payload)
     by_id = {item["source_id"]: item for item in sources}
-    errors, cited = [], []
-    for citation in result["evidence"]:
+    errors, cited, diagnostics = [], [], []
+    for index, citation in enumerate(result["evidence"]):
         source = by_id.get(citation["source_id"])
-        valid = False
-        if source is not None:
-            if citation.get("absent"):
-                valid = source["status"] == "absent"
-            elif source["status"] == "available":
-                start, end = citation["start_line"], citation["end_line"]
-                if source["start_line"] <= start <= end <= source["end_line"]:
-                    lines = source["text"].split("\n")
-                    actual = "\n".join(lines[start - source["start_line"]:end - source["start_line"] + 1])
-                    valid = actual == citation["quote"]
-        if valid:
+        code = None
+        if source is None:
+            code = "unknown_source"
+        elif citation.get("absent"):
+            if source["status"] != "absent":
+                code = "false_absence"
+        elif source["status"] != "available":
+            code = "source_unavailable"
+        else:
+            start, end = citation["start_line"], citation["end_line"]
+            if not source["start_line"] <= start <= end <= source["end_line"]:
+                code = "range_outside_excerpt"
+            else:
+                lines = source["text"].split("\n")
+                actual = "\n".join(lines[start - source["start_line"]:end - source["start_line"] + 1])
+                if actual != citation["quote"]:
+                    code = "quote_mismatch"
+        if code is None:
             cited.append(source)
         else:
             errors.append(f"unverified citation: {citation['source_id']}")
+            diagnostics.append({"citation_index": index, "source_id": citation["source_id"], "code": code})
     revisions = {item["revision"] for item in cited}
     if result["verdict"] == "confirmed":
         if revisions != {"base", "head"}:
@@ -163,7 +213,7 @@ def validate_evidence(payload: dict, sources: list[dict]) -> dict:
     return {
         **result, "model_verdict": result["verdict"],
         "verdict": "insufficient_evidence" if errors else result["verdict"],
-        "validation_errors": errors,
+        "validation_errors": errors, "citation_diagnostics": diagnostics,
     }
 
 
@@ -223,7 +273,7 @@ def run_replay(case: dict, client: pi.PiClient, github: pi._review.GitHubClient)
                 for index, spec in enumerate(case["context"], 1)
             ]
             artifact["sources"] = [{key: value for key, value in source.items() if key != "text"} for source in sources]
-            model_input = json.dumps({"candidate": finding, "sources": sources}, ensure_ascii=False)
+            model_input = verifier_input(finding, sources)
             if len(model_input.encode()) > MAX_INPUT_BYTES:
                 raise ValueError("source excerpts exceed replay input budget; narrow the ranges")
             artifact["input_sha256"] = hashlib.sha256(model_input.encode()).hexdigest()
@@ -234,7 +284,7 @@ def run_replay(case: dict, client: pi.PiClient, github: pi._review.GitHubClient)
             artifact.update(status="completed", verification=validate_evidence(payload, sources))
             artifact["tool_calls"] = 0
     except (pi.PiReviewError, pi._review.ModelResponseError, subprocess.SubprocessError, OSError, ValueError) as exc:
-        artifact.update(status="failed", failed_stage=stage, error_type=type(exc).__name__)
+        artifact.update(status="failed", **verification_failure(exc, stage))
     artifact["elapsed_seconds"] = round(time.monotonic() - started, 3)
     if "expected_verdict" in case:
         artifact["expected_verdict"] = case["expected_verdict"]

@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import copy
 import hashlib
-import json
 import os
 import subprocess
 import tempfile
@@ -88,6 +87,7 @@ def verify_candidates(github, client: pi.PiClient, pull: dict, findings: list[pi
 
             def verify(index):
                 record = {"finding": asdict(findings[index])}
+                stage = "source"
                 try:
                     context = candidate_context(findings[index], payloads, raw_files)
                     if not context:
@@ -96,23 +96,25 @@ def verify_candidates(github, client: pi.PiClient, pull: dict, findings: list[pi
                                for number, spec in enumerate(context, 1)]
                     record["sources"] = [{key: value for key, value in source.items() if key != "text"}
                                          for source in sources]
-                    model_input = json.dumps({"candidate": record["finding"], "sources": sources}, ensure_ascii=False)
+                    model_input = replay.verifier_input(record["finding"], sources)
                     record["input_sha256"] = hashlib.sha256(model_input.encode()).hexdigest()
                     record["prompt_sha256"] = hashlib.sha256(prompt.encode()).hexdigest()
                     record["verifier_code_sha256"] = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
                     if len(model_input.encode()) > replay.MAX_INPUT_BYTES:
                         return {**record, "status": "skipped", "reason": "input_budget"}
+                    stage = "verifier"
                     payload = verifier.review(prompt, model_input, no_tools=True, retry_malformed=True,
                                               response_validator=replay.parse_verdict)
                     if payload.get("_pi_tool_calls", 0):
                         raise pi.PiReviewError("tool-free verifier unexpectedly executed tools")
                     return {**record, "status": "completed", "verification": replay.validate_evidence(payload, sources)}
                 except errors as exc:
-                    return {**record, "status": "failed", "error_type": type(exc).__name__}
+                    return {**record, "status": "failed", **replay.verification_failure(exc, stage)}
 
             with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
                 records[:count] = list(executor.map(verify, range(count)))
     except errors as exc:
         for index in range(count):
-            records[index] = {"finding": asdict(findings[index]), "status": "failed", "error_type": type(exc).__name__}
+            records[index] = {"finding": asdict(findings[index]), "status": "failed",
+                              **replay.verification_failure(exc, "source")}
     return records

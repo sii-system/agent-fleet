@@ -87,6 +87,8 @@ class ReplayTest(unittest.TestCase):
         self.assertNotIn("expected_verdict", captured)
         self.assertNotIn("HIDDEN_EVALUATOR_ONLY_SENTINEL", captured)
         self.assertIn("arg=<--no-tools>", captured)
+        self.assertIn('"text_format": "numbered_lines"', captured)
+        self.assertIn('1: def ratio(n):', captured)
         self.assertNotIn("fake-model-token", json.dumps(result))
         self.assertNotIn("fake-github-token", json.dumps(result))
 
@@ -133,9 +135,57 @@ class ReplayTest(unittest.TestCase):
         _stub_pi_script(self.bin, stderr="fake-model-token", exit_code=1)
         result = replay.run_replay(self.case, self.client, self.github)
         self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["failed_stage"], "verifier")
+        self.assertEqual(result["error_category"], "process_exit")
         self.assertNotIn("verification", result)
         self.assertNotIn("fake-model-token", json.dumps(result))
         self.assertIsNone(result["matches_expected"])
+
+    def test_malformed_json_and_schema_failures_have_safe_distinct_diagnostics(self):
+        # Synthetic responses: the failed PR #216 artifact did not retain its response.
+        for response, category, code in (
+            ("not JSON fake-model-token", "response_format", None),
+            (json.dumps(dict(verdict(), rationale="x" * 2001)), "schema", "invalid_rationale"),
+            (json.dumps(dict(verdict(), evidence=[{"source_id": "s1", "quote": "fake-model-token"}])),
+             "schema", "invalid_citation_range"),
+        ):
+            with self.subTest(category=category, code=code):
+                _stub_pi_script(self.bin, stdout=_make_text_response(response))
+                result = replay.run_replay(self.case, self.client, self.github)
+                self.assertEqual(result["status"], "failed")
+                self.assertEqual(result["failed_stage"], "verifier")
+                self.assertEqual(result["error_category"], category)
+                self.assertEqual(result.get("validation_code"), code)
+                self.assertNotIn("fake-model-token", json.dumps(result))
+                self.assertNotIn("x" * 2001, json.dumps(result))
+
+    def test_model_input_numbers_lines_without_mutating_validator_source(self):
+        sources = [{"source_id": "s1", "status": "available", "start_line": 98,
+                    "end_line": 100, "text": "  first\n\n99: literal source"},
+                   {"source_id": "s2", "status": "absent"}]
+        original = copy.deepcopy(sources)
+        encoded = replay.verifier_input(self.case["finding"], sources)
+        data = json.loads(encoded)
+        self.assertEqual(data["sources"][0]["text_format"], "numbered_lines")
+        self.assertEqual(data["sources"][0]["text"], "98:   first\n99: \n100: 99: literal source")
+        self.assertEqual(data["sources"][1], sources[1])
+        self.assertEqual(sources, original)
+
+    def test_pr215_frozen_citations_explain_mismatches_without_reanchoring(self):
+        fixture = json.loads((Path(__file__).parent / "fixtures/pi-review-verification/pr215-citation-mismatches.json").read_text())
+        payload = dict(verdict("insufficient_evidence"), evidence=fixture["evidence"])
+        result = replay.validate_evidence(payload, fixture["sources"])
+        self.assertEqual(result["citation_diagnostics"], [
+            {"citation_index": i, "source_id": source_id, "code": "quote_mismatch"}
+            for i, source_id in enumerate(("s3", "s4", "s5"))
+        ])
+        self.assertEqual(result["evidence"], fixture["evidence"])
+        self.assertEqual(len(result["validation_errors"]), 3)
+        # A correct quote at the actual line remains valid; no fuzzy matching.
+        payload["evidence"] = [{"source_id": "s3", "start_line": 99, "end_line": 100,
+                                "quote": fixture["evidence"][0]["quote"]},
+                               {"source_id": "s1", "absent": True}]
+        self.assertEqual(replay.validate_evidence(payload, fixture["sources"])["citation_diagnostics"], [])
 
     def test_model_explanations_redact_supplied_credentials(self):
         payload = verdict()
@@ -228,15 +278,17 @@ class ReplayTest(unittest.TestCase):
             replay.parse_verdict(dict(verdict(), verdict=[]))
 
     def test_out_of_range_unknown_and_false_absence_citations_are_rejected(self):
-        for citation in (
-            {"source_id": "s2", "start_line": 3, "end_line": 3, "quote": "made up"},
-            {"source_id": "unknown", "start_line": 2, "end_line": 2, "quote": "    return 1 / n"},
-            {"source_id": "s2", "absent": True},
+        for citation, code in (
+            ({"source_id": "s2", "start_line": 3, "end_line": 3, "quote": "made up"}, "range_outside_excerpt"),
+            ({"source_id": "unknown", "start_line": 2, "end_line": 2, "quote": "    return 1 / n"}, "unknown_source"),
+            ({"source_id": "s2", "absent": True}, "false_absence"),
         ):
             with self.subTest(citation=citation):
                 payload = verdict()
                 payload["evidence"][1] = citation
-                self.assertEqual(self.run_case(payload)["verification"]["verdict"], "insufficient_evidence")
+                result = self.run_case(payload)["verification"]
+                self.assertEqual(result["verdict"], "insufficient_evidence")
+                self.assertEqual(result["citation_diagnostics"][0]["code"], code)
 
     def test_tool_events_fail_the_tool_free_verifier(self):
         with mock.patch.object(self.client, "review", return_value=dict(verdict(), _pi_tool_calls=1)):
@@ -272,6 +324,8 @@ class ReplayTest(unittest.TestCase):
             result = self.run_case()
         self.assertEqual(result["sources"][1]["status"], "omitted")
         self.assertEqual(result["verification"]["verdict"], "insufficient_evidence")
+        self.assertEqual({item["code"] for item in result["verification"]["citation_diagnostics"]},
+                         {"source_unavailable"})
 
     def test_cli_writes_private_artifact_and_never_overwrites_existing_output(self):
         case_file = self.root / "case.json"
