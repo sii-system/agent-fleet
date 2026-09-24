@@ -27,29 +27,43 @@ def render_build_dockerfile(
     aliases: set[str] = set()
     active_instruction: str | None = None
     heredocs: list[tuple[str, bool]] = []
+    # A heredoc body needs structural handling: a RUN body is shell the build
+    # runs (task templates put every install command inside
+    # `RUN <<-DOCKER_RUN_EOF`), so package sources inside it are rewritten; a
+    # COPY/ADD body is file content and stays byte-identical. The renderer
+    # only reports that structure via ``shell_context``; which sources a shell
+    # body gets rewritten to stays in the strategy.
     for source_line in source.splitlines():
         if heredocs:
             delimiter, strip_tabs = heredocs[0]
             candidate = source_line.lstrip("\t") if strip_tabs else source_line
-            output.append(source_line)
             if candidate == delimiter:
+                # The delimiter line is structure, not shell: emit it verbatim.
+                output.append(source_line)
                 heredocs.pop(0)
                 if not heredocs:
                     active_instruction = None
+                continue
+            output.append(
+                rewrite_package_source_urls(
+                    source_line,
+                    rustup_init_url=rustup_init_url,
+                    pytorch_index_url=pytorch_index_url,
+                    shell_context=active_instruction == "RUN",
+                )
+            )
             continue
 
-        instruction = None
+        line = rewrite_package_source_urls(
+            source_line,
+            rustup_init_url=rustup_init_url,
+            pytorch_index_url=pytorch_index_url,
+        )
         if active_instruction is None:
             instruction = DOCKERFILE_INSTRUCTION.match(source_line)
             if instruction:
                 active_instruction = instruction.group("name").upper()
 
-        line = source_line
-        line = rewrite_package_source_urls(
-            line,
-            rustup_init_url=rustup_init_url,
-            pytorch_index_url=pytorch_index_url,
-        )
         match = FROM_LINE.match(line)
         if match:
             source_image = match.group("image")

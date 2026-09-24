@@ -633,6 +633,85 @@ networks:
         self.assertEqual(rendered.count("ARG NPM_CONFIG_REGISTRY"), 2)
         self.assertEqual(rendered.count("ARG PIP_INDEX_URL"), 2)
 
+    def test_render_rewrites_package_sources_inside_run_heredoc(self) -> None:
+        """A RUN heredoc body is a shell script, so mirrors must reach it.
+
+        The task templates put every install command inside
+        `RUN <<-DOCKER_RUN_EOF`; emitting that body verbatim kept
+        `curl --proto '=https' ... https://sh.rustup.rs` pointing at the public
+        origin with its https-only restriction intact, which made the rustup
+        bootstrap fail on every task that installs a Rust toolchain.
+        """
+
+        gateway = "http://gateway.internal:8080/v1/cache/rustup-init/rustup-init.sh"
+        source = (
+            "FROM ubuntu:24.04\n"
+            "RUN <<-DOCKER_RUN_EOF\n"
+            "    set -eux;\n"
+            "    ( curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs "
+            "| sh -s -- -y ) || true;\n"
+            "DOCKER_RUN_EOF\n"
+        )
+
+        rendered = render_build_dockerfile(
+            source, dockerhub_mirror_prefix="", rustup_init_url=gateway
+        )
+
+        self.assertIn(f"--proto '=http,https' --tlsv1.2 -sSf {gateway}", rendered)
+        self.assertNotIn("https://sh.rustup.rs", rendered)
+        # The heredoc itself must survive the rewrite unchanged.
+        self.assertIn("RUN <<-DOCKER_RUN_EOF\n", rendered)
+        self.assertIn("DOCKER_RUN_EOF\n", rendered)
+        self.assertEqual(rendered.count("DOCKER_RUN_EOF"), 2)
+
+    def test_render_rewrites_pytorch_index_inside_run_heredoc(self) -> None:
+        rendered = render_build_dockerfile(
+            (
+                "FROM ubuntu:24.04\n"
+                "RUN <<-DOCKER_RUN_EOF\n"
+                "    pip install --index-url https://download.pytorch.org/whl/cpu torch\n"
+                "DOCKER_RUN_EOF\n"
+            ),
+            dockerhub_mirror_prefix="",
+            pytorch_index_url="http://gateway.internal:8080/v1/cache/pytorch",
+        )
+
+        self.assertIn(
+            "--index-url http://gateway.internal:8080/v1/cache/pytorch/cpu torch",
+            rendered,
+        )
+        self.assertNotIn("download.pytorch.org", rendered)
+
+    def test_render_leaves_copy_heredoc_and_unconfigured_run_heredoc_alone(self) -> None:
+        """Only RUN bodies are commands; file contents and the no-mirror case
+        must stay byte-identical."""
+
+        copy_source = (
+            "FROM ubuntu:24.04\n"
+            "COPY <<EOF /tmp/notes\n"
+            "https://sh.rustup.rs\n"
+            "EOF\n"
+        )
+        self.assertEqual(
+            copy_source,
+            render_build_dockerfile(
+                copy_source,
+                dockerhub_mirror_prefix="",
+                rustup_init_url="http://gateway.internal/rustup-init.sh",
+            ),
+        )
+
+        run_source = (
+            "FROM ubuntu:24.04\n"
+            "RUN <<-DOCKER_RUN_EOF\n"
+            "    echo https://sh.rustup.rs\n"
+            "DOCKER_RUN_EOF\n"
+        )
+        self.assertEqual(
+            run_source,
+            render_build_dockerfile(run_source, dockerhub_mirror_prefix=""),
+        )
+
     def test_logical_base_image_uses_immutable_named_context(self) -> None:
         source = (
             "FROM --platform=linux/amd64 go_1.19.13 AS builder\n"

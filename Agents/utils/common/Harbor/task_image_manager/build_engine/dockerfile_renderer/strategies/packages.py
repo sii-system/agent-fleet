@@ -159,8 +159,26 @@ def package_source_hosts(build_args: dict[str, str], *additional_urls: str) -> s
 
 
 def rewrite_package_source_urls(
-    source: str, *, rustup_init_url: str = "", pytorch_index_url: str = ""
+    source: str,
+    *,
+    rustup_init_url: str = "",
+    pytorch_index_url: str = "",
+    shell_context: bool = True,
 ) -> str:
+    """Rewrite the configured package sources in ``source``.
+
+    ``shell_context`` reports whether ``source`` is shell the build actually
+    runs. Callers that walk a Dockerfile pass ``False`` for heredoc bodies that
+    are file contents (COPY/ADD) so their bytes stay identical, and ``True`` for
+    RUN bodies, which the templates use for every install command: a
+    ``curl --proto '=https' ... https://sh.rustup.rs | sh`` bootstrap must be
+    rewritten there too, otherwise it keeps its https-only restriction and still
+    aims at the public origin.
+    """
+
+    if not shell_context:
+        return source
+
     rewritten = source
     if rustup_init_url:
         rewritten = rewritten.replace(
