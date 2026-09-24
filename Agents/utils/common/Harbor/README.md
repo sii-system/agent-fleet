@@ -6,6 +6,9 @@ Pi, and DeepSeek Harness SDK minimal.
 For YiCloud OpenSandbox, start with the
 [OpenSandbox quick start](OPENSANDBOX_README.md). For qz (SII Inspire)
 sandboxes, start with the [qz Sandbox quick start](QZ_SANDBOX_README.md).
+For Windows VMs on KubeVirt, use the dedicated launcher and
+[Windows backend guide](KUBEVIRT_WINDOWS_README.md). This backend consumes
+externally supplied Windows tasks and prepared VM images.
 
 The normal workflow is:
 
