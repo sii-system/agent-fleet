@@ -77,8 +77,8 @@ class WindowsSSH:
             f"HostName={self.ip}",
             "-o",
             f"User={self.settings.ssh_user}",
-            "-p",
-            str(self.settings.ssh_port),
+            "-o",
+            f"Port={self.settings.ssh_port}",
         ]
 
     async def powershell(self, script, *, timeout=60):

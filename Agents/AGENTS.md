@@ -85,8 +85,9 @@ Windows KubeVirt runs use the separate
 [`run_kubevirt_windows.sh`](utils/common/Harbor/run_kubevirt_windows.sh) launcher
 and [Windows backend contract](utils/common/Harbor/KUBEVIRT_WINDOWS_README.md).
 The shared Linux fleet launcher does not dispatch this backend. Windows images
-and agents are prepared ahead of time; benchmark adapters belong to the consuming
-project. Do not route Windows runs through the Linux runtime installers.
+are prepared ahead of time; agents can be image-provided or provisioned with the
+optional pinned local preparation manifest. Benchmark adapters belong to the
+consuming project. Do not route Windows runs through the Linux runtime installers.
 
 ### Monitor, Analyzer, and Fixer
 

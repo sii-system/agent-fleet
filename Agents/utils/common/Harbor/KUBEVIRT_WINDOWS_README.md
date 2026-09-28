@@ -25,28 +25,21 @@ directly by another project's Harbor configuration.
   disk clone is needed. The backend generates VM names and labels.
 - Prepare a versioned Windows image with VirtIO drivers, Windows PowerShell 5.1
   or later, OpenSSH Server with SFTP and key authentication, and the desired
-  applications/agent already installed. The SSH account must be able to create
+  stable applications already installed. Agent tools may be delivered at runtime
+  using the preparation manifest below. The SSH account must be able to create
   `C:/ProgramData/AgentFleet`, `C:/logs`, and the task workspace. Commands execute
   as that account; alternate users and automatic privilege escalation are not
   supported. Each trial gets a freshly cloned disk; restarting an existing VM is
   not the reset mechanism.
 
-> **Platform image availability.** The platform template catalog currently
-> contains only Linux images (for example `ubuntu20.04-template-image`). Windows
-> guest readiness (`execute.ps1`) is therefore only confirmed once a Windows
-> golden image is provisioned. Lifecycle and direct-IP SSH plumbing can be
-> validated with a Linux image as a stand-in today, but the Windows-specific
-> `execute.ps1` contract remains untested until a Windows image exists.
->
-> **Direct-IP SSH caveat (live-validated).** Against this platform from the
-> runner, SSH does **not** complete: the runner establishes the TCP connection
-> to the VM's overlay IP but the handshake times out at banner exchange, and the
-> platform injects no SSH key (there is no cloud-init/access-credential API; the
-> guest agent reports Offline). The only interactive access path exposed by the
-> platform is the VNC/WebSocket console (`vnc/ws`, standard RFB, reachable
-> through the gateway), not SSH. Control-plane lifecycle is fully validated; the
-> SSH `execute.ps1` execution transport still requires a runner with route/key
-> to the VM overlay.
+> **Validation boundary.** Earlier validation of this PR exercised the platform
+> lifecycle with a Linux template. It did not validate a Windows image or Windows
+> command execution. The runner could open TCP to the guest IP, but SSH stalled
+> during banner exchange; the platform did not inject a usable SSH key. VNC console
+> access does not supply this backend's execution/file-transfer transport. A
+> Windows image, reachable SSH/SFTP, and a provisioned guest key remain required.
+> These observations describe the earlier test environment, not a current image
+> catalog or a guarantee of platform readiness.
 
 The platform owns the golden-image clone and VM lifecycle: each trial creates a
 fresh VM from `HARBOR_KUBEVIRT_IMAGE`, and teardown requests release the cloned
@@ -60,9 +53,9 @@ variables. Runtime environment values, including explicitly empty ones, override
 saved configuration.
 
 ```bash
-export HARBOR_KUBEVIRT_BASE_URL=http://10.9.202.91:31600
+export HARBOR_KUBEVIRT_BASE_URL=https://vm-platform.example.com
 # export HARBOR_KUBEVIRT_TOKEN=replace-with-a-platform-access-token
-export HARBOR_KUBEVIRT_IMAGE=ubuntu20.04-template-image
+export HARBOR_KUBEVIRT_IMAGE=windows-benchmark-v1
 export HARBOR_KUBEVIRT_NAMESPACE=windows-benchmarks
 export HARBOR_KUBEVIRT_SSH_USER=runner
 export HARBOR_KUBEVIRT_SSH_KEY=/path/to/runner-key
@@ -106,9 +99,9 @@ or agent-specific realtime tracing hooks.
 
 The consuming project declares `[environment].os = "windows"`. An optional
 Windows absolute `workdir` is created on startup; otherwise commands run in
-`C:/workspace`. The task's `cpus` and `memory_mb` override the image template's
-CPU and guest RAM. Disk size is configured in the template; `storage_mb` is
-rejected. The backend sizes the root disk to at least the source template's
+`C:/workspace`. The task's `cpus` and `memory_mb` become `cpuCores` (one socket) and
+`memoryGuest` in MiB in the create request; omitted values use 2 vCPUs and 4 GiB.
+Disk size follows the template minimum; `storage_mb` is rejected. The backend sizes the root disk to at least the source template's
 `minSize` (a template-image clone cannot be smaller than its source), then
 sends an explicit power-on after create (create defines the VM in a Stopped
 state). It supports CPU/memory limit policies, not Kubernetes request
@@ -125,8 +118,8 @@ Harbor outside the provided launcher. The backend implements start/stop,
 execution, file/directory transfer, and filtered artifact downloads. Harbor's
 normal Windows `.bat` entrypoints and result handling remain in use.
 
-The default `WindowsCommandAgent` calls a **preinstalled** command, without
-invoking Harbor's Linux-oriented `BaseInstalledAgent`. Its contract is:
+The default `WindowsCommandAgent` calls an image-provided or runtime-prepared
+command, without invoking Harbor's Linux-oriented `BaseInstalledAgent`. Its contract is:
 
 - Read the UTF-8 task instruction from the file named by
   `HARBOR_INSTRUCTION_FILE`. The instruction is never interpolated into a shell
@@ -136,8 +129,8 @@ invoking Harbor's Linux-oriented `BaseInstalledAgent`. Its contract is:
   copy its entire environment or kubeconfig into Windows.
 - Run synchronously and return a nonzero exit code on failure. Full stdout and
   stderr are collected in `agent/stdout.txt` and `agent/stderr.txt`.
-- Agent setup is image-owned. MCP/skills injection, token accounting, and ATIF
-  conversion are not implemented by this generic bridge.
+- Agent setup may use the preparation manifest below. MCP/skills injection,
+  token accounting, and ATIF conversion are not implemented by this generic bridge.
 
 For a prepared Claude Code image, an example command is
 `call claude -p --model "%HARBOR_MODEL%" < "%HARBOR_INSTRUCTION_FILE%"`, paired
@@ -149,6 +142,107 @@ Use `--agent your_module:WindowsAgent` to select another Harbor agent with
 `SUPPORTS_WINDOWS = True`. `--agent oracle` is available for reference solutions
 provided by the other project. Windows environment support does not make the
 existing Claude Code/OpenCode/Pi Linux adapters Windows-compatible.
+
+## Runtime tool preparation
+
+Keep Windows, drivers, Office/browser installations, and reboot-requiring
+prerequisites in a versioned base image. Put frequently changing agent binaries,
+portable dependencies, and bootstrap scripts in an immutable runner-side cache.
+Each fresh VM receives the selected cached files; the controller does not download
+packages or run a public installer for every trial.
+
+```text
+versioned Windows/app image → fresh VM → verified cached tools → readiness check
+                                                               ↓
+                                      task instruction + runtime credentials
+                                                               ↓
+                                                    agent → artifacts → delete
+```
+
+The optional `HARBOR_WINDOWS_PREPARE_MANIFEST` points to a local JSON file. It can
+also be passed as the agent argument `--ak prepare_manifest=/path/prepare.json`;
+an explicit empty argument disables the environment setting. Existing runs that
+omit it continue to use their preinstalled agent.
+
+Example manifest (replace each all-zero digest with the cached file's SHA256):
+
+```json
+{
+  "version": 1,
+  "files": [
+    {
+      "source": "cache/agent-tools-v1.zip",
+      "target": "C:/agent-tools/agent-tools-v1.zip",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    {
+      "source": "cache/prepare-v1.ps1",
+      "target": "C:/agent-tools/prepare.ps1",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    }
+  ],
+  "commands": [
+    "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File C:/agent-tools/prepare.ps1"
+  ],
+  "env": {
+    "AGENT_TOOLS_ROOT": "C:/agent-tools/v1"
+  }
+}
+```
+
+The consuming project supplies the versioned bundle and script; for example, a
+bundle can contain its selected Codex version and prerequisites. The script owns
+unpacking, tool configuration, and any required checks. Keep privileged or
+reboot-requiring setup in the base image. This is not a package manager or a
+Codex-specific installer.
+
+- `source` is a regular local file; relative paths resolve beside the manifest.
+  Maintain cache files as immutable while trials use them. All file checksums are
+  checked before the first upload. `target` must be an absolute Windows path.
+- `commands` run in order with `cmd.exe` semantics. Invoke PowerShell explicitly.
+  A nonzero status fails agent setup before readiness or task execution. Commands
+  should be idempotent; successful preparation is not cached inside the guest.
+- `env` contains non-secret string values used for preparation, the agent readiness
+  check, and agent execution. Harbor's scoped agent environment overrides these
+  defaults. Values are literal; use full executable paths or a
+  wrapper script to extend `PATH`. Environment changes inside a preparation process
+  do not persist into later SSH commands or the verifier.
+- Use Harbor's agent environment configuration for credentials at runtime. Do not
+  place secrets in images, cached bundles, scripts, or the manifest. The manifest
+  is trusted operator input and is not a task-controlled download instruction.
+- `--ak prepare_timeout_sec=600` bounds checksum verification, uploads, and all
+  preparation commands together (default 600 seconds). Harbor's agent setup
+  deadline also applies; configure it to cover provisioning. The readiness check
+  follows preparation and has its own 60-second deadline.
+- Agent result metadata records `preparation_sha256`, the digest of the manifest
+  bytes, without recording its environment values. Keep the manifest and pinned
+  artifacts externally for reproducibility. No prepare/checkpoint/fan-out cache
+  or shared writable tool volume is created by this backend.
+
+```bash
+export HARBOR_WINDOWS_PREPARE_MANIFEST=/srv/windows-tools/prepare.json
+export HARBOR_WINDOWS_AGENT_COMMAND='C:\agent-tools\v1\run-agent.cmd'
+export HARBOR_WINDOWS_AGENT_CHECK_COMMAND='C:\agent-tools\v1\run-agent.cmd --version'
+./Agents/utils/common/Harbor/run_kubevirt_windows.sh \
+  --path /data/external-windows-tasks --n-concurrent 1 \
+  --ak prepare_timeout_sec=600
+```
+
+## Desktop and snapshot integration boundary
+
+This PR provides VM lifecycle, command execution, file transfer, and runtime tool
+preparation. It does not establish an interactive desktop session. A desktop
+benchmark integration must separately prepare and validate its logged-in GUI
+session, virtual display/resolution/DPI, screenshot/input/UIA service, application
+state, task setup, and evaluator. An SSH process is not evidence that GUI actions
+run in the intended desktop session.
+
+The reset boundary remains **fresh template clone per trial**. Restarting a
+retained VM is not a reset. Importing benchmark disks, restoring application-state
+snapshots, attaching tool disks, and building a prepared-snapshot cache require
+provider APIs and image workflows outside this PR. Keep base image versions,
+tool manifests, and per-task assets independently versioned; benchmark-specific
+adapters and scoring remain in the consuming project.
 
 ## Execution, isolation, and cleanup
 
@@ -173,7 +267,10 @@ is accepted through that direct connection and pinned in a private per-instance
 to the VM subnet.
 
 Startup failures and cancellation attempt VM cleanup. Normal `stop(delete=True)`
-checks the trial ownership label and requests foreground deletion. Harbor's
+reads the VM and checks the trial ownership label before stop/delete requests.
+Missing or mismatched labels block both mutations; a missing VM is treated as
+already cleaned up. The HTTP API does not provide an atomic UID precondition,
+so this read-before-delete check is not a lock against concurrent replacement. Harbor's
 retention mode (`delete=False`) halts the VM and retains its disks for inspection.
 Retained instances are not reused for subsequent trials. VM identity is saved
 in each trial's `kubevirt.json`; use it for operator cleanup after a controller
@@ -188,11 +285,11 @@ this transport and requires additional guest tools.
 ## Local validation
 
 ```bash
-PYTHONPATH=. python3 -m unittest discover \
-  -s Agents/utils/common/Harbor/tests -p test_kubevirt_windows.py -v
+PYTHONPATH=.:Agents/utils/common/Harbor python3 -m unittest discover \
+  -s Agents/utils/common/Harbor/tests -p 'test_kubevirt*.py' -v
 ruff check --config .github/ruff.toml \
   Agents/utils/common/Harbor/kubevirt_windows \
-  Agents/utils/common/Harbor/tests/test_kubevirt_windows.py
+  Agents/utils/common/Harbor/tests/test_kubevirt*.py
 bash -n Agents/utils/common/Harbor/run_kubevirt_windows.sh
 ```
 

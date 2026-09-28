@@ -24,9 +24,9 @@ from kubevirt_windows.control import (
 )
 
 VALID_ENV = {
-    "HARBOR_KUBEVIRT_BASE_URL": "http://10.9.202.91:31600",
+    "HARBOR_KUBEVIRT_BASE_URL": "https://vm-platform.example.com",
     "HARBOR_KUBEVIRT_TOKEN": "tok",
-    "HARBOR_KUBEVIRT_IMAGE": "ubuntu20.04-template-image",
+    "HARBOR_KUBEVIRT_IMAGE": "windows-benchmark-v1",
     "HARBOR_KUBEVIRT_NAMESPACE": "default",
     "HARBOR_KUBEVIRT_SSH_USER": "runner",
     "HARBOR_KUBEVIRT_SSH_PORT": "22",
@@ -100,8 +100,8 @@ def _tmp_key():
 def build_settings():
     with _tmp_key() as key:
         return Settings(
-            platform=Platform(base_url="http://10.9.202.91:31600", token="tok"),
-            image="ubuntu20.04-template-image",
+            platform=Platform(base_url="https://vm-platform.example.com", token="tok"),
+            image="windows-benchmark-v1",
             namespace="default",
             ssh_user="runner",
             ssh_key=key,
@@ -111,6 +111,14 @@ def build_settings():
 
 
 class CreateRequestTests(unittest.TestCase):
+    def test_task_resources_reach_request(self):
+        request = build_create_request(
+            build_settings(), "trial-a1b2", "192.0.2.4", cpus=8, memory_mb=16384
+        )
+        self.assertEqual(request["compute"], {
+            "cpuCores": 8, "cpuSockets": 1, "memoryGuest": "16384Mi"
+        })
+
     def test_build_create_request_shape(self):
         settings = build_settings()
         request = build_create_request(settings, "trial-a1b2", "10.16.0.4")
@@ -128,7 +136,7 @@ class CreateRequestTests(unittest.TestCase):
                 "network": {"subnetName": "ovn-default", "ipAddress": "10.16.0.4"},
                 "storage": {
                     "rootDisk": {
-                        "imageName": "ubuntu20.04-template-image",
+                        "imageName": "windows-benchmark-v1",
                         "size": DEFAULT_DISK_SIZE,
                         "storageClassName": "ceph-rbd-sc",
                     }
@@ -152,6 +160,14 @@ class CreateRequestTests(unittest.TestCase):
 
 
 class PlatformControlTests(unittest.IsolatedAsyncioTestCase):
+    async def test_client_can_cleanup_retained_vm_after_close(self):
+        control = self._control(lambda request: httpx.Response(
+            200, json={"code": 200, "data": {"labels": {"agent-fleet/trial": "abc"}}}
+        ))
+        await control.close()
+        async with control:
+            self.assertEqual((await control.get("trial-a1b2"))["labels"], {"agent-fleet/trial": "abc"})
+
     def _control(self, handler) -> PlatformControl:
         transport = httpx.MockTransport(handler)
         settings = build_settings()
@@ -194,7 +210,7 @@ class PlatformControlTests(unittest.IsolatedAsyncioTestCase):
 
         control = self._control(handler)
         async with control:
-            created = await control.create("trial-a1b2", "10.16.0.4")
+            created = await control.create("trial-a1b2", "10.16.0.4", cpus=8, memory_mb=16384)
             self.assertEqual(created, {"name": "trial-a1b2"})
             vm = await control.get("trial-a1b2")
             self.assertEqual(vm["ip"], "10.16.0.4")
@@ -221,6 +237,9 @@ class PlatformControlTests(unittest.IsolatedAsyncioTestCase):
         )
         create_body = json.loads(calls[0][2])
         self.assertEqual(create_body["name"], "trial-a1b2")
+        self.assertEqual(create_body["compute"], {
+            "cpuCores": 8, "cpuSockets": 1, "memoryGuest": "16384Mi"
+        })
         self.assertEqual(create_body["network"]["ipAddress"], "10.16.0.4")
         self.assertEqual(calls[2][2], "")  # stop sends no body
         self.assertEqual(calls[3][2], "")  # start sends no body
@@ -257,7 +276,7 @@ class PlatformControlTests(unittest.IsolatedAsyncioTestCase):
                 json={
                     "code": 200,
                     "message": "success",
-                    "data": {"name": "ubuntu20.04-template-image", "minSize": "40Gi"},
+                    "data": {"name": "windows-benchmark-v1", "minSize": "40Gi"},
                 },
             )
 
@@ -266,7 +285,7 @@ class PlatformControlTests(unittest.IsolatedAsyncioTestCase):
             min_size = await control.image_min_size()
         self.assertEqual(min_size, "40Gi")
         self.assertEqual(
-            calls, [("GET", "/api/v1/images/default/ubuntu20.04-template-image")]
+            calls, [("GET", "/api/v1/images/default/windows-benchmark-v1")]
         )
 
     def test_pick_root_disk_size_uses_template_min(self):

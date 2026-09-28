@@ -20,6 +20,7 @@ from harbor.models.task.config import EnvironmentConfig
 from harbor.models.trial.paths import TrialPaths
 from kubevirt_windows.agent import WindowsCommandAgent
 from kubevirt_windows.control import (
+    OWNER_LABEL,
     Platform,
     Settings,
 )
@@ -29,8 +30,8 @@ from kubevirt_windows.transport import WindowsSSH, ps_quote, sftp_quote, windows
 
 def make_settings(key: Path) -> Settings:
     return Settings(
-        platform=Platform(base_url="http://10.9.202.91:31600", token="tok"),
-        image="ubuntu20.04-template-image",
+        platform=Platform(base_url="https://vm-platform.example.com", token="tok"),
+        image="windows-benchmark-v1",
         namespace="default",
         ssh_user="runner",
         ssh_key=key,
@@ -69,7 +70,7 @@ class TransportTests(unittest.IsolatedAsyncioTestCase):
         key.write_text("fake-key")
         self.settings = make_settings(key)
         self.transport = WindowsSSH(
-            self.settings, "trial", "10.9.202.100", root / "known-hosts"
+            self.settings, "trial", "192.0.2.100", root / "known-hosts"
         )
 
     async def test_request_uses_file_not_command_interpolation(self):
@@ -195,8 +196,8 @@ class EnvironmentTests(unittest.IsolatedAsyncioTestCase):
                 self.environment(**config)
 
     async def test_start_waits_for_guest_and_creates_log_dirs(self):
-        environment = self.environment()
-        environment.control.available_ips = AsyncMock(return_value=["10.9.202.100"])
+        environment = self.environment(cpus=8, memory_mb=16384)
+        environment.control.available_ips = AsyncMock(return_value=["192.0.2.100"])
         environment.control.image_min_size = AsyncMock(return_value="40Gi")
         environment.control.create = AsyncMock()
         environment.control.start = AsyncMock()
@@ -204,11 +205,11 @@ class EnvironmentTests(unittest.IsolatedAsyncioTestCase):
             return_value={
                 "name": environment.vm_name,
                 "namespace": "default",
-                "ip": "10.9.202.100",
+                "ip": "192.0.2.100",
                 "ready": True,
-                "labels": {},
                 "status": "Running",
                 "uid": "x",
+                "labels": {OWNER_LABEL: environment.token[:12]},
             }
         )
         with patch("kubevirt_windows.environment.WindowsSSH") as transport_class:
@@ -221,12 +222,14 @@ class EnvironmentTests(unittest.IsolatedAsyncioTestCase):
         environment.control.create.assert_awaited_once()
         _, kwargs = environment.control.create.await_args
         self.assertEqual(kwargs["disk_size"], "40Gi")
+        self.assertEqual(kwargs.get("cpus"), 8)
+        self.assertEqual(kwargs.get("memory_mb"), 16384)
         environment.control.start.assert_awaited_once_with(environment.vm_name)
         environment.transport.probe.assert_awaited_once()
         self.assertEqual(environment.transport.mkdir.await_count, 4)
         metadata = json.loads((self.root / "trial/kubevirt.json").read_text())
         self.assertEqual(metadata["vm"], environment.vm_name)
-        self.assertEqual(metadata["ip"], "10.9.202.100")
+        self.assertEqual(metadata["ip"], "192.0.2.100")
         self.assertNotIn("fake-key", json.dumps(metadata))
         environment.control.stop = AsyncMock()
         environment.control.delete = AsyncMock()
@@ -237,7 +240,7 @@ class EnvironmentTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_failed_start_cleans_up(self):
         environment = self.environment()
-        environment.control.available_ips = AsyncMock(return_value=["10.9.202.100"])
+        environment.control.available_ips = AsyncMock(return_value=["192.0.2.100"])
         environment.control.image_min_size = AsyncMock(return_value="40Gi")
         environment.control.create = AsyncMock(
             side_effect=RuntimeError("creation failed")
@@ -245,6 +248,9 @@ class EnvironmentTests(unittest.IsolatedAsyncioTestCase):
         environment.control.stop = AsyncMock()
         environment.control.delete = AsyncMock()
         environment.control.close = AsyncMock()
+        environment.control.get = AsyncMock(
+            return_value={"labels": {OWNER_LABEL: environment.token[:12]}}
+        )
         with self.assertRaisesRegex(RuntimeError, "creation failed"):
             await environment.start()
         environment.control.stop.assert_awaited_once_with(environment.vm_name)
@@ -254,17 +260,74 @@ class EnvironmentTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_cancelled_start_cleans_up(self):
         environment = self.environment()
-        environment.control.available_ips = AsyncMock(return_value=["10.9.202.100"])
+        environment.control.available_ips = AsyncMock(return_value=["192.0.2.100"])
         environment.control.image_min_size = AsyncMock(return_value="40Gi")
         environment.control.create = AsyncMock(side_effect=asyncio.CancelledError)
         environment.control.stop = AsyncMock()
         environment.control.delete = AsyncMock()
         environment.control.close = AsyncMock()
+        environment.control.get = AsyncMock(
+            return_value={"labels": {OWNER_LABEL: environment.token[:12]}}
+        )
         with self.assertRaises(asyncio.CancelledError):
             await environment.start()
         environment.control.stop.assert_awaited_once_with(environment.vm_name)
         environment.control.delete.assert_awaited_once_with(environment.vm_name)
         environment.control.close.assert_awaited_once()
+
+    async def test_stop_refuses_vm_owned_by_another_trial(self):
+        environment = self.environment()
+        environment._created = True
+        environment.control = AsyncMock()
+        environment.control.get.return_value = {"labels": {OWNER_LABEL: "another-trial"}}
+        with self.assertRaisesRegex(RuntimeError, "ownership"):
+            await environment.stop()
+        environment.control.stop.assert_not_awaited()
+        environment.control.delete.assert_not_awaited()
+
+    async def test_retained_vm_cannot_be_started_again(self):
+        environment = self.environment()
+        environment._created = True
+        environment.control = AsyncMock()
+        environment.control.get.return_value = {
+            "labels": {OWNER_LABEL: environment.token[:12]}
+        }
+        await environment.stop(delete=False)
+        environment.control.delete.assert_not_awaited()
+        self.assertTrue(environment._created)
+        with self.assertRaisesRegex(RuntimeError, "retained"):
+            await environment.start()
+
+    async def test_stop_before_start_never_mutates_platform(self):
+        environment = self.environment()
+        environment.control = AsyncMock()
+        await environment.stop()
+        environment.control.stop.assert_not_awaited()
+        environment.control.delete.assert_not_awaited()
+
+    async def test_ip_lookup_failure_releases_local_resources(self):
+        environment = self.environment()
+        environment.control = AsyncMock()
+        environment.control.available_ips.side_effect = RuntimeError("lookup failed")
+        with self.assertRaisesRegex(RuntimeError, "lookup failed"):
+            await environment.start()
+        self.assertIsNone(environment._local_dir)
+        environment.control.close.assert_awaited_once()
+        environment.control.stop.assert_not_awaited()
+        environment.control.delete.assert_not_awaited()
+
+    async def test_already_deleted_vm_is_idempotent(self):
+        from kubevirt_windows.control import PlatformAPIError
+
+        environment = self.environment()
+        environment._created = True
+        environment.control = AsyncMock()
+        environment.control.get.side_effect = PlatformAPIError("missing", code=404)
+        await environment.stop()
+        await environment.stop()
+        environment.control.get.assert_awaited_once()
+        environment.control.stop.assert_not_awaited()
+        environment.control.delete.assert_not_awaited()
 
     async def test_filtered_download_and_protected_reward(self):
         environment = self.environment()
@@ -333,6 +396,27 @@ class EnvironmentTests(unittest.IsolatedAsyncioTestCase):
             "example/model",
         )
         self.assertEqual(context.metadata, {"exit_code": 0})
+
+    async def test_agent_runtime_env_overrides_preparation_defaults(self):
+        environment = self.environment()
+        environment._started = True
+        environment.transport = AsyncMock()
+        environment.transport.execute.return_value = {
+            "stdout": "", "stderr": "", "return_code": 0,
+        }
+        manifest = self.root / "prepare.json"
+        manifest.write_text(json.dumps({
+            "version": 1, "env": {"TOOL_HOME": "C:/tools/default"},
+        }))
+        agent = WindowsCommandAgent(
+            logs_dir=self.root / "logs", command="tool.exe",
+            check_command="tool.exe --version", prepare_manifest=manifest,
+        )
+        with environment.scoped_exec_env({"TOOL_HOME": "C:/tools/override"}):
+            await agent.setup(environment)
+            await agent.run("task", environment, AgentContext())
+        for call in environment.transport.execute.await_args_list:
+            self.assertEqual(call.kwargs["env"]["TOOL_HOME"], "C:/tools/override")
 
 
 class LauncherTests(unittest.TestCase):

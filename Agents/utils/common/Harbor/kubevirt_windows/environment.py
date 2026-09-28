@@ -9,6 +9,7 @@ import tempfile
 import uuid
 from pathlib import Path
 
+import httpx
 from harbor.environments.base import BaseEnvironment, ExecResult
 from harbor.environments.capabilities import (
     EnvironmentCapabilities,
@@ -37,6 +38,7 @@ class KubeVirtWindowsEnvironment(BaseEnvironment):
         self.vm_name = "hf-win-" + self.token[:24]
         self.control = PlatformControl(self.settings)
         self._created = False
+        self._create_attempted = False
         self._local_dir = None
         self.transport = None
         self._started = False
@@ -77,9 +79,7 @@ class KubeVirtWindowsEnvironment(BaseEnvironment):
                 f"KubeVirt platform unreachable at {settings.platform.base_url}: {exc}"
             ) from exc
         except PlatformAPIError as exc:
-            raise ValueError(
-                f"KubeVirt platform rejected the token: {exc}"
-            ) from exc
+            raise ValueError(f"KubeVirt platform rejected the token: {exc}") from exc
 
     def _validate_definition(self):
         if self.os != TaskOS.WINDOWS:
@@ -121,41 +121,46 @@ class KubeVirtWindowsEnvironment(BaseEnvironment):
     async def start(self, force_build=False):
         if self._started:
             return
-        if self._created:
+        if self._created or self._create_attempted:
             raise RuntimeError(
                 "A retained VM cannot be reused; create a new environment instance"
             )
         self._local_dir = tempfile.TemporaryDirectory(prefix="harbor-kubevirt-")
         tag = self.token[:12]
-        ips = await self.control.available_ips()
-        ip = ips[0] if ips else None
-        if not ip:
-            raise RuntimeError("No free IP available on subnet " + self.settings.subnet)
-        self.trial_paths.trial_dir.mkdir(parents=True, exist_ok=True)
-        (self.trial_paths.trial_dir / "kubevirt.json").write_text(
-            json.dumps(
-                {
-                    "vm": self.vm_name,
-                    "namespace": self.settings.namespace,
-                    "subnet": self.settings.subnet,
-                    "ip": ip,
-                    "labels": {OWNER_LABEL: tag},
-                },
-                indent=2,
-            )
-            + "\n",
-            encoding="utf-8",
-        )
         try:
             async with asyncio.timeout(self.settings.start_timeout):
+                ips = await self.control.available_ips()
+                ip = ips[0] if ips else None
+                if not ip:
+                    raise RuntimeError(
+                        "No free IP available on subnet " + self.settings.subnet
+                    )
+                self.trial_paths.trial_dir.mkdir(parents=True, exist_ok=True)
+                (self.trial_paths.trial_dir / "kubevirt.json").write_text(
+                    json.dumps(
+                        {
+                            "vm": self.vm_name,
+                            "namespace": self.settings.namespace,
+                            "subnet": self.settings.subnet,
+                            "ip": ip,
+                            "labels": {OWNER_LABEL: tag},
+                        },
+                        indent=2,
+                    )
+                    + "\n",
+                    encoding="utf-8",
+                )
                 # Disk must be >= the source template's minSize to clone.
                 min_size = await self.control.image_min_size(self.settings.image)
                 disk_size = pick_root_disk_size(DEFAULT_DISK_SIZE, min_size)
+                self._create_attempted = True
                 await self.control.create(
                     self.vm_name,
                     ip,
                     labels={OWNER_LABEL: tag},
                     disk_size=disk_size,
+                    cpus=self.task_env_config.cpus,
+                    memory_mb=self.task_env_config.memory_mb,
                 )
                 self._created = True
                 # Create leaves the VM defined/Stopped; power it on explicitly.
@@ -196,14 +201,30 @@ class KubeVirtWindowsEnvironment(BaseEnvironment):
 
     async def stop(self, delete=True):
         try:
+            if not (self._created or self._create_attempted):
+                return
+            try:
+                vm = await self.control.get(self.vm_name)
+            except (httpx.HTTPStatusError, PlatformAPIError) as exc:
+                code = (
+                    exc.response.status_code
+                    if isinstance(exc, httpx.HTTPStatusError)
+                    else exc.code
+                )
+                if code != 404:
+                    raise
+                self._created = self._create_attempted = False
+                return
+            if vm.get("labels", {}).get(OWNER_LABEL) != self.token[:12]:
+                raise RuntimeError(f"VM ownership mismatch: {self.vm_name}")
             try:
                 await self.control.stop(self.vm_name)
             finally:
                 if delete:
                     await self.control.delete(self.vm_name)
+                    self._created = self._create_attempted = False
         finally:
             self._started = False
-            self._created = False
             if self._local_dir is not None:
                 self._local_dir.cleanup()
                 self._local_dir = None

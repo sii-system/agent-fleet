@@ -84,6 +84,10 @@ RFC1123_NAME_RE = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
 class PlatformAPIError(RuntimeError):
     """Raised when the platform returns a non-2xx HTTP status or envelope code."""
 
+    def __init__(self, message, code=None):
+        super().__init__(message)
+        self.code = code
+
 
 async def run_process(
     argv, *, data=None, timeout=60, max_output_bytes=16 * 1024 * 1024
@@ -245,12 +249,19 @@ def raise_for_platform(response: httpx.Response) -> None:
     code = payload.get("code")
     if isinstance(code, int) and not 200 <= code < 300:
         raise PlatformAPIError(
-            f"Platform API error (code={code}): {payload.get('message', '')}"
+            f"Platform API error (code={code}): {payload.get('message', '')}", code=code
         )
 
 
 def build_create_request(
-    settings: Settings, name: str, ip: str, labels: dict | None = None, disk_size: str = DEFAULT_DISK_SIZE
+    settings: Settings,
+    name: str,
+    ip: str,
+    labels: dict | None = None,
+    disk_size: str = DEFAULT_DISK_SIZE,
+    *,
+    cpus: int | None = None,
+    memory_mb: int | None = None,
 ) -> dict:
     """Build the CreateVMRequest envelope accepted by POST /virtualmachines.
 
@@ -265,14 +276,19 @@ def build_create_request(
         )
     if not ip:
         raise ValueError("A subnet IP address is required")
+    for value in (cpus, memory_mb):
+        if value is not None and (type(value) is not int or value <= 0):
+            raise ValueError("CPU and memory sizes must be positive integers")
     request: dict[str, Any] = {
         "name": name,
         "namespace": settings.namespace,
         "createType": "template",
         "compute": {
-            "cpuCores": DEFAULT_CPU_CORES,
+            "cpuCores": cpus if cpus is not None else DEFAULT_CPU_CORES,
             "cpuSockets": DEFAULT_CPU_SOCKETS,
-            "memoryGuest": DEFAULT_MEMORY_GUEST,
+            "memoryGuest": (
+                f"{memory_mb}Mi" if memory_mb is not None else DEFAULT_MEMORY_GUEST
+            ),
         },
         "network": {"subnetName": settings.subnet, "ipAddress": ip},
         "storage": {
@@ -325,12 +341,19 @@ class PlatformControl:
         transport: httpx.AsyncBaseTransport | None = None,
     ):
         self.settings = settings
-        self._client = httpx.AsyncClient(
-            base_url=_api_base(settings.platform.base_url),
-            headers={"Authorization": f"Bearer {settings.platform.token}"},
-            timeout=httpx.Timeout(30.0),
-            transport=transport,
-        )
+        self._transport = transport
+        self._client = None
+
+    @property
+    def client(self):
+        if self._client is None:
+            self._client = httpx.AsyncClient(
+                base_url=_api_base(self.settings.platform.base_url),
+                headers={"Authorization": f"Bearer {self.settings.platform.token}"},
+                timeout=httpx.Timeout(30.0),
+                transport=self._transport,
+            )
+        return self._client
 
     async def __aenter__(self):
         return self
@@ -339,14 +362,25 @@ class PlatformControl:
         await self.close()
 
     async def close(self) -> None:
-        await self._client.aclose()
+        if self._client is not None:
+            await self._client.aclose()
+            self._client = None
 
     async def create(
-        self, name: str, ip: str, labels: dict | None = None, disk_size: str = DEFAULT_DISK_SIZE
+        self,
+        name: str,
+        ip: str,
+        labels: dict | None = None,
+        disk_size: str = DEFAULT_DISK_SIZE,
+        *,
+        cpus: int | None = None,
+        memory_mb: int | None = None,
     ) -> dict:
-        response = await self._client.post(
+        response = await self.client.post(
             "/virtualmachines",
-            json=build_create_request(self.settings, name, ip, labels, disk_size),
+            json=build_create_request(
+                self.settings, name, ip, labels, disk_size, cpus=cpus, memory_mb=memory_mb
+            ),
         )
         raise_for_platform(response)
         body = response.json()
@@ -361,7 +395,7 @@ class PlatformControl:
         image = image or self.settings.image
         if not image:
             return None
-        response = await self._client.get(
+        response = await self.client.get(
             f"/images/{self.settings.namespace}/{image}"
         )
         raise_for_platform(response)
@@ -371,7 +405,7 @@ class PlatformControl:
         return min_size if isinstance(min_size, str) and min_size else None
 
     async def get(self, name: str) -> dict:
-        response = await self._client.get(
+        response = await self.client.get(
             f"/virtualmachines/{self.settings.namespace}/{name}"
         )
         raise_for_platform(response)
@@ -387,7 +421,7 @@ class PlatformControl:
         listing is the read-only call that works for this role.
         """
         subnet = subnet or self.settings.subnet
-        response = await self._client.get(
+        response = await self.client.get(
             f"/network/subnets/{subnet}/available-ips"
         )
         raise_for_platform(response)
@@ -401,7 +435,7 @@ class PlatformControl:
     async def start(self, name: str) -> dict:
         """Power on an existing VM. Create leaves the VM defined/Stopped and an
         explicit start is required before the guest boots and becomes ready."""
-        response = await self._client.put(
+        response = await self.client.put(
             f"/virtualmachines/{self.settings.namespace}/{name}/start"
         )
         raise_for_platform(response)
@@ -409,7 +443,7 @@ class PlatformControl:
         return body.get("data", {}) if isinstance(body, dict) else {}
 
     async def stop(self, name: str) -> dict:
-        response = await self._client.put(
+        response = await self.client.put(
             f"/virtualmachines/{self.settings.namespace}/{name}/stop"
         )
         raise_for_platform(response)
@@ -417,7 +451,7 @@ class PlatformControl:
         return body.get("data", {}) if isinstance(body, dict) else {}
 
     async def delete(self, name: str) -> dict:
-        response = await self._client.delete(
+        response = await self.client.delete(
             f"/virtualmachines/{self.settings.namespace}/{name}"
         )
         raise_for_platform(response)
@@ -426,7 +460,7 @@ class PlatformControl:
 
     async def ping(self) -> bool:
         try:
-            response = await self._client.get("/users/me")
+            response = await self.client.get("/users/me")
             raise_for_platform(response)
             return True
         except (httpx.HTTPError, PlatformAPIError):
