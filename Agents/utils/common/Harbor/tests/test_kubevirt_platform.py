@@ -11,6 +11,7 @@ import httpx
 from kubevirt_windows.control import (
     DEFAULT_CPU_CORES,
     DEFAULT_CPU_SOCKETS,
+    DEFAULT_DISK_BUS,
     DEFAULT_DISK_SIZE,
     DEFAULT_MEMORY_GUEST,
     PlatformAPIError,
@@ -106,12 +107,32 @@ class CreateRequestTests(unittest.TestCase):
                         "imageName": "waa-v2-win11-v1",
                         "size": DEFAULT_DISK_SIZE,
                         "storageClassName": "ceph-rbd-sc",
+                        "bus": DEFAULT_DISK_BUS,
                     }
                 },
             },
         )
         self.assertNotIn("labels", request)
         self.assertIsInstance(request["storage"]["rootDisk"]["size"], str)
+
+    def test_build_create_request_defaults_to_sata_bus(self):
+        # Windows golden images lack a virtio storage driver; a virtio root
+        # disk makes the clone BSOD with INACCESSIBLE_BOOT_DEVICE (0x7B).
+        request = build_create_request(build_settings(), "trial-a1b2", "10.16.0.4")
+        self.assertEqual(DEFAULT_DISK_BUS, "sata")
+        self.assertEqual(request["storage"]["rootDisk"]["bus"], "sata")
+
+    def test_build_create_request_honors_disk_bus_override(self):
+        request = build_create_request(
+            build_settings(), "trial-a1b2", "10.16.0.4", disk_bus="virtio"
+        )
+        self.assertEqual(request["storage"]["rootDisk"]["bus"], "virtio")
+
+    def test_build_create_request_rejects_bad_disk_bus(self):
+        with self.assertRaises(ValueError):
+            build_create_request(
+                build_settings(), "trial-a1b2", "10.16.0.4", disk_bus="ide"
+            )
 
     def test_build_create_request_includes_labels_when_provided(self):
         settings = build_settings()

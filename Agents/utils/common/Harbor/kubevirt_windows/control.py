@@ -15,6 +15,7 @@ DEFAULT_CPU_CORES = 2
 DEFAULT_CPU_SOCKETS = 1
 DEFAULT_MEMORY_GUEST = "4Gi"
 DEFAULT_DISK_SIZE = "32Gi"  # minimum rootDisk size; the larger of this and the source template's minSize wins
+DEFAULT_DISK_BUS = "sata"  # Windows golden images have no virtio storage driver; sata keeps them bootable
 
 
 _QUANTITY_UNITS = {
@@ -189,6 +190,7 @@ def build_create_request(
     *,
     cpus: int | None = None,
     memory_mb: int | None = None,
+    disk_bus: str = DEFAULT_DISK_BUS,
 ) -> dict:
     """Build the CreateVMRequest envelope accepted by POST /virtualmachines.
 
@@ -196,6 +198,10 @@ def build_create_request(
     declares CreateVMRequest.labels as an object of string values. `disk_size`
     is the root disk size as a Kubernetes quantity string (e.g. "40Gi"); callers
     should pass the larger of the default and the source template's minSize.
+
+    `disk_bus` is the root disk bus. Windows golden images built on sata carry
+    no virtio storage driver, so cloning them onto a virtio root disk yields
+    INACCESSIBLE_BOOT_DEVICE (0x7B); the default is therefore "sata".
     """
     if not name or not RFC1123_NAME_RE.fullmatch(name):
         raise ValueError(
@@ -206,6 +212,8 @@ def build_create_request(
     for value in (cpus, memory_mb):
         if value is not None and (type(value) is not int or value <= 0):
             raise ValueError("CPU and memory sizes must be positive integers")
+    if disk_bus not in ("sata", "virtio", "scsi"):
+        raise ValueError("disk_bus must be one of: sata, virtio, scsi")
     request: dict[str, Any] = {
         "name": name,
         "namespace": settings.namespace,
@@ -223,6 +231,7 @@ def build_create_request(
                 "imageName": settings.image,
                 "size": disk_size,
                 "storageClassName": settings.storage_class,
+                "bus": disk_bus,
             }
         },
     }
@@ -302,11 +311,12 @@ class PlatformControl:
         *,
         cpus: int | None = None,
         memory_mb: int | None = None,
+        disk_bus: str = DEFAULT_DISK_BUS,
     ) -> dict:
         response = await self.client.post(
             "/virtualmachines",
             json=build_create_request(
-                self.settings, name, ip, labels, disk_size, cpus=cpus, memory_mb=memory_mb
+                self.settings, name, ip, labels, disk_size, cpus=cpus, memory_mb=memory_mb, disk_bus=disk_bus
             ),
         )
         raise_for_platform(response)

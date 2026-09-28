@@ -348,3 +348,26 @@ runs, GUI automation, or benchmark scoring were tested. KubeVirt provisioning,
 boot, resource configuration, retention/deletion, and compatibility of the
 published WAA-V2 snapshot remain outside these results. No implementation fixes
 were required by these checks.
+
+## Live template-clone validation (2026-09-28)
+
+Cloning a Windows golden **template** on the platform API was validated live. The
+critical finding is the root disk **bus**: the `win-base` template was installed
+on a **SATA** system disk, so a clone that attaches the root disk as **virtio**
+boots to a Windows bugcheck `INACCESSIBLE_BOOT_DEVICE (0x7B)` because the image
+carries no virtio storage driver. `build_create_request`/`create` therefore send
+`storage.rootDisk.bus="sata"` by default (`DEFAULT_DISK_BUS`), overridable with
+`disk_bus` for images that really do include virtio drivers. The clone itself is
+also subject to the platform's CDI copy: cloning **from** an existing template is
+fast (a 40 GiB `win-base` clone reached `Running`/`ready=True` in about three
+minutes), while **making** a new template from a stopped VM (`POST
+/virtualmachines/{ns}/{name}/template-image`) stalled in `CloneInProgress` for
+~45 minutes with no progress and was abandoned.
+
+Also confirmed live: the root disk must be at least the source template's
+`minSize` (a 40 GiB request against the 100 GiB `win-base-maa` template stalls in
+`Provisioning`/`VMINotExists` indefinitely). The platform VNC console
+(`GET /virtualmachines/{ns}/{name}/vnc/ws`, standard RFB 003.008, security type
+None) was used to read the guest via framebuffer capture and OCR; it is the only
+gateway-reachable view of the guest, since the runner has no route to the VM
+overlay network.
