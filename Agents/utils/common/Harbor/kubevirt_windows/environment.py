@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import shutil
 import tempfile
 import uuid
 from pathlib import Path
@@ -28,7 +27,7 @@ from .control import (
     pick_root_disk_size,
     raise_for_platform,
 )
-from .transport import WindowsSSH, windows_path
+from .transport import WAATransport, windows_path
 
 
 class KubeVirtWindowsEnvironment(BaseEnvironment):
@@ -59,9 +58,6 @@ class KubeVirtWindowsEnvironment(BaseEnvironment):
     @classmethod
     def preflight(cls):
         settings = Settings.from_env()
-        for executable in ("ssh", "sftp"):
-            if not shutil.which(executable):
-                raise ValueError(f"{executable} is required on the Linux runner")
         # Read-only reachability + token check; never mutates the platform.
         try:
             import httpx
@@ -108,7 +104,7 @@ class KubeVirtWindowsEnvironment(BaseEnvironment):
                     "KubeVirt Windows uses a prepared VM template, not Docker build files"
                 )
         # Harbor always supplies these three log mount hints. We collect them
-        # via SFTP; arbitrary host mounts cannot be implemented by a remote VM.
+        # via WAA HTTP; arbitrary host mounts cannot be implemented by a remote VM.
         logs = {"c:/logs/agent", "c:/logs/verifier", "c:/logs/artifacts"}
         for mount in self._mounts:
             if windows_path(mount["target"]).lower() not in logs or mount.get(
@@ -171,7 +167,7 @@ class KubeVirtWindowsEnvironment(BaseEnvironment):
                         ip = vm["ip"]
                         break
                     await asyncio.sleep(2)
-                self.transport = WindowsSSH(
+                self.transport = WAATransport(
                     self.settings, self.vm_name, ip, self._local_dir.name
                 )
                 while True:
@@ -179,7 +175,7 @@ class KubeVirtWindowsEnvironment(BaseEnvironment):
                         await self.transport.probe()
                         break
                     except (RuntimeError, TimeoutError):
-                        # VM readiness precedes Windows/OpenSSH readiness.
+                        # VM readiness precedes Windows/WAA service readiness.
                         await asyncio.sleep(2)
                 await self.transport.prepare()
                 for path in (
@@ -228,7 +224,11 @@ class KubeVirtWindowsEnvironment(BaseEnvironment):
             if self._local_dir is not None:
                 self._local_dir.cleanup()
                 self._local_dir = None
-            await self.control.close()
+            try:
+                if self.transport is not None:
+                    await self.transport.close()
+            finally:
+                await self.control.close()
 
     def _guest(self):
         if not self._started or self.transport is None:
@@ -237,11 +237,8 @@ class KubeVirtWindowsEnvironment(BaseEnvironment):
 
     async def exec(self, command, cwd=None, env=None, timeout_sec=None, user=None):
         effective_user = user if user is not None else self.default_user
-        if (
-            effective_user is not None
-            and str(effective_user).lower() != self.settings.ssh_user.lower()
-        ):
-            raise ValueError("Windows commands must run as the configured SSH user")
+        if effective_user is not None:
+            raise ValueError("Windows commands run as the WAA session user; user selection is unsupported")
         timeout = self.settings.command_timeout if timeout_sec is None else timeout_sec
         if timeout <= 0:
             raise ValueError("Command timeout must be positive")

@@ -1,9 +1,10 @@
-"""Windows OpenSSH transport with explicit cmd.exe execution semantics."""
+"""WAA guest HTTP transport with supervised cmd.exe execution."""
 
 from __future__ import annotations
 
 import asyncio
 import base64
+import ipaddress
 import json
 import logging
 import re
@@ -11,7 +12,7 @@ import tempfile
 import uuid
 from pathlib import Path, PureWindowsPath
 
-from .control import run_process
+import httpx
 
 
 def ps_quote(value):
@@ -30,81 +31,69 @@ def windows_path(value):
     return path.as_posix()
 
 
-def sftp_quote(value):
-    if any(c in str(value) for c in "\r\n\x00"):
-        raise ValueError("Invalid SFTP path")
-    value = str(value).replace("\\", "\\\\").replace('"', '\\"')
-    for char in "*?[":
-        value = value.replace(char, "\\" + char)
-    return '"' + value + '"'
+def encoded_powershell(script):
+    return base64.b64encode(script.encode("utf-16-le")).decode("ascii")
 
 
-class WindowsSSH:
+class WAATransport:
     def __init__(self, settings, name, ip, local_dir):
-        self.settings, self.name, self.ip = settings, name, ip
-        if not ip:
-            raise ValueError("ip is required")
+        self.settings, self.name = settings, name
+        address = ipaddress.ip_address(ip)
+        host = f"[{address}]" if address.version == 6 else str(address)
         self.local_dir = Path(local_dir)
         self.remote_root = f"C:/ProgramData/AgentFleet/{name}"
+        # WAA's guest service has no auth. Never send the platform token or
+        # route guest requests through a controller-side HTTP proxy.
+        self.client = httpx.AsyncClient(
+            base_url=f"http://{host}:{settings.waa_port}", trust_env=False,
+        )
 
-    def options(self):
-        return [
-            "-F",
-            "/dev/null",
-            "-i",
-            str(self.settings.ssh_key),
-            "-o",
-            "BatchMode=yes",
-            "-o",
-            "IdentitiesOnly=yes",
-            "-o",
-            "ConnectTimeout=10",
-            "-o",
-            "ConnectionAttempts=1",
-            "-o",
-            "ServerAliveInterval=15",
-            "-o",
-            "ServerAliveCountMax=2",
-            "-o",
-            "StrictHostKeyChecking=accept-new",
-            "-o",
-            f"UserKnownHostsFile={self.local_dir / 'known_hosts'}",
-            "-o",
-            # Direct-IP connect: HostName overrides the destination host, so
-            # the `self.name` argument in powershell()/sftp() resolves to the
-            # VM ipAddress. A fresh known_hosts per trial pins the host key
-            # for this VM only.
-            f"HostName={self.ip}",
-            "-o",
-            f"User={self.settings.ssh_user}",
-            "-o",
-            f"Port={self.settings.ssh_port}",
-        ]
+    async def close(self):
+        await self.client.aclose()
+
+    async def _request(self, method, path, *, timeout=60, target=None, **kwargs):
+        try:
+            async with asyncio.timeout(timeout):
+                async with self.client.stream(method, path, timeout=timeout, **kwargs) as response:
+                    if response.status_code != 200:
+                        raise RuntimeError(f"WAA {path} failed (HTTP {response.status_code})")
+                    if target is not None:
+                        with target.open("wb") as output:
+                            async for chunk in response.aiter_bytes(65536):
+                                output.write(chunk)
+                        return b""
+                    output = bytearray()
+                    async for chunk in response.aiter_bytes(65536):
+                        if len(output) + len(chunk) > 16 * 1024 * 1024:
+                            raise RuntimeError("WAA control response exceeded its output limit")
+                        output.extend(chunk)
+                    return bytes(output)
+        except httpx.HTTPError:
+            # Response bodies and commands may contain guest credentials.
+            raise RuntimeError(f"WAA {path} transport failed") from None
 
     async def powershell(self, script, *, timeout=60):
-        # The encoded command contains no shell metacharacters and works with
-        # both Windows OpenSSH default shells (cmd.exe and PowerShell).
-        encoded = base64.b64encode(
-            ("$ErrorActionPreference='Stop'; " + script).encode("utf-16-le")
-        ).decode()
-        raw = await run_process(
-            [
-                "ssh",
-                *self.options(),
-                self.name,
-                "powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand "
-                + encoded,
-            ],
-            timeout=timeout,
+        # WAA subprocess.run(text=True) uses the guest Python locale. Emit ASCII
+        # base64 so Unicode paths/results survive even a non-UTF-8 Windows locale.
+        wrapped = (
+            "$ErrorActionPreference='Stop'; try { $value = & { " + script +
+            " } | Out-String; [Console]::Write([Convert]::ToBase64String("
+            "[Text.Encoding]::UTF8.GetBytes([string]$value))) } catch { exit 1 }"
         )
-        return raw.decode("utf-8-sig")
-
-    async def sftp(self, lines):
-        await run_process(
-            ["sftp", *self.options(), "-b", "-", self.name],
-            data=("\n".join(lines) + "\n").encode(),
-            timeout=self.settings.transfer_timeout,
+        raw = await self._request(
+            "POST", "/execute", timeout=min(timeout, 90),
+            json={"command": [
+                "powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive",
+                "-ExecutionPolicy", "Bypass", "-EncodedCommand", encoded_powershell(wrapped),
+            ], "shell": False},
         )
+        try:
+            result = json.loads(raw)
+            if result["status"] != "success" or result["returncode"] != 0:
+                raise RuntimeError("WAA PowerShell helper failed")
+            return base64.b64decode(result["output"].strip(), validate=True).decode("utf-8-sig")
+        except (ValueError, TypeError, KeyError):
+            raise RuntimeError("Invalid WAA execution response") from None
 
     async def mkdir(self, path):
         await self.powershell(
@@ -119,11 +108,12 @@ class WindowsSSH:
         )
 
     async def probe(self):
-        result = await self.powershell(
-            "[Console]::Write('agent-fleet-ready')", timeout=15
-        )
-        if result.strip() != "agent-fleet-ready":
-            raise RuntimeError("Unexpected Windows guest readiness response")
+        raw = await self._request("GET", "/probe", timeout=15)
+        try:
+            if json.loads(raw).get("status") != "Probe successful":
+                raise ValueError
+        except (ValueError, AttributeError):
+            raise RuntimeError("Unexpected WAA guest readiness response") from None
 
     async def execute(self, command, *, cwd, env, timeout):
         request = self.remote_root + "/" + uuid.uuid4().hex + ".json"
@@ -134,17 +124,41 @@ class WindowsSSH:
             "timeout_sec": timeout,
             "max_output_bytes": 1024 * 1024,
         }
+        result_path = request + ".result"
         script = (
-            f"& {ps_quote(self.remote_root + '/execute.ps1')} "
-            f"-Request {ps_quote(request)}"
+            "$ErrorActionPreference='Stop'; try { $result = & "
+            f"{ps_quote(self.remote_root + '/execute.ps1')} -Request {ps_quote(request)}; "
+            "} catch { $result = '{\"error\":\"supervisor failed\"}' }; "
+            f"[IO.File]::WriteAllText({ps_quote(result_path + '.tmp')}, [string]$result, "
+            "(New-Object Text.UTF8Encoding($false))); "
+            f"Move-Item -LiteralPath {ps_quote(result_path + '.tmp')} -Destination {ps_quote(result_path)}"
         )
         try:
-            with tempfile.TemporaryDirectory(prefix="kubevirt-exec-") as tmp:
-                local = Path(tmp) / "request.json"
-                local.write_text(json.dumps(payload), encoding="utf-8")
-                await self.upload_file(local, request)
-            raw = await self.powershell(script, timeout=timeout + 30)
-            result = json.loads(raw)
+            async with asyncio.timeout(timeout + 30):
+                with tempfile.TemporaryDirectory(prefix="kubevirt-exec-") as tmp:
+                    local = Path(tmp) / "request.json"
+                    local.write_text(json.dumps(payload), encoding="utf-8")
+                    await self.upload_file(local, request)
+                # WAA caps each /execute at 120s. Start a detached supervisor,
+                # then use short requests to poll its atomically published result.
+                await self.powershell(
+                    "Start-Process -FilePath powershell.exe -WindowStyle Hidden -ArgumentList "
+                    "'-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand "
+                    + encoded_powershell(script) + "'",
+                    timeout=30,
+                )
+                while True:
+                    raw = await self.powershell(
+                        f"if (Test-Path -LiteralPath {ps_quote(result_path)}) {{ "
+                        f"[IO.File]::ReadAllText({ps_quote(result_path)}) }} else {{ 'null' }}",
+                        timeout=30,
+                    )
+                    result = json.loads(raw)
+                    if result is not None:
+                        if not isinstance(result, dict) or "error" in result:
+                            raise RuntimeError("WAA command supervisor failed")
+                        break
+                    await asyncio.sleep(1)
         except BaseException:
             # A marker handles cancellation before and after child creation.
             # The remote supervisor kills the whole cmd.exe process tree.
@@ -156,12 +170,12 @@ class WindowsSSH:
             )
             try:
                 await asyncio.shield(cleanup)
-            except (Exception, asyncio.CancelledError):
+            except (RuntimeError, TimeoutError, asyncio.CancelledError):
                 # Consume completion even if the outer task is cancelled again.
                 cleanup.add_done_callback(
                     lambda task: task.exception() if not task.cancelled() else None
                 )
-                logging.getLogger(__name__).exception(
+                logging.getLogger(__name__).warning(
                     "Remote cancellation could not be confirmed for VM %s; VM teardown is required",
                     self.name,
                 )
@@ -178,13 +192,21 @@ class WindowsSSH:
             raise ValueError(f"Upload requires a regular file: {source}")
         target = windows_path(target)
         await self.mkdir(str(PureWindowsPath(target).parent))
-        await self.sftp([f"put {sftp_quote(source)} {sftp_quote(target)}"])
+        with source.open("rb") as data:
+            await self._request(
+                "POST", "/setup/upload", data={"file_path": target},
+                files={"file_data": (source.name, data, "application/octet-stream")},
+                timeout=self.settings.transfer_timeout,
+            )
 
     async def download_file(self, source, target):
         source = windows_path(source)
         target = Path(target).absolute()
         target.parent.mkdir(parents=True, exist_ok=True)
-        await self.sftp([f"get {sftp_quote(source)} {sftp_quote(target)}"])
+        await self._request(
+            "POST", "/file", data={"file_path": source}, target=target,
+            timeout=self.settings.transfer_timeout,
+        )
 
     async def upload_dir(self, source, target):
         source, target = Path(source), windows_path(target)
@@ -219,7 +241,7 @@ while ($pending.Count) {{
     }}
 }}
 [Console]::OutputEncoding = New-Object Text.UTF8Encoding($false)
-[Console]::Write((ConvertTo-Json -InputObject @($files.ToArray()) -Compress))
+ConvertTo-Json -InputObject @($files.ToArray()) -Compress
 """
         paths = json.loads(
             await self.powershell(script, timeout=self.settings.transfer_timeout)

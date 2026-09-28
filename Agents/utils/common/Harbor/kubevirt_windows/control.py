@@ -2,12 +2,9 @@
 
 from __future__ import annotations
 
-import asyncio
 import os
 import re
-import signal
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
 import httpx
@@ -89,66 +86,6 @@ class PlatformAPIError(RuntimeError):
         self.code = code
 
 
-async def run_process(
-    argv, *, data=None, timeout=60, max_output_bytes=16 * 1024 * 1024
-):
-    """Bound subprocess output/lifetime, including ProxyCommand descendants."""
-    process = await asyncio.create_subprocess_exec(
-        *map(str, argv),
-        stdin=asyncio.subprocess.PIPE,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        start_new_session=True,
-    )
-
-    async def read_bounded(stream):
-        output = bytearray()
-        while chunk := await stream.read(65536):
-            if len(output) + len(chunk) > max_output_bytes:
-                raise RuntimeError(f"{Path(argv[0]).name} exceeded its output limit")
-            output.extend(chunk)
-        return bytes(output)
-
-    async def write_input():
-        try:
-            if data:
-                process.stdin.write(data)
-                await process.stdin.drain()
-            process.stdin.close()
-            await process.stdin.wait_closed()
-        except (BrokenPipeError, ConnectionResetError):
-            pass  # Report the subprocess exit status after collecting stderr.
-
-    tasks = [
-        asyncio.create_task(coro)
-        for coro in (
-            read_bounded(process.stdout),
-            read_bounded(process.stderr),
-            write_input(),
-            process.wait(),
-        )
-    ]
-    try:
-        stdout, stderr, _, _ = await asyncio.wait_for(asyncio.gather(*tasks), timeout)
-    except BaseException:
-        try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-        for task in tasks:
-            task.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
-        await process.wait()
-        raise
-    if process.returncode:
-        # Do not print argv or stdin: requests can contain guest credentials.
-        raise RuntimeError(
-            f"{Path(argv[0]).name} failed ({process.returncode}): "
-            f"{stderr.decode(errors='replace')[-4000:]}"
-        )
-    return stdout
-
-
 URL_RE = re.compile(r"^https?://", re.IGNORECASE)
 NS_RE = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
 
@@ -164,11 +101,9 @@ class Settings:
     platform: Platform
     image: str
     namespace: str
-    ssh_user: str
-    ssh_key: Path
     subnet: str
     storage_class: str
-    ssh_port: int = 22
+    waa_port: int = 5000
     start_timeout: int = 1800
     command_timeout: int = 3600
     transfer_timeout: int = 300
@@ -187,12 +122,6 @@ class Settings:
         namespace = required("NAMESPACE")
         if not NS_RE.fullmatch(namespace):
             raise ValueError("Invalid Kubernetes namespace")
-        ssh_user = required("SSH_USER")
-        if not ssh_user or any(c in ssh_user for c in "\r\n\x00@"):
-            raise ValueError("Invalid SSH user")
-        ssh_key = Path(required("SSH_KEY")).expanduser()
-        if not ssh_key.is_file():
-            raise FileNotFoundError(ssh_key)
         image = required("IMAGE")
         subnet = os.environ.get("HARBOR_KUBEVIRT_SUBNET", "ovn-default")
         storage_class = os.environ.get("HARBOR_KUBEVIRT_STORAGE_CLASS", "ceph-rbd-sc")
@@ -206,23 +135,21 @@ class Settings:
                     f"HARBOR_KUBEVIRT_{key} must be an integer, got {value!r}"
                 ) from None
 
-        ssh_port = as_int("SSH_PORT", 22)
+        waa_port = as_int("WAA_PORT", 5000)
         start_timeout = as_int("START_TIMEOUT", 1800)
         command_timeout = as_int("COMMAND_TIMEOUT", 3600)
         transfer_timeout = as_int("TRANSFER_TIMEOUT", 300)
         if min(start_timeout, command_timeout, transfer_timeout) <= 0:
             raise ValueError("Timeouts must be positive")
-        if not 1 <= ssh_port <= 65535:
-            raise ValueError("SSH port must be between 1 and 65535")
+        if not 1 <= waa_port <= 65535:
+            raise ValueError("WAA port must be between 1 and 65535")
         return cls(
             platform=Platform(base_url=base_url, token=required("TOKEN")),
             image=image,
             namespace=namespace,
-            ssh_user=ssh_user,
-            ssh_key=ssh_key,
             subnet=subnet,
             storage_class=storage_class,
-            ssh_port=ssh_port,
+            waa_port=waa_port,
             start_timeout=start_timeout,
             command_timeout=command_timeout,
             transfer_timeout=transfer_timeout,
@@ -416,7 +343,7 @@ class PlatformControl:
         """Return free subnet IPs the platform may assign to a new VM.
 
         The platform requires a concrete network.ipAddress at create time and
-        direct-IP SSH needs a known host, so a free IP is picked before create.
+        direct-IP WAA HTTP needs a known host, so a free IP is picked before create.
         GET /network/ips is admin-only (403); the per-subnet available-ips
         listing is the read-only call that works for this role.
         """

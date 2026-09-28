@@ -25,16 +25,14 @@ from kubevirt_windows.control import (
     Settings,
 )
 from kubevirt_windows.environment import KubeVirtWindowsEnvironment
-from kubevirt_windows.transport import WindowsSSH, ps_quote, sftp_quote, windows_path
+from kubevirt_windows.transport import WAATransport, ps_quote, windows_path
 
 
-def make_settings(key: Path) -> Settings:
+def make_settings() -> Settings:
     return Settings(
         platform=Platform(base_url="https://vm-platform.example.com", token="tok"),
-        image="windows-benchmark-v1",
+        image="waa-v2-win11-v1",
         namespace="default",
-        ssh_user="runner",
-        ssh_key=key,
         subnet="ovn-default",
         storage_class="ceph-rbd-sc",
     )
@@ -44,7 +42,6 @@ class PathTests(unittest.TestCase):
     def test_windows_paths_and_quoting(self):
         self.assertEqual(windows_path(r"C:\任务\a b.txt"), "C:/任务/a b.txt")
         self.assertEqual(ps_quote("a'b"), "'a''b'")
-        self.assertEqual(sftp_quote("a b[1].txt"), '"a b\\[1].txt"')
 
     def test_reject_ambiguous_windows_paths(self):
         for path in [
@@ -66,12 +63,13 @@ class TransportTests(unittest.IsolatedAsyncioTestCase):
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
         root = Path(self._tmp.name)
-        key = root / "id_rsa"
-        key.write_text("fake-key")
-        self.settings = make_settings(key)
-        self.transport = WindowsSSH(
-            self.settings, "trial", "192.0.2.100", root / "known-hosts"
+        self.settings = make_settings()
+        self.transport = WAATransport(
+            self.settings, "trial", "192.0.2.100", root
         )
+
+    async def asyncTearDown(self):
+        await self.transport.close()
 
     async def test_request_uses_file_not_command_interpolation(self):
         captured = {}
@@ -81,7 +79,7 @@ class TransportTests(unittest.IsolatedAsyncioTestCase):
 
         self.transport.upload_file = AsyncMock(side_effect=upload)
         self.transport.powershell = AsyncMock(
-            return_value='{"stdout":"ok","stderr":"","return_code":7,"timed_out":false}'
+            side_effect=["", '{"stdout":"ok","stderr":"","return_code":7,"timed_out":false}']
         )
         result = await self.transport.execute(
             "echo %KEY% & exit /b 7",
@@ -96,7 +94,7 @@ class TransportTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_remote_timeout_raises(self):
         self.transport.upload_file = AsyncMock()
-        self.transport.powershell = AsyncMock(return_value='{"timed_out":true}')
+        self.transport.powershell = AsyncMock(side_effect=["", '{"timed_out":true}'])
         with self.assertRaises(TimeoutError):
             await self.transport.execute("sleep", cwd="C:/", env={}, timeout=1)
 
@@ -133,9 +131,7 @@ class EnvironmentTests(unittest.IsolatedAsyncioTestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
-        key = self.root / "key"
-        key.write_text("fake-key")
-        self.settings = make_settings(key)
+        self.settings = make_settings()
         patcher = patch.object(Settings, "from_env", return_value=self.settings)
         patcher.start()
         self.addCleanup(patcher.stop)
@@ -179,7 +175,7 @@ class EnvironmentTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_reject_user_impersonation_before_command(self):
         environment = self.environment()
-        with self.assertRaisesRegex(ValueError, "SSH user"):
+        with self.assertRaisesRegex(ValueError, "WAA session user"):
             await environment.exec("echo x", user="root")
 
     def test_unsupported_resource_and_network_requirements_fail(self):
@@ -212,7 +208,7 @@ class EnvironmentTests(unittest.IsolatedAsyncioTestCase):
                 "labels": {OWNER_LABEL: environment.token[:12]},
             }
         )
-        with patch("kubevirt_windows.environment.WindowsSSH") as transport_class:
+        with patch("kubevirt_windows.environment.WAATransport") as transport_class:
             transport_class.return_value = AsyncMock()
             await environment.start()
         self.assertTrue(environment._started)

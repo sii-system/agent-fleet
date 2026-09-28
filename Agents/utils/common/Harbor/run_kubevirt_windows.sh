@@ -11,13 +11,13 @@ if [[ "${1:-}" == "--help" || "$#" == 0 ]]; then
   cat <<'HELP'
 Usage: run_kubevirt_windows.sh [--dry-run] <Harbor run arguments>
 
-Runs externally supplied Windows Harbor tasks on isolated KubeVirt VMs.
+Runs externally supplied Windows Harbor tasks on isolated WAA-image KubeVirt VMs.
 Example: run_kubevirt_windows.sh --path /data/windows-tasks --n-concurrent 1
          run_kubevirt_windows.sh --path /data/windows-tasks --agent oracle
 
 Required: HARBOR_KUBEVIRT_BASE_URL, HARBOR_KUBEVIRT_TOKEN,
-          HARBOR_KUBEVIRT_IMAGE, HARBOR_KUBEVIRT_NAMESPACE,
-          HARBOR_KUBEVIRT_SSH_USER, HARBOR_KUBEVIRT_SSH_KEY.
+          HARBOR_KUBEVIRT_IMAGE, HARBOR_KUBEVIRT_NAMESPACE.
+The imported WAA image must serve its guest HTTP API (default port 5000).
 The default agent also requires HARBOR_WINDOWS_AGENT_COMMAND.
 See KUBEVIRT_WINDOWS_README.md for the VM and agent contracts.
 HELP

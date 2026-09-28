@@ -5,9 +5,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
-import tempfile
 import unittest
-from pathlib import Path
 
 import httpx
 from kubevirt_windows.control import (
@@ -15,7 +13,6 @@ from kubevirt_windows.control import (
     DEFAULT_CPU_SOCKETS,
     DEFAULT_DISK_SIZE,
     DEFAULT_MEMORY_GUEST,
-    Platform,
     PlatformAPIError,
     PlatformControl,
     Settings,
@@ -26,10 +23,8 @@ from kubevirt_windows.control import (
 VALID_ENV = {
     "HARBOR_KUBEVIRT_BASE_URL": "https://vm-platform.example.com",
     "HARBOR_KUBEVIRT_TOKEN": "tok",
-    "HARBOR_KUBEVIRT_IMAGE": "windows-benchmark-v1",
+    "HARBOR_KUBEVIRT_IMAGE": "waa-v2-win11-v1",
     "HARBOR_KUBEVIRT_NAMESPACE": "default",
-    "HARBOR_KUBEVIRT_SSH_USER": "runner",
-    "HARBOR_KUBEVIRT_SSH_PORT": "22",
     "HARBOR_KUBEVIRT_START_TIMEOUT": "600",
     "HARBOR_KUBEVIRT_COMMAND_TIMEOUT": "3600",
     "HARBOR_KUBEVIRT_TRANSFER_TIMEOUT": "300",
@@ -48,66 +43,38 @@ def _pristine_harbor_env():
         os.environ.update(saved)
 
 
-def make_settings(overrides: dict, ssh_key: Path) -> Settings:
+def make_settings(overrides=None):
     with _pristine_harbor_env():
-        env = {**VALID_ENV, "HARBOR_KUBEVIRT_SSH_KEY": str(ssh_key), **overrides}
-        os.environ.update(env)
+        os.environ.update({**VALID_ENV, **(overrides or {})})
         return Settings.from_env()
 
 
 class SettingsTests(unittest.TestCase):
     def test_requires_platform_url_token_and_image(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            key = Path(tmp) / "id_rsa"
-            key.touch()
-            with self.assertRaises(ValueError):
-                make_settings({"HARBOR_KUBEVIRT_BASE_URL": ""}, key)
-            with self.assertRaises(ValueError):
-                make_settings({"HARBOR_KUBEVIRT_TOKEN": ""}, key)
-            with self.assertRaises(ValueError):
-                make_settings({"HARBOR_KUBEVIRT_IMAGE": ""}, key)
+        for key in ("BASE_URL", "TOKEN", "IMAGE"):
+            with self.subTest(key=key), self.assertRaises(ValueError):
+                make_settings({"HARBOR_KUBEVIRT_" + key: ""})
 
     def test_rejects_bad_url_scheme(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            key = Path(tmp) / "id_rsa"
-            key.touch()
-            with self.assertRaises(ValueError):
-                make_settings({"HARBOR_KUBEVIRT_BASE_URL": "ftp://bad"}, key)
+        with self.assertRaises(ValueError):
+            make_settings({"HARBOR_KUBEVIRT_BASE_URL": "ftp://bad"})
 
     def test_rejects_bad_namespace(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            key = Path(tmp) / "id_rsa"
-            key.touch()
-            with self.assertRaises(ValueError):
-                make_settings({"HARBOR_KUBEVIRT_NAMESPACE": "Bad_NS"}, key)
+        with self.assertRaises(ValueError):
+            make_settings({"HARBOR_KUBEVIRT_NAMESPACE": "Bad_NS"})
 
-    def test_rejects_missing_ssh_key(self):
-        with (
-            tempfile.TemporaryDirectory() as tmp,
-            self.assertRaises(FileNotFoundError),
-        ):
-            make_settings({}, Path(tmp) / "missing-key")
+    def test_waa_needs_no_ssh_credentials(self):
+        self.assertEqual(make_settings().waa_port, 5000)
+        self.assertEqual(make_settings({"HARBOR_KUBEVIRT_WAA_PORT": "5001"}).waa_port, 5001)
 
-
-@contextlib.contextmanager
-def _tmp_key():
-    with tempfile.TemporaryDirectory() as tmp:
-        key = Path(tmp) / "id_rsa"
-        key.touch()
-        yield key
+    def test_rejects_invalid_waa_ports(self):
+        for port in ("0", "65536", "invalid"):
+            with self.subTest(port=port), self.assertRaises(ValueError):
+                make_settings({"HARBOR_KUBEVIRT_WAA_PORT": port})
 
 
 def build_settings():
-    with _tmp_key() as key:
-        return Settings(
-            platform=Platform(base_url="https://vm-platform.example.com", token="tok"),
-            image="windows-benchmark-v1",
-            namespace="default",
-            ssh_user="runner",
-            ssh_key=key,
-            subnet="ovn-default",
-            storage_class="ceph-rbd-sc",
-        )
+    return make_settings()
 
 
 class CreateRequestTests(unittest.TestCase):
@@ -136,7 +103,7 @@ class CreateRequestTests(unittest.TestCase):
                 "network": {"subnetName": "ovn-default", "ipAddress": "10.16.0.4"},
                 "storage": {
                     "rootDisk": {
-                        "imageName": "windows-benchmark-v1",
+                        "imageName": "waa-v2-win11-v1",
                         "size": DEFAULT_DISK_SIZE,
                         "storageClassName": "ceph-rbd-sc",
                     }
@@ -276,7 +243,7 @@ class PlatformControlTests(unittest.IsolatedAsyncioTestCase):
                 json={
                     "code": 200,
                     "message": "success",
-                    "data": {"name": "windows-benchmark-v1", "minSize": "40Gi"},
+                    "data": {"name": "waa-v2-win11-v1", "minSize": "40Gi"},
                 },
             )
 
@@ -285,7 +252,7 @@ class PlatformControlTests(unittest.IsolatedAsyncioTestCase):
             min_size = await control.image_min_size()
         self.assertEqual(min_size, "40Gi")
         self.assertEqual(
-            calls, [("GET", "/api/v1/images/default/windows-benchmark-v1")]
+            calls, [("GET", "/api/v1/images/default/waa-v2-win11-v1")]
         )
 
     def test_pick_root_disk_size_uses_template_min(self):

@@ -51,7 +51,7 @@ try {
         return_code = $process.ExitCode
         timed_out = $timedOut
     }
-    [Console]::Write((ConvertTo-Json -InputObject $result -Compress))
+    ConvertTo-Json -InputObject $result -Compress
 } finally {
     if ($process -and -not $process.HasExited) {
         & "$env:SystemRoot\System32\taskkill.exe" /PID $process.Id /T /F >$null 2>&1

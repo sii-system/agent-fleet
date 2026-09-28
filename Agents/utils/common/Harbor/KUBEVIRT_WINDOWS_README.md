@@ -1,7 +1,8 @@
-# Windows environments on KubeVirt
+# WAA Windows images on KubeVirt
 
 This backend implements Harbor 0.18.0's `BaseEnvironment` using an isolated
-Windows VM per trial. The Harbor controller runs on Linux. Benchmark tasks,
+WindowsAgentArena (WAA) VM per trial. The first target is the published
+WAA-V2 Windows 11 snapshot. The Harbor controller runs on Linux. Benchmark tasks,
 datasets, setup logic, evaluators, and scoring belong to the consuming project.
 No benchmark adapter is included here.
 
@@ -15,31 +16,33 @@ directly by another project's Harbor configuration.
 
 - Prepare the pinned Harbor runner with repository setup. Workload startup only
   validates it; it does not install tools or download agent runtimes.
-- Install OpenSSH `ssh` / `sftp` on the Linux runner and confirm network
-  reachability to the platform HTTP API at `HARBOR_KUBEVIRT_BASE_URL`. No
-  `kubectl`, `virtctl`, or kubeconfig is required.
+- Confirm network reachability to the platform HTTP API at
+  `HARBOR_KUBEVIRT_BASE_URL` and to the guest WAA service on TCP port 5000.
+  No SSH/SFTP, WinRM, `kubectl`, `virtctl`, or kubeconfig is used.
 - Provide a platform access token via `HARBOR_KUBEVIRT_TOKEN` with permission to
   create/get/stop/delete VMs and read available IPs in the configured namespace.
-- The platform clones the selected golden image (`HARBOR_KUBEVIRT_IMAGE`) into a
-  fresh VM per trial, so no operator-owned VM manifest, DataVolume, or portable
-  disk clone is needed. The backend generates VM names and labels.
-- Prepare a versioned Windows image with VirtIO drivers, Windows PowerShell 5.1
-  or later, OpenSSH Server with SFTP and key authentication, and the desired
-  stable applications already installed. Agent tools may be delivered at runtime
-  using the preparation manifest below. The SSH account must be able to create
-  `C:/ProgramData/AgentFleet`, `C:/logs`, and the task workspace. Commands execute
-  as that account; alternate users and automatic privilege escalation are not
-  supported. Each trial gets a freshly cloned disk; restarting an existing VM is
-  not the reset mechanism.
+- Import the [WAA-V2 Windows 11 snapshot](https://huggingface.co/datasets/henryhe0123/WAA-V2-win11-snapshot)
+  through the platform's image workflow, then set `HARBOR_KUBEVIRT_IMAGE` to its
+  versioned platform image name. Image download, import/conversion, and driver
+  repair are operator steps; this backend does not perform them.
+- Preserve the image's WAA service and logged-in session startup. WAA's
+  [setup script](https://github.com/GAIR-NLP/WindowsAgentArena-V2/blob/2927fe55005d1be75d5a9188c0045f73ba28d192/src/win-arena-container/vm/setup/setup.ps1#L380-L429)
+  opens port 5000 and registers the server at logon. The backend waits for
+  `/probe`, then uses `/execute`, `/setup/upload`, and `/file` from the
+  [guest server](https://github.com/GAIR-NLP/WindowsAgentArena-V2/blob/2927fe55005d1be75d5a9188c0045f73ba28d192/src/win-arena-container/vm/setup/server/main.py).
+  A running VM without a running WAA service is insufficient.
+- The imported image must boot with the platform's disk/network devices and
+  VirtIO drivers. Windows PowerShell 5.1+ and the WAA session account must be
+  able to create `C:/ProgramData/AgentFleet`, `C:/logs`, and the workspace.
+  Commands run as the WAA server's account; user selection and automatic
+  privilege escalation are unsupported. Agent tools can be supplied by the
+  runtime preparation manifest below.
 
-> **Validation boundary.** Earlier validation of this PR exercised the platform
-> lifecycle with a Linux template. It did not validate a Windows image or Windows
-> command execution. The runner could open TCP to the guest IP, but SSH stalled
-> during banner exchange; the platform did not inject a usable SSH key. VNC console
-> access does not supply this backend's execution/file-transfer transport. A
-> Windows image, reachable SSH/SFTP, and a provisioned guest key remain required.
-> These observations describe the earlier test environment, not a current image
-> catalog or a guarantee of platform readiness.
+> **Validation boundary.** The WAA API contract is source-checked at the pinned
+> revision above and exercised by local HTTP tests. No imported WAA snapshot,
+> Windows PowerShell process, or complete WAA benchmark run has been validated
+> on KubeVirt by this change. ALE, OSWorld, arbitrary Windows images, and other
+> guest protocols are not supported targets of this PR.
 
 The platform owns the golden-image clone and VM lifecycle: each trial creates a
 fresh VM from `HARBOR_KUBEVIRT_IMAGE`, and teardown requests release the cloned
@@ -55,10 +58,8 @@ saved configuration.
 ```bash
 export HARBOR_KUBEVIRT_BASE_URL=https://vm-platform.example.com
 # export HARBOR_KUBEVIRT_TOKEN=replace-with-a-platform-access-token
-export HARBOR_KUBEVIRT_IMAGE=windows-benchmark-v1
+export HARBOR_KUBEVIRT_IMAGE=waa-v2-win11-v1
 export HARBOR_KUBEVIRT_NAMESPACE=windows-benchmarks
-export HARBOR_KUBEVIRT_SSH_USER=runner
-export HARBOR_KUBEVIRT_SSH_KEY=/path/to/runner-key
 export HARBOR_WINDOWS_AGENT_COMMAND='C:\Agent\run-agent.cmd'
 
 ./Agents/utils/common/Harbor/run_kubevirt_windows.sh --dry-run \
@@ -81,7 +82,7 @@ Optional settings:
 | `HARBOR_KUBEVIRT_IMAGE` | required | Golden image name to clone per trial |
 | `HARBOR_KUBEVIRT_SUBNET` | `ovn-default` | Platform subnet for the VM IP |
 | `HARBOR_KUBEVIRT_STORAGE_CLASS` | `ceph-rbd-sc` | Platform storage class for the root disk |
-| `HARBOR_KUBEVIRT_SSH_PORT` | `22` | Guest SSH port |
+| `HARBOR_KUBEVIRT_WAA_PORT` | `5000` | Guest WAA HTTP port |
 | `HARBOR_KUBEVIRT_START_TIMEOUT` | `1800` | Total create/clone/boot/guest-readiness deadline, seconds. Template-image provisioning alone can take ~10 min; keep this generous |
 | `HARBOR_KUBEVIRT_COMMAND_TIMEOUT` | `3600` | Command deadline when Harbor supplies none |
 | `HARBOR_KUBEVIRT_TRANSFER_TIMEOUT` | `300` | Per-transfer deadline, seconds |
@@ -206,7 +207,7 @@ Codex-specific installer.
   check, and agent execution. Harbor's scoped agent environment overrides these
   defaults. Values are literal; use full executable paths or a
   wrapper script to extend `PATH`. Environment changes inside a preparation process
-  do not persist into later SSH commands or the verifier.
+  do not persist into later guest commands or the verifier.
 - Use Harbor's agent environment configuration for credentials at runtime. Do not
   place secrets in images, cached bundles, scripts, or the manifest. The manifest
   is trusted operator input and is not a task-controlled download instruction.
@@ -228,31 +229,33 @@ export HARBOR_WINDOWS_AGENT_CHECK_COMMAND='C:\agent-tools\v1\run-agent.cmd --ver
   --ak prepare_timeout_sec=600
 ```
 
-## Desktop and snapshot integration boundary
+## WAA scope and reset boundary
 
-This PR provides VM lifecycle, command execution, file transfer, and runtime tool
-preparation. It does not establish an interactive desktop session. A desktop
-benchmark integration must separately prepare and validate its logged-in GUI
-session, virtual display/resolution/DPI, screenshot/input/UIA service, application
-state, task setup, and evaluator. An SSH process is not evidence that GUI actions
-run in the intended desktop session.
+This PR integrates WAA's existing command/file service for VM lifecycle, agent
+preparation, command execution, and artifact collection. It does not add a WAA
+benchmark adapter, task setup/reset logic, evaluators, scoring, or GUI tools.
+The image already includes desktop-control endpoints, but exposing screenshot,
+input, or accessibility APIs to agents is outside this transport's contract.
+The consuming benchmark project owns those integrations and desktop validation.
 
-The reset boundary remains **fresh template clone per trial**. Restarting a
-retained VM is not a reset. Importing benchmark disks, restoring application-state
-snapshots, attaching tool disks, and building a prepared-snapshot cache require
-provider APIs and image workflows outside this PR. Keep base image versions,
-tool manifests, and per-task assets independently versioned; benchmark-specific
-adapters and scoring remain in the consuming project.
+Reset remains **fresh template clone per trial**. Restarting a retained VM is
+not a reset. WAA application-state snapshot restoration, tool-disk attachment,
+and prepared-snapshot caching are outside this PR. Keep base image versions,
+tool manifests, and task assets independently versioned.
 
 ## Execution, isolation, and cleanup
 
 Guest commands use **cmd.exe semantics**, matching Harbor's Windows helpers.
 Call PowerShell explicitly for `.ps1` scripts. Commands, cwd, and environment are
-transferred in a JSON request over SFTP; shell command length does not constrain
+uploaded in a JSON file through WAA; shell command length does not constrain
 task instructions or environment values. The PowerShell supervisor bounds the
 command's lifetime and requests process-tree termination on timeout/cancellation.
-If SSH is lost, remote cancellation is best effort; VM teardown remains the
-cleanup boundary. Detached/background processes are not a supported agent model.
+WAA caps an `/execute` request at 120 seconds. The backend launches its
+PowerShell supervisor as a detached process, then polls an atomically published
+result using short `/execute` requests. Agent commands still run synchronously
+inside the supervisor. If HTTP access is lost, cancellation is best effort;
+VM teardown remains the cleanup boundary. Agent-created detached/background
+processes are not a supported agent model.
 
 Each `exec()` returns at most the last 1 MiB of each output stream, with a
 truncation marker. Full per-command output stays under
@@ -260,11 +263,19 @@ truncation marker. Full per-command output stays under
 The command bridge redirects agent output to Harbor's collected logs.
 Output callbacks fire when a command completes, not continuously.
 
-SSH and SFTP connect directly to the VM's assigned IP address on the configured
-`HARBOR_KUBEVIRT_SSH_PORT` (no `virtctl` port-forward). The first guest host key
-is accepted through that direct connection and pinned in a private per-instance
-`known_hosts` file; changed keys are rejected. Verify that the runner can route
-to the VM subnet.
+Guest HTTP connects directly to the VM's assigned IP and
+`HARBOR_KUBEVIRT_WAA_PORT`; there is no port-forward or SSH bootstrap. WAA's
+service provides unauthenticated command execution and file access over HTTP.
+Use a trusted private guest network with access restricted to the runner and
+operators; do not publish port 5000 to untrusted clients. This backend does not
+configure those network restrictions or add guest authentication. Platform
+credentials are sent only to the platform API, never to WAA; guest requests
+ignore controller HTTP proxy environment variables.
+
+Migration from earlier revisions of this unmerged PR: replace the generic
+Windows/SSH template with an imported WAA image, remove `HARBOR_KUBEVIRT_SSH_*`
+settings, and allow runner-to-guest TCP 5000 (or the configured WAA port).
+There is no SSH/WinRM fallback. The Harbor environment import path is unchanged.
 
 Startup failures and cancellation attempt VM cleanup. Normal `stop(delete=True)`
 reads the VM and checks the trial ownership label before stop/delete requests.
@@ -280,7 +291,7 @@ Only public/default network policy is supported. Restricted network policies,
 GPU/TPU requests, Docker/Compose definitions, arbitrary host mounts, and user
 impersonation fail explicitly. Directory downloads exclude Windows reparse
 points; uploads reject symlinks. Desktop screenshot/input control is outside
-this transport and requires additional guest tools.
+this transport; consumers may integrate WAA's existing desktop endpoints.
 
 ## Local validation
 
@@ -293,7 +304,10 @@ ruff check --config .github/ruff.toml \
 bash -n Agents/utils/common/Harbor/run_kubevirt_windows.sh
 ```
 
-Tests use the real pinned Harbor interfaces with a mocked HTTP transport and SSH
-operations. They do not boot Windows. Guest PowerShell behavior, image
-compatibility, platform RBAC, and actual Windows agent execution require a
-later live validation.
+Tests use the real pinned Harbor interfaces, mocked platform/guest responses,
+and a loopback HTTP server for file-transfer requests. They do not boot Windows.
+Before declaring an image usable, run a single trial against a fresh clone and
+verify: WAA readiness after boot, Unicode/binary upload/download, an agent command
+lasting more than 120 seconds, timeout/process-tree cancellation, artifact
+collection, and ownership-checked VM deletion. Image compatibility, guest
+PowerShell behavior, and actual Windows agent execution remain live checks.
