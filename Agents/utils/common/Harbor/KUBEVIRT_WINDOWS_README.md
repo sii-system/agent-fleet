@@ -39,10 +39,12 @@ directly by another project's Harbor configuration.
   runtime preparation manifest below.
 
 > **Validation boundary.** The WAA API contract is source-checked at the pinned
-> revision above and exercised by local HTTP tests. No imported WAA snapshot,
-> Windows PowerShell process, or complete WAA benchmark run has been validated
-> on KubeVirt by this change. ALE, OSWorld, arbitrary Windows images, and other
-> guest protocols are not supported targets of this PR.
+> revision above and exercised by local HTTP tests. Guest preparation and the
+> PowerShell supervisor were also validated on four existing Windows guests in
+> `julyai/mywinarena:v1` containers (see live validation below). KubeVirt lifecycle,
+> the imported WAA-V2 snapshot, and complete benchmark runs remain unvalidated.
+> ALE, OSWorld, arbitrary Windows images, and other guest protocols are not
+> supported targets of this PR.
 
 The platform owns the golden-image clone and VM lifecycle: each trial creates a
 fresh VM from `HARBOR_KUBEVIRT_IMAGE`, and teardown requests release the cloned
@@ -309,5 +311,40 @@ and a loopback HTTP server for file-transfer requests. They do not boot Windows.
 Before declaring an image usable, run a single trial against a fresh clone and
 verify: WAA readiness after boot, Unicode/binary upload/download, an agent command
 lasting more than 120 seconds, timeout/process-tree cancellation, artifact
-collection, and ownership-checked VM deletion. Image compatibility, guest
-PowerShell behavior, and actual Windows agent execution remain live checks.
+collection, and ownership-checked VM deletion. The existing-guest checks below
+cover preparation and supervisor behavior; they do not replace fresh-clone
+validation on the target platform and image.
+
+## Live guest preparation validation (2026-09-28)
+
+Revision `aa2703a30dd51958ce5562fdd23a528cef1f41f9` passed **40 live checks** on
+existing WAA instances 07–10 (`julyai/mywinarena:v1`). The controller used Python
+3.12.13, Harbor 0.18.0, and httpx 0.28.1; guest commands ran as the WAA `Docker`
+account under Windows PowerShell 5.1.26100.1591. A separate run of **22 focused
+preparation and WAA transport tests** also passed; platform/lifecycle tests were
+excluded from this validation session.
+
+The live harness used the unmodified guest transport and preparation methods,
+attaching directly to the existing WAA endpoints without constructing a platform
+client or invoking VM lifecycle methods. Each guest passed:
+
+- Checksum-pinned local installation of Codex CLI 0.155.1 into a fresh test
+  directory, repeat setup, and native executable `--version` readiness.
+- Checksum rejection before any upload, installation failure skipping readiness,
+  and readiness failure propagation.
+- A 1 MiB binary roundtrip through a Unicode path, Unicode stdout/stderr,
+  nonzero exit propagation, and final WAA/agent health and request-file cleanup.
+
+Instance 07 completed a 125-second preparation command followed by readiness,
+exceeding WAA's per-request limit. Instances 08 and 09 verified child-process
+termination after a command timeout and an overall preparation deadline,
+respectively. Instance 10 verified bounded stdout/stderr tails and truncation
+markers.
+
+These were fresh installation directories on existing guests, not fresh image
+clones. The installer and bundle were supplied as validation fixtures; this does
+not add a built-in Codex installer. No credentials, model requests, agent task
+runs, GUI automation, or benchmark scoring were tested. KubeVirt provisioning,
+boot, resource configuration, retention/deletion, and compatibility of the
+published WAA-V2 snapshot remain outside these results. No implementation fixes
+were required by these checks.
