@@ -36,7 +36,7 @@ def encoded_powershell(script):
 
 
 class WAATransport:
-    def __init__(self, settings, name, ip, local_dir):
+    def __init__(self, settings, name, ip, local_dir, waa_port=None):
         self.settings, self.name = settings, name
         address = ipaddress.ip_address(ip)
         host = f"[{address}]" if address.version == 6 else str(address)
@@ -44,8 +44,11 @@ class WAATransport:
         self.remote_root = f"C:/ProgramData/AgentFleet/{name}"
         # WAA's guest service has no auth. Never send the platform token or
         # route guest requests through a controller-side HTTP proxy.
+        # `ip` may be a node IP and `waa_port` the node port when the guest is
+        # exposed through a NodePort Service reachable from the runner.
         self.client = httpx.AsyncClient(
-            base_url=f"http://{host}:{settings.waa_port}", trust_env=False,
+            base_url=f"http://{host}:{waa_port or settings.waa_port}",
+            trust_env=False,
         )
 
     async def close(self):

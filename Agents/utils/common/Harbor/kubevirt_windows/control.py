@@ -1,131 +1,115 @@
-"""Platform-HTTP VM lifecycle; no credentials are copied into the guest."""
+"""KubeVirt-native VM lifecycle over the Kubernetes API server.
+
+A KubeVirt Windows trial is a `VirtualMachine` (kubevirt.io/v1) that boots
+the reused Windows golden image attached as a `hostDisk` (SATA bus, since the
+image carries no virtio storage driver), uses the pod network via masquerade
+with the WAA port declared, and is reachable from the runner through a NodePort
+Service. The control plane talks only to the kube-apiserver over HTTPS using
+mTLS credentials loaded from a kubeconfig; it never shells out to `kubectl`.
+"""
 
 from __future__ import annotations
 
+import base64
 import os
 import re
+import ssl
+import tempfile
 from dataclasses import dataclass
-from typing import Any
+from pathlib import Path
 
 import httpx
+import yaml
 
 OWNER_LABEL = "agent-fleet/trial"
 
 DEFAULT_CPU_CORES = 2
 DEFAULT_CPU_SOCKETS = 1
 DEFAULT_MEMORY_GUEST = "4Gi"
-DEFAULT_DISK_SIZE = "32Gi"  # minimum rootDisk size; the larger of this and the source template's minSize wins
-DEFAULT_DISK_BUS = "sata"  # Windows golden images have no virtio storage driver; sata keeps them bootable
+DEFAULT_DISK_SIZE = "32Gi"
+DEFAULT_DISK_BUS = "sata"  # Windows golden images lack a virtio storage driver
 
+_KUBEVIRT_VM_GROUP = "kubevirt.io/v1"
+_SUBRESOURCE_GROUP = "apis/subresources.kubevirt.io/v1"
 
-_QUANTITY_UNITS = {
-    "Ki": 1 << 10,
-    "Mi": 1 << 20,
-    "Gi": 1 << 30,
-    "Ti": 1 << 40,
-    "Pi": 1 << 50,
-    "K": 10**3,
-    "M": 10**6,
-    "G": 10**9,
-    "T": 10**12,
-    "P": 10**15,
+RFC1123_NAME_RE = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
+URL_RE = re.compile(r"^https?://", re.IGNORECASE)
+NS_RE = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
+
+_WINDOWS_SPEC_BASE = {
+    "architecture": "amd64",
+    "domain": {
+        "clock": {"timer": {"hpet": {"present": False}}, "utc": {}},
+        "devices": {
+            "autoattachPodInterface": True,
+            "interfaces": [{
+                "masquerade": {}, "model": "virtio", "name": "default",
+                "ports": [],  # WAA port added per create
+            }],
+            "tpm": {},
+        },
+        "features": {"acpi": {"enabled": True}, "smm": {"enabled": True}},
+        "firmware": {"bootloader": {"efi": {"secureBoot": True}}},
+        "machine": {"type": "pc-q35-rhel9.2.0"},
+    },
+    "networks": [{"name": "default", "pod": {}}],
 }
 
-
-def _quantity_bytes(value) -> int | None:
-    """Parse a Kubernetes quantity string (e.g. "40Gi", "5G") into bytes.
-
-    Returns None for unparseable values so callers can fall back safely.
-    Only the suffixes the platform emits for disk sizes (Ki/Mi/Gi/Ti, K/M/G/T)
-    are handled; bare integers are treated as bytes.
-    """
-    if isinstance(value, (int, float)):
-        return int(value)
-    if not isinstance(value, str):
-        return None
-    value = value.strip()
-    if not value:
-        return None
-    for suffix, factor in _QUANTITY_UNITS.items():
-        if value.endswith(suffix):
-            number = value[: -len(suffix)].strip()
-            try:
-                return int(float(number) * factor)
-            except ValueError:
-                return None
-    try:
-        return int(value)
-    except ValueError:
-        return None
+_CLOUD_INIT = "#cloud-config\n# Windows WAA image; guest server starts at logon.\n"
 
 
-def pick_root_disk_size(configured: str, min_size: str | None) -> str:
-    """Choose the root disk size for a create request.
-
-    A clone of a template image must be at least as large as the source
-    image's minSize, otherwise CDI provisioning hangs/fails. Returns the
-    larger of the configured default and the template minSize (when known).
-    """
-    configured_bytes = _quantity_bytes(configured)
-    min_bytes = _quantity_bytes(min_size) if min_size else None
-    if configured_bytes is None and min_bytes is None:
-        return configured
-    if min_bytes is None or (configured_bytes is not None and configured_bytes >= min_bytes):
-        return configured
-    return min_size or configured
-
-# Lowercase RFC 1123 DNS subdomain (max 63): what the platform requires for VM
-# names because it auto-creates a guest-credential Secret named after the VM.
-RFC1123_NAME_RE = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
-
-
-class PlatformAPIError(RuntimeError):
-    """Raised when the platform returns a non-2xx HTTP status or envelope code."""
+class KubeVirtError(RuntimeError):
+    """Raised when the Kubernetes/KubeVirt API rejects a request."""
 
     def __init__(self, message, code=None):
         super().__init__(message)
         self.code = code
 
 
-URL_RE = re.compile(r"^https?://", re.IGNORECASE)
-NS_RE = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
+PlatformAPIError = KubeVirtError  # compatibility alias
 
 
 @dataclass(frozen=True)
-class Platform:
-    base_url: str
-    token: str
+class Cluster:
+    api_server: str
+    ca_data: str
+    client_cert_data: str
+    client_key_data: str
 
 
 @dataclass(frozen=True)
 class Settings:
-    platform: Platform
+    cluster: Cluster
     image: str
     namespace: str
-    subnet: str
-    storage_class: str
+    node: str
+    disk_bus: str = DEFAULT_DISK_BUS
     waa_port: int = 5000
+    waa_node_port: int = 0
     start_timeout: int = 1800
     command_timeout: int = 3600
     transfer_timeout: int = 300
 
     @classmethod
     def from_env(cls):
-        def required(key):
-            value = os.environ.get("HARBOR_KUBEVIRT_" + key, "")
-            if not value:
-                raise ValueError(f"HARBOR_KUBEVIRT_{key} is required")
-            return value
-
-        base_url = required("BASE_URL")
-        if not URL_RE.match(base_url):
-            raise ValueError("HARBOR_KUBEVIRT_BASE_URL must use http:// or https://")
-        namespace = required("NAMESPACE")
+        kubeconfig = os.environ.get(
+            "HARBOR_KUBEVIRT_KUBECONFIG", os.path.expanduser("~/.kube/config")
+        )
+        api_server = os.environ.get("HARBOR_KUBEVIRT_API_SERVER")
+        image = os.environ.get("HARBOR_KUBEVIRT_IMAGE", "")
+        namespace = os.environ.get("HARBOR_KUBEVIRT_NAMESPACE", "")
+        if not namespace:
+            namespace = "default"
         if not NS_RE.fullmatch(namespace):
             raise ValueError("Invalid Kubernetes namespace")
-        image = required("IMAGE")
-        subnet = os.environ.get("HARBOR_KUBEVIRT_SUBNET", "ovn-default")
-        storage_class = os.environ.get("HARBOR_KUBEVIRT_STORAGE_CLASS", "ceph-rbd-sc")
+        if not image:
+            raise ValueError("HARBOR_KUBEVIRT_IMAGE (host disk path) is required")
+        if api_server and not URL_RE.match(api_server):
+            raise ValueError("HARBOR_KUBEVIRT_API_SERVER must use http:// or https://")
+        node = os.environ.get("HARBOR_KUBEVIRT_NODE", "")
+        kc_server, ca, cert, key = _load_kubeconfig(kubeconfig)
+        if not api_server:
+            api_server = kc_server
 
         def as_int(key, default):
             value = os.environ.get("HARBOR_KUBEVIRT_" + key)
@@ -137,6 +121,7 @@ class Settings:
                 ) from None
 
         waa_port = as_int("WAA_PORT", 5000)
+        waa_node_port = as_int("WAA_NODE_PORT", 0)
         start_timeout = as_int("START_TIMEOUT", 1800)
         command_timeout = as_int("COMMAND_TIMEOUT", 3600)
         transfer_timeout = as_int("TRANSFER_TIMEOUT", 300)
@@ -144,131 +129,192 @@ class Settings:
             raise ValueError("Timeouts must be positive")
         if not 1 <= waa_port <= 65535:
             raise ValueError("WAA port must be between 1 and 65535")
+        disk_bus = os.environ.get("HARBOR_KUBEVIRT_DISK_BUS", DEFAULT_DISK_BUS)
+        if disk_bus not in ("sata", "virtio", "scsi"):
+            raise ValueError("disk_bus must be one of: sata, virtio, scsi")
         return cls(
-            platform=Platform(base_url=base_url, token=required("TOKEN")),
+            cluster=Cluster(
+                api_server=api_server,
+                ca_data=ca,
+                client_cert_data=cert,
+                client_key_data=key,
+            ),
             image=image,
             namespace=namespace,
-            subnet=subnet,
-            storage_class=storage_class,
+            node=node,
+            disk_bus=disk_bus,
             waa_port=waa_port,
+            waa_node_port=waa_node_port,
             start_timeout=start_timeout,
             command_timeout=command_timeout,
             transfer_timeout=transfer_timeout,
         )
 
 
-def _api_base(base_url: str) -> str:
-    """Normalize a human-supplied base URL into the API v1 endpoint."""
-    return base_url.rstrip("/") + "/api/v1"
+def _load_kubeconfig(path: str):
+    """Return (api_server, ca_data, client_cert_data, client_key_data).
 
-
-def raise_for_platform(response: httpx.Response) -> None:
-    """Raise if the HTTP status or the envelope's `code` is not 2xx."""
-    try:
-        response.raise_for_status()
-    except httpx.HTTPStatusError as exc:
-        raise exc from None
-    try:
-        payload = response.json()
-    except (ValueError, TypeError):
-        return  # No JSON envelope to inspect; the HTTP status already passed.
-    if not isinstance(payload, dict):
-        return
-    code = payload.get("code")
-    if isinstance(code, int) and not 200 <= code < 300:
-        raise PlatformAPIError(
-            f"Platform API error (code={code}): {payload.get('message', '')}", code=code
+    Reads the current cluster/user from a kubeconfig. No `kubectl` is invoked;
+    traffic goes straight to the apiserver over mTLS.
+    """
+    kpath = Path(os.path.expanduser(path))
+    if not kpath.exists():
+        raise ValueError(f"HARBOR_KUBEVIRT_KUBECONFIG not found: {kpath}")
+    with kpath.open("r", encoding="utf-8") as fh:
+        cfg = yaml.safe_load(fh) or {}
+    contexts = {c.get("name"): c.get("context") or {} for c in cfg.get("contexts", [])}
+    current = cfg.get("current-context")
+    if not current or current not in contexts:
+        raise ValueError("No current-context in kubeconfig")
+    ctx = contexts[current]
+    cl_name = ctx.get("cluster")
+    us_name = ctx.get("user")
+    cluster = next(
+        (c.get("cluster") or {} for c in cfg.get("clusters", [])
+         if c.get("name") == cl_name), {}
+    )
+    user = next(
+        (u.get("user") or {} for u in cfg.get("users", [])
+         if u.get("name") == us_name), {}
+    )
+    api_server = cluster.get("server")
+    if not api_server:
+        raise ValueError("kubeconfig cluster has no server")
+    ca = _decode(cluster.get("certificate-authority-data")) or (
+        _read_b64_file(cluster, "certificate-authority") if cluster.get("certificate-authority") else None
+    )
+    cert = _decode(user.get("client-certificate-data")) or (
+        _read_b64_file(user, "client-certificate") if user.get("client-certificate") else None
+    )
+    key = _decode(user.get("client-key-data")) or (
+        _read_b64_file(user, "client-key") if user.get("client-key") else None
+    )
+    if not all((api_server, cert, key)):
+        raise ValueError(
+            "kubeconfig cluster/user must provide mTLS client cert/key (or token auth is unsupported)"
         )
+    return api_server, ca or "", cert, key
+
+
+def _decode(data):
+    if not data:
+        return None
+    try:
+        return base64.b64decode(data).decode("utf-8")
+    except (ValueError, TypeError):
+        return data
+
+
+def _read_b64_file(container, key):
+    path = container.get(key)
+    if not path:
+        return None
+    try:
+        return Path(os.path.expanduser(path)).read_bytes().decode("utf-8")
+    except OSError:
+        return None
+
+
+def pick_root_disk_size(configured: str, min_size: str | None) -> str:
+    """A hostDisk clone has no CDI minSize; return the configured default."""
+    return configured
 
 
 def build_create_request(
     settings: Settings,
     name: str,
-    ip: str,
     labels: dict | None = None,
-    disk_size: str = DEFAULT_DISK_SIZE,
     *,
     cpus: int | None = None,
     memory_mb: int | None = None,
-    disk_bus: str = DEFAULT_DISK_BUS,
+    disk_bus: str | None = None,
 ) -> dict:
-    """Build the CreateVMRequest envelope accepted by POST /virtualmachines.
+    """Build a `VirtualMachine` (kubevirt.io/v1) CR reusing the golden image.
 
-    `labels` is an operator metadata map (e.g. {OWNER_LABEL: tag}); the platform
-    declares CreateVMRequest.labels as an object of string values. `disk_size`
-    is the root disk size as a Kubernetes quantity string (e.g. "40Gi"); callers
-    should pass the larger of the default and the source template's minSize.
-
-    `disk_bus` is the root disk bus. Windows golden images built on sata carry
-    no virtio storage driver, so cloning them onto a virtio root disk yields
-    INACCESSIBLE_BOOT_DEVICE (0x7B); the default is therefore "sata".
+    The root disk is a `hostDisk` on `settings.node` pointing at
+    `settings.image` (the existing same-host raw image, e.g. minimal.raw).
+    The pod-network masquerade interface declares the WAA port; a NodePort
+    Service (created by the control plane) exposes it to the runner.
     """
+    disk_bus = disk_bus or settings.disk_bus
     if not name or not RFC1123_NAME_RE.fullmatch(name):
-        raise ValueError(
-            "VM name must be a lowercase RFC1123 DNS subdomain (max 63 chars)"
-        )
-    if not ip:
-        raise ValueError("A subnet IP address is required")
+        raise ValueError("VM name must be a lowercase RFC1123 DNS subdomain")
+    if disk_bus not in ("sata", "virtio", "scsi"):
+        raise ValueError("disk_bus must be one of: sata, virtio, scsi")
     for value in (cpus, memory_mb):
         if value is not None and (type(value) is not int or value <= 0):
             raise ValueError("CPU and memory sizes must be positive integers")
-    if disk_bus not in ("sata", "virtio", "scsi"):
-        raise ValueError("disk_bus must be one of: sata, virtio, scsi")
-    request: dict[str, Any] = {
-        "name": name,
-        "namespace": settings.namespace,
-        "createType": "template",
-        "compute": {
-            "cpuCores": cpus if cpus is not None else DEFAULT_CPU_CORES,
-            "cpuSockets": DEFAULT_CPU_SOCKETS,
-            "memoryGuest": (
-                f"{memory_mb}Mi" if memory_mb is not None else DEFAULT_MEMORY_GUEST
-            ),
+    cores = cpus if cpus is not None else DEFAULT_CPU_CORES
+    memory = f"{memory_mb}Mi" if memory_mb is not None else DEFAULT_MEMORY_GUEST
+
+    spec = jsonable(_WINDOWS_SPEC_BASE)
+    spec["domain"]["cpu"] = {
+        "cores": cores, "sockets": DEFAULT_CPU_SOCKETS, "threads": 1,
+    }
+    spec["domain"]["devices"]["interfaces"][0]["ports"] = [
+        {"name": "waa", "port": settings.waa_port, "protocol": "TCP"}
+    ]
+    spec["domain"]["resources"] = {
+        "limits": {"memory": memory},
+        "requests": {"memory": memory},
+    }
+    spec["volumes"] = [
+        {
+            "name": "disk0",
+            "hostDisk": {
+                "path": settings.image,
+                "type": "Disk",
+                "capacity": "0",
+            },
         },
-        "network": {"subnetName": settings.subnet, "ipAddress": ip},
-        "storage": {
-            "rootDisk": {
-                "imageName": settings.image,
-                "size": disk_size,
-                "storageClassName": settings.storage_class,
-                "bus": disk_bus,
-            }
+        {
+            "name": "cloudinit",
+            "cloudInitNoCloud": {
+                "userDataBase64": base64.b64encode(_CLOUD_INIT.encode("utf-8")).decode("ascii")
+            },
+        },
+    ]
+    root_disk = {"disk": {"bus": disk_bus}, "name": "disk0"}
+    cloudinit_disk = {"disk": {"bus": "virtio"}, "name": "cloudinit"}
+    spec["domain"]["devices"]["disks"] = [root_disk, cloudinit_disk]
+    if settings.node:
+        spec["nodeSelector"] = {"kubernetes.io/hostname": settings.node}
+
+    vm_labels = dict(labels or {})
+    vm_labels.setdefault("kubevirt.io/domain", name)
+    return {
+        "apiVersion": _KUBEVIRT_VM_GROUP,
+        "kind": "VirtualMachine",
+        "metadata": {
+            "name": name,
+            "namespace": settings.namespace,
+            "labels": vm_labels,
+        },
+        "spec": {
+            "running": False,
+            "template": {
+                "metadata": {"labels": {"kubevirt.io/domain": name}},
+                "spec": spec,
+            },
         },
     }
-    if labels:
-        request["labels"] = labels
-    return request
+
+
+def jsonable(value):
+    return __import__("copy").deepcopy(value)
 
 
 def _as_bool(value) -> bool:
-    """Coerce a ready flag that may arrive as bool, int, or string."""
     if isinstance(value, str):
         return value.strip().lower() in ("true", "1", "yes")
     return bool(value)
 
 
-def parse_vm(data: dict) -> dict:
-    """Normalize a GET VM `data` payload into a stable, tolerant dict."""
-    metadata = data.get("metadata") or {}
-    labels = data.get("labels") or metadata.get("labels") or {}
-    return {
-        "name": data.get("name") or metadata.get("name") or "",
-        "namespace": data.get("namespace") or metadata.get("namespace") or "",
-        "ip": data.get("ipAddress") or "",
-        "ready": _as_bool(data.get("ready")),
-        "labels": labels,
-        "status": data.get("printableStatus")
-        or data.get("status")
-        or (metadata.get("status") or ""),
-        "uid": data.get("uid") or metadata.get("uid") or "",
-    }
+class KubeVirtControl:
+    """Async apiserver client for KubeVirt VirtualMachine lifecycle.
 
-
-class PlatformControl:
-    """Async client for the platform HTTP VM lifecycle API.
-
-    Replaces the kubectl-based VMControl. Uses direct bearer-token auth; the
-    client is created per instance and never performs I/O at import time.
+    Uses mTLS credentials from the kubeconfig; no kubectl, virtctl, or client
+    library. Created per environment instance; never performs I/O at import.
     """
 
     def __init__(
@@ -279,17 +325,51 @@ class PlatformControl:
         self.settings = settings
         self._transport = transport
         self._client = None
+        self._tmp = None
+        self._cert_path = None
+        self._verify_path = None
+
+    def _materialize(self):
+        if self._verify_path is not None:
+            return
+        self._tmp = tempfile.TemporaryDirectory(prefix="kubevirt-ctl-")
+        tmp = Path(self._tmp.name)
+        self._verify_path = str(tmp / "ca.pem")
+        cert = tmp / "client.crt"
+        key = tmp / "client.key"
+        cert.write_text(self.settings.cluster.client_cert_data, encoding="utf-8")
+        key.write_text(self.settings.cluster.client_key_data, encoding="utf-8")
+        with open(self._verify_path, "w", encoding="utf-8") as fh:
+            fh.write(self.settings.cluster.ca_data)
+        self._cert_path = (str(cert), str(key))
 
     @property
-    def client(self):
+    def client(self) -> httpx.AsyncClient:
         if self._client is None:
+            self._materialize()
+            ssl_context = ssl.create_default_context(cafile=self._verify_path)
+            ssl_context.load_cert_chain(*self._cert_path)
             self._client = httpx.AsyncClient(
-                base_url=_api_base(self.settings.platform.base_url),
-                headers={"Authorization": f"Bearer {self.settings.platform.token}"},
+                base_url=self.settings.cluster.api_server,
+                verify=ssl_context,
                 timeout=httpx.Timeout(30.0),
                 transport=self._transport,
             )
         return self._client
+
+    def _vm_path(self, name=None):
+        ns = self.settings.namespace
+        return f"/apis/{_KUBEVIRT_VM_GROUP}/namespaces/{ns}/virtualmachines/{name}"
+
+    def _vmi_path(self, name):
+        ns = self.settings.namespace
+        return f"/apis/{_KUBEVIRT_VM_GROUP}/namespaces/{ns}/virtualmachineinstances/{name}"
+
+    def _sub_path(self, name, action):
+        return (
+            f"/{_SUBRESOURCE_GROUP}/namespaces/{self.settings.namespace}/"
+            f"virtualmachines/{name}/{action}"
+        )
 
     async def __aenter__(self):
         return self
@@ -301,104 +381,208 @@ class PlatformControl:
         if self._client is not None:
             await self._client.aclose()
             self._client = None
+        if self._tmp is not None:
+            self._tmp.cleanup()
+            self._tmp = None
+            self._cert_path = None
+            self._verify_path = None
+
+    async def ping(self) -> bool:
+        try:
+            response = await self.client.get("/version")
+            response.raise_for_status()
+            return True
+        except (httpx.HTTPError, ValueError):
+            return False
 
     async def create(
         self,
         name: str,
-        ip: str,
         labels: dict | None = None,
-        disk_size: str = DEFAULT_DISK_SIZE,
         *,
         cpus: int | None = None,
         memory_mb: int | None = None,
-        disk_bus: str = DEFAULT_DISK_BUS,
+        disk_bus: str | None = None,
     ) -> dict:
+        body = build_create_request(
+            self.settings, name, labels, cpus=cpus, memory_mb=memory_mb,
+            disk_bus=disk_bus,
+        )
         response = await self.client.post(
-            "/virtualmachines",
-            json=build_create_request(
-                self.settings, name, ip, labels, disk_size, cpus=cpus, memory_mb=memory_mb, disk_bus=disk_bus
-            ),
+            f"/apis/{_KUBEVIRT_VM_GROUP}/namespaces/{self.settings.namespace}/virtualmachines",
+            json=body,
         )
-        raise_for_platform(response)
-        body = response.json()
-        return body.get("data", {}) if isinstance(body, dict) else {}
-
-    async def image_min_size(self, image: str | None = None) -> str | None:
-        """Return the source image/template's minSize (e.g. "40Gi") or None.
-
-        A clone of a template must be at least this large to provision; the
-        caller should size the root disk to at least this value.
-        """
-        image = image or self.settings.image
-        if not image:
-            return None
-        response = await self.client.get(
-            f"/images/{self.settings.namespace}/{image}"
-        )
-        raise_for_platform(response)
-        body = response.json()
-        data = body.get("data", {}) if isinstance(body, dict) else {}
-        min_size = data.get("minSize") if isinstance(data, dict) else None
-        return min_size if isinstance(min_size, str) and min_size else None
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError:
+            msg = response.text[:500]
+            raise KubeVirtError(
+                f"KubeVirt create failed ({response.status_code}): {msg}",
+                code=response.status_code,
+            ) from None
+        return response.json().get("metadata", {})
 
     async def get(self, name: str) -> dict:
-        response = await self.client.get(
-            f"/virtualmachines/{self.settings.namespace}/{name}"
-        )
-        raise_for_platform(response)
-        body = response.json()
-        return parse_vm(body.get("data", {}) if isinstance(body, dict) else {})
-
-    async def available_ips(self, subnet: str | None = None) -> list:
-        """Return free subnet IPs the platform may assign to a new VM.
-
-        The platform requires a concrete network.ipAddress at create time and
-        direct-IP WAA HTTP needs a known host, so a free IP is picked before create.
-        GET /network/ips is admin-only (403); the per-subnet available-ips
-        listing is the read-only call that works for this role.
-        """
-        subnet = subnet or self.settings.subnet
-        response = await self.client.get(
-            f"/network/subnets/{subnet}/available-ips"
-        )
-        raise_for_platform(response)
-        body = response.json()
-        data = body.get("data", {}) if isinstance(body, dict) else {}
-        ips = data.get("ips") if isinstance(data, dict) else data
-        if not isinstance(ips, list):
-            raise PlatformAPIError("available-ips returned unexpected shape")
-        return [ip for ip in ips if isinstance(ip, str) and ip]
-
-    async def start(self, name: str) -> dict:
-        """Power on an existing VM. Create leaves the VM defined/Stopped and an
-        explicit start is required before the guest boots and becomes ready."""
-        response = await self.client.put(
-            f"/virtualmachines/{self.settings.namespace}/{name}/start"
-        )
-        raise_for_platform(response)
-        body = response.json()
-        return body.get("data", {}) if isinstance(body, dict) else {}
-
-    async def stop(self, name: str) -> dict:
-        response = await self.client.put(
-            f"/virtualmachines/{self.settings.namespace}/{name}/stop"
-        )
-        raise_for_platform(response)
-        body = response.json()
-        return body.get("data", {}) if isinstance(body, dict) else {}
-
-    async def delete(self, name: str) -> dict:
-        response = await self.client.delete(
-            f"/virtualmachines/{self.settings.namespace}/{name}"
-        )
-        raise_for_platform(response)
-        body = response.json()
-        return body.get("data", {}) if isinstance(body, dict) else {}
-
-    async def ping(self) -> bool:
+        response = await self.client.get(self._vm_path(name))
         try:
-            response = await self.client.get("/users/me")
-            raise_for_platform(response)
-            return True
-        except (httpx.HTTPError, PlatformAPIError):
-            return False
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            raise exc from None
+        vm = response.json() or {}
+        metadata = vm.get("metadata", {})
+        spec = vm.get("spec", {})
+        status = vm.get("status", {}) or {}
+        labels = metadata.get("labels") or spec.get("template", {}).get("metadata", {}).get("labels") or {}
+        vm_status = status.get("printableStatus") or status.get("phase") or ""
+
+        # The pod-network IP lives on the VMI. The VM defines the desired state;
+        # a running target has a VMI. Absence of the VMI means not started.
+        ip = ""
+        phase = vm_status
+        vmi_running = False
+        try:
+            vmi_resp = await self.client.get(self._vmi_path(name))
+            vmi_resp.raise_for_status()
+            vmi = vmi_resp.json() or {}
+            vmi_status = vmi.get("status", {}) or {}
+            phase = vmi_status.get("phase", vm_status)
+            vmi_running = phase.lower() == "running"
+            interfaces = vmi_status.get("interfaces") or []
+            for item in interfaces:
+                if item.get("ipAddress"):
+                    ip = item["ipAddress"]
+                    break
+        except httpx.HTTPStatusError as exc:
+            # No VMI yet (VM not running) is expected when queried pre-start.
+            if exc.response.status_code != 404:
+                raise
+        return {
+            "name": name,
+            "namespace": self.settings.namespace,
+            "ip": ip,
+            "ready": bool(ip) and vmi_running,
+            "labels": labels,
+            "status": phase,
+            "uid": metadata.get("uid", ""),
+            "running": _as_bool(status.get("ready")),
+        }
+
+    async def start(self, name: str) -> None:
+        response = await self.client.put(self._sub_path(name, "start"))
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError:
+            raise KubeVirtError(
+                f"KubeVirt start failed ({response.status_code}): {response.text[:300]}",
+                code=response.status_code,
+            ) from None
+
+    async def stop(self, name: str) -> None:
+        response = await self.client.put(self._sub_path(name, "stop"))
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError:
+            raise KubeVirtError(
+                f"KubeVirt stop failed ({response.status_code}): {response.text[:300]}",
+                code=response.status_code,
+            ) from None
+
+    async def delete(self, name: str) -> None:
+        response = await self.client.delete(self._vm_path(name))
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code != 404:
+                raise
+        await self._delete_service(name)
+
+    async def expose_waa(self, name: str) -> str:
+        """Create a NodePort Service exposing WAA and return ``host:port``."""
+        service_name = f"{name}-waa"
+        svc = {
+            "apiVersion": "v1",
+            "kind": "Service",
+            "metadata": {
+                "name": service_name,
+                "namespace": self.settings.namespace,
+                "labels": {OWNER_LABEL: name},
+            },
+            "spec": {
+                "type": "NodePort",
+                "selector": {"kubevirt.io/domain": name},
+                "ports": [{
+                    "name": "waa",
+                    "port": self.settings.waa_port,
+                    "targetPort": self.settings.waa_port,
+                    "protocol": "TCP",
+                }],
+            },
+        }
+        if self.settings.waa_node_port:
+            svc["spec"]["ports"][0]["nodePort"] = self.settings.waa_node_port
+        create = await self.client.post(
+            f"/api/v1/namespaces/{self.settings.namespace}/services",
+            json=svc,
+        )
+        if create.status_code != 201 and create.status_code != 200:
+            # Retry idempotently on a stale/existing service.
+            existing = await self.client.get(
+                f"/api/v1/namespaces/{self.settings.namespace}/services/{service_name}"
+            )
+            if existing.status_code != 200:
+                raise KubeVirtError(
+                    f"WAA Service create failed ({create.status_code}): {create.text[:200]}",
+                    code=create.status_code,
+                )
+        get_svc = await self.client.get(
+            f"/api/v1/namespaces/{self.settings.namespace}/services/{service_name}"
+        )
+        get_svc.raise_for_status()
+        spec = get_svc.json().get("spec", {})
+        node_port = spec.get("ports", [{}])[0].get("nodePort")
+        if not node_port:
+            raise KubeVirtError("WAA Service returned no nodePort")
+        host = await self._waa_host(name)
+        return f"{host}:{node_port}"
+
+    async def _waa_host(self, name: str) -> str:
+        """Return the InternalIP of the node running this VM's VMI."""
+        try:
+            vmi_resp = await self.client.get(self._vmi_path(name))
+            vmi_resp.raise_for_status()
+            node_name = (vmi_resp.json().get("status") or {}).get("nodeName")
+        except (httpx.HTTPStatusError, AttributeError):
+            node_name = None
+        if not node_name:
+            node_name = self.settings.node
+        if node_name:
+            node_resp = await self.client.get(f"/api/v1/nodes/{node_name}")
+            if node_resp.status_code == 200:
+                for addr in (node_resp.json().get("status") or {}).get("addresses", []):
+                    if addr.get("type") == "InternalIP":
+                        return addr["address"]
+        raise KubeVirtError(f"Could not resolve a reachable host for VM {name}")
+
+    async def _delete_service(self, name: str) -> None:
+        service_name = f"{name}-waa"
+        response = await self.client.delete(
+            f"/api/v1/namespaces/{self.settings.namespace}/services/{service_name}"
+        )
+        if response.status_code not in (200, 404, 202):
+            raise KubeVirtError(
+                f"WAA Service delete failed ({response.status_code}): {response.text[:200]}",
+                code=response.status_code,
+            )
+
+    async def available_ips(self) -> list:
+        """KubeVirt allocates pod IPs automatically; no pre-allocator exists."""
+        return []
+
+    async def image_min_size(self, image: str | None = None) -> str | None:
+        """hostDisk clones have no CDI minSize; sizing is irrelevant."""
+        return None
+
+
+def raise_for_platform(response: httpx.Response) -> None:
+    """Compatibility shim: raise on non-2xx HTTP status."""
+    response.raise_for_status()

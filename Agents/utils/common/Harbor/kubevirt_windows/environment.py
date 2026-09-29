@@ -18,14 +18,10 @@ from harbor.models.task.config import TaskOS
 from harbor.utils.path_filter import filter_paths_by_patterns
 
 from .control import (
-    DEFAULT_DISK_SIZE,
     OWNER_LABEL,
+    KubeVirtControl,
     PlatformAPIError,
-    PlatformControl,
     Settings,
-    _api_base,
-    pick_root_disk_size,
-    raise_for_platform,
 )
 from .transport import WAATransport, windows_path
 
@@ -35,7 +31,7 @@ class KubeVirtWindowsEnvironment(BaseEnvironment):
         self.settings = Settings.from_env()
         self.token = uuid.uuid4().hex
         self.vm_name = "hf-win-" + self.token[:24]
-        self.control = PlatformControl(self.settings)
+        self.control = KubeVirtControl(self.settings)
         self._created = False
         self._create_attempted = False
         self._local_dir = None
@@ -58,24 +54,25 @@ class KubeVirtWindowsEnvironment(BaseEnvironment):
     @classmethod
     def preflight(cls):
         settings = Settings.from_env()
-        # Read-only reachability + token check; never mutates the platform.
+        # Read-only reachability of the kube-apiserver; never mutates clusters.
+        control = KubeVirtControl(settings)
         try:
-            import httpx
+            import asyncio
 
-            with httpx.Client(
-                base_url=_api_base(settings.platform.base_url),
-                headers={"Authorization": f"Bearer {settings.platform.token}"},
-                timeout=httpx.Timeout(15.0),
-            ) as client:
-                raise_for_platform(client.get("/users/me"))
+            async def check():
+                ok = await control.ping()
+                if not ok:
+                    raise RuntimeError("KubeVirt apiserver not reachable or not authorized")
+
+            asyncio.get_event_loop().run_until_complete(check())
         except ValueError:
             raise
-        except httpx.HTTPError as exc:
+        except (httpx.HTTPError, RuntimeError, OSError) as exc:
             raise ValueError(
-                f"KubeVirt platform unreachable at {settings.platform.base_url}: {exc}"
+                f"KubeVirt apiserver unreachable at {settings.cluster.api_server}: {exc}"
             ) from exc
-        except PlatformAPIError as exc:
-            raise ValueError(f"KubeVirt platform rejected the token: {exc}") from exc
+        finally:
+            asyncio.get_event_loop().run_until_complete(control.close())
 
     def _validate_definition(self):
         if self.os != TaskOS.WINDOWS:
@@ -125,20 +122,14 @@ class KubeVirtWindowsEnvironment(BaseEnvironment):
         tag = self.token[:12]
         try:
             async with asyncio.timeout(self.settings.start_timeout):
-                ips = await self.control.available_ips()
-                ip = ips[0] if ips else None
-                if not ip:
-                    raise RuntimeError(
-                        "No free IP available on subnet " + self.settings.subnet
-                    )
                 self.trial_paths.trial_dir.mkdir(parents=True, exist_ok=True)
                 (self.trial_paths.trial_dir / "kubevirt.json").write_text(
                     json.dumps(
                         {
                             "vm": self.vm_name,
                             "namespace": self.settings.namespace,
-                            "subnet": self.settings.subnet,
-                            "ip": ip,
+                            "host_disk": self.settings.image,
+                            "node": self.settings.node,
                             "labels": {OWNER_LABEL: tag},
                         },
                         indent=2,
@@ -146,15 +137,10 @@ class KubeVirtWindowsEnvironment(BaseEnvironment):
                     + "\n",
                     encoding="utf-8",
                 )
-                # Disk must be >= the source template's minSize to clone.
-                min_size = await self.control.image_min_size(self.settings.image)
-                disk_size = pick_root_disk_size(DEFAULT_DISK_SIZE, min_size)
                 self._create_attempted = True
                 await self.control.create(
                     self.vm_name,
-                    ip,
                     labels={OWNER_LABEL: tag},
-                    disk_size=disk_size,
                     cpus=self.task_env_config.cpus,
                     memory_mb=self.task_env_config.memory_mb,
                 )
@@ -164,11 +150,15 @@ class KubeVirtWindowsEnvironment(BaseEnvironment):
                 while True:
                     vm = await self.control.get(self.vm_name)
                     if vm.get("ready") and vm.get("ip"):
-                        ip = vm["ip"]
                         break
                     await asyncio.sleep(2)
+                # Expose WAA on a node port reachable from the runner, and
+                # connect the guest transport to that endpoint.
+                node_endpoint = await self.control.expose_waa(self.vm_name)
+                host, port = node_endpoint.rsplit(":", 1)
                 self.transport = WAATransport(
-                    self.settings, self.vm_name, ip, self._local_dir.name
+                    self.settings, self.vm_name, host, self._local_dir.name,
+                    waa_port=int(port),
                 )
                 while True:
                     try:

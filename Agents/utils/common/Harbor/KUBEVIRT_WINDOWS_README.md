@@ -12,44 +12,69 @@ bind mounts, and agent wrappers used by `start.sh` / `run_fleet.sh`. Those unifi
 launchers do not yet dispatch Windows runs. The backend is also importable
 directly by another project's Harbor configuration.
 
+## KubeVirt-native VM lifecycle
+
+The control plane follows KubeVirt's own API surface and talks **only** to the
+kube-apiserver over HTTPS; it never shells out to `kubectl`, `virtctl`, or a
+client library. Each trial is a fresh `VirtualMachine` (`kubevirt.io/v1`) that
+reuses an existing **`hostDisk`** golden image on one of the cluster's nodes
+(e.g. `/var/lib/kubevirt/custom-disks/minimal.raw`). Because the golden disk is
+reused in place, a cloned VM must run on the node that holds that file
+(`HARBOR_KUBEVIRT_NODE`); use a DataVolume-backed template if you need replicas
+across restarts and concurrent trials from one image.
+
+- Create: `POST /apis/kubevirt.io/v1/namespaces/{ns}/virtualmachines`
+- Read status + pod IP: `GET .../virtualmachineinstances/{name}` (`status.interfaces[].ipAddress`)
+- Start/stop: `PUT /apis/subresources.kubevirt.io/v1/.../virtualmachines/{name}/start|stop`
+- Delete: `DELETE /apis/kubevirt.io/v1/namespaces/{ns}/virtualmachines/{name}`
+
+The VM spec matches a proven Windows guest: SATA root disk (the golden image
+carries no virtio storage driver), masquerade pod network with the WAA port
+declared, EFI secure boot, and cloud-init. The runner lives outside the pod
+overlay, so the backend additionally creates a **NodePort `Service`** that maps
+the WAA port onto a node IP the runner can reach, and connects the guest
+transport to `node_ip:node_port`.
+
 ## Host and image requirements
 
-- Prepare the pinned Harbor runner with repository setup. Workload startup only
-  validates it; it does not install tools or download agent runtimes.
-- Confirm network reachability to the platform HTTP API at
-  `HARBOR_KUBEVIRT_BASE_URL` and to the guest WAA service on TCP port 5000.
-  No SSH/SFTP, WinRM, `kubectl`, `virtctl`, or kubeconfig is used.
-- Provide a platform access token via `HARBOR_KUBEVIRT_TOKEN` with permission to
-  create/get/stop/delete VMs and read available IPs in the configured namespace.
-- Import the [WAA-V2 Windows 11 snapshot](https://huggingface.co/datasets/henryhe0123/WAA-V2-win11-snapshot)
-  through the platform's image workflow, then set `HARBOR_KUBEVIRT_IMAGE` to its
-  versioned platform image name. Image download, import/conversion, and driver
-  repair are operator steps; this backend does not perform them.
+- Prepare the pinned Harbor runner with repository setup; workload startup only
+  validates it and does not install Windows tools.
+- Confirm the runner can reach the kube-apiserver (`HARBOR_KUBEVIRT_API_SERVER`
+  or the kubeconfig's `server`) with mTLS, and can reach node ports on a cluster
+  node (the NodePort Service exposes WAA there). No SSH/SFTP, WinRM, or client
+  tools are used.
+- Provide a kubeconfig (`HARBOR_KUBEVIRT_KUBECONFIG`, default `~/.kube/config`)
+  whose current user presents client certificate + key with permission to
+  create/get/start/stop/delete `virtualmachines` and `services` in the namespace.
+  Alternatively set `HARBOR_KUBEVIRT_API_SERVER` (the kubeconfig is still read
+  for the mTLS credentials). Token auth is not supported.
+- Place a bootable Windows image on a node as a raw file, then set
+  `HARBOR_KUBEVIRT_IMAGE` to its absolute `hostDisk` path (e.g.
+  `/var/lib/kubevirt/custom-disks/minimal.raw`) and `HARBOR_KUBEVIRT_NODE` to
+  the node holding that file. Note that a `hostDisk` is shared in place: start a
+  clean clone of the image and keep concurrent trials on different images.
 - Preserve the image's WAA service and logged-in session startup. WAA's
   [setup script](https://github.com/GAIR-NLP/WindowsAgentArena-V2/blob/2927fe55005d1be75d5a9188c0045f73ba28d192/src/win-arena-container/vm/setup/setup.ps1#L380-L429)
   opens port 5000 and registers the server at logon. The backend waits for
   `/probe`, then uses `/execute`, `/setup/upload`, and `/file` from the
   [guest server](https://github.com/GAIR-NLP/WindowsAgentArena-V2/blob/2927fe55005d1be75d5a9188c0045f73ba28d192/src/win-arena-container/vm/setup/server/main.py).
   A running VM without a running WAA service is insufficient.
-- The imported image must boot with the platform's disk/network devices and
-  VirtIO drivers. Windows PowerShell 5.1+ and the WAA session account must be
-  able to create `C:/ProgramData/AgentFleet`, `C:/logs`, and the workspace.
-  Commands run as the WAA server's account; user selection and automatic
-  privilege escalation are unsupported. Agent tools can be supplied by the
-  runtime preparation manifest below.
+- The image must boot with the node's disk/network devices and VirtIO drivers.
+  Windows PowerShell 5.1+ and the WAA session account must be able to create
+  `C:/ProgramData/AgentFleet`, `C:/logs`, and the workspace. Commands run as the
+  WAA server's account; user selection and automatic privilege escalation are
+  unsupported. Agent tools can be supplied by the runtime preparation manifest
+  below.
 
 > **Validation boundary.** The WAA API contract is source-checked at the pinned
 > revision above and exercised by local HTTP tests. Guest preparation and the
-> PowerShell supervisor were also validated on four existing Windows guests in
-> `julyai/mywinarena:v1` containers (see live validation below). KubeVirt lifecycle,
-> the imported WAA-V2 snapshot, and complete benchmark runs remain unvalidated.
+> PowerShell supervisor were validated on existing Windows guests (see live
+> validation below). This revision replaces the custom platform HTTP API with a
+> KubeVirt-native control plane, live-validated for VM create/start/read/delete,
+> NodePort WAA exposure, and guest execution. Complete Harbor benchmark runs and
+> production image management remain the consuming project's responsibility.
 > ALE, OSWorld, arbitrary Windows images, and other guest protocols are not
 > supported targets of this PR.
-
-The platform owns the golden-image clone and VM lifecycle: each trial creates a
-fresh VM from `HARBOR_KUBEVIRT_IMAGE`, and teardown requests release the cloned
-storage. The backend does not delete the golden source image or the guest
-credential Secret the platform creates at VM creation.
 
 ## Configuration and launch
 
@@ -58,9 +83,10 @@ variables. Runtime environment values, including explicitly empty ones, override
 saved configuration.
 
 ```bash
-export HARBOR_KUBEVIRT_BASE_URL=https://vm-platform.example.com
-# export HARBOR_KUBEVIRT_TOKEN=replace-with-a-platform-access-token
-export HARBOR_KUBEVIRT_IMAGE=waa-v2-win11-v1
+export HARBOR_KUBEVIRT_KUBECONFIG=$HOME/.kube/config
+export HARBOR_KUBEVIRT_API_SERVER=https://10.254.64.34:6443
+export HARBOR_KUBEVIRT_IMAGE=/var/lib/kubevirt/custom-disks/minimal.raw
+export HARBOR_KUBEVIRT_NODE=cpu-nat-391
 export HARBOR_KUBEVIRT_NAMESPACE=windows-benchmarks
 export HARBOR_WINDOWS_AGENT_COMMAND='C:\Agent\run-agent.cmd'
 
@@ -71,21 +97,22 @@ export HARBOR_WINDOWS_AGENT_COMMAND='C:\Agent\run-agent.cmd'
   --path /data/external-windows-tasks --n-concurrent 1
 ```
 
-Dry-run makes no platform API calls and deliberately does not print raw
-arguments, which may include secrets. It does not validate the image or the
-platform token.
+Dry-run makes no apiserver calls and deliberately does not print raw arguments,
+which may include secrets. It does not validate the image or the kubeconfig.
 
 Optional settings:
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `HARBOR_KUBEVIRT_BASE_URL` | required | Platform HTTP API base URL (no trailing `/api/v1`) |
-| `HARBOR_KUBEVIRT_TOKEN` | required | Platform access token |
-| `HARBOR_KUBEVIRT_IMAGE` | required | Golden image name to clone per trial |
-| `HARBOR_KUBEVIRT_SUBNET` | `ovn-default` | Platform subnet for the VM IP |
-| `HARBOR_KUBEVIRT_STORAGE_CLASS` | `ceph-rbd-sc` | Platform storage class for the root disk |
+| `HARBOR_KUBEVIRT_KUBECONFIG` | `~/.kube/config` | kubeconfig with the mTLS client cert/key and cluster `server` |
+| `HARBOR_KUBEVIRT_API_SERVER` | from kubeconfig | KubeVirt apiserver URL; overrides the kubeconfig `server` (certs still come from kubeconfig) |
+| `HARBOR_KUBEVIRT_IMAGE` | required | Absolute `hostDisk` path to the golden image on the node |
+| `HARBOR_KUBEVIRT_NODE` | empty | Node (hostname) that holds the `hostDisk` image; required for a hostDisk reusing the existing file |
+| `HARBOR_KUBEVIRT_NAMESPACE` | `default` | Namespace for the VM and WAA Service |
+| `HARBOR_KUBEVIRT_DISK_BUS` | `sata` | Root disk bus (sata/virtio/scsi); Windows golden images need SATA |
 | `HARBOR_KUBEVIRT_WAA_PORT` | `5000` | Guest WAA HTTP port |
-| `HARBOR_KUBEVIRT_START_TIMEOUT` | `1800` | Total create/clone/boot/guest-readiness deadline, seconds. Template-image provisioning alone can take ~10 min; keep this generous |
+| `HARBOR_KUBEVIRT_WAA_NODE_PORT` | auto | Optional explicit nodePort for the WAA Service |
+| `HARBOR_KUBEVIRT_START_TIMEOUT` | `1800` | Total create/boot/guest-readiness deadline, seconds. Windows boot can take ~10 min; keep this generous |
 | `HARBOR_KUBEVIRT_COMMAND_TIMEOUT` | `3600` | Command deadline when Harbor supplies none |
 | `HARBOR_KUBEVIRT_TRANSFER_TIMEOUT` | `300` | Per-transfer deadline, seconds |
 | `HARBOR_WINDOWS_AGENT_COMMAND` | required for default bridge | Prepared Windows command/entrypoint |
@@ -265,26 +292,32 @@ truncation marker. Full per-command output stays under
 The command bridge redirects agent output to Harbor's collected logs.
 Output callbacks fire when a command completes, not continuously.
 
-Guest HTTP connects directly to the VM's assigned IP and
-`HARBOR_KUBEVIRT_WAA_PORT`; there is no port-forward or SSH bootstrap. WAA's
-service provides unauthenticated command execution and file access over HTTP.
-Use a trusted private guest network with access restricted to the runner and
-operators; do not publish port 5000 to untrusted clients. This backend does not
-configure those network restrictions or add guest authentication. Platform
-credentials are sent only to the platform API, never to WAA; guest requests
-ignore controller HTTP proxy environment variables.
+Guest HTTP connects to `node_ip:node_port` from a NodePort `Service` that maps
+`HARBOR_KUBEVIRT_WAA_PORT` onto a cluster node IP the runner can reach; there is
+no port-forward, SSH, or virtctl proxy. WAA's service provides unauthenticated
+command execution and file access over HTTP. Use a trusted private guest network
+with access restricted to the runner and operators; do not publish port 5000 to
+untrusted clients. This backend does not configure those network restrictions or
+add guest authentication. mTLS apiserver credentials are sent only to the
+kube-apiserver, never to WAA; guest requests ignore controller HTTP proxy
+environment variables.
 
-Migration from earlier revisions of this unmerged PR: replace the generic
-Windows/SSH template with an imported WAA image, remove `HARBOR_KUBEVIRT_SSH_*`
-settings, and allow runner-to-guest TCP 5000 (or the configured WAA port).
-There is no SSH/WinRM fallback. The Harbor environment import path is unchanged.
+Migration from earlier revisions of this unmerged PR: replace the custom
+platform HTTP API with the KubeVirt-native control plane, remove
+`HARBOR_KUBEVIRT_BASE_URL`/`TOKEN`/`SUBNET`/`STORAGE_CLASS` platform settings and
+`HARBOR_KUBEVIRT_SSH_*` settings, and use `HARBOR_KUBEVIRT_KUBECONFIG` (+ optional
+`HARBOR_KUBEVIRT_API_SERVER`) with `HARBOR_KUBEVIRT_IMAGE` as a hostDisk path and
+`HARBOR_KUBEVIRT_NODE`. Allow runner-to-node port access for the NodePort WAA
+Service. There is no SSH/WinRM fallback. The Harbor environment import path is
+unchanged.
 
 Startup failures and cancellation attempt VM cleanup. Normal `stop(delete=True)`
-reads the VM and checks the trial ownership label before stop/delete requests.
-Missing or mismatched labels block both mutations; a missing VM is treated as
-already cleaned up. The HTTP API does not provide an atomic UID precondition,
-so this read-before-delete check is not a lock against concurrent replacement. Harbor's
-retention mode (`delete=False`) halts the VM and retains its disks for inspection.
+reads the VM, checks the trial ownership label, then stops the VM, deletes the VM
+object, and deletes the WAA NodePort Service. Missing or mismatched labels block
+both mutations; a missing VM is treated as already cleaned up. The apiserver does
+not provide an atomic UID precondition, so this read-before-delete check is not a
+lock against concurrent replacement. Harbor's retention mode (`delete=False`)
+halts the VM and retains its disks for inspection.
 Retained instances are not reused for subsequent trials. VM identity is saved
 in each trial's `kubevirt.json`; use it for operator cleanup after a controller
 crash or failed API request. There is no automatic orphan reaper in this version.
@@ -349,25 +382,60 @@ boot, resource configuration, retention/deletion, and compatibility of the
 published WAA-V2 snapshot remain outside these results. No implementation fixes
 were required by these checks.
 
-## Live template-clone validation (2026-09-28)
+## Live KubeVirt-native validation (2026-09-29)
 
-Cloning a Windows golden **template** on the platform API was validated live. The
-critical finding is the root disk **bus**: the `win-base` template was installed
-on a **SATA** system disk, so a clone that attaches the root disk as **virtio**
-boots to a Windows bugcheck `INACCESSIBLE_BOOT_DEVICE (0x7B)` because the image
-carries no virtio storage driver. `build_create_request`/`create` therefore send
-`storage.rootDisk.bus="sata"` by default (`DEFAULT_DISK_BUS`), overridable with
-`disk_bus` for images that really do include virtio drivers. The clone itself is
-also subject to the platform's CDI copy: cloning **from** an existing template is
-fast (a 40 GiB `win-base` clone reached `Running`/`ready=True` in about three
-minutes), while **making** a new template from a stopped VM (`POST
-/virtualmachines/{ns}/{name}/template-image`) stalled in `CloneInProgress` for
-~45 minutes with no progress and was abandoned.
+This revision moved the control plane to KubeVirt's native apiserver API. Live
+checks on a three-node KubeVirt cluster (cpu-nat-131 control-plane,
+cpu-nat-184, cpu-nat-391) confirmed:
 
-Also confirmed live: the root disk must be at least the source template's
-`minSize` (a 40 GiB request against the 100 GiB `win-base-maa` template stalls in
-`Provisioning`/`VMINotExists` indefinitely). The platform VNC console
-(`GET /virtualmachines/{ns}/{name}/vnc/ws`, standard RFB 003.008, security type
-None) was used to read the guest via framebuffer capture and OCR; it is the only
-gateway-reachable view of the guest, since the runner has no route to the VM
-overlay network.
+- **mTLS to the apiserver** from the runner via client certificate/key decoded
+  from the kubeconfig (no `kubectl`/`virtctl` invoked).
+- **VM lifecycle** against the real cluster: `create` (a `VirtualMachine`
+  reusing an existing `hostDisk`, e.g. `minimal.raw`, on cpu-nat-391),
+  `start`, read of the pod IP from the VMI `status.interfaces`, and `delete`.
+  The control plane returned correct phase/ready/IP values; a VM launched and
+  the launcher pod was scheduled on the image's node.
+- **Runner-to-guest reachability.** The runner has no route into the pod
+  overlay (10.90.x.x). A **NodePort `Service`** mapping the WAA port onto a
+  node IP (`node_ip:node_port`) bridged this: `GET /probe` returned
+  `Service is operational`, and a full guest `execute` (including the
+  PowerShell supervisor, upload of `execute.ps1`, and output collection)
+  returned the expected session account (`win-...\docker`).
+
+Important operational findings:
+
+- **Root disk bus.** Windows golden images lack a virtio storage driver; a
+  virtio root disk BSODs with `INACCESSIBLE_BOOT_DEVICE (0x7B)`. The backend
+  attaches the root disk on **SATA** (`DEFAULT_DISK_BUS`), overridable with
+  `HARBOR_KUBEVIRT_DISK_BUS`.
+- **hostDisk is shared in place.** A `hostDisk` reuses the same raw file on the
+  node; starting a second VM that points at a file already attached by a
+  running VM (here each of the four golden disks was in use by a live Win
+  guest) causes the launcher to crash-loop (`CrashLoopBackOff`). A fresh trial
+  VM therefore needs a disk that is not currently attached to another VM, or a
+  node-local copy.
+- The running Win guests were not disturbed by these checks; the control-plane
+  and NodePort/transport paths were validated against them read-only or via a
+  throwaway Service that was deleted afterwards.
+
+## Live end-to-end task run (2026-09-29)
+
+The `minimal-waa` image (a purpose-built Windows 11 + WAA command-server image)
+was deployed to cpu-nat-184 as `minimal-waa.raw` and used for real Harbor trials
+against the KubeVirt-native backend:
+
+- **Oracle agent** — three small Windows tasks (create a fixed text file, report
+  the logged-in user, compute an arithmetic result) each **passed (reward 1.0)**.
+  This validated the full path: VM create/start via the apiserver, NodePort WAA
+  exposure, in-guest `solve.bat` execution, `test.bat` writing
+  `C:/logs/verifier/reward.txt`, download, and reward parsing.
+- **Real LLM agent** — the same tasks were solved by the `WindowsCommandAgent`
+  bridge with an in-guest runner that read `HARBOR_INSTRUCTION_FILE`, called an
+  OpenAI-compatible/anthropic-messages LLM endpoint for a Windows command, and
+  executed it via WAA. All three tasks **passed (reward 1.0)**, with the verifier
+  confirming the guest-side artifacts the LLM produced.
+
+Authoring a task for this backend requires an (empty) `environment/` directory so
+Harbor classifies the path as a task rather than a dataset, and a `.bat` verifier
+that writes `C:/logs/verifier/reward.txt` (beware Windows `echo 1>` being parsed
+as a stdout FD redirect — use `> path echo 1`).

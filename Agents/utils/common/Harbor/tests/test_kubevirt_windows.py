@@ -21,7 +21,7 @@ from harbor.models.trial.paths import TrialPaths
 from kubevirt_windows.agent import WindowsCommandAgent
 from kubevirt_windows.control import (
     OWNER_LABEL,
-    Platform,
+    Cluster,
     Settings,
 )
 from kubevirt_windows.environment import KubeVirtWindowsEnvironment
@@ -30,11 +30,15 @@ from kubevirt_windows.transport import WAATransport, ps_quote, windows_path
 
 def make_settings() -> Settings:
     return Settings(
-        platform=Platform(base_url="https://vm-platform.example.com", token="tok"),
-        image="waa-v2-win11-v1",
+        cluster=Cluster(
+            api_server="https://10.254.64.34:6443",
+            ca_data="CA",
+            client_cert_data="CERT",
+            client_key_data="KEY",
+        ),
+        image="/var/lib/kubevirt/custom-disks/minimal.raw",
         namespace="default",
-        subnet="ovn-default",
-        storage_class="ceph-rbd-sc",
+        node="cpu-nat-391",
     )
 
 
@@ -193,39 +197,42 @@ class EnvironmentTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_start_waits_for_guest_and_creates_log_dirs(self):
         environment = self.environment(cpus=8, memory_mb=16384)
-        environment.control.available_ips = AsyncMock(return_value=["192.0.2.100"])
-        environment.control.image_min_size = AsyncMock(return_value="40Gi")
         environment.control.create = AsyncMock()
         environment.control.start = AsyncMock()
         environment.control.get = AsyncMock(
             return_value={
                 "name": environment.vm_name,
                 "namespace": "default",
-                "ip": "192.0.2.100",
+                "ip": "10.254.73.30",
                 "ready": True,
                 "status": "Running",
                 "uid": "x",
                 "labels": {OWNER_LABEL: environment.token[:12]},
             }
         )
+        environment.control.expose_waa = AsyncMock(return_value="10.254.73.30:30050")
         with patch("kubevirt_windows.environment.WAATransport") as transport_class:
             transport_class.return_value = AsyncMock()
             await environment.start()
         self.assertTrue(environment._started)
-        environment.control.image_min_size.assert_awaited_once_with(
-            environment.settings.image
-        )
         environment.control.create.assert_awaited_once()
         _, kwargs = environment.control.create.await_args
-        self.assertEqual(kwargs["disk_size"], "40Gi")
         self.assertEqual(kwargs.get("cpus"), 8)
         self.assertEqual(kwargs.get("memory_mb"), 16384)
         environment.control.start.assert_awaited_once_with(environment.vm_name)
+        environment.control.expose_waa.assert_awaited_once_with(environment.vm_name)
+        transport_class.assert_called_once_with(
+            environment.settings,
+            environment.vm_name,
+            "10.254.73.30",
+            environment._local_dir.name,
+            waa_port=30050,
+        )
         environment.transport.probe.assert_awaited_once()
         self.assertEqual(environment.transport.mkdir.await_count, 4)
         metadata = json.loads((self.root / "trial/kubevirt.json").read_text())
         self.assertEqual(metadata["vm"], environment.vm_name)
-        self.assertEqual(metadata["ip"], "192.0.2.100")
+        self.assertEqual(metadata["host_disk"], environment.settings.image)
         self.assertNotIn("fake-key", json.dumps(metadata))
         environment.control.stop = AsyncMock()
         environment.control.delete = AsyncMock()
@@ -236,8 +243,6 @@ class EnvironmentTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_failed_start_cleans_up(self):
         environment = self.environment()
-        environment.control.available_ips = AsyncMock(return_value=["192.0.2.100"])
-        environment.control.image_min_size = AsyncMock(return_value="40Gi")
         environment.control.create = AsyncMock(
             side_effect=RuntimeError("creation failed")
         )
@@ -256,8 +261,6 @@ class EnvironmentTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_cancelled_start_cleans_up(self):
         environment = self.environment()
-        environment.control.available_ips = AsyncMock(return_value=["192.0.2.100"])
-        environment.control.image_min_size = AsyncMock(return_value="40Gi")
         environment.control.create = AsyncMock(side_effect=asyncio.CancelledError)
         environment.control.stop = AsyncMock()
         environment.control.delete = AsyncMock()
@@ -301,24 +304,34 @@ class EnvironmentTests(unittest.IsolatedAsyncioTestCase):
         environment.control.stop.assert_not_awaited()
         environment.control.delete.assert_not_awaited()
 
-    async def test_ip_lookup_failure_releases_local_resources(self):
+    async def test_create_failure_releases_local_resources(self):
         environment = self.environment()
         environment.control = AsyncMock()
-        environment.control.available_ips.side_effect = RuntimeError("lookup failed")
-        with self.assertRaisesRegex(RuntimeError, "lookup failed"):
+        environment.control.create.side_effect = RuntimeError("create failed")
+        # Once create is attempted the VM may be partially defined; cleanup must
+        # still track ownership and release local resources after the delete.
+        environment.control.get.return_value = {
+            "labels": {OWNER_LABEL: environment.token[:12]}
+        }
+        environment.control.stop = AsyncMock()
+        environment.control.delete = AsyncMock()
+        environment.control.close = AsyncMock()
+        with self.assertRaisesRegex(RuntimeError, "create failed"):
             await environment.start()
-        self.assertIsNone(environment._local_dir)
+        environment.control.stop.assert_awaited_once()
+        environment.control.delete.assert_awaited_once()
         environment.control.close.assert_awaited_once()
-        environment.control.stop.assert_not_awaited()
-        environment.control.delete.assert_not_awaited()
+        self.assertIsNone(environment._local_dir)
 
     async def test_already_deleted_vm_is_idempotent(self):
-        from kubevirt_windows.control import PlatformAPIError
+        import httpx
 
         environment = self.environment()
         environment._created = True
         environment.control = AsyncMock()
-        environment.control.get.side_effect = PlatformAPIError("missing", code=404)
+        environment.control.get.side_effect = httpx.HTTPStatusError(
+            "missing", request=httpx.Request("GET", "http://x"), response=httpx.Response(404)
+        )
         await environment.stop()
         await environment.stop()
         environment.control.get.assert_awaited_once()
