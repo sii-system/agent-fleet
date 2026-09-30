@@ -1,7 +1,7 @@
 """KubeVirt-native VM lifecycle over the Kubernetes API server.
 
 A KubeVirt Windows trial is a `VirtualMachine` (kubevirt.io/v1) that boots
-the reused Windows golden image attached as a `hostDisk` (SATA bus, since the
+an independent CDI clone of a Windows golden-image PVC (SATA bus, since the
 image carries no virtio storage driver), uses the pod network via masquerade
 with the WAA port declared, and is reachable from the runner through a NodePort
 Service. The control plane talks only to the kube-apiserver over HTTPS using
@@ -26,7 +26,6 @@ OWNER_LABEL = "agent-fleet/trial"
 DEFAULT_CPU_CORES = 2
 DEFAULT_CPU_SOCKETS = 1
 DEFAULT_MEMORY_GUEST = "4Gi"
-DEFAULT_DISK_SIZE = "32Gi"
 DEFAULT_DISK_BUS = "sata"  # Windows golden images lack a virtio storage driver
 
 _KUBEVIRT_VM_GROUP = "kubevirt.io/v1"
@@ -83,6 +82,7 @@ class Settings:
     image: str
     namespace: str
     node: str
+    storage_class: str = ""
     disk_bus: str = DEFAULT_DISK_BUS
     waa_port: int = 5000
     waa_node_port: int = 0
@@ -102,8 +102,7 @@ class Settings:
             namespace = "default"
         if not NS_RE.fullmatch(namespace):
             raise ValueError("Invalid Kubernetes namespace")
-        if not image:
-            raise ValueError("HARBOR_KUBEVIRT_IMAGE (host disk path) is required")
+        validate_image(image)
         if api_server and not URL_RE.match(api_server):
             raise ValueError("HARBOR_KUBEVIRT_API_SERVER must use http:// or https://")
         node = os.environ.get("HARBOR_KUBEVIRT_NODE", "")
@@ -142,6 +141,7 @@ class Settings:
             image=image,
             namespace=namespace,
             node=node,
+            storage_class=os.environ.get("HARBOR_KUBEVIRT_STORAGE_CLASS", ""),
             disk_bus=disk_bus,
             waa_port=waa_port,
             waa_node_port=waa_node_port,
@@ -215,9 +215,14 @@ def _read_b64_file(container, key):
         return None
 
 
-def pick_root_disk_size(configured: str, min_size: str | None) -> str:
-    """A hostDisk clone has no CDI minSize; return the configured default."""
-    return configured
+def validate_image(image: str) -> None:
+    if len(image) > 253 or not all(
+        RFC1123_NAME_RE.fullmatch(part) for part in image.split(".")
+    ):
+        raise ValueError(
+            "HARBOR_KUBEVIRT_IMAGE must be a golden-image PVC name in the trial "
+            "namespace; import host disk files into a PVC before running trials"
+        )
 
 
 def build_create_request(
@@ -229,14 +234,15 @@ def build_create_request(
     memory_mb: int | None = None,
     disk_bus: str | None = None,
 ) -> dict:
-    """Build a `VirtualMachine` (kubevirt.io/v1) CR reusing the golden image.
+    """Build a VM with its own CDI-managed persistent clone of the golden PVC.
 
-    The root disk is a `hostDisk` on `settings.node` pointing at
-    `settings.image` (the existing same-host raw image, e.g. minimal.raw).
+    KubeVirt owns the DataVolume template and CDI sizes the new PVC from its
+    source. Deleting the VM cascades to the clone; stopping it retains the disk.
     The pod-network masquerade interface declares the WAA port; a NodePort
     Service (created by the control plane) exposes it to the runner.
     """
     disk_bus = disk_bus or settings.disk_bus
+    validate_image(settings.image)
     if not name or not RFC1123_NAME_RE.fullmatch(name):
         raise ValueError("VM name must be a lowercase RFC1123 DNS subdomain")
     if disk_bus not in ("sata", "virtio", "scsi"):
@@ -261,11 +267,7 @@ def build_create_request(
     spec["volumes"] = [
         {
             "name": "disk0",
-            "hostDisk": {
-                "path": settings.image,
-                "type": "Disk",
-                "capacity": "0",
-            },
+            "dataVolume": {"name": name + "-root"},
         },
         {
             "name": "cloudinit",
@@ -292,6 +294,19 @@ def build_create_request(
         },
         "spec": {
             "running": False,
+            "dataVolumeTemplates": [{
+                "metadata": {"name": name + "-root", "labels": vm_labels},
+                "spec": {
+                    "source": {"pvc": {
+                        "name": settings.image, "namespace": settings.namespace,
+                    }},
+                    # CDI infers clone size and storage-profile defaults.
+                    "storage": (
+                        {"storageClassName": settings.storage_class}
+                        if settings.storage_class else {}
+                    ),
+                },
+            }],
             "template": {
                 "metadata": {"labels": {"kubevirt.io/domain": name}},
                 "spec": spec,
@@ -487,17 +502,20 @@ class KubeVirtControl:
                 code=response.status_code,
             ) from None
 
-    async def delete(self, name: str) -> None:
+    async def delete(self, name: str, *, owner: str) -> None:
         response = await self.client.delete(self._vm_path(name))
         try:
             response.raise_for_status()
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code != 404:
                 raise
-        await self._delete_service(name)
+        await self.delete_service(name, owner=owner)
 
-    async def expose_waa(self, name: str) -> str:
+    async def expose_waa(self, name: str, *, owner: str) -> str:
         """Create a NodePort Service exposing WAA and return ``host:port``."""
+        vm = await self.get(name)
+        if vm["labels"].get(OWNER_LABEL) != owner or not vm["uid"]:
+            raise KubeVirtError(f"VM ownership mismatch: {name}")
         service_name = f"{name}-waa"
         svc = {
             "apiVersion": "v1",
@@ -505,7 +523,11 @@ class KubeVirtControl:
             "metadata": {
                 "name": service_name,
                 "namespace": self.settings.namespace,
-                "labels": {OWNER_LABEL: name},
+                "labels": {OWNER_LABEL: owner},
+                "ownerReferences": [{
+                    "apiVersion": _KUBEVIRT_VM_GROUP,
+                    "kind": "VirtualMachine", "name": name, "uid": vm["uid"],
+                }],
             },
             "spec": {
                 "type": "NodePort",
@@ -538,6 +560,8 @@ class KubeVirtControl:
             f"/api/v1/namespaces/{self.settings.namespace}/services/{service_name}"
         )
         get_svc.raise_for_status()
+        if get_svc.json().get("metadata", {}).get("labels", {}).get(OWNER_LABEL) != owner:
+            raise KubeVirtError(f"WAA Service ownership mismatch: {service_name}")
         spec = get_svc.json().get("spec", {})
         node_port = spec.get("ports", [{}])[0].get("nodePort")
         if not node_port:
@@ -563,10 +587,19 @@ class KubeVirtControl:
                         return addr["address"]
         raise KubeVirtError(f"Could not resolve a reachable host for VM {name}")
 
-    async def _delete_service(self, name: str) -> None:
+    async def delete_service(self, name: str, *, owner: str) -> None:
         service_name = f"{name}-waa"
-        response = await self.client.delete(
-            f"/api/v1/namespaces/{self.settings.namespace}/services/{service_name}"
+        path = f"/api/v1/namespaces/{self.settings.namespace}/services/{service_name}"
+        service = await self.client.get(path)
+        if service.status_code == 404:
+            return
+        service.raise_for_status()
+        metadata = service.json().get("metadata", {})
+        if metadata.get("labels", {}).get(OWNER_LABEL) != owner or not metadata.get("uid"):
+            raise KubeVirtError(f"WAA Service ownership mismatch: {service_name}")
+        response = await self.client.request(
+            "DELETE", path,
+            json={"preconditions": {"uid": metadata["uid"]}},
         )
         if response.status_code not in (200, 404, 202):
             raise KubeVirtError(
@@ -577,10 +610,6 @@ class KubeVirtControl:
     async def available_ips(self) -> list:
         """KubeVirt allocates pod IPs automatically; no pre-allocator exists."""
         return []
-
-    async def image_min_size(self, image: str | None = None) -> str | None:
-        """hostDisk clones have no CDI minSize; sizing is irrelevant."""
-        return None
 
 
 def raise_for_platform(response: httpx.Response) -> None:

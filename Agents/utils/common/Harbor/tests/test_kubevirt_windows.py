@@ -36,7 +36,7 @@ def make_settings() -> Settings:
             client_cert_data="CERT",
             client_key_data="KEY",
         ),
-        image="/var/lib/kubevirt/custom-disks/minimal.raw",
+        image="windows-golden",
         namespace="default",
         node="cpu-nat-391",
     )
@@ -220,7 +220,9 @@ class EnvironmentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(kwargs.get("cpus"), 8)
         self.assertEqual(kwargs.get("memory_mb"), 16384)
         environment.control.start.assert_awaited_once_with(environment.vm_name)
-        environment.control.expose_waa.assert_awaited_once_with(environment.vm_name)
+        environment.control.expose_waa.assert_awaited_once_with(
+            environment.vm_name, owner=environment.token[:12]
+        )
         transport_class.assert_called_once_with(
             environment.settings,
             environment.vm_name,
@@ -232,14 +234,16 @@ class EnvironmentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(environment.transport.mkdir.await_count, 4)
         metadata = json.loads((self.root / "trial/kubevirt.json").read_text())
         self.assertEqual(metadata["vm"], environment.vm_name)
-        self.assertEqual(metadata["host_disk"], environment.settings.image)
+        self.assertEqual(metadata["source_pvc"], environment.settings.image)
         self.assertNotIn("fake-key", json.dumps(metadata))
         environment.control.stop = AsyncMock()
         environment.control.delete = AsyncMock()
         environment.control.close = AsyncMock()
         await environment.stop()
         environment.control.stop.assert_awaited_once_with(environment.vm_name)
-        environment.control.delete.assert_awaited_once_with(environment.vm_name)
+        environment.control.delete.assert_awaited_once_with(
+            environment.vm_name, owner=environment.token[:12]
+        )
 
     async def test_failed_start_cleans_up(self):
         environment = self.environment()
@@ -255,7 +259,9 @@ class EnvironmentTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(RuntimeError, "creation failed"):
             await environment.start()
         environment.control.stop.assert_awaited_once_with(environment.vm_name)
-        environment.control.delete.assert_awaited_once_with(environment.vm_name)
+        environment.control.delete.assert_awaited_once_with(
+            environment.vm_name, owner=environment.token[:12]
+        )
         environment.control.close.assert_awaited_once()
         self.assertIsNone(environment._local_dir)
 
@@ -271,7 +277,9 @@ class EnvironmentTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(asyncio.CancelledError):
             await environment.start()
         environment.control.stop.assert_awaited_once_with(environment.vm_name)
-        environment.control.delete.assert_awaited_once_with(environment.vm_name)
+        environment.control.delete.assert_awaited_once_with(
+            environment.vm_name, owner=environment.token[:12]
+        )
         environment.control.close.assert_awaited_once()
 
     async def test_stop_refuses_vm_owned_by_another_trial(self):
@@ -337,6 +345,68 @@ class EnvironmentTests(unittest.IsolatedAsyncioTestCase):
         environment.control.get.assert_awaited_once()
         environment.control.stop.assert_not_awaited()
         environment.control.delete.assert_not_awaited()
+        environment.control.delete_service.assert_awaited_once_with(
+            environment.vm_name, owner=environment.token[:12]
+        )
+
+    async def test_service_delete_failure_is_retried_after_vm_is_gone(self):
+        import httpx
+
+        environment = self.environment()
+        environment._created = True
+        state = {"vm": True, "service": True, "service_deletes": 0}
+        calls = []
+
+        def handler(request):
+            path = request.url.path
+            calls.append((request.method, path))
+            if "/services/" in path:
+                if request.method == "GET":
+                    return httpx.Response(200, json={"metadata": {
+                        "uid": "service-uid",
+                        "labels": {OWNER_LABEL: environment.token[:12]},
+                    }})
+                state["service_deletes"] += 1
+                if state["service_deletes"] <= 2:
+                    return httpx.Response(500, text="transient failure")
+                self.assertEqual(json.loads(request.content), {
+                    "preconditions": {"uid": "service-uid"},
+                })
+                state["service"] = False
+                return httpx.Response(200)
+            if request.method == "DELETE":
+                state["vm"] = False
+                return httpx.Response(200)
+            if request.method == "PUT":
+                return httpx.Response(200)
+            if "/virtualmachineinstances/" in path or not state["vm"]:
+                return httpx.Response(404)
+            return httpx.Response(200, json={"metadata": {
+                "uid": "vm-uid", "labels": {OWNER_LABEL: environment.token[:12]},
+            }})
+
+        for attempt in range(3):
+            # stop() closes its client, so replace only the mocked HTTP boundary.
+            environment.control._client = httpx.AsyncClient(
+                base_url="https://cluster.example", transport=httpx.MockTransport(handler),
+                trust_env=False,
+            )
+            if attempt < 2:
+                with self.assertRaisesRegex(RuntimeError, "Service delete failed"):
+                    await environment.stop()
+                self.assertTrue(environment._created)
+            else:
+                await environment.stop()
+        self.assertEqual(state, {"vm": False, "service": False, "service_deletes": 3})
+        self.assertFalse(environment._created)
+        self.assertFalse(environment._create_attempted)
+        self.assertEqual(sum(method == "PUT" for method, _ in calls), 1)
+        self.assertEqual(sum(
+            method == "DELETE" and "/virtualmachines/" in path for method, path in calls
+        ), 1)
+        count = len(calls)
+        await environment.stop()
+        self.assertEqual(len(calls), count)
 
     async def test_filtered_download_and_protected_reward(self):
         environment = self.environment()

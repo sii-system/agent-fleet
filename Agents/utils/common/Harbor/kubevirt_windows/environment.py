@@ -128,7 +128,8 @@ class KubeVirtWindowsEnvironment(BaseEnvironment):
                         {
                             "vm": self.vm_name,
                             "namespace": self.settings.namespace,
-                            "host_disk": self.settings.image,
+                            "source_pvc": self.settings.image,
+                            "root_datavolume": self.vm_name + "-root",
                             "node": self.settings.node,
                             "labels": {OWNER_LABEL: tag},
                         },
@@ -154,7 +155,9 @@ class KubeVirtWindowsEnvironment(BaseEnvironment):
                     await asyncio.sleep(2)
                 # Expose WAA on a node port reachable from the runner, and
                 # connect the guest transport to that endpoint.
-                node_endpoint = await self.control.expose_waa(self.vm_name)
+                node_endpoint = await self.control.expose_waa(
+                    self.vm_name, owner=tag
+                )
                 host, port = node_endpoint.rsplit(":", 1)
                 self.transport = WAATransport(
                     self.settings, self.vm_name, host, self._local_dir.name,
@@ -199,6 +202,12 @@ class KubeVirtWindowsEnvironment(BaseEnvironment):
                 )
                 if code != 404:
                     raise
+                if delete:
+                    # VM deletion may have succeeded before Service deletion
+                    # failed. Keep retry state until both resources are gone.
+                    await self.control.delete_service(
+                        self.vm_name, owner=self.token[:12]
+                    )
                 self._created = self._create_attempted = False
                 return
             if vm.get("labels", {}).get(OWNER_LABEL) != self.token[:12]:
@@ -207,7 +216,7 @@ class KubeVirtWindowsEnvironment(BaseEnvironment):
                 await self.control.stop(self.vm_name)
             finally:
                 if delete:
-                    await self.control.delete(self.vm_name)
+                    await self.control.delete(self.vm_name, owner=self.token[:12])
                     self._created = self._create_attempted = False
         finally:
             self._started = False

@@ -17,11 +17,20 @@ directly by another project's Harbor configuration.
 The control plane follows KubeVirt's own API surface and talks **only** to the
 kube-apiserver over HTTPS; it never shells out to `kubectl`, `virtctl`, or a
 client library. Each trial is a fresh `VirtualMachine` (`kubevirt.io/v1`) that
-reuses an existing **`hostDisk`** golden image on one of the cluster's nodes
-(e.g. `/var/lib/kubevirt/custom-disks/minimal.raw`). Because the golden disk is
-reused in place, a cloned VM must run on the node that holds that file
-(`HARBOR_KUBEVIRT_NODE`); use a DataVolume-backed template if you need replicas
-across restarts and concurrent trials from one image.
+owns a **CDI DataVolume clone** of a golden-image PVC in the same namespace.
+`HARBOR_KUBEVIRT_IMAGE` identifies that source PVC. Each VM attaches only its
+unique `<vm-name>-root` clone; task writes never reach the golden image or another
+trial. KubeVirt manages clone creation through `spec.dataVolumeTemplates` and
+waits for it before booting. CDI derives the disk size from the source PVC.
+Stopping a retained VM preserves its clone; deleting the VM garbage-collects
+its DataVolume and PVC. The storage class's reclaim policy controls removal of
+the underlying storage.
+
+The cluster must have CDI and a provisioner/storage profile capable of PVC
+cloning. `HARBOR_KUBEVIRT_STORAGE_CLASS` selects target storage; when omitted,
+CDI uses the cluster's default virtualization/storage class. See the
+[CDI storage and PVC cloning contract](https://github.com/kubevirt/containerized-data-importer/blob/main/doc/datavolumes.md).
+`HARBOR_KUBEVIRT_NODE` is an optional scheduling constraint for node-local storage.
 
 - Create: `POST /apis/kubevirt.io/v1/namespaces/{ns}/virtualmachines`
 - Read status + pod IP: `GET .../virtualmachineinstances/{name}` (`status.interfaces[].ipAddress`)
@@ -45,14 +54,16 @@ transport to `node_ip:node_port`.
   tools are used.
 - Provide a kubeconfig (`HARBOR_KUBEVIRT_KUBECONFIG`, default `~/.kube/config`)
   whose current user presents client certificate + key with permission to
-  create/get/start/stop/delete `virtualmachines` and `services` in the namespace.
+  create/get/start/stop/delete `virtualmachines`, get `virtualmachineinstances`,
+  and create/get/delete `services` in the namespace, plus get `nodes` for WAA
+  endpoint resolution. CDI must authorize cloning from the source PVC (including
+  `datavolumes/source` creation permission where required by CDI).
   Alternatively set `HARBOR_KUBEVIRT_API_SERVER` (the kubeconfig is still read
   for the mTLS credentials). Token auth is not supported.
-- Place a bootable Windows image on a node as a raw file, then set
-  `HARBOR_KUBEVIRT_IMAGE` to its absolute `hostDisk` path (e.g.
-  `/var/lib/kubevirt/custom-disks/minimal.raw`) and `HARBOR_KUBEVIRT_NODE` to
-  the node holding that file. Note that a `hostDisk` is shared in place: start a
-  clean clone of the image and keep concurrent trials on different images.
+- Import a clean, shut-down Windows image into a golden-image PVC in the trial
+  namespace. Set `HARBOR_KUBEVIRT_IMAGE` to that PVC's name. Keep it immutable and
+  unattached to running VMs while cloning; publish a new PVC for each image version.
+  Host file paths are rejected, because attaching them directly would share writes.
 - Preserve the image's WAA service and logged-in session startup. WAA's
   [setup script](https://github.com/GAIR-NLP/WindowsAgentArena-V2/blob/2927fe55005d1be75d5a9188c0045f73ba28d192/src/win-arena-container/vm/setup/setup.ps1#L380-L429)
   opens port 5000 and registers the server at logon. The backend waits for
@@ -85,7 +96,7 @@ saved configuration.
 ```bash
 export HARBOR_KUBEVIRT_KUBECONFIG=$HOME/.kube/config
 export HARBOR_KUBEVIRT_API_SERVER=https://10.254.64.34:6443
-export HARBOR_KUBEVIRT_IMAGE=/var/lib/kubevirt/custom-disks/minimal.raw
+export HARBOR_KUBEVIRT_IMAGE=windows-golden-v1
 export HARBOR_KUBEVIRT_NODE=cpu-nat-391
 export HARBOR_KUBEVIRT_NAMESPACE=windows-benchmarks
 export HARBOR_WINDOWS_AGENT_COMMAND='C:\Agent\run-agent.cmd'
@@ -106,8 +117,9 @@ Optional settings:
 | --- | --- | --- |
 | `HARBOR_KUBEVIRT_KUBECONFIG` | `~/.kube/config` | kubeconfig with the mTLS client cert/key and cluster `server` |
 | `HARBOR_KUBEVIRT_API_SERVER` | from kubeconfig | KubeVirt apiserver URL; overrides the kubeconfig `server` (certs still come from kubeconfig) |
-| `HARBOR_KUBEVIRT_IMAGE` | required | Absolute `hostDisk` path to the golden image on the node |
-| `HARBOR_KUBEVIRT_NODE` | empty | Node (hostname) that holds the `hostDisk` image; required for a hostDisk reusing the existing file |
+| `HARBOR_KUBEVIRT_IMAGE` | required | Golden-image PVC name in the trial namespace |
+| `HARBOR_KUBEVIRT_STORAGE_CLASS` | cluster default | Target storage class for per-trial clones |
+| `HARBOR_KUBEVIRT_NODE` | empty | Optional node hostname constraint, for example for node-local storage |
 | `HARBOR_KUBEVIRT_NAMESPACE` | `default` | Namespace for the VM and WAA Service |
 | `HARBOR_KUBEVIRT_DISK_BUS` | `sata` | Root disk bus (sata/virtio/scsi); Windows golden images need SATA |
 | `HARBOR_KUBEVIRT_WAA_PORT` | `5000` | Guest WAA HTTP port |
@@ -129,12 +141,11 @@ or agent-specific realtime tracing hooks.
 
 The consuming project declares `[environment].os = "windows"`. An optional
 Windows absolute `workdir` is created on startup; otherwise commands run in
-`C:/workspace`. The task's `cpus` and `memory_mb` become `cpuCores` (one socket) and
-`memoryGuest` in MiB in the create request; omitted values use 2 vCPUs and 4 GiB.
-Disk size follows the template minimum; `storage_mb` is rejected. The backend sizes the root disk to at least the source template's
-`minSize` (a template-image clone cannot be smaller than its source), then
-sends an explicit power-on after create (create defines the VM in a Stopped
-state). It supports CPU/memory limit policies, not Kubernetes request
+`C:/workspace`. The task's `cpus` and `memory_mb` configure VM CPU cores (one
+socket) and memory in MiB; omitted values use 2 vCPUs and 4 GiB. CDI derives the
+clone's disk capacity from the golden PVC; `storage_mb` is rejected. Create
+defines a stopped VM and its DataVolume template, then the backend requests
+power-on. It supports CPU/memory limit policies, not Kubernetes request
 or guarantee policies.
 
 Select this environment through Harbor's supported import path:
@@ -267,7 +278,7 @@ The image already includes desktop-control endpoints, but exposing screenshot,
 input, or accessibility APIs to agents is outside this transport's contract.
 The consuming benchmark project owns those integrations and desktop validation.
 
-Reset remains **fresh template clone per trial**. Restarting a retained VM is
+Reset is a **fresh persistent disk clone per trial**. Restarting a retained VM is
 not a reset. WAA application-state snapshot restoration, tool-disk attachment,
 and prepared-snapshot caching are outside this PR. Keep base image versions,
 tool manifests, and task assets independently versioned.
@@ -304,20 +315,41 @@ environment variables.
 
 Migration from earlier revisions of this unmerged PR: replace the custom
 platform HTTP API with the KubeVirt-native control plane, remove
-`HARBOR_KUBEVIRT_BASE_URL`/`TOKEN`/`SUBNET`/`STORAGE_CLASS` platform settings and
+`HARBOR_KUBEVIRT_BASE_URL`/`TOKEN`/`SUBNET` platform settings and
 `HARBOR_KUBEVIRT_SSH_*` settings, and use `HARBOR_KUBEVIRT_KUBECONFIG` (+ optional
-`HARBOR_KUBEVIRT_API_SERVER`) with `HARBOR_KUBEVIRT_IMAGE` as a hostDisk path and
-`HARBOR_KUBEVIRT_NODE`. Allow runner-to-node port access for the NodePort WAA
-Service. There is no SSH/WinRM fallback. The Harbor environment import path is
-unchanged.
+`HARBOR_KUBEVIRT_API_SERVER`) with `HARBOR_KUBEVIRT_IMAGE` as a golden PVC name.
+`HARBOR_KUBEVIRT_STORAGE_CLASS` now takes a Kubernetes storage class name, not
+a platform storage-class ID. Allow runner-to-node port access for the NodePort
+WAA Service.
+
+Migration from the shared-hostDisk revision requires a one-time image import.
+With the source Windows VM shut down, upload its clean disk using the operator's
+[CDI image upload tooling](https://kubevirt.io/user-guide/storage/containerized_data_importer/),
+for example (choose a capacity large enough for your image and a valid storage class):
+
+```bash
+virtctl image-upload pvc windows-golden-v1 --namespace default \
+  --size=64Gi --storage-class=windows-storage --image-path=/srv/windows-clean.raw
+export HARBOR_KUBEVIRT_IMAGE=windows-golden-v1
+export HARBOR_KUBEVIRT_STORAGE_CLASS=windows-storage
+```
+
+This operator import is separate from workload startup. The launcher still uses
+only the apiserver. A per-trial DataVolume is recorded in `kubevirt.json` along
+with the source PVC; no host disk is attached directly. There is no SSH/WinRM
+fallback. The Harbor environment import path is unchanged.
 
 Startup failures and cancellation attempt VM cleanup. Normal `stop(delete=True)`
-reads the VM, checks the trial ownership label, then stops the VM, deletes the VM
-object, and deletes the WAA NodePort Service. Missing or mismatched labels block
-both mutations; a missing VM is treated as already cleaned up. The apiserver does
-not provide an atomic UID precondition, so this read-before-delete check is not a
-lock against concurrent replacement. Harbor's retention mode (`delete=False`)
-halts the VM and retains its disks for inspection.
+reads the VM, checks the trial ownership label, then stops and deletes it and
+cleans up the WAA NodePort Service. Services carry a VM owner reference so
+Kubernetes also garbage-collects them. Explicit service cleanup checks the trial
+label and uses a UID deletion precondition. If VM deletion succeeds but service
+cleanup fails, subsequent cleanup retries still check and delete the service;
+retry state is cleared only after cleanup succeeds. Missing or mismatched VM
+labels block VM mutation; mismatched service labels block service deletion.
+VM ownership checks remain read-before-delete and do not lock against concurrent
+replacement. Harbor's retention mode (`delete=False`) halts the VM and retains
+its cloned disk and Service for inspection.
 Retained instances are not reused for subsequent trials. VM identity is saved
 in each trial's `kubevirt.json`; use it for operator cleanup after a controller
 crash or failed API request. There is no automatic orphan reaper in this version.
@@ -339,8 +371,9 @@ ruff check --config .github/ruff.toml \
 bash -n Agents/utils/common/Harbor/run_kubevirt_windows.sh
 ```
 
-Tests use the real pinned Harbor interfaces, mocked platform/guest responses,
-and a loopback HTTP server for file-transfer requests. They do not boot Windows.
+Tests use the real pinned Harbor interfaces, synthetic cluster settings, mocked platform/guest responses,
+and a loopback HTTP server for file-transfer requests. They require no kubeconfig
+or cluster credentials and do not boot Windows.
 Before declaring an image usable, run a single trial against a fresh clone and
 verify: WAA readiness after boot, Unicode/binary upload/download, an agent command
 lasting more than 120 seconds, timeout/process-tree cancellation, artifact
@@ -382,7 +415,13 @@ boot, resource configuration, retention/deletion, and compatibility of the
 published WAA-V2 snapshot remain outside these results. No implementation fixes
 were required by these checks.
 
-## Live KubeVirt-native validation (2026-09-29)
+## Historical hostDisk validation (2026-09-29)
+
+These results predate the per-trial CDI cloning fix. They establish transport
+and guest behavior only; they do not validate the current clone lifecycle.
+Before production use, validate concurrent clone isolation, sequential clean
+state, retention, and VM/DataVolume/PVC/Service garbage collection on the target
+cluster.
 
 This revision moved the control plane to KubeVirt's native apiserver API. Live
 checks on a three-node KubeVirt cluster (cpu-nat-131 control-plane,
@@ -418,7 +457,7 @@ Important operational findings:
   and NodePort/transport paths were validated against them read-only or via a
   throwaway Service that was deleted afterwards.
 
-## Live end-to-end task run (2026-09-29)
+## Historical hostDisk end-to-end task run (2026-09-29)
 
 The `minimal-waa` image (a purpose-built Windows 11 + WAA command-server image)
 was deployed to cpu-nat-184 as `minimal-waa.raw` and used for real Harbor trials
