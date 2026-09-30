@@ -87,6 +87,42 @@ class SettingsTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             make_settings({"HARBOR_KUBEVIRT_DISK_BUS": "ide"})
 
+    def test_ale_protocol_and_generic_ports(self):
+        settings = make_settings({
+            "HARBOR_KUBEVIRT_GUEST_PROTOCOL": "ale",
+            "HARBOR_KUBEVIRT_GUEST_PORT": "8000",
+            "HARBOR_KUBEVIRT_GUEST_NODE_PORT": "30080",
+            "HARBOR_KUBEVIRT_WAA_PORT": "invalid",
+            "HARBOR_KUBEVIRT_WAA_NODE_PORT": "invalid",
+        })
+        self.assertEqual(settings.guest_protocol, "ale")
+        self.assertEqual(settings.guest_port, 8000)
+        self.assertEqual(settings.guest_node_port, 30080)
+        spec = build_create_request(settings, "trial-ale")["spec"]["template"]["spec"]
+        self.assertEqual(spec["domain"]["devices"]["interfaces"][0]["ports"], [
+            {"name": "ale", "port": 8000, "protocol": "TCP"},
+        ])
+
+    def test_empty_generic_ports_override_legacy_values(self):
+        settings = make_settings({
+            "HARBOR_KUBEVIRT_GUEST_PORT": "",
+            "HARBOR_KUBEVIRT_GUEST_NODE_PORT": "",
+            "HARBOR_KUBEVIRT_WAA_PORT": "8000",
+            "HARBOR_KUBEVIRT_WAA_NODE_PORT": "30080",
+        })
+        self.assertEqual(settings.guest_port, 5000)
+        self.assertEqual(settings.guest_node_port, 0)
+
+    def test_rejects_invalid_guest_settings(self):
+        for key, values in {
+            "GUEST_PROTOCOL": ("", "osworld", "linux"),
+            "GUEST_PORT": ("0", "65536", "invalid"),
+            "GUEST_NODE_PORT": ("-1", "65536", "invalid"),
+        }.items():
+            for value in values:
+                with self.subTest(key=key, value=value), self.assertRaises(ValueError):
+                    make_settings({"HARBOR_KUBEVIRT_" + key: value})
+
 
 def build_settings():
     settings = make_settings()
@@ -234,9 +270,9 @@ class KubeVirtControlTests(unittest.IsolatedAsyncioTestCase):
         async with self._control(handler) as control:
             await control.delete_service("trial", owner="abc")
 
-    def _control(self, handler) -> KubeVirtControl:
+    def _control(self, handler, settings=None) -> KubeVirtControl:
         transport = httpx.MockTransport(handler)
-        control = KubeVirtControl(build_settings())
+        control = KubeVirtControl(settings or build_settings())
         # Inject the HTTP boundary: no TLS material or operator kubeconfig is read.
         control._client = httpx.AsyncClient(
             base_url=control.settings.cluster.api_server, transport=transport,
@@ -363,6 +399,48 @@ class KubeVirtControlTests(unittest.IsolatedAsyncioTestCase):
         async with control:
             endpoint = await control.expose_waa("trial", owner="abc")
         self.assertEqual(endpoint, "10.254.73.30:30050")
+
+    async def test_ale_service_uses_guest_ports_and_cleans_up(self):
+        calls = []
+        settings = make_settings({
+            "HARBOR_KUBEVIRT_GUEST_PROTOCOL": "ale",
+            "HARBOR_KUBEVIRT_GUEST_PORT": "8000",
+            "HARBOR_KUBEVIRT_GUEST_NODE_PORT": "30080",
+        })
+
+        def handler(request):
+            calls.append((request.method, request.url.path))
+            path = request.url.path
+            if path.endswith("/services/trial-ale"):
+                return httpx.Response(200, json={
+                    "metadata": {"uid": "svc-uid", "labels": {OWNER_LABEL: "abc"}},
+                    "spec": {"ports": [{"nodePort": 30080}]},
+                })
+            if "/virtualmachineinstances/" in path:
+                return httpx.Response(200, json=self._vm_status())
+            if path == "/api/v1/nodes/cpu-nat-391":
+                return httpx.Response(200, json={"status": {"addresses": [
+                    {"type": "InternalIP", "address": "192.0.2.10"},
+                ]}})
+            if "/virtualmachines/" in path:
+                return httpx.Response(200, json={"metadata": {
+                    "uid": "vm-uid", "labels": {OWNER_LABEL: "abc"},
+                }})
+            if request.method == "POST" and path.endswith("/services"):
+                body = json.loads(request.content)
+                self.assertEqual(body["metadata"]["name"], "trial-ale")
+                self.assertEqual(body["spec"]["ports"], [{
+                    "name": "ale", "port": 8000, "targetPort": 8000,
+                    "protocol": "TCP", "nodePort": 30080,
+                }])
+                return httpx.Response(201)
+            raise AssertionError((request.method, path))
+
+        async with self._control(handler, settings) as control:
+            self.assertEqual(await control.expose_guest("trial", owner="abc"), "192.0.2.10:30080")
+            await control.delete("trial", owner="abc")
+        self.assertIn(("DELETE", "/api/v1/namespaces/default/services/trial-ale"), calls)
+        self.assertFalse(any("trial-waa" in path for _, path in calls))
 
     async def test_ping_ok(self):
         def handler(request: httpx.Request) -> httpx.Response:

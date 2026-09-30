@@ -1,4 +1,4 @@
-"""WAA guest HTTP transport with supervised cmd.exe execution."""
+"""Windows guest HTTP transports with shared supervised cmd.exe execution."""
 
 from __future__ import annotations
 
@@ -35,19 +35,21 @@ def encoded_powershell(script):
     return base64.b64encode(script.encode("utf-16-le")).decode("ascii")
 
 
-class WAATransport:
-    def __init__(self, settings, name, ip, local_dir, waa_port=None):
+class WindowsTransport:
+    protocol = "Windows"
+
+    def __init__(self, settings, name, ip, local_dir, waa_port=None, *, guest_port=None):
         self.settings, self.name = settings, name
         address = ipaddress.ip_address(ip)
         host = f"[{address}]" if address.version == 6 else str(address)
         self.local_dir = Path(local_dir)
         self.remote_root = f"C:/ProgramData/AgentFleet/{name}"
-        # WAA's guest service has no auth. Never send the platform token or
+        # Guest services have no auth. Never send the platform token or
         # route guest requests through a controller-side HTTP proxy.
-        # `ip` may be a node IP and `waa_port` the node port when the guest is
+        # `ip` may be a node IP and the port a node port when the guest is
         # exposed through a NodePort Service reachable from the runner.
         self.client = httpx.AsyncClient(
-            base_url=f"http://{host}:{waa_port or settings.waa_port}",
+            base_url=f"http://{host}:{guest_port or waa_port or settings.waa_port}",
             trust_env=False,
         )
 
@@ -59,7 +61,7 @@ class WAATransport:
             async with asyncio.timeout(timeout):
                 async with self.client.stream(method, path, timeout=timeout, **kwargs) as response:
                     if response.status_code != 200:
-                        raise RuntimeError(f"WAA {path} failed (HTTP {response.status_code})")
+                        raise RuntimeError(f"{self.protocol} {path} failed (HTTP {response.status_code})")
                     if target is not None:
                         with target.open("wb") as output:
                             async for chunk in response.aiter_bytes(65536):
@@ -68,35 +70,29 @@ class WAATransport:
                     output = bytearray()
                     async for chunk in response.aiter_bytes(65536):
                         if len(output) + len(chunk) > 16 * 1024 * 1024:
-                            raise RuntimeError("WAA control response exceeded its output limit")
+                            raise RuntimeError(f"{self.protocol} control response exceeded its output limit")
                         output.extend(chunk)
                     return bytes(output)
         except httpx.HTTPError:
             # Response bodies and commands may contain guest credentials.
-            raise RuntimeError(f"WAA {path} transport failed") from None
+            raise RuntimeError(f"{self.protocol} {path} transport failed") from None
 
     async def powershell(self, script, *, timeout=60):
-        # WAA subprocess.run(text=True) uses the guest Python locale. Emit ASCII
+        # Guest subprocess decoding may use the Python locale. Emit ASCII
         # base64 so Unicode paths/results survive even a non-UTF-8 Windows locale.
         wrapped = (
             "$ErrorActionPreference='Stop'; try { $value = & { " + script +
             " } | Out-String; [Console]::Write([Convert]::ToBase64String("
             "[Text.Encoding]::UTF8.GetBytes([string]$value))) } catch { exit 1 }"
         )
-        raw = await self._request(
-            "POST", "/execute", timeout=min(timeout, 90),
-            json={"command": [
-                "powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive",
-                "-ExecutionPolicy", "Bypass", "-EncodedCommand", encoded_powershell(wrapped),
-            ], "shell": False},
-        )
+        output = await self._run_powershell(wrapped, timeout=min(timeout, 90))
         try:
-            result = json.loads(raw)
-            if result["status"] != "success" or result["returncode"] != 0:
-                raise RuntimeError("WAA PowerShell helper failed")
-            return base64.b64decode(result["output"].strip(), validate=True).decode("utf-8-sig")
-        except (ValueError, TypeError, KeyError):
-            raise RuntimeError("Invalid WAA execution response") from None
+            return base64.b64decode(output.strip(), validate=True).decode("utf-8-sig")
+        except (ValueError, TypeError, AttributeError):
+            raise RuntimeError(f"Invalid {self.protocol} execution response") from None
+
+    async def _run_powershell(self, script, *, timeout):
+        raise NotImplementedError
 
     async def mkdir(self, path):
         await self.powershell(
@@ -109,14 +105,6 @@ class WAATransport:
         await self.upload_file(
             Path(__file__).with_name("execute.ps1"), self.remote_root + "/execute.ps1"
         )
-
-    async def probe(self):
-        raw = await self._request("GET", "/probe", timeout=15)
-        try:
-            if json.loads(raw).get("status") != "Probe successful":
-                raise ValueError
-        except (ValueError, AttributeError):
-            raise RuntimeError("Unexpected WAA guest readiness response") from None
 
     async def execute(self, command, *, cwd, env, timeout):
         request = self.remote_root + "/" + uuid.uuid4().hex + ".json"
@@ -142,7 +130,7 @@ class WAATransport:
                     local = Path(tmp) / "request.json"
                     local.write_text(json.dumps(payload), encoding="utf-8")
                     await self.upload_file(local, request)
-                # WAA caps each /execute at 120s. Start a detached supervisor,
+                # Start a detached supervisor to avoid guest request time limits,
                 # then use short requests to poll its atomically published result.
                 await self.powershell(
                     "Start-Process -FilePath powershell.exe -WindowStyle Hidden -ArgumentList "
@@ -159,7 +147,7 @@ class WAATransport:
                     result = json.loads(raw)
                     if result is not None:
                         if not isinstance(result, dict) or "error" in result:
-                            raise RuntimeError("WAA command supervisor failed")
+                            raise RuntimeError("Windows command supervisor failed")
                         break
                     await asyncio.sleep(1)
         except BaseException:
@@ -188,28 +176,6 @@ class WAATransport:
                 f"Windows command exceeded {timeout}s; process tree terminated"
             )
         return result
-
-    async def upload_file(self, source, target):
-        source = Path(source).absolute()
-        if source.is_symlink() or not source.is_file():
-            raise ValueError(f"Upload requires a regular file: {source}")
-        target = windows_path(target)
-        await self.mkdir(str(PureWindowsPath(target).parent))
-        with source.open("rb") as data:
-            await self._request(
-                "POST", "/setup/upload", data={"file_path": target},
-                files={"file_data": (source.name, data, "application/octet-stream")},
-                timeout=self.settings.transfer_timeout,
-            )
-
-    async def download_file(self, source, target):
-        source = windows_path(source)
-        target = Path(target).absolute()
-        target.parent.mkdir(parents=True, exist_ok=True)
-        await self._request(
-            "POST", "/file", data={"file_path": source}, target=target,
-            timeout=self.settings.transfer_timeout,
-        )
 
     async def upload_dir(self, source, target):
         source, target = Path(source), windows_path(target)
@@ -264,3 +230,53 @@ ConvertTo-Json -InputObject @($files.ToArray()) -Compress
                 raise ValueError("Invalid relative path returned by Windows guest")
             windows_path(source.rstrip("/") + "/" + path)
         return paths
+
+
+class WAATransport(WindowsTransport):
+    protocol = "WAA"
+
+    async def _run_powershell(self, script, *, timeout):
+        raw = await self._request(
+            "POST", "/execute", timeout=timeout,
+            json={"command": [
+                "powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive",
+                "-ExecutionPolicy", "Bypass", "-EncodedCommand", encoded_powershell(script),
+            ], "shell": False},
+        )
+        try:
+            result = json.loads(raw)
+            if result["status"] != "success" or result["returncode"] != 0:
+                raise RuntimeError("WAA PowerShell helper failed")
+            return result["output"]
+        except (ValueError, TypeError, KeyError):
+            raise RuntimeError("Invalid WAA execution response") from None
+
+    async def probe(self):
+        raw = await self._request("GET", "/probe", timeout=15)
+        try:
+            if json.loads(raw).get("status") != "Probe successful":
+                raise ValueError
+        except (ValueError, AttributeError):
+            raise RuntimeError("Unexpected WAA guest readiness response") from None
+
+    async def upload_file(self, source, target):
+        source = Path(source).absolute()
+        if source.is_symlink() or not source.is_file():
+            raise ValueError(f"Upload requires a regular file: {source}")
+        target = windows_path(target)
+        await self.mkdir(str(PureWindowsPath(target).parent))
+        with source.open("rb") as data:
+            await self._request(
+                "POST", "/setup/upload", data={"file_path": target},
+                files={"file_data": (source.name, data, "application/octet-stream")},
+                timeout=self.settings.transfer_timeout,
+            )
+
+    async def download_file(self, source, target):
+        source = windows_path(source)
+        target = Path(target).absolute()
+        target.parent.mkdir(parents=True, exist_ok=True)
+        await self._request(
+            "POST", "/file", data={"file_path": source}, target=target,
+            timeout=self.settings.transfer_timeout,
+        )

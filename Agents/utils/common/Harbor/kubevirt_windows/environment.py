@@ -17,6 +17,7 @@ from harbor.environments.capabilities import (
 from harbor.models.task.config import TaskOS
 from harbor.utils.path_filter import filter_paths_by_patterns
 
+from .ale import ALETransport
 from .control import (
     OWNER_LABEL,
     KubeVirtControl,
@@ -101,7 +102,7 @@ class KubeVirtWindowsEnvironment(BaseEnvironment):
                     "KubeVirt Windows uses a prepared VM template, not Docker build files"
                 )
         # Harbor always supplies these three log mount hints. We collect them
-        # via WAA HTTP; arbitrary host mounts cannot be implemented by a remote VM.
+        # via guest HTTP; arbitrary host mounts cannot be implemented by a remote VM.
         logs = {"c:/logs/agent", "c:/logs/verifier", "c:/logs/artifacts"}
         for mount in self._mounts:
             if windows_path(mount["target"]).lower() not in logs or mount.get(
@@ -131,6 +132,7 @@ class KubeVirtWindowsEnvironment(BaseEnvironment):
                             "source_pvc": self.settings.image,
                             "root_datavolume": self.vm_name + "-root",
                             "node": self.settings.node,
+                            "guest_protocol": self.settings.guest_protocol,
                             "labels": {OWNER_LABEL: tag},
                         },
                         indent=2,
@@ -153,22 +155,25 @@ class KubeVirtWindowsEnvironment(BaseEnvironment):
                     if vm.get("ready") and vm.get("ip"):
                         break
                     await asyncio.sleep(2)
-                # Expose WAA on a node port reachable from the runner, and
-                # connect the guest transport to that endpoint.
-                node_endpoint = await self.control.expose_waa(
+                # Expose the guest server on a node port reachable from the
+                # runner and connect the guest transport to that endpoint.
+                node_endpoint = await self.control.expose_guest(
                     self.vm_name, owner=tag
                 )
                 host, port = node_endpoint.rsplit(":", 1)
-                self.transport = WAATransport(
+                transport_class = (
+                    ALETransport if self.settings.guest_protocol == "ale" else WAATransport
+                )
+                self.transport = transport_class(
                     self.settings, self.vm_name, host, self._local_dir.name,
-                    waa_port=int(port),
+                    guest_port=int(port),
                 )
                 while True:
                     try:
                         await self.transport.probe()
                         break
                     except (RuntimeError, TimeoutError):
-                        # VM readiness precedes Windows/WAA service readiness.
+                        # VM readiness precedes guest service readiness.
                         await asyncio.sleep(2)
                 await self.transport.prepare()
                 for path in (
@@ -237,7 +242,7 @@ class KubeVirtWindowsEnvironment(BaseEnvironment):
     async def exec(self, command, cwd=None, env=None, timeout_sec=None, user=None):
         effective_user = user if user is not None else self.default_user
         if effective_user is not None:
-            raise ValueError("Windows commands run as the WAA session user; user selection is unsupported")
+            raise ValueError("Windows commands run as the guest server user; user selection is unsupported")
         timeout = self.settings.command_timeout if timeout_sec is None else timeout_sec
         if timeout <= 0:
             raise ValueError("Command timeout must be positive")

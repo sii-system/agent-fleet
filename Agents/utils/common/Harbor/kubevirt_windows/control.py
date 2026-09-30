@@ -3,7 +3,7 @@
 A KubeVirt Windows trial is a `VirtualMachine` (kubevirt.io/v1) that boots
 an independent CDI clone of a Windows golden-image PVC (SATA bus, since the
 image carries no virtio storage driver), uses the pod network via masquerade
-with the WAA port declared, and is reachable from the runner through a NodePort
+with the guest HTTP port declared, and is reachable from the runner through a NodePort
 Service. The control plane talks only to the kube-apiserver over HTTPS using
 mTLS credentials loaded from a kubeconfig; it never shells out to `kubectl`.
 """
@@ -43,7 +43,7 @@ _WINDOWS_SPEC_BASE = {
             "autoattachPodInterface": True,
             "interfaces": [{
                 "masquerade": {}, "model": "virtio", "name": "default",
-                "ports": [],  # WAA port added per create
+                "ports": [],  # Guest port added per create
             }],
             "tpm": {},
         },
@@ -54,7 +54,7 @@ _WINDOWS_SPEC_BASE = {
     "networks": [{"name": "default", "pod": {}}],
 }
 
-_CLOUD_INIT = "#cloud-config\n# Windows WAA image; guest server starts at logon.\n"
+_CLOUD_INIT = "#cloud-config\n# Windows image; guest server starts at logon.\n"
 
 
 class KubeVirtError(RuntimeError):
@@ -89,6 +89,15 @@ class Settings:
     start_timeout: int = 1800
     command_timeout: int = 3600
     transfer_timeout: int = 300
+    guest_protocol: str = "waa"
+
+    @property
+    def guest_port(self):
+        return self.waa_port
+
+    @property
+    def guest_node_port(self):
+        return self.waa_node_port
 
     @classmethod
     def from_env(cls):
@@ -119,15 +128,26 @@ class Settings:
                     f"HARBOR_KUBEVIRT_{key} must be an integer, got {value!r}"
                 ) from None
 
-        waa_port = as_int("WAA_PORT", 5000)
-        waa_node_port = as_int("WAA_NODE_PORT", 0)
+        guest_protocol = os.environ.get("HARBOR_KUBEVIRT_GUEST_PROTOCOL", "waa")
+        if guest_protocol not in ("waa", "ale"):
+            raise ValueError("HARBOR_KUBEVIRT_GUEST_PROTOCOL must be waa or ale")
+        waa_port = as_int(
+            "GUEST_PORT" if "HARBOR_KUBEVIRT_GUEST_PORT" in os.environ else "WAA_PORT",
+            5000,
+        )
+        waa_node_port = as_int(
+            "GUEST_NODE_PORT" if "HARBOR_KUBEVIRT_GUEST_NODE_PORT" in os.environ else "WAA_NODE_PORT",
+            0,
+        )
         start_timeout = as_int("START_TIMEOUT", 1800)
         command_timeout = as_int("COMMAND_TIMEOUT", 3600)
         transfer_timeout = as_int("TRANSFER_TIMEOUT", 300)
         if min(start_timeout, command_timeout, transfer_timeout) <= 0:
             raise ValueError("Timeouts must be positive")
         if not 1 <= waa_port <= 65535:
-            raise ValueError("WAA port must be between 1 and 65535")
+            raise ValueError("Guest port must be between 1 and 65535")
+        if waa_node_port != 0 and not 1 <= waa_node_port <= 65535:
+            raise ValueError("Guest node port must be 0 or between 1 and 65535")
         disk_bus = os.environ.get("HARBOR_KUBEVIRT_DISK_BUS", DEFAULT_DISK_BUS)
         if disk_bus not in ("sata", "virtio", "scsi"):
             raise ValueError("disk_bus must be one of: sata, virtio, scsi")
@@ -148,6 +168,7 @@ class Settings:
             start_timeout=start_timeout,
             command_timeout=command_timeout,
             transfer_timeout=transfer_timeout,
+            guest_protocol=guest_protocol,
         )
 
 
@@ -258,7 +279,7 @@ def build_create_request(
         "cores": cores, "sockets": DEFAULT_CPU_SOCKETS, "threads": 1,
     }
     spec["domain"]["devices"]["interfaces"][0]["ports"] = [
-        {"name": "waa", "port": settings.waa_port, "protocol": "TCP"}
+        {"name": settings.guest_protocol, "port": settings.guest_port, "protocol": "TCP"}
     ]
     spec["domain"]["resources"] = {
         "limits": {"memory": memory},
@@ -517,11 +538,15 @@ class KubeVirtControl:
         await self.delete_service(name, owner=owner)
 
     async def expose_waa(self, name: str, *, owner: str) -> str:
-        """Create a NodePort Service exposing WAA and return ``host:port``."""
+        """Compatibility entrypoint for existing WAA callers."""
+        return await self.expose_guest(name, owner=owner)
+
+    async def expose_guest(self, name: str, *, owner: str) -> str:
+        """Expose the selected guest server and return ``host:port``."""
         vm = await self.get(name)
         if vm["labels"].get(OWNER_LABEL) != owner or not vm["uid"]:
             raise KubeVirtError(f"VM ownership mismatch: {name}")
-        service_name = f"{name}-waa"
+        service_name = f"{name}-{self.settings.guest_protocol}"
         svc = {
             "apiVersion": "v1",
             "kind": "Service",
@@ -538,15 +563,15 @@ class KubeVirtControl:
                 "type": "NodePort",
                 "selector": {"kubevirt.io/domain": name},
                 "ports": [{
-                    "name": "waa",
-                    "port": self.settings.waa_port,
-                    "targetPort": self.settings.waa_port,
+                    "name": self.settings.guest_protocol,
+                    "port": self.settings.guest_port,
+                    "targetPort": self.settings.guest_port,
                     "protocol": "TCP",
                 }],
             },
         }
-        if self.settings.waa_node_port:
-            svc["spec"]["ports"][0]["nodePort"] = self.settings.waa_node_port
+        if self.settings.guest_node_port:
+            svc["spec"]["ports"][0]["nodePort"] = self.settings.guest_node_port
         create = await self.client.post(
             f"/api/v1/namespaces/{self.settings.namespace}/services",
             json=svc,
@@ -558,7 +583,7 @@ class KubeVirtControl:
             )
             if existing.status_code != 200:
                 raise KubeVirtError(
-                    f"WAA Service create failed ({create.status_code}): {create.text[:200]}",
+                    f"Guest Service create failed ({create.status_code}): {create.text[:200]}",
                     code=create.status_code,
                 )
         get_svc = await self.client.get(
@@ -566,15 +591,15 @@ class KubeVirtControl:
         )
         get_svc.raise_for_status()
         if get_svc.json().get("metadata", {}).get("labels", {}).get(OWNER_LABEL) != owner:
-            raise KubeVirtError(f"WAA Service ownership mismatch: {service_name}")
+            raise KubeVirtError(f"Guest Service ownership mismatch: {service_name}")
         spec = get_svc.json().get("spec", {})
         node_port = spec.get("ports", [{}])[0].get("nodePort")
         if not node_port:
-            raise KubeVirtError("WAA Service returned no nodePort")
-        host = await self._waa_host(name)
+            raise KubeVirtError("Guest Service returned no nodePort")
+        host = await self._guest_host(name)
         return f"{host}:{node_port}"
 
-    async def _waa_host(self, name: str) -> str:
+    async def _guest_host(self, name: str) -> str:
         """Return the InternalIP of the node running this VM's VMI."""
         try:
             vmi_resp = await self.client.get(self._vmi_path(name))
@@ -593,7 +618,7 @@ class KubeVirtControl:
         raise KubeVirtError(f"Could not resolve a reachable host for VM {name}")
 
     async def delete_service(self, name: str, *, owner: str) -> None:
-        service_name = f"{name}-waa"
+        service_name = f"{name}-{self.settings.guest_protocol}"
         path = f"/api/v1/namespaces/{self.settings.namespace}/services/{service_name}"
         service = await self.client.get(path)
         if service.status_code == 404:
@@ -601,14 +626,14 @@ class KubeVirtControl:
         service.raise_for_status()
         metadata = service.json().get("metadata", {})
         if metadata.get("labels", {}).get(OWNER_LABEL) != owner or not metadata.get("uid"):
-            raise KubeVirtError(f"WAA Service ownership mismatch: {service_name}")
+            raise KubeVirtError(f"Guest Service ownership mismatch: {service_name}")
         response = await self.client.request(
             "DELETE", path,
             json={"preconditions": {"uid": metadata["uid"]}},
         )
         if response.status_code not in (200, 404, 202):
             raise KubeVirtError(
-                f"WAA Service delete failed ({response.status_code}): {response.text[:200]}",
+                f"Guest Service delete failed ({response.status_code}): {response.text[:200]}",
                 code=response.status_code,
             )
 

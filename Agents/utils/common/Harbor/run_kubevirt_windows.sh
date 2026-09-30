@@ -11,7 +11,7 @@ if [[ "${1:-}" == "--help" || "$#" == 0 ]]; then
   cat <<'HELP'
 Usage: run_kubevirt_windows.sh [--dry-run] <Harbor run arguments>
 
-Runs externally supplied Windows Harbor tasks on isolated WAA-image KubeVirt VMs.
+Runs externally supplied Windows Harbor tasks on isolated WAA or ALE KubeVirt VMs.
 Example: run_kubevirt_windows.sh --path /data/windows-tasks --n-concurrent 1
          run_kubevirt_windows.sh --path /data/windows-tasks --agent oracle
 
@@ -21,7 +21,9 @@ Required: HARBOR_KUBEVIRT_IMAGE (golden PVC name in the trial namespace), CDI
           HARBOR_KUBEVIRT_API_SERVER optionally overrides the kubeconfig URL.
           Each VM owns a separate disk clone; host file paths are rejected.
           The control plane talks to the KubeVirt apiserver directly (no kubectl).
-The Windows image must run its guest WAA HTTP API (default port 5000).
+Select HARBOR_KUBEVIRT_GUEST_PROTOCOL=waa (default) or ale for ALE Windows tasks.
+The Windows image must run the matching guest HTTP API (default port 5000).
+HARBOR_KUBEVIRT_GUEST_PORT and HARBOR_KUBEVIRT_GUEST_NODE_PORT override its ports.
 The default agent also requires HARBOR_WINDOWS_AGENT_COMMAND.
 See KUBEVIRT_WINDOWS_README.md for the VM and agent contracts.
 HELP

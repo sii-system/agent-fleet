@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -179,7 +180,7 @@ class EnvironmentTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_reject_user_impersonation_before_command(self):
         environment = self.environment()
-        with self.assertRaisesRegex(ValueError, "WAA session user"):
+        with self.assertRaisesRegex(ValueError, "guest server user"):
             await environment.exec("echo x", user="root")
 
     def test_unsupported_resource_and_network_requirements_fail(self):
@@ -210,7 +211,7 @@ class EnvironmentTests(unittest.IsolatedAsyncioTestCase):
                 "labels": {OWNER_LABEL: environment.token[:12]},
             }
         )
-        environment.control.expose_waa = AsyncMock(return_value="10.254.73.30:30050")
+        environment.control.expose_guest = AsyncMock(return_value="10.254.73.30:30050")
         with patch("kubevirt_windows.environment.WAATransport") as transport_class:
             transport_class.return_value = AsyncMock()
             await environment.start()
@@ -220,7 +221,7 @@ class EnvironmentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(kwargs.get("cpus"), 8)
         self.assertEqual(kwargs.get("memory_mb"), 16384)
         environment.control.start.assert_awaited_once_with(environment.vm_name)
-        environment.control.expose_waa.assert_awaited_once_with(
+        environment.control.expose_guest.assert_awaited_once_with(
             environment.vm_name, owner=environment.token[:12]
         )
         transport_class.assert_called_once_with(
@@ -228,7 +229,7 @@ class EnvironmentTests(unittest.IsolatedAsyncioTestCase):
             environment.vm_name,
             "10.254.73.30",
             environment._local_dir.name,
-            waa_port=30050,
+            guest_port=30050,
         )
         environment.transport.probe.assert_awaited_once()
         self.assertEqual(environment.transport.mkdir.await_count, 4)
@@ -264,6 +265,40 @@ class EnvironmentTests(unittest.IsolatedAsyncioTestCase):
         )
         environment.control.close.assert_awaited_once()
         self.assertIsNone(environment._local_dir)
+
+    async def test_ale_start_selects_transport_and_retries_guest_readiness(self):
+        settings = replace(self.settings, guest_protocol="ale", waa_port=8000)
+        with patch.object(Settings, "from_env", return_value=settings):
+            environment = self.environment()
+        environment.control.create = AsyncMock()
+        environment.control.start = AsyncMock()
+        environment.control.get = AsyncMock(return_value={"ready": True, "ip": "192.0.2.10"})
+        environment.control.expose_guest = AsyncMock(return_value="192.0.2.10:30080")
+        environment.control.close = AsyncMock()
+        guest = AsyncMock()
+        guest.probe.side_effect = [RuntimeError("booting"), None]
+        with (
+            patch("kubevirt_windows.environment.ALETransport", return_value=guest) as ale_class,
+            patch("kubevirt_windows.environment.WAATransport") as waa_class,
+            patch("kubevirt_windows.environment.asyncio.sleep", new_callable=AsyncMock),
+        ):
+            await environment.start()
+        waa_class.assert_not_called()
+        ale_class.assert_called_once_with(
+            settings, environment.vm_name, "192.0.2.10", environment._local_dir.name,
+            guest_port=30080,
+        )
+        self.assertEqual(guest.probe.await_count, 2)
+        guest.prepare.assert_awaited_once()
+        self.assertEqual(guest.mkdir.await_count, 4)
+        metadata = json.loads((self.root / "trial/kubevirt.json").read_text())
+        self.assertEqual(metadata["guest_protocol"], "ale")
+        environment.control.get.return_value = {"labels": {OWNER_LABEL: environment.token[:12]}}
+        environment.control.stop = AsyncMock()
+        environment.control.delete = AsyncMock()
+        await environment.stop()
+        guest.close.assert_awaited_once()
+        environment.control.delete.assert_awaited_once()
 
     async def test_cancelled_start_cleans_up(self):
         environment = self.environment()

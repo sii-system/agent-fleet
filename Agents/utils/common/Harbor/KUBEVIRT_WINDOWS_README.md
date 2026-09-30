@@ -1,8 +1,9 @@
-# WAA Windows images on KubeVirt
+# WAA and ALE Windows images on KubeVirt
 
 This backend implements Harbor 0.18.0's `BaseEnvironment` using an isolated
-WindowsAgentArena (WAA) VM per trial. The first target is the published
-WAA-V2 Windows 11 snapshot. The Harbor controller runs on Linux. Benchmark tasks,
+Windows VM per trial. Supported guest protocols are WindowsAgentArena (WAA),
+including WAA-V2's Windows 11 snapshot, and Agents' Last Exam (ALE)'s Windows
+CUA computer-server. ALE support covers Windows tasks. The Harbor controller runs on Linux. Benchmark tasks,
 datasets, setup logic, evaluators, and scoring belong to the consuming project.
 No benchmark adapter is included here.
 
@@ -38,10 +39,10 @@ CDI uses the cluster's default virtualization/storage class. See the
 - Delete: `DELETE /apis/kubevirt.io/v1/namespaces/{ns}/virtualmachines/{name}`
 
 The VM spec matches a proven Windows guest: SATA root disk (the golden image
-carries no virtio storage driver), masquerade pod network with the WAA port
+carries no virtio storage driver), masquerade pod network with the guest HTTP port
 declared, EFI secure boot, and cloud-init. The runner lives outside the pod
 overlay, so the backend additionally creates a **NodePort `Service`** that maps
-the WAA port onto a node IP the runner can reach, and connects the guest
+the guest port onto a node IP the runner can reach, and connects the guest
 transport to `node_ip:node_port`.
 
 ## Host and image requirements
@@ -50,12 +51,12 @@ transport to `node_ip:node_port`.
   validates it and does not install Windows tools.
 - Confirm the runner can reach the kube-apiserver (`HARBOR_KUBEVIRT_API_SERVER`
   or the kubeconfig's `server`) with mTLS, and can reach node ports on a cluster
-  node (the NodePort Service exposes WAA there). No SSH/SFTP, WinRM, or client
+  node (the NodePort Service exposes the guest server there). No SSH/SFTP, WinRM, or client
   tools are used.
 - Provide a kubeconfig (`HARBOR_KUBEVIRT_KUBECONFIG`, default `~/.kube/config`)
   whose current user presents client certificate + key with permission to
   create/get/start/stop/delete `virtualmachines`, get `virtualmachineinstances`,
-  and create/get/delete `services` in the namespace, plus get `nodes` for WAA
+  and create/get/delete `services` in the namespace, plus get `nodes` for guest
   endpoint resolution. CDI must authorize cloning from the source PVC (including
   `datavolumes/source` creation permission where required by CDI).
   Alternatively set `HARBOR_KUBEVIRT_API_SERVER` (the kubeconfig is still read
@@ -64,16 +65,17 @@ transport to `node_ip:node_port`.
   namespace. Set `HARBOR_KUBEVIRT_IMAGE` to that PVC's name. Keep it immutable and
   unattached to running VMs while cloning; publish a new PVC for each image version.
   Host file paths are rejected, because attaching them directly would share writes.
-- Preserve the image's WAA service and logged-in session startup. WAA's
+- For the default `waa` protocol, preserve the image's WAA service and logged-in session startup. WAA's
   [setup script](https://github.com/GAIR-NLP/WindowsAgentArena-V2/blob/2927fe55005d1be75d5a9188c0045f73ba28d192/src/win-arena-container/vm/setup/setup.ps1#L380-L429)
   opens port 5000 and registers the server at logon. The backend waits for
   `/probe`, then uses `/execute`, `/setup/upload`, and `/file` from the
   [guest server](https://github.com/GAIR-NLP/WindowsAgentArena-V2/blob/2927fe55005d1be75d5a9188c0045f73ba28d192/src/win-arena-container/vm/setup/server/main.py).
-  A running VM without a running WAA service is insufficient.
+  A running VM without a running guest server is insufficient. For `ale`,
+  preserve the CUA computer-server instead; see the ALE contract below.
 - The image must boot with the node's disk/network devices and VirtIO drivers.
-  Windows PowerShell 5.1+ and the WAA session account must be able to create
+  Windows PowerShell 5.1+ and the guest server account must be able to create
   `C:/ProgramData/AgentFleet`, `C:/logs`, and the workspace. Commands run as the
-  WAA server's account; user selection and automatic privilege escalation are
+  guest server's account; user selection and automatic privilege escalation are
   unsupported. Agent tools can be supplied by the runtime preparation manifest
   below.
 
@@ -84,8 +86,62 @@ transport to `node_ip:node_port`.
 > KubeVirt-native control plane, live-validated for VM create/start/read/delete,
 > NodePort WAA exposure, and guest execution. Complete Harbor benchmark runs and
 > production image management remain the consuming project's responsibility.
-> ALE, OSWorld, arbitrary Windows images, and other guest protocols are not
-> supported targets of this PR.
+> ALE's Windows wire contract is source-checked and exercised by offline and
+> loopback HTTP tests; no live ALE image or benchmark run has been validated.
+> ALE Linux tasks, OSWorld, and other guest protocols remain outside this backend.
+
+## ALE Windows guest contract
+
+Set `HARBOR_KUBEVIRT_GUEST_PROTOCOL=ale` for an imported ALE Windows image.
+The source PVC must include the applications and task data expected by the
+selected Windows tasks. Preserve the CUA server's startup and interactive
+Windows session, and allow its HTTP port through the guest firewall. Its account
+must have the same workspace/log permissions described above. The KubeVirt
+backend clones the image and waits for `GET /status` to return `{"status":"ok"}`.
+
+ALE uses `POST /cmd` with `{"command":"run_command","params":{"command":"..."}}`.
+Responses contain SSE `data:` JSON records, including when the content type is
+`text/plain`. Successful commands supply `success`, `stdout`, `stderr`, and
+`return_code`. The backend sends encoded PowerShell helper commands and uses the
+same detached `execute.ps1` supervisor as WAA for cmd.exe semantics, per-command
+working directories/environment, long runs, and process-tree timeout/cancellation.
+It does not retry commands after ambiguous transport failures.
+
+Binary transfers use CUA `write_bytes` (`path`, `content_b64`) and `read_bytes`
+(`path`, `offset`, `length`; response `content_b64`). Uploads stage 1 MiB chunks,
+append them with PowerShell, and publish the completed file. Downloads decode
+bounded chunks into a local temporary file and replace the destination on
+success. Empty files, Unicode paths, and binary contents are preserved. Both
+transfers have a total deadline; upload staging cleanup is best effort.
+
+The wire contract was checked against ALE's
+[SandboxHandle](https://github.com/rdi-berkeley/agents-last-exam/blob/d10fb61a14f9719774c3520c5763068b28ef5546/ale_run/base_interface/sandbox.py)
+and CUA's
+[command dispatcher](https://github.com/trycua/cua/blob/0f29c142d7fe3e05ea0ce276cee11b3a9725ba01/libs/python/computer-server/computer_server/main.py)
+and [file interface](https://github.com/trycua/cua/blob/0f29c142d7fe3e05ea0ce276cee11b3a9725ba01/libs/python/computer-server/computer_server/handlers/base.py).
+This supports ALE's image-local CUA HTTP service without cloud-provider auth.
+Controller credentials are never forwarded to the guest.
+
+Example using externally adapted Windows Harbor tasks:
+
+```bash
+export HARBOR_KUBEVIRT_GUEST_PROTOCOL=ale
+export HARBOR_KUBEVIRT_IMAGE=ale-win10-golden-v1
+export HARBOR_KUBEVIRT_GUEST_PORT=5000
+export HARBOR_WINDOWS_AGENT_COMMAND='C:\Agent\run-agent.cmd'
+
+./Agents/utils/common/Harbor/run_kubevirt_windows.sh --dry-run \
+  --path /data/ale-windows-harbor-tasks --n-concurrent 1
+./Agents/utils/common/Harbor/run_kubevirt_windows.sh \
+  --path /data/ale-windows-harbor-tasks --n-concurrent 1
+```
+
+The consuming project's adapter must select Windows tasks, declare
+`[environment].os = "windows"`, stage their inputs, and provide Windows verifier
+entrypoints/rewards. ALE's native task scripts and graders are not converted by
+this backend. An agent entrypoint requiring desktop tools must configure its
+CUA/MCP bridge inside the guest; the command-agent bridge invokes that entrypoint
+using the existing request contract below.
 
 ## Configuration and launch
 
@@ -120,10 +176,11 @@ Optional settings:
 | `HARBOR_KUBEVIRT_IMAGE` | required | Golden-image PVC name in the trial namespace |
 | `HARBOR_KUBEVIRT_STORAGE_CLASS` | cluster default | Target storage class for per-trial clones |
 | `HARBOR_KUBEVIRT_NODE` | empty | Optional node hostname constraint, for example for node-local storage |
-| `HARBOR_KUBEVIRT_NAMESPACE` | `default` | Namespace for the VM and WAA Service |
+| `HARBOR_KUBEVIRT_NAMESPACE` | `default` | Namespace for the VM and guest Service |
 | `HARBOR_KUBEVIRT_DISK_BUS` | `sata` | Root disk bus (sata/virtio/scsi); Windows golden images need SATA |
-| `HARBOR_KUBEVIRT_WAA_PORT` | `5000` | Guest WAA HTTP port |
-| `HARBOR_KUBEVIRT_WAA_NODE_PORT` | auto | Optional explicit nodePort for the WAA Service |
+| `HARBOR_KUBEVIRT_GUEST_PROTOCOL` | `waa` | `waa` or `ale`; ALE Windows CUA protocol |
+| `HARBOR_KUBEVIRT_GUEST_PORT` | `5000` | Guest HTTP port; falls back to `HARBOR_KUBEVIRT_WAA_PORT` when unset |
+| `HARBOR_KUBEVIRT_GUEST_NODE_PORT` | auto | Optional explicit nodePort; falls back to `HARBOR_KUBEVIRT_WAA_NODE_PORT` when unset |
 | `HARBOR_KUBEVIRT_START_TIMEOUT` | `1800` | Total create/boot/guest-readiness deadline, seconds. Windows boot can take ~10 min; keep this generous |
 | `HARBOR_KUBEVIRT_COMMAND_TIMEOUT` | `3600` | Command deadline when Harbor supplies none |
 | `HARBOR_KUBEVIRT_TRANSFER_TIMEOUT` | `300` | Per-transfer deadline, seconds |
@@ -133,6 +190,10 @@ Optional settings:
 
 Harbor's own environment/agent/verifier deadlines still apply. Configure the
 external tasks' startup timeout to allow Windows boot and image cloning.
+Generic port variables take precedence over the legacy WAA names. Explicitly
+empty generic port values select the defaults (5000/automatic), preserving
+caller overrides. Services are named `<vm>-waa` or `<vm>-ale` for the selected
+protocol and cleaned up with the VM's existing ownership checks.
 `OPIK_URL` selects the existing `opik harbor` wrapper when nonempty; an empty
 value selects Harbor directly. The command bridge does not emit ATIF trajectories
 or agent-specific realtime tracing hooks.
@@ -269,30 +330,31 @@ export HARBOR_WINDOWS_AGENT_CHECK_COMMAND='C:\agent-tools\v1\run-agent.cmd --ver
   --ak prepare_timeout_sec=600
 ```
 
-## WAA scope and reset boundary
+## Benchmark scope and reset boundary
 
-This PR integrates WAA's existing command/file service for VM lifecycle, agent
-preparation, command execution, and artifact collection. It does not add a WAA
+This backend integrates WAA and ALE Windows command/file services for VM lifecycle,
+agent preparation, command execution, and artifact collection. It does not add a
 benchmark adapter, task setup/reset logic, evaluators, scoring, or GUI tools.
 The image already includes desktop-control endpoints, but exposing screenshot,
 input, or accessibility APIs to agents is outside this transport's contract.
 The consuming benchmark project owns those integrations and desktop validation.
 
 Reset is a **fresh persistent disk clone per trial**. Restarting a retained VM is
-not a reset. WAA application-state snapshot restoration, tool-disk attachment,
-and prepared-snapshot caching are outside this PR. Keep base image versions,
+not a reset. Benchmark application-state snapshot restoration, tool-disk attachment,
+and prepared-snapshot caching are outside this backend. Keep base image versions,
 tool manifests, and task assets independently versioned.
 
 ## Execution, isolation, and cleanup
 
 Guest commands use **cmd.exe semantics**, matching Harbor's Windows helpers.
 Call PowerShell explicitly for `.ps1` scripts. Commands, cwd, and environment are
-uploaded in a JSON file through WAA; shell command length does not constrain
+uploaded in a JSON file through the selected guest service; shell command length does not constrain
 task instructions or environment values. The PowerShell supervisor bounds the
 command's lifetime and requests process-tree termination on timeout/cancellation.
 WAA caps an `/execute` request at 120 seconds. The backend launches its
 PowerShell supervisor as a detached process, then polls an atomically published
-result using short `/execute` requests. Agent commands still run synchronously
+result using short `/execute` requests. ALE launches the same supervisor and
+polls through `/cmd` with `run_command`. Agent commands still run synchronously
 inside the supervisor. If HTTP access is lost, cancellation is best effort;
 VM teardown remains the cleanup boundary. Agent-created detached/background
 processes are not a supported agent model.
@@ -304,23 +366,23 @@ The command bridge redirects agent output to Harbor's collected logs.
 Output callbacks fire when a command completes, not continuously.
 
 Guest HTTP connects to `node_ip:node_port` from a NodePort `Service` that maps
-`HARBOR_KUBEVIRT_WAA_PORT` onto a cluster node IP the runner can reach; there is
-no port-forward, SSH, or virtctl proxy. WAA's service provides unauthenticated
+`HARBOR_KUBEVIRT_GUEST_PORT` onto a cluster node IP the runner can reach; there is
+no port-forward, SSH, or virtctl proxy. Both image-local services provide unauthenticated
 command execution and file access over HTTP. Use a trusted private guest network
 with access restricted to the runner and operators; do not publish port 5000 to
 untrusted clients. This backend does not configure those network restrictions or
 add guest authentication. mTLS apiserver credentials are sent only to the
-kube-apiserver, never to WAA; guest requests ignore controller HTTP proxy
+kube-apiserver, never to the guest; guest requests ignore controller HTTP proxy
 environment variables.
 
-Migration from earlier revisions of this unmerged PR: replace the custom
+Migration from earlier Windows backend revisions: replace the custom
 platform HTTP API with the KubeVirt-native control plane, remove
 `HARBOR_KUBEVIRT_BASE_URL`/`TOKEN`/`SUBNET` platform settings and
 `HARBOR_KUBEVIRT_SSH_*` settings, and use `HARBOR_KUBEVIRT_KUBECONFIG` (+ optional
 `HARBOR_KUBEVIRT_API_SERVER`) with `HARBOR_KUBEVIRT_IMAGE` as a golden PVC name.
 `HARBOR_KUBEVIRT_STORAGE_CLASS` now takes a Kubernetes storage class name, not
 a platform storage-class ID. Allow runner-to-node port access for the NodePort
-WAA Service.
+guest Service.
 
 Migration from the shared-hostDisk revision requires a one-time image import.
 With the source Windows VM shut down, upload its clean disk using the operator's
@@ -341,7 +403,7 @@ fallback. The Harbor environment import path is unchanged.
 
 Startup failures and cancellation attempt VM cleanup. Normal `stop(delete=True)`
 reads the VM, checks the trial ownership label, then stops and deletes it and
-cleans up the WAA NodePort Service. Services carry a VM owner reference so
+cleans up the selected guest NodePort Service. Services carry a VM owner reference so
 Kubernetes also garbage-collects them. Explicit service cleanup checks the trial
 label and uses a UID deletion precondition. If VM deletion succeeds but service
 cleanup fails, subsequent cleanup retries still check and delete the service;
@@ -358,7 +420,7 @@ Only public/default network policy is supported. Restricted network policies,
 GPU/TPU requests, Docker/Compose definitions, arbitrary host mounts, and user
 impersonation fail explicitly. Directory downloads exclude Windows reparse
 points; uploads reject symlinks. Desktop screenshot/input control is outside
-this transport; consumers may integrate WAA's existing desktop endpoints.
+this transport; consumers may integrate the selected guest's desktop endpoints.
 
 ## Local validation
 
@@ -375,7 +437,7 @@ Tests use the real pinned Harbor interfaces, synthetic cluster settings, mocked 
 and a loopback HTTP server for file-transfer requests. They require no kubeconfig
 or cluster credentials and do not boot Windows.
 Before declaring an image usable, run a single trial against a fresh clone and
-verify: WAA readiness after boot, Unicode/binary upload/download, an agent command
+verify: guest readiness after boot, Unicode/binary upload/download, an agent command
 lasting more than 120 seconds, timeout/process-tree cancellation, artifact
 collection, and ownership-checked VM deletion. The existing-guest checks below
 cover preparation and supervisor behavior; they do not replace fresh-clone
