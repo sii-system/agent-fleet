@@ -4,6 +4,14 @@
 four hours. `harbor-e2e-validation.yml` runs all Terminal-Bench 2.1 tasks on its
 schedule; a manual dispatch defaults to its four-task canary set.
 
+## Pinned runner dependencies
+
+Both workflows prepare separate Harbor runner environments under `RUNNER_TEMP`
+with `setup_runner_env.sh` and pass those paths to benchmark startup. Setup
+rebuilds a stale environment against `runner-requirements.txt`, including the
+`yicloud-sdk-python` pin, and fails before launch if validation fails. Shared
+host and image-provided runners are not modified.
+
 ## Model availability
 
 Both workflows use the `self-hosted-env` environment:
