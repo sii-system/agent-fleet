@@ -111,6 +111,8 @@ class CreateRequestTests(unittest.TestCase):
         settings = make_settings({"HARBOR_KUBEVIRT_STORAGE_CLASS": "windows-storage"})
         spec = build_create_request(settings, "trial-a")["spec"]
         self.assertEqual(spec["dataVolumeTemplates"][0]["spec"]["storage"], {
+            "accessModes": ["ReadWriteOnce"],
+            "volumeMode": "Filesystem",
             "storageClassName": "windows-storage",
         })
 
@@ -134,7 +136,10 @@ class CreateRequestTests(unittest.TestCase):
         self.assertEqual(clone["spec"]["source"], {
             "pvc": {"name": settings.image, "namespace": settings.namespace},
         })
-        self.assertEqual(clone["spec"]["storage"], {})
+        self.assertEqual(clone["spec"]["storage"], {
+            "accessModes": ["ReadWriteOnce"],
+            "volumeMode": "Filesystem",
+        })
         self.assertEqual(
             spec["spec"]["template"]["spec"]["nodeSelector"],
             {"kubernetes.io/hostname": "cpu-nat-391"},

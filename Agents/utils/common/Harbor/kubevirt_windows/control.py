@@ -300,11 +300,16 @@ def build_create_request(
                     "source": {"pvc": {
                         "name": settings.image, "namespace": settings.namespace,
                     }},
-                    # CDI infers clone size and storage-profile defaults.
-                    "storage": (
-                        {"storageClassName": settings.storage_class}
-                        if settings.storage_class else {}
-                    ),
+                    # Explicit accessModes/volumeMode so clones work even when the
+                    # StorageProfile does not define a default accessMode (e.g.
+                    # local-path). CDI infers clone size from the source PVC and
+                    # uses the storage class when one is selected.
+                    "storage": {
+                        "accessModes": ["ReadWriteOnce"],
+                        "volumeMode": "Filesystem",
+                        **({"storageClassName": settings.storage_class}
+                           if settings.storage_class else {}),
+                    },
                 },
             }],
             "template": {
