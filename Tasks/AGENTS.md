@@ -18,6 +18,7 @@ fleet from `Agents/Openclaw/` (see
 | `BrowseComp/`, `DeepSearchQA/` | Native Harbor dataset entrypoints; automatic preparation and optional manual adapters share `Agents/utils/web_search/` |
 | `Pinchbench/` | PinchBench runner for the OpenClaw fleet |
 | `clawBio/` | ClawBio bioinformatics benchmark for the OpenClaw fleet |
+| `WindowsAgentArena/` | WAA / WAA-V2 Harbor task adapters and native agent/verifier integration |
 
 ## Harbor Task Lists
 
@@ -161,11 +162,19 @@ Sandbox errors ("path escapes sandbox"): rerun `setup.sh` with
 
 ## Development
 
+WindowsAgentArena uses its own host environment and pinned native upstream clients.
+Run `WindowsAgentArena/setup.sh` explicitly; startup must only validate it.
+Harbor owns trial orchestration, retries and resume. Task materialization and native setup/evaluation belong here; host agents belong under
+`Agents/WindowsAgentArena/`. Reuse the shared Windows KubeVirt backend for VM
+ownership and cleanup. See [WindowsAgentArena/README.md](WindowsAgentArena/README.md)
+for full runs, resume and pinned-client integration tests.
+
 Run from the repo root:
 
 ```bash
 python3 -m unittest discover -s Tasks/Pinchbench/tests
 python3 -m unittest discover -s Tasks/clawBio/tests
+python3 -m unittest discover -s Tasks/WindowsAgentArena/tests
 uv run --project Agents/utils/web_search python -m unittest discover -s Agents/utils/web_search/tests -v
 uv run --project Tasks/SWE-rebench-v2 pytest Tasks/SWE-rebench-v2/tests -q
 ```

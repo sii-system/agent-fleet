@@ -218,6 +218,21 @@ exit "${STUB_EXIT:-0}"
             },
         )
 
+    def test_prompt_supports_waa_pcagent_and_custom_agent(self):
+        for taskset in ("waa", "waa-v2", "waa2"):
+            for agent in ("pcagent", "custom.agent:build"):
+                result = self.run_goal("--prompt", "Run " + taskset + " with " + agent, "--dry-run",
+                    response=self.response(spec={"schema_version": 1, "taskset": taskset, "agent": agent, "workers": 2}))
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("WindowsAgentArena/run.sh", result.stdout)
+                self.assertIn("--benchmark " + ("waa" if taskset == "waa" else "waa-v2"), result.stdout)
+                self.assertIn("--workers 2", result.stdout)
+
+    def test_prompt_rejects_waa_with_linux_agent(self):
+        result = self.run_goal("--prompt", "Run WAA with pi", "--dry-run",
+            response=self.response(spec={"schema_version": 1, "taskset": "waa", "agent": "pi"}))
+        self.assertNotEqual(result.returncode, 0)
+
     def test_prompt_routes_supported_harbor_agents(self):
         for agent in ("pi", "dsh-sdk-minimal"):
             with self.subTest(agent=agent):

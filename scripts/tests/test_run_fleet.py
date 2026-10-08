@@ -84,6 +84,9 @@ exit "${STUB_EXIT:-0}"
             "MODEL=test-model\n",
             encoding="utf-8",
         )
+        waa = self.repo / "Tasks/WindowsAgentArena/run.sh"
+        waa.parent.mkdir(parents=True)
+        waa.write_text("#!/usr/bin/env bash\nset -euo pipefail\nprintf 'runner=waa\\nargs=%s\\n' \"$*\"\n", encoding="utf-8")
 
     def tearDown(self):
         self.temp_dir.cleanup()
@@ -124,6 +127,40 @@ exit "${STUB_EXIT:-0}"
             capture_output=True,
             check=False,
         )
+
+    def test_waa_full_run_defaults_to_pcagent_and_preserves_workers(self):
+        result = self.run_fleet("--taskset", "waa", "--workers", "3")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("runner=waa", result.stdout)
+        self.assertIn("--agent pcagent --all --workers 3", result.stdout)
+        self.assertNotIn("runner=harbor", result.stdout)
+
+    def test_waa_releases_route_to_separate_harbor_adapters(self):
+        for taskset, benchmark in (("waa", "waa"), ("waa-v2", "waa-v2"), ("waa2", "waa-v2")):
+            with self.subTest(taskset=taskset):
+                result = self.run_fleet("--taskset", taskset, "--task", "chrome/one", "--workers", "2")
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("--benchmark " + benchmark, result.stdout)
+                self.assertIn("--task chrome/one", result.stdout)
+                self.assertIn("--workers 2", result.stdout)
+
+    def test_waa_fleet_spec_task_selection_and_custom_agent(self):
+        output = self.root / "waa-spec.json"
+        result = self.run_fleet("--taskset", "waa", "--task", "chrome/one,vlc/two",
+                                "--agent", "custom.agent:build", "--output", str(output))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("--task chrome/one,vlc/two", result.stdout)
+        self.assertIn("--agent custom.agent:build", result.stdout)
+        self.assertEqual(json.loads(output.read_text())["taskset"], "waa")
+
+    def test_waa_dry_run_and_task_validation_stay_offline(self):
+        result = self.run_fleet("--taskset", "waa", "--dry-run")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("WindowsAgentArena/run.sh", result.stdout)
+        self.assertNotIn("runner=waa", result.stdout)
+        result = self.run_fleet("--taskset", "waa", "--task", "chrome/one", "--validate-task-selection")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("--dry-run", result.stdout)
 
     def test_harbor_registry_handoff(self):
         result = self.run_fleet(

@@ -84,15 +84,18 @@ dataset-specific verifier composition belongs in `verifier_runtime/`.
 Windows KubeVirt runs use the separate
 [`run_kubevirt_windows.sh`](utils/common/Harbor/run_kubevirt_windows.sh) launcher
 and [Windows backend contract](utils/common/Harbor/KUBEVIRT_WINDOWS_README.md).
-The shared Linux fleet launcher does not dispatch this backend. Supported targets
-are imported WAA-V2 and Agents' Last Exam (ALE) Windows images. Select their
+The `waa` and `waa-v2` fleet tasksets materialize
+[full WAA / WAA-V2 Harbor adapters](../Tasks/WindowsAgentArena/README.md), using
+the [reference PC-Agent or custom host agents](WindowsAgentArena/README.md).
+Other Windows Harbor tasks use the dedicated Windows launcher. Supported targets
+are imported WAA, WAA-V2 and Agents' Last Exam (ALE) Windows images. Select their
 guest HTTP protocol with `HARBOR_KUBEVIRT_GUEST_PROTOCOL=waa|ale` (default `waa`),
 and optionally set `HARBOR_KUBEVIRT_GUEST_PORT` (default 5000).
 ALE support covers Windows tasks; SSH/WinRM and other benchmark images are
 outside this backend. Agents can be
 image-provided or provisioned with the optional pinned local preparation
-manifest. Benchmark adapters belong to the
-consuming project. Do not route Windows runs through the Linux runtime installers.
+manifest. ALE benchmark adapters still belong to the consuming project.
+Do not route Windows runs through the Linux runtime installers.
 
 ### Monitor, Analyzer, and Fixer
 

@@ -5,12 +5,16 @@ Windows VM per trial. Supported guest protocols are WindowsAgentArena (WAA),
 including WAA-V2's Windows 11 snapshot, and Agents' Last Exam (ALE)'s Windows
 CUA computer-server. ALE support covers Windows tasks. The Harbor controller runs on Linux. Benchmark tasks,
 datasets, setup logic, evaluators, and scoring belong to the consuming project.
-No benchmark adapter is included here.
+The WAA and WAA-V2 Harbor benchmark adapters are available under
+[Tasks/WindowsAgentArena](../../../../Tasks/WindowsAgentArena/README.md), including
+task setup, PC-Agent/custom agents, native evaluation, resume and reporting.
+ALE's full benchmark adapter is not included.
 
 Use `run_kubevirt_windows.sh` for Windows runs. It uses the existing config
 loader and pinned runner validation, but avoids the Linux dependency installers,
 bind mounts, and agent wrappers used by `start.sh` / `run_fleet.sh`. Those unified
-launchers do not yet dispatch Windows runs. The backend is also importable
+launchers dispatch full Harbor WAA benchmarks via `--taskset waa` or `--taskset waa-v2`. Other Windows
+Harbor runs use the dedicated launcher. The backend is also importable
 directly by another project's Harbor configuration.
 
 ## KubeVirt-native VM lifecycle
@@ -181,6 +185,7 @@ Optional settings:
 | `HARBOR_KUBEVIRT_GUEST_PROTOCOL` | `waa` | `waa` or `ale`; ALE Windows CUA protocol |
 | `HARBOR_KUBEVIRT_GUEST_PORT` | `5000` | Guest HTTP port; falls back to `HARBOR_KUBEVIRT_WAA_PORT` when unset |
 | `HARBOR_KUBEVIRT_GUEST_NODE_PORT` | auto | Optional explicit nodePort; falls back to `HARBOR_KUBEVIRT_WAA_NODE_PORT` when unset |
+| `HARBOR_KUBEVIRT_EXTRA_PORTS` | empty | Comma-separated auxiliary guest ports in the same owned Service; the WAA benchmark launcher defaults to `9222,8080` |
 | `HARBOR_KUBEVIRT_START_TIMEOUT` | `1800` | Total create/boot/guest-readiness deadline, seconds. Windows boot can take ~10 min; keep this generous |
 | `HARBOR_KUBEVIRT_COMMAND_TIMEOUT` | `3600` | Command deadline when Harbor supplies none |
 | `HARBOR_KUBEVIRT_TRANSFER_TIMEOUT` | `300` | Per-transfer deadline, seconds |

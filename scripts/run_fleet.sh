@@ -45,8 +45,9 @@ Short flags: -t --taskset, -a --agent, -n --workers, -s --spec, -p --prompt,
 
 Tasksets: seta, smith, terminalbench21, sweverify, browsecomp, deepsearchqa,
           agent-fleet-swe-rebench-v2, a registry id, a local path (./dir),
-          or the OpenClaw tasksets: pinchbench, clawbio
-Agents:   claude-code, opencode, pi, dsh-sdk-minimal; openclaw for OpenClaw tasksets
+          waa (WindowsAgentArena), waa-v2 / waa2 (WAA-V2), or the OpenClaw tasksets: pinchbench, clawbio
+Agents:   claude-code, opencode, pi, dsh-sdk-minimal; openclaw for OpenClaw tasksets;
+          pcagent or module:factory for waa / waa-v2
 Use --task=<name> when a task ID begins with a dash.
 
 Examples:
@@ -152,7 +153,7 @@ fi
 [[ -n "$TASKSET" ]] || { usage >&2; exit 2; }
 if [[ -n "$FLEET_TASK" ]]; then
   case "$TASKSET" in
-    seta|smith|terminalbench21|sweverify|browsecomp|deepsearchqa|agent-fleet-swe-rebench-v2|pinchbench|clawbio|/*|./*|../*|.|..|\~/*) ;;
+    seta|smith|terminalbench21|sweverify|browsecomp|deepsearchqa|agent-fleet-swe-rebench-v2|waa|waa-v2|waa2|pinchbench|clawbio|/*|./*|../*|.|..|\~/*) ;;
     *)
       printf '[ERROR] --task is unsupported for Harbor registry taskset: %s\n' "$TASKSET" >&2
       exit 2
@@ -169,7 +170,12 @@ if (( ! DRY_RUN && ! VALIDATE_TASK_SELECTION )); then
     printf '[ERROR] --task is unsupported when ROLLOUT=1\n' >&2
     exit 2
   fi
-  validate_run_config || exit 1
+  # The WAA Harbor launcher validates its own OpenAI/custom-agent settings.
+  # It accepts explicit OPENAI_* values and does not require a shared gateway
+  # credential for custom agents that use their own provider.
+  if [[ "$TASKSET" != "waa" && "$TASKSET" != "waa-v2" && "$TASKSET" != "waa2" ]]; then
+    validate_run_config || exit 1
+  fi
 fi
 if [[ -n "$OUTPUT" ]]; then
   if [[ -z "$FLEET_SPEC_JSON" ]]; then
@@ -184,7 +190,7 @@ if [[ "$TASKSET" == "pinchbench" || "$TASKSET" == "clawbio" ]] &&
    [[ -n "$REQUESTED_AGENT" && "$REQUESTED_AGENT" != "openclaw" ]]; then
   printf '[WARN] requested agent: %s; taskset: %s; actual agent: openclaw (requested agent ignored)\n' "$REQUESTED_AGENT" "$TASKSET" >&2
 fi
-if (( DETACH )) && [[ "$TASKSET" == "pinchbench" || "$TASKSET" == "clawbio" ]]; then
+if (( DETACH )) && [[ "$TASKSET" == "pinchbench" || "$TASKSET" == "clawbio" || "$TASKSET" == "waa" || "$TASKSET" == "waa-v2" || "$TASKSET" == "waa2" ]]; then
   printf '[WARN] --detach ignored for taskset: %s; runner remains in foreground\n' "$TASKSET" >&2
 fi
 if (( VALIDATE_TASK_SELECTION )) && [[ -z "$FLEET_TASK" ]]; then
@@ -192,6 +198,19 @@ if (( VALIDATE_TASK_SELECTION )) && [[ -z "$FLEET_TASK" ]]; then
 fi
 
 case "$TASKSET" in
+  waa|waa-v2|waa2)
+    waa_benchmark="$TASKSET"
+    [[ "$waa_benchmark" != "waa2" ]] || waa_benchmark=waa-v2
+    cmd=(bash "$REPO_DIR/Tasks/WindowsAgentArena/run.sh" --benchmark "$waa_benchmark" --agent "${AGENT_ARG:-pcagent}")
+    if [[ -n "$FLEET_TASK" ]]; then
+      cmd+=(--task "$FLEET_TASK")
+    else
+      cmd+=(--all)
+    fi
+    [[ -z "$WORKERS" ]] || cmd+=(--workers "$WORKERS")
+    (( VALIDATE_TASK_SELECTION == 0 )) || cmd+=(--dry-run)
+    run_command "${cmd[@]}"
+    ;;
   pinchbench)
     pinchbench_exact_task_selection=0
     [[ -z "$FLEET_TASK" ]] || pinchbench_exact_task_selection=1

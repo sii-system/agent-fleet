@@ -6,6 +6,7 @@ Benchmarks, task lists, and automated task workflows.
 | --- | --- |
 | [`Pinchbench/`](./Pinchbench/) | PinchBench benchmark task runner for OpenClaw. |
 | [`clawBio/`](./clawBio/) | ClawBio benchmark task runner for OpenClaw. |
+| [`WindowsAgentArena/`](./WindowsAgentArena/) | Official WAA and WAA-V2 Harbor adapters with PC-Agent/custom agents and isolated Windows VMs. |
 | [`SWE-rebench-v2/`](./SWE-rebench-v2/) | Official SWE-rebench-V2 to Harbor converter and local taskset entrypoint. |
 | [`SWE-rebench-v2-TaskTrove/`](./SWE-rebench-v2-TaskTrove/) | Third-party TaskTrove SWE-rebench-V2 registry integration. |
 | [`SWE-verify/`](./SWE-verify/) | SWE-bench Verified task list for Harbor. |

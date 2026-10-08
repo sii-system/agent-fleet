@@ -16,6 +16,7 @@ def fleet_taskset_supports_task_v1:
   . == "browsecomp" or
   . == "deepsearchqa" or
   . == "agent-fleet-swe-rebench-v2" or
+  . == "waa" or . == "waa-v2" or . == "waa2" or
   . == "pinchbench" or
   . == "clawbio" or
   . == "." or

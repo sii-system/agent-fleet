@@ -716,3 +716,14 @@ When invoked inside a container, the launcher warns and delegates directly to
 - **Do not commit `config.local.env`**: it contains secrets.
 - **`bypassPermissions` mode**: the agent executes all tool calls automatically; only use in a controlled environment.
 - **Sessions and background execution**: use the facilities provided by the selected Harbor or OpenClaw runner. The router does not manage sessions.
+
+### WindowsAgentArena and WindowsAgentArena-V2
+
+`./scripts/run_fleet.sh --taskset waa-v2 --agent pcagent --workers 4` dispatches the
+[WAA and WAA-V2 Harbor adapters](../Tasks/WindowsAgentArena/README.md). FleetSpec v1
+and prompt mode recognize `waa`, `waa-v2` and `waa2`; exact task IDs can be passed with `--task`.
+Custom agents use `--agent module:factory`. Prepare WAA's separate host environment
+and Windows golden image first. The dedicated `Tasks/WindowsAgentArena/run.sh`
+provides domain selection and an output directory; resume uses Harbor’s CLI. The runner
+stays in the foreground; unified `--detach` prints a warning. Unified `--output`
+continues to mean a saved FleetSpec file.

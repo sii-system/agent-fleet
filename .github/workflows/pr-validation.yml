@@ -67,6 +67,7 @@ jobs:
           set -euo pipefail
           python -m unittest discover -s Tasks/Pinchbench/tests -v
           python -m unittest discover -s Tasks/clawBio/tests -v
+          python -m unittest discover -s Tasks/WindowsAgentArena/tests -v
           python -m unittest discover -s Agents/utils/web_search/tests -v
 
       - name: Run portable shell regressions
@@ -86,3 +87,41 @@ jobs:
           bash Agents/Openclaw/tests/test_start_session_tui.sh
           echo "Running Agents/Openclaw/tests/test_stream_openclaw_session_sh.sh"
           bash Agents/Openclaw/tests/test_stream_openclaw_session_sh.sh
+
+  waa-client-checks:
+    name: WAA and WAA-V2 Harbor integration
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      PYTHONPATH: .
+      PYTHONDONTWRITEBYTECODE: "1"
+      HARBOR_WAA_CACHE_DIR: ${{ github.workspace }}/.waa-test-cache
+      HARBOR_WAA_ENV_DIR: ${{ github.workspace }}/.waa-test-env
+      WAA_TEST_PCAGENT_RUNTIME: ${{ github.workspace }}/.waa-test-cache/runtime/2927fe55005d1be75d5a9188c0045f73ba28d192
+      WAA_TEST_RUNTIME: ${{ github.workspace }}/.waa-test-cache/runtime/2927fe55005d1be75d5a9188c0045f73ba28d192
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@83679a892e2d95755f2dac6acb0bfd1e9ac5d548 # v6.1.0
+        with:
+          python-version: "3.12"
+      - name: Set up uv
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: Tasks/WindowsAgentArena/pyproject.toml
+      - name: Prepare and validate all 154 WAA and 141 WAA-V2 tasks
+        run: ./Tasks/WindowsAgentArena/setup.sh
+      - name: Run offline and pinned-client integration tests
+        run: .waa-test-env/bin/python -m unittest discover -s Tasks/WindowsAgentArena/tests -v
+      - name: Run original WAA native and Harbor trial integration tests
+        env:
+          WAA_TEST_BENCHMARK: waa
+          WAA_TEST_RUNTIME: ${{ github.workspace }}/.waa-test-cache/runtime/6d39ed88c545a0d40a7a02e39b928e278df7332b
+        run: |
+          set -euo pipefail
+          .waa-test-env/bin/python -m unittest discover -s Tasks/WindowsAgentArena/tests -p test_native.py -v
+          .waa-test-env/bin/python -m unittest discover -s Tasks/WindowsAgentArena/tests -p test_harbor.py -v
