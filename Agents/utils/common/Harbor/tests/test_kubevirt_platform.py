@@ -78,6 +78,15 @@ class SettingsTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             make_settings({"HARBOR_KUBEVIRT_NAMESPACE": "Bad_NS"})
 
+    def test_auxiliary_guest_ports_are_validated_and_exposed_in_vm(self):
+        settings = make_settings({"HARBOR_KUBEVIRT_EXTRA_PORTS": "9222,8080"})
+        spec = build_create_request(settings, "trial-waa")["spec"]["template"]["spec"]
+        self.assertEqual([p["port"] for p in spec["domain"]["devices"]["interfaces"][0]["ports"]],
+                         [5000, 9222, 8080])
+        for ports in ("0", "65536", "9222,9222", "5000", "8080,", "abc"):
+            with self.subTest(ports=ports), self.assertRaises(ValueError):
+                make_settings({"HARBOR_KUBEVIRT_EXTRA_PORTS": ports})
+
     def test_rejects_invalid_waa_ports(self):
         for port in ("0", "65536", "invalid"):
             with self.subTest(port=port), self.assertRaises(ValueError):
@@ -450,6 +459,38 @@ class KubeVirtControlTests(unittest.IsolatedAsyncioTestCase):
         control = self._control(handler)
         async with control:
             self.assertTrue(await control.ping())
+
+    async def test_benchmark_service_exposes_owned_auxiliary_endpoints(self):
+        settings = make_settings({"HARBOR_KUBEVIRT_EXTRA_PORTS": "9222,8080"})
+        service = {"metadata": {"labels": {OWNER_LABEL: "abc"}}, "spec": {"ports": [
+            {"port": 5000, "nodePort": 30050}, {"port": 9222, "nodePort": 30051},
+            {"port": 8080, "nodePort": 30052}]}}
+
+        def handler(request):
+            if request.url.path.endswith("/services/trial-waa"):
+                return httpx.Response(200, json=service)
+            if "/virtualmachineinstances/" in request.url.path:
+                return httpx.Response(200, json={"status": {"nodeName": "cpu-nat-391"}})
+            if request.url.path == "/api/v1/nodes/cpu-nat-391":
+                return httpx.Response(200, json={"status": {"addresses": [{"type": "InternalIP", "address": "192.0.2.10"}]}})
+            if "/virtualmachines/" in request.url.path:
+                return httpx.Response(200, json={"metadata": {"uid": "vm-uid", "labels": {OWNER_LABEL: "abc"}}})
+            if request.method == "POST":
+                body = json.loads(request.content)
+                self.assertEqual([p["port"] for p in body["spec"]["ports"]], [5000, 9222, 8080])
+                self.assertTrue(all("nodePort" not in p for p in body["spec"]["ports"]))
+                return httpx.Response(201)
+            raise AssertionError(request.url.path)
+
+        async with self._control(handler, settings) as control:
+            await control.expose_guest("trial", owner="abc")
+            self.assertEqual(await control.guest_endpoints("trial", owner="abc"), {
+                5000: "http://192.0.2.10:30050", 9222: "http://192.0.2.10:30051", 8080: "http://192.0.2.10:30052"})
+            with self.assertRaisesRegex(RuntimeError, "ownership"):
+                await control.guest_endpoints("trial", owner="wrong")
+            service["spec"]["ports"].pop()
+            with self.assertRaisesRegex(RuntimeError, "incomplete"):
+                await control.guest_endpoints("trial", owner="abc")
 
     async def test_ping_unreachable(self):
         def handler(request: httpx.Request) -> httpx.Response:

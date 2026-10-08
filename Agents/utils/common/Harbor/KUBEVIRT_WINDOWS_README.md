@@ -181,6 +181,7 @@ Optional settings:
 | `HARBOR_KUBEVIRT_GUEST_PROTOCOL` | `waa` | `waa` or `ale`; ALE Windows CUA protocol |
 | `HARBOR_KUBEVIRT_GUEST_PORT` | `5000` | Guest HTTP port; falls back to `HARBOR_KUBEVIRT_WAA_PORT` when unset |
 | `HARBOR_KUBEVIRT_GUEST_NODE_PORT` | auto | Optional explicit nodePort; falls back to `HARBOR_KUBEVIRT_WAA_NODE_PORT` when unset |
+| `HARBOR_KUBEVIRT_EXTRA_PORTS` | empty | Comma-separated auxiliary guest ports exposed in the same owned trial Service |
 | `HARBOR_KUBEVIRT_START_TIMEOUT` | `1800` | Total create/boot/guest-readiness deadline, seconds. Windows boot can take ~10 min; keep this generous |
 | `HARBOR_KUBEVIRT_COMMAND_TIMEOUT` | `3600` | Command deadline when Harbor supplies none |
 | `HARBOR_KUBEVIRT_TRANSFER_TIMEOUT` | `300` | Per-transfer deadline, seconds |

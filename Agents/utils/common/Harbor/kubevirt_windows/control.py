@@ -90,6 +90,7 @@ class Settings:
     command_timeout: int = 3600
     transfer_timeout: int = 300
     guest_protocol: str = "waa"
+    extra_guest_ports: tuple[int, ...] = ()
 
     @property
     def guest_port(self):
@@ -131,6 +132,13 @@ class Settings:
         guest_protocol = os.environ.get("HARBOR_KUBEVIRT_GUEST_PROTOCOL", "waa")
         if guest_protocol not in ("waa", "ale"):
             raise ValueError("HARBOR_KUBEVIRT_GUEST_PROTOCOL must be waa or ale")
+        raw_ports = os.environ.get("HARBOR_KUBEVIRT_EXTRA_PORTS", "")
+        try:
+            extra_ports = tuple(int(port.strip()) for port in raw_ports.split(",")) if raw_ports else ()
+        except ValueError:
+            raise ValueError("HARBOR_KUBEVIRT_EXTRA_PORTS must be comma-separated ports") from None
+        if any(not 1 <= port <= 65535 for port in extra_ports) or len(set(extra_ports)) != len(extra_ports):
+            raise ValueError("Extra guest ports must be unique and between 1 and 65535")
         waa_port = as_int(
             "GUEST_PORT" if "HARBOR_KUBEVIRT_GUEST_PORT" in os.environ else "WAA_PORT",
             5000,
@@ -146,6 +154,8 @@ class Settings:
             raise ValueError("Timeouts must be positive")
         if not 1 <= waa_port <= 65535:
             raise ValueError("Guest port must be between 1 and 65535")
+        if waa_port in extra_ports:
+            raise ValueError("Extra guest ports must exclude the command-server port")
         if waa_node_port != 0 and not 1 <= waa_node_port <= 65535:
             raise ValueError("Guest node port must be 0 or between 1 and 65535")
         disk_bus = os.environ.get("HARBOR_KUBEVIRT_DISK_BUS", DEFAULT_DISK_BUS)
@@ -169,6 +179,7 @@ class Settings:
             command_timeout=command_timeout,
             transfer_timeout=transfer_timeout,
             guest_protocol=guest_protocol,
+            extra_guest_ports=extra_ports,
         )
 
 
@@ -280,6 +291,9 @@ def build_create_request(
     }
     spec["domain"]["devices"]["interfaces"][0]["ports"] = [
         {"name": settings.guest_protocol, "port": settings.guest_port, "protocol": "TCP"}
+    ] + [
+        {"name": f"guest-{port}", "port": port, "protocol": "TCP"}
+        for port in settings.extra_guest_ports
     ]
     spec["domain"]["resources"] = {
         "limits": {"memory": memory},
@@ -567,7 +581,10 @@ class KubeVirtControl:
                     "port": self.settings.guest_port,
                     "targetPort": self.settings.guest_port,
                     "protocol": "TCP",
-                }],
+                }] + [{
+                    "name": f"guest-{port}", "port": port,
+                    "targetPort": port, "protocol": "TCP",
+                } for port in self.settings.extra_guest_ports],
             },
         }
         if self.settings.guest_node_port:
@@ -598,6 +615,23 @@ class KubeVirtControl:
             raise KubeVirtError("Guest Service returned no nodePort")
         host = await self._guest_host(name)
         return f"{host}:{node_port}"
+
+    async def guest_endpoints(self, name: str, *, owner: str) -> dict[int, str]:
+        """Return owned NodePort endpoints for benchmark auxiliary services."""
+        path = f"/api/v1/namespaces/{self.settings.namespace}/services/{name}-{self.settings.guest_protocol}"
+        response = await self.client.get(path)
+        response.raise_for_status()
+        service = response.json()
+        if service.get("metadata", {}).get("labels", {}).get(OWNER_LABEL) != owner:
+            raise KubeVirtError(f"Guest Service ownership mismatch: {name}")
+        host = await self._guest_host(name)
+        if ":" in host:
+            host = f"[{host}]"
+        ports = {port["port"]: port.get("nodePort") for port in service.get("spec", {}).get("ports", [])}
+        expected = (self.settings.guest_port, *self.settings.extra_guest_ports)
+        if any(not ports.get(port) for port in expected):
+            raise KubeVirtError("Guest Service returned incomplete node ports")
+        return {port: f"http://{host}:{ports[port]}" for port in expected}
 
     async def _guest_host(self, name: str) -> str:
         """Return the InternalIP of the node running this VM's VMI."""
