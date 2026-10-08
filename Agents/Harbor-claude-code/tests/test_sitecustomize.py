@@ -356,6 +356,62 @@ class ClaudeInstallCommandTest(unittest.TestCase):
         )
         self.assertEqual(bash_check.returncode, 0, bash_check.stderr)
 
+    def test_installs_pinned_claude_over_an_existing_image_executable(self) -> None:
+        for existing in ("native", "symlink", "dangling-symlink", "absent"):
+            with self.subTest(existing=existing), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                home = root / "home"
+                local_bin = home / ".local/bin"
+                local_bin.mkdir(parents=True)
+                claude = local_bin / "claude"
+                old_content = "#!/bin/sh\necho old-image-version\n"
+                target = root / "image-claude"
+                target.write_text(old_content)
+                target.chmod(0o755)
+                if existing == "native":
+                    claude.write_text(old_content)
+                    claude.chmod(0o755)
+                elif existing == "symlink":
+                    claude.symlink_to(target)
+                elif existing == "dangling-symlink":
+                    claude.symlink_to(root / "missing-claude")
+                sibling = local_bin / "unrelated-cli"
+                sibling.write_text("keep this executable")
+                binaries = root / "bin"
+                binaries.mkdir()
+                npm = binaries / "npm"
+                npm.write_text(
+                    "#!/bin/bash\nset -euo pipefail\n"
+                    '[[ "$1" == install ]] || exit 0\n'
+                    'if [[ -e "$HOME/.local/bin/claude" || -L "$HOME/.local/bin/claude" ]]; then\n'
+                    '  echo "npm error EEXIST" >&2; exit 73\nfi\n'
+                    'printf "#!/bin/sh\\necho 2.1.90\\n" > "$HOME/.local/bin/claude"\n'
+                    'chmod +x "$HOME/.local/bin/claude"\n'
+                )
+                npm.chmod(0o755)
+                archive = root / "claude-code.tgz"
+                archive.write_bytes(b"test fixture")
+                command = self._install_command({
+                    "CC_OPIK_ENABLE_HOOK": "false",
+                    "CC_OPIK_CLAUDE_TGZ_PATH": str(archive),
+                    "CC_OPIK_PY_WHEEL_DIR": str(root / "no-wheels"),
+                })
+                result = subprocess.run(
+                    ["bash", "-c", command], capture_output=True, text=True, check=False,
+                    env={**os.environ, "HOME": str(home), "TMPDIR": tmp,
+                         "PATH": f"{binaries}:{os.environ['PATH']}"},
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("2.1.90", result.stdout)
+                self.assertEqual(sibling.read_text(), "keep this executable")
+                self.assertEqual(target.read_text(), old_content)
+                backups = list(root.glob("harbor-claude-backup-*/claude"))
+                self.assertEqual(len(backups), 0 if existing == "absent" else 1)
+                if existing in ("native", "symlink"):
+                    self.assertEqual(backups[0].read_text(), old_content)
+                elif existing == "dangling-symlink":
+                    self.assertTrue(backups[0].is_symlink())
+
     def test_s3_node_runtime_does_not_reenter_package_manager_fallback(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

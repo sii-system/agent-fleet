@@ -5,7 +5,8 @@ smith
 sweverify
 
 # Harbor Hub datasets with at least 20 tasks. Modal Port is excluded because
-# its verifier requires external Modal credentials.
+# its verifier requires external Modal credentials. GAIA is excluded while
+# the nightly model only supports text input; image tasks receive HTTP 400.
 swe-bench/swe-bench-verified
 scale-ai/swe-bench-pro
 openthoughts/openthoughts-tblite
@@ -26,4 +27,3 @@ orca-bench/orca-bench
 aime/aime
 tmax/TMax-15K-Harbor
 swe-rebench/swe-rebench-leaderboard
-gaia/gaia

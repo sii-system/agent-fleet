@@ -249,6 +249,54 @@ class E2eValidationWorkflowTest(unittest.TestCase):
         # setup.sh prompts for missing credentials and would persist the key.
         self.assertNotIn("scripts/setup.sh", self.workflow)
 
+    def test_refreshes_and_exports_an_isolated_pinned_runner(self):
+        step = self.workflow.split("- name: Validate prerequisites\n", 1)[1]
+        script = textwrap.dedent(
+            step.split("\n      - name:", 1)[0].split("        run: |\n", 1)[1]
+        )
+        for setup_status in (0, 1):
+            with self.subTest(setup_status=setup_status), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                (root / "scripts").mkdir()
+                (root / "scripts/prerequisites.sh").write_text(
+                    "set -euo pipefail\n"
+                    "agent_fleet_bootstrap_setup_prerequisites() { :; }\n"
+                )
+                setup = root / "Agents/utils/common/Harbor/setup_runner_env.sh"
+                setup.parent.mkdir(parents=True)
+                setup.write_text(
+                    "set -euo pipefail\n"
+                    'printf "%s\\n%s\\n" "$HARBOR_RUNNER_HOST_DIR" '
+                    '"$HARBOR_RUNNER_IMAGE_DIR" > "$RUNNER_TEMP/setup-paths"\n'
+                    f"exit {setup_status}\n"
+                )
+                binaries = root / "bin"
+                binaries.mkdir()
+                for name in ("docker", "python3.12"):
+                    binary = binaries / name
+                    binary.write_text("#!/bin/bash\nset -euo pipefail\nexit 0\n")
+                    binary.chmod(0o755)
+                temp = root / "temp"
+                temp.mkdir()
+                env_file = temp / "env"
+                result = subprocess.run(
+                    ["bash", "-c", script], cwd=root,
+                    env={**os.environ, "PATH": f"{binaries}:{os.environ['PATH']}",
+                         "PYTHON_BIN": "python3.12", "RUNNER_TEMP": str(temp),
+                         "GITHUB_ENV": str(env_file)},
+                    capture_output=True, text=True, check=False,
+                )
+                self.assertEqual(result.returncode, setup_status, result.stderr)
+                host, image = (temp / "setup-paths").read_text().splitlines()
+                self.assertEqual(Path(host).parent, temp)
+                self.assertEqual(Path(image).parent, temp)
+                self.assertNotEqual(host, image)
+                if setup_status:
+                    self.assertFalse(env_file.exists())
+                else:
+                    self.assertIn(f"HARBOR_RUNNER_HOST_DIR={host}\n", env_file.read_text())
+                    self.assertIn(f"HARBOR_RUNNER_IMAGE_DIR={image}\n", env_file.read_text())
+
     def test_canary_tasks_exist_in_the_terminalbench21_task_list(self):
         available = set(TASK_LIST.read_text(encoding="utf-8").split())
         for task in CANARY_TASKS:

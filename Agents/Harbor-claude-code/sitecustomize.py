@@ -404,6 +404,14 @@ def _patch_claude_code_realtime_hooks() -> None:
                 "fi; "
                 "mkdir -p \"$HOME/.local/bin\"; "
                 "if command -v npm >/dev/null 2>&1; then npm config set prefix \"$HOME/.local\" >/dev/null 2>&1 || true; fi; "
+                # Some task images ship a native Claude executable or symlink
+                # in npm's bin directory. npm refuses to replace that unmanaged
+                # entry with EEXIST. Preserve it outside the bin directory before
+                # installing Harbor's pinned package; do not force all npm writes.
+                "if [ -e \"$HOME/.local/bin/claude\" ] || [ -L \"$HOME/.local/bin/claude\" ]; then "
+                "  claude_backup=\"$(mktemp -d \"${TMPDIR:-/tmp}/harbor-claude-backup-XXXXXX\")\"; "
+                "  mv \"$HOME/.local/bin/claude\" \"$claude_backup/claude\"; "
+                "fi; "
                 "claude_installed=0; "
                 "if command -v npm >/dev/null 2>&1 && [ -n \"${claude_tgz_path:-}\" ]; then "
                 f"  if [ -d {npm_cache_path} ]; then "

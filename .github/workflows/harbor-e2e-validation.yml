@@ -96,6 +96,17 @@ jobs:
             echo "::error::Harbor dependency-cache builder requires Python 3.12, got $($required_python --version 2>&1)" >&2
             exit 1
           fi
+          # Refresh this workflow's runner when repository dependency pins change.
+          # Keep it separate from other workloads on the shared host.
+          runner_dir="$RUNNER_TEMP/harbor-e2e-validation-runner"
+          no_image_dir="$RUNNER_TEMP/harbor-e2e-validation-no-image"
+          HARBOR_RUNNER_IMAGE_DIR="$no_image_dir" \
+          HARBOR_RUNNER_HOST_DIR="$runner_dir" \
+            bash Agents/utils/common/Harbor/setup_runner_env.sh
+          {
+            printf 'HARBOR_RUNNER_IMAGE_DIR=%s\n' "$no_image_dir"
+            printf 'HARBOR_RUNNER_HOST_DIR=%s\n' "$runner_dir"
+          } >> "$GITHUB_ENV"
 
       - name: Check host capacity
         id: capacity

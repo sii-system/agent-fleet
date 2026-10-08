@@ -29,6 +29,29 @@ are not logged.
 A model that disappears mid-run can still fail trials. The preflight checks
 availability at startup; it does not change models or weaken the health gate.
 
+The random catalog currently excludes GAIA because the nightly model supports
+text input only. On 2026-10-07, GAIA image reads received HTTP 400 with
+`Model only supports text input`; text-only preflight requests still passed.
+Re-add GAIA only after configuring a model that accepts image content through
+the agent's API route and verifying a representative image task. That run
+also had three agent timeouts; removing the image incompatibility alone does
+not establish that all tasks will complete within their time budgets.
+
+## Pinned runtime preparation
+
+Both workflows call `Agents/utils/common/Harbor/setup_runner_env.sh` during
+prerequisite validation and export their own runner directories under
+`RUNNER_TEMP`. Setup refreshes stale package pins before workload startup,
+which only validates the environment. The TB nightly previously reused a
+host runner with `yicloud-sdk-python==0.3.1` after the repository pin advanced
+to `0.4.1`, preventing every trial from starting.
+
+Some task images, including RuneBench, already contain a native Claude
+executable at `~/.local/bin/claude`. The Claude installer moves that entry
+into a temporary backup before installing Harbor's pinned npm package.
+Without this step npm returned `EEXIST`, causing all 20 sampled RuneBench
+tasks on 2026-10-07 to fail during agent setup.
+
 ## Docker registry failures
 
 A reachable registry endpoint does not prove that all task images are
