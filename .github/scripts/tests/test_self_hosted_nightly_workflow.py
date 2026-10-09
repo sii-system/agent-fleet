@@ -74,6 +74,20 @@ class SelectorTest(unittest.TestCase):
         ):
             selector.select_tasks(Path("."), "seta", FakeRandom())
 
+    def test_explicit_replay_preserves_order_and_removes_duplicates(self):
+        with mock.patch.object(selector, "task_names", return_value=["task-a", "task-b"]):
+            self.assertEqual(
+                selector.requested_tasks(Path("."), "seta", " task-b,task-a,task-b "),
+                ["task-b", "task-a"],
+            )
+
+    def test_explicit_replay_rejects_invalid_or_excess_tasks(self):
+        for tasks in ("unknown", ",,", ",".join(f"task-{i}" for i in range(21))):
+            with self.subTest(tasks=tasks), mock.patch.object(
+                selector, "task_names", return_value=["task-a"]
+            ), self.assertRaises(ValueError):
+                selector.requested_tasks(Path("."), "seta", tasks)
+
 
 class WorkflowTest(unittest.TestCase):
     @classmethod
@@ -157,6 +171,46 @@ class WorkflowTest(unittest.TestCase):
             "\n      - name:", 1
         )[0]
         return textwrap.dedent(step.split("        run: |\n", 1)[1])
+
+    def test_dispatch_validates_replay_parameters_before_launch(self):
+        script = self.step_script("Select benchmark and tasks")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fake_python = root / "selector"
+            fake_python.write_text(
+                '#!/usr/bin/env bash\nset -euo pipefail\nprintf "1\\nrequested-task\\n"\n'
+            )
+            fake_python.chmod(0o755)
+            for benchmark, tasks, expected in (
+                ("sierra-research/tau3-bench", "requested-task", 0),
+                ("terminal-bench/terminal-bench-2-1", "", 1),
+                ("", "requested-task", 1),
+            ):
+                with self.subTest(benchmark=benchmark, tasks=tasks):
+                    output = root / "output"
+                    output.write_text("")
+                    result = subprocess.run(
+                        ["bash", "-c", script],
+                        cwd=ROOT,
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                        env={
+                            **os.environ,
+                            "INPUT_AGENT": "claude-code",
+                            "INPUT_BENCHMARK": benchmark,
+                            "INPUT_TASKS": tasks,
+                            "SMITH_DATASET_PATH": str(root / "absent"),
+                            "HARBOR_NIGHTLY_PYTHON": str(fake_python),
+                            "GITHUB_WORKSPACE": str(ROOT),
+                            "GITHUB_OUTPUT": str(output),
+                            "RUN_ID": "test-replay",
+                        },
+                    )
+                    self.assertEqual(result.returncode, expected, result.stderr)
+                    if expected == 0:
+                        self.assertIn(f"benchmark={benchmark}\n", output.read_text())
+                        self.assertIn("task_count=1\n", output.read_text())
 
     def test_health_reports_registry_and_smith_failures(self):
         script = self.step_script("Verify sampled tasks completed")

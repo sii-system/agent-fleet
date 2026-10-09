@@ -3,6 +3,18 @@ name: Harbor Random Bench Nightly
 "on":
   workflow_dispatch:
     inputs:
+      benchmark:
+        description: Catalog benchmark to replay; empty selects randomly
+        required: false
+        type: string
+      tasks:
+        description: Comma-separated task names; empty samples 20 tasks
+        required: false
+        type: string
+      revision:
+        description: Checkout revision, e.g. refs/pull/227/head; empty uses this workflow revision
+        required: false
+        type: string
       agent:
         description: claude-code or opencode
         required: false
@@ -50,6 +62,7 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ inputs.revision || github.sha }}
           submodules: recursive
           persist-credentials: false
 
@@ -89,6 +102,8 @@ jobs:
         id: params
         env:
           INPUT_AGENT: ${{ inputs.agent }}
+          INPUT_BENCHMARK: ${{ inputs.benchmark }}
+          INPUT_TASKS: ${{ inputs.tasks }}
           SMITH_DATASET_PATH: ${{ vars.SMITH_DATASET_PATH }}
           RUN_ID: harbor-self-hosted-nightly-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
@@ -105,11 +120,24 @@ jobs:
           if [[ ! -d "$smith_path" ]]; then
             benchmarks=("${benchmarks[@]/#smith/}")
           fi
-          benchmark="$(printf '%s\n' "${benchmarks[@]}" | awk 'NF' | shuf -n 1)"
+          benchmark="${INPUT_BENCHMARK:-}"
+          if [[ -n "$benchmark" ]]; then
+            if ! printf '%s\n' "${benchmarks[@]}" | grep -Fxq -- "$benchmark"; then
+              echo "::error::Requested benchmark is unavailable in the nightly catalog" >&2
+              exit 1
+            fi
+          else
+            if [[ -n "${INPUT_TASKS:-}" ]]; then
+              echo "::error::Explicit tasks require an explicit benchmark" >&2
+              exit 1
+            fi
+            benchmark="$(printf '%s\n' "${benchmarks[@]}" | awk 'NF' | shuf -n 1)"
+          fi
           mapfile -t selection < <("$HARBOR_NIGHTLY_PYTHON" \
             .github/scripts/harbor_nightly_select.py \
             --repo-root "$GITHUB_WORKSPACE" \
-            --benchmark "$benchmark")
+            --benchmark "$benchmark" \
+            --tasks "${INPUT_TASKS:-}")
           if (( ${#selection[@]} != 2 )); then
             echo "::error::task selector returned invalid output" >&2
             exit 1

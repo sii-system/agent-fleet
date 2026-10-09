@@ -80,13 +80,27 @@ def select_tasks(
     return randomizer.sample(available, SAMPLE_SIZE)
 
 
+def requested_tasks(repo_root: Path, benchmark: str, tasks: str) -> list[str]:
+    selected = unique_names(tasks.split(","))
+    if not selected or len(selected) > SAMPLE_SIZE:
+        raise ValueError(f"request between 1 and {SAMPLE_SIZE} unique tasks")
+    missing = set(selected) - set(task_names(repo_root, benchmark))
+    if missing:
+        raise ValueError("requested tasks are not present in the selected benchmark")
+    return selected
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--repo-root", type=Path, required=True)
     parser.add_argument("--benchmark", required=True)
+    parser.add_argument("--tasks", default="")
     args = parser.parse_args(argv)
     try:
-        selected = select_tasks(args.repo_root, args.benchmark)
+        selected = (
+            requested_tasks(args.repo_root, args.benchmark, args.tasks)
+            if args.tasks else select_tasks(args.repo_root, args.benchmark)
+        )
     except (OSError, RuntimeError, ValueError) as exc:
         print(f"[ERROR] {exc}", file=sys.stderr)
         return 1

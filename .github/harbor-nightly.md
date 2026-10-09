@@ -76,6 +76,18 @@ remain visible.
 
 ## Checkout and artifact recovery
 
+Manual random-nightly dispatches can set `benchmark` to a catalog entry and
+`tasks` to 1–20 exact task names to replay a failing sample. Empty task input
+samples 20 tasks from the selected benchmark; empty benchmark input retains
+random selection. Explicit tasks require an explicit benchmark. Selection
+validates task membership before launching Harbor.
+
+The optional `revision` input selects the checkout, including upstream PR refs
+such as `refs/pull/227/head`, while the workflow uses upstream's
+`self-hosted-env` credentials. Dispatch only trusted revisions. Empty revision
+uses the workflow commit. Scheduled runs retain their normal checkout and
+random selection.
+
 Both workflows repair run artifact ownership before checkout and after
 cleanup, before artifact staging. Runner users need noninteractive sudo
 access to `chown` for root-owned Docker artifacts. Recovery operates on the
