@@ -13,7 +13,10 @@ CONFIG_NAMES = (
     "MODEL",
     "AUTH_TOKEN",
     "ANTHROPIC_BASE_URL",
+    "ANTHROPIC_API_KEY",
     "ANTHROPIC_AUTH_TOKEN",
+    "OPENAI_BASE_URL",
+    "OPENAI_API_KEY",
     "HARBOR_MODEL",
     "HARBOR_API_BASE",
     "HARBOR_ANTHROPIC_BASE_URL",
@@ -181,6 +184,45 @@ class ConfigLoaderTest(unittest.TestCase):
             "||runtime-model|xxx"
             "|https://runtime.example.invalid/v1|fake-runtime-key|runtime-model",
         )
+
+    def test_harbor_provider_fallbacks_follow_config_precedence(self):
+        self.write_configs(
+            "BASE_URL=https://public.example.invalid\nAPI_KEY=fake-public-key\n",
+            "BASE_URL=https://saved.example.invalid/v1\nAPI_KEY=fake-saved-key\n"
+            "OPENAI_API_KEY=fake-provider-key\nANTHROPIC_BASE_URL=\n",
+        )
+        command = (
+            'agent_fleet_load_config "$2"; '
+            'export AGENT_FLEET_CONFIG_LOADED_ROOT="$3"; source "$4"; '
+            'printf "%s|%s|%s|%s" "$OPENAI_API_KEY" "$OPENAI_BASE_URL" '
+            '"$ANTHROPIC_API_KEY" "$ANTHROPIC_BASE_URL"'
+        )
+        for runtime, expected in (
+            ({}, "fake-provider-key|https://saved.example.invalid/v1|fake-saved-key|"),
+            (
+                {"OPENAI_API_KEY": "", "API_KEY": "fake-runtime-key"},
+                "|https://saved.example.invalid/v1|fake-runtime-key|",
+            ),
+        ):
+            with self.subTest(runtime=runtime):
+                result = subprocess.run(
+                    [
+                        "bash", "-c", f'source "$1"; {command}', "bash",
+                        str(LOADER), str(self.config_root), str(REPO_ROOT),
+                        str(HARBOR_ENV),
+                    ],
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                    env=self.clean_env({
+                        "HOME": str(self.root / "home"),
+                        "AGENT_FLEET_PATHS_FILE": str(self.root / "missing.env"),
+                        "AGENT_FLEET_RUNTIME_DIR": str(self.root / "runtime"),
+                        **runtime,
+                    }),
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout, expected)
 
     def test_retired_opik_vars_warn_once_each_and_can_be_silenced(self):
         command = 'agent_fleet_load_config "$2"'

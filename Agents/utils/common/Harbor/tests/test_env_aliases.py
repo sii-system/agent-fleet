@@ -48,6 +48,51 @@ class HarborEnvAliasTests(unittest.TestCase):
         for old in ("N_ATTEMPTS", "HARBOR_RUNS", "MAX_RETRIES", "INCLUDE_TASKS"):
             self.assertNotIn(old, env)
 
+    def test_provider_credentials_use_shared_gateway_for_all_agents(self) -> None:
+        for agent in ("claude-code", "opencode", "pi", "dsh-sdk-minimal", "oracle"):
+            for suffix in ("", "/", "/v1", "/v1/", "/v1/chat/completions/"):
+                with self.subTest(agent=agent, suffix=suffix):
+                    env = self.load_env(
+                        AGENT=agent,
+                        BASE_URL="https://gateway.invalid" + suffix,
+                        API_KEY="fake-shared-key",
+                    )
+                    self.assertEqual(env["OPENAI_API_KEY"], "fake-shared-key")
+                    self.assertEqual(env["ANTHROPIC_API_KEY"], "fake-shared-key")
+                    self.assertEqual(
+                        env["OPENAI_BASE_URL"], "https://gateway.invalid/v1"
+                    )
+                    self.assertEqual(
+                        env["ANTHROPIC_BASE_URL"], "https://gateway.invalid"
+                    )
+                    self.assertEqual(env["BASE_URL"], "https://gateway.invalid")
+
+    def test_explicit_provider_credentials_including_empty_values_win(self) -> None:
+        for value in ("provider-override", ""):
+            with self.subTest(value=value):
+                overrides = dict.fromkeys(
+                    (
+                        "OPENAI_API_KEY", "OPENAI_BASE_URL",
+                        "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL",
+                    ),
+                    value,
+                )
+                env = self.load_env(
+                    BASE_URL="https://gateway.invalid/v1",
+                    API_KEY="fake-shared-key",
+                    **overrides,
+                )
+                for name in overrides:
+                    self.assertEqual(env[name], value)
+
+    def test_empty_shared_settings_do_not_create_provider_credentials(self) -> None:
+        env = self.load_env(BASE_URL="", API_KEY="")
+        for name in (
+            "API_KEY", "OPENAI_API_KEY", "OPENAI_BASE_URL",
+            "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL",
+        ):
+            self.assertEqual(env[name], "")
+
     def test_summary_and_analyzer_have_independent_opt_in_defaults(self) -> None:
         env = self.load_env()
         self.assertEqual(env["HARBOR_SUMMARY_ENABLED"], "1")

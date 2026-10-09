@@ -95,6 +95,16 @@ they do not use the fixed-benchmark aggregate monitor or summary.
 
 ## Minimal Setup
 
+For normal benchmarks and nightlies, Harbor exports provider settings from the
+shared gateway configuration: `OPENAI_API_KEY` and `ANTHROPIC_API_KEY` default
+to `API_KEY`, `OPENAI_BASE_URL` defaults to the API root plus `/v1`, and
+`ANTHROPIC_BASE_URL` defaults to the versionless API root. `BASE_URL` accepts
+an API root, `/v1`, or `/v1/chat/completions`, with an optional trailing slash.
+Explicit provider values in the configuration or shell, including empty values,
+take precedence. Harbor uses these exports to resolve the environment and
+verifier variables declared by each task. The gateway must support those
+tasks' API routes and requested models.
+
 Point the runner at your infrastructure. `config.env` is a committed template;
 copy it to a git-ignored `config.local.env` (sourced after, and overriding,
 `config.env`) and set your values — including credentials — there:

@@ -9,7 +9,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/env/bootstrap.sh"
 AGENT="${AGENT:-claude-code}"       # claude-code, opencode, pi, or oracle
 MODEL="${MODEL:-minimax2.7}"
 BASE_URL="${BASE_URL:-}"             # Model API root, without /v1
-API_KEY="${API_KEY:-xxx}"
+API_KEY="${API_KEY-xxx}"
 # Registry: seta, terminalbench21, sweverify, or owner/name[@version].
 # Local data: DATASET_NAME=auto and DATASET_PATH pointing to the task directory.
 DATASET_NAME="${DATASET_NAME:-auto}"

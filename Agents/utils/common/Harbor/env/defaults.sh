@@ -76,13 +76,20 @@ HARBOR_MONITOR_STALL_SECONDS="${HARBOR_MONITOR_STALL_SECONDS:-1800}"
 HARBOR_MONITOR_MAX_RETRIES="${HARBOR_MONITOR_MAX_RETRIES:-3}"
 HARBOR_MONITOR_CONFIGURED_TIMEOUT="${HARBOR_MONITOR_CONFIGURED_TIMEOUT:-}"
 
-# Normalize to a versionless API root: callers may supply a value already ending
-# in /v1, but the endpoints below append /v1 (or /v1/chat/completions), so strip
-# one trailing /v1 to avoid doubling it.
+# Normalize to a versionless API root, accepting /v1 and /v1/chat/completions.
+# The endpoints below append their own version and route suffixes.
 if [[ -n "$BASE_URL" ]]; then
   BASE_URL="${BASE_URL%/}"
+  BASE_URL="${BASE_URL%/chat/completions}"
   BASE_URL="${BASE_URL%/v1}"
 fi
+# Harbor resolves task environment/verifier placeholders from the exported
+# host environment. Default provider settings to the shared gateway, preserving
+# explicit overrides (including empty values) after config loading.
+export OPENAI_API_KEY="${OPENAI_API_KEY-$API_KEY}"
+export OPENAI_BASE_URL="${OPENAI_BASE_URL-${BASE_URL:+${BASE_URL}/v1}}"
+export ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY-$API_KEY}"
+export ANTHROPIC_BASE_URL="${ANTHROPIC_BASE_URL-$BASE_URL}"
 HARBOR_ANTHROPIC_BASE_URL="${HARBOR_ANTHROPIC_BASE_URL:-${ANTHROPIC_BASE_URL:-${BASE_URL%/}}}"
 HARBOR_ANTHROPIC_BASE_URL="${HARBOR_ANTHROPIC_BASE_URL%/}"
 HARBOR_ANTHROPIC_BASE_URL="${HARBOR_ANTHROPIC_BASE_URL%/v1}"
