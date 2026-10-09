@@ -7,7 +7,7 @@
 
 The adapter generates Windows Harbor tasks with instructions, unchanged native
 JSON, and release/domain/ID provenance. `WAAEnvironment` performs native setup on
-a fresh KubeVirt VM; `WAAAgent` executes PC-Agent or a custom predict/reset agent;
+a fresh Windows VM on KubeVirt or Docker/Dockur; `WAAAgent` executes PC-Agent or a custom predict/reset agent;
 `WAAVerifier` returns native rewards through Harbor's verifier interface. Harbor
 owns scheduling, phase timeouts, retries, resume, and result reporting.
 
@@ -40,10 +40,11 @@ separate between worktrees. Generated task datasets remain outside the repositor
 
 Prepare **a separate application-complete Windows image for each release** using
 its upstream instructions, including profiles/data, matching WAA server, and an
-automatically logged-in desktop. Import its shut-down disk into an immutable PVC
+automatically logged-in desktop. For KubeVirt, import its shut-down disk into an immutable PVC
 following the [KubeVirt contract](../../Agents/utils/common/Harbor/KUBEVIRT_WINDOWS_README.md).
+For local Docker, prepare golden Dockur storage as described below.
 A command server alone is insufficient. Publish a new PVC name when an image changes.
-The host needs mTLS kube-apiserver access and reachable node NodePorts. Guest services
+The KubeVirt host needs mTLS kube-apiserver access and reachable node NodePorts. Guest services
 must expose 5000 (command server), 9222 (browser debugging), and 8080 (VLC HTTP).
 The ports belong to the trial's owned Service and are removed with its VM. Enable
 these services in the image and restrict NodePort access to the runner's network.
@@ -64,6 +65,80 @@ provide `OPENAI_BASE_URL` / `OPENAI_API_KEY` defaults; explicit OpenAI values,
 including empty values, take precedence. Secrets are inherited, not stored in tasks.
 
 ## Run through Harbor
+
+### Docker / Dockur
+
+Use a native x86_64 Linux host with rootful local Docker Engine, GNU `cp`,
+`/dev/kvm`, and `/dev/net/tun`. Prepare a separate application-complete Windows
+storage directory for each benchmark release, with the matching WAA server and
+an automatically logged-in desktop. The public Dockur image installs Windows;
+it does not include WAA or benchmark applications. Follow the
+[Dockur instructions](https://github.com/dockur/windows) and each benchmark's
+image preparation instructions first. Stop Windows cleanly before making an
+immutable golden storage copy. Include the disk, firmware variables, and TPM
+state; QCOW2 disks must have no backing files. Do not use storage from a running
+VM. Symlinks in golden storage are rejected.
+
+Pull the Docker runtime explicitly before workload startup. The default runtime
+is the digest used in our earlier public Dockur validation:
+
+```bash
+docker pull dockurr/windows@sha256:0cff9eb0e7aee9953e55bc682852ca4fdca233145a58ae1ec94f0b0c01a2ed30
+export HARBOR_WAA_DOCKER_STORAGE=/srv/waa-v2/golden/storage
+./Tasks/WindowsAgentArena/run.sh --benchmark waa-v2 --backend docker --all --dry-run
+./Tasks/WindowsAgentArena/run.sh --benchmark waa-v2 --backend docker --all --workers 2
+
+HARBOR_WAA_BACKEND=docker HARBOR_WAA_DOCKER_STORAGE=/srv/waa/golden/storage \
+  ./scripts/run_fleet.sh --taskset waa --agent pcagent --workers 2
+HARBOR_WAA_BACKEND=docker HARBOR_WAA_DOCKER_STORAGE=/srv/waa-v2/golden/storage \
+  ./scripts/run_fleet.sh --taskset waa2 --agent pcagent --workers 2
+```
+
+The dedicated launcher accepts `--backend docker|kubevirt`; `HARBOR_WAA_BACKEND`
+provides its default and also selects Docker through FleetSpec/prompt launches.
+The default remains KubeVirt. Keep model and private settings in `config.local.env`
+or the caller environment. Explicit empty caller values retain precedence.
+
+Each trial copies the entire golden storage into
+`${HARBOR_WAA_DOCKER_INSTANCES:-${AGENT_FLEET_CACHE_DIR:-~/.cache/agent-fleet}/waa/docker}`.
+Copies use reflinks when supported and otherwise allocate independent sparse files;
+allow enough disk space and boot time for every concurrent worker. Docker runs the
+Windows guest with `CPU_CORES` and `RAM_SIZE` from the Harbor task, KVM/TUN devices,
+and `NET_ADMIN`. Guest TCP ports 5000, 9222, and 8080 get random host ports bound
+to `127.0.0.1`; enable the command server, Chrome debugging, and VLC HTTP in the
+prepared guest. No Kubernetes credentials are needed. Remote Docker and rootless
+Docker are unsupported by this backend.
+
+| Setting | Default / purpose |
+| --- | --- |
+| `HARBOR_WAA_DOCKER_STORAGE` | Required shut-down golden storage directory |
+| `HARBOR_WAA_DOCKER_IMAGE` | Pinned public Dockur digest above; must already exist locally |
+| `HARBOR_WAA_DOCKER_INSTANCES` | Owned trial copies, outside the golden storage tree |
+| `HARBOR_WAA_DOCKER_START_TIMEOUT` | 1800 seconds, including copying and boot |
+| `HARBOR_WAA_DOCKER_COMMAND_TIMEOUT` | 3600 seconds |
+| `HARBOR_WAA_DOCKER_TRANSFER_TIMEOUT` | 300 seconds |
+| `HARBOR_WAA_DOCKER_DISK_FMT` | Inferred from `data.img` / `data.qcow2` |
+| `HARBOR_WAA_DOCKER_VERSION`, `BOOT_MODE`, `DISK_TYPE`, `DISK_SIZE` | Use the full `HARBOR_WAA_DOCKER_` prefix for each variable; optional Dockur boot settings matching the golden image |
+
+Changing the Docker runtime requires an image with Dockur's `/storage`, `/shared`,
+CPU/RAM settings and entrypoint contract. The older `julyai/mywinarena` application
+wrapper needs its own startup configuration and is not interchangeable with the
+public runtime. Task Dockerfiles and arbitrary task bind mounts are unsupported.
+
+`docker-windows.json` records container ownership, runtime, storage paths and
+guest endpoints; `docker.log` retains boot output. Native trajectories and rewards
+use the same Harbor paths as KubeVirt. Before deleting its container and storage,
+the backend recovers guest logs. `delete=False` stops and retains a trial for
+inspection; retained trials cannot restart as fresh benchmark sessions.
+
+Resume with the same Docker storage/runtime settings, `PYTHONPATH` from the example
+below, and `harbor jobs resume --job-path DIR`. After a hard kill, inspect
+`docker-windows.json` and the matching container's `agent-fleet.windows-owner`
+label before removing that container and its recorded trial directory. Keep the
+golden storage. Minimal command-server images can validate lifecycle and transfer;
+full benchmark scores require the release's application-complete image.
+
+### KubeVirt
 
 ```bash
 ./Tasks/WindowsAgentArena/run.sh --benchmark waa --all --dry-run
@@ -159,3 +234,9 @@ WAA_TEST_RUNTIME="$WAA_PC_RUNTIME" PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. \
 CI checks both full manifests and runs actual Harbor trials against pinned clients
 with loopback command/model services. These tests do not establish live Windows
 image readiness. Run a canary on each image before the full benchmark.
+
+Docker validation also booted an independent copy of the local minimal WAA image
+using the pinned public Dockur runtime. Guest command exit codes, binary file
+transfer, log recovery after stop, and container/storage deletion passed. This
+validates the Docker lifecycle and transport; the minimal image does not provide
+the application set needed for a complete WAA or WAA-V2 benchmark run.

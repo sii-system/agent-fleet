@@ -59,13 +59,16 @@ class NativeTests(unittest.TestCase):
         environment = {k: v for k, v in os.environ.items() if not k.startswith(('HARBOR_KUBEVIRT_', 'OPENAI_', 'API_KEY'))}
         environment.update(PYTHONDONTWRITEBYTECODE='1', PYTHONPATH=str(REPO) + ':' + str(REPO / 'Tasks/WindowsAgentArena/src'))
         output = self.root / 'dry-run'
-        completed = subprocess.run([sys.executable, '-m', 'waa_benchmark.launch', '--runtime', str(self.runtime),
+        for backend in ("kubevirt", "docker"):
+            with self.subTest(backend=backend):
+                completed = subprocess.run([sys.executable, '-m', 'waa_benchmark.launch', '--runtime', str(self.runtime),
                                     '--benchmark', BENCHMARK, '--cache', str(self.runtime.parent.parent),
-                                    '--all', '--dry-run', '--output', str(output)],
+                                    '--backend', backend, '--all', '--dry-run', '--output', str(output)],
                                    env=environment, capture_output=True, text=True, check=True)
-        plan = json.loads(completed.stdout)
-        self.assertEqual(len(plan['selected']), 154 if BENCHMARK == 'waa' else 141)
-        self.assertEqual(plan['agent'], 'pcagent')
+                plan = json.loads(completed.stdout)
+                self.assertEqual(len(plan['selected']), 154 if BENCHMARK == 'waa' else 141)
+                self.assertEqual(plan['agent'], 'pcagent')
+                self.assertEqual(plan['backend'], backend)
         self.assertFalse(output.exists())
 
     def test_native_metric_composition_and_infeasible_scoring(self):

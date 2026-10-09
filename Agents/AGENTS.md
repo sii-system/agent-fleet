@@ -98,6 +98,13 @@ manifest. The native ALE Linux/Windows CPU benchmark adapter and launch commands
 live in [Tasks/AgentsLastExam](../Tasks/AgentsLastExam/README.md).
 Do not route Windows runs through the Linux runtime installers.
 
+WAA/WAA2 also support local Docker/Dockur through the dedicated task launcher:
+`HARBOR_WAA_BACKEND=docker` and `HARBOR_WAA_DOCKER_STORAGE` select an immutable,
+shut-down golden storage directory. Runtime lifecycle belongs in
+`utils/common/Harbor/docker_windows/`; guest execution and log recovery are shared
+in `windows_guest.py`. Each trial owns its container and independent disk copy.
+See [WAA Docker configuration](../Tasks/WindowsAgentArena/README.md#docker--dockur).
+
 ### Monitor, Analyzer, and Fixer
 
 Fixed benchmark runs start the monitor and publish a Pi-backed summary by default.
