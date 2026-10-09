@@ -26,8 +26,15 @@ PCAGENT_RUNTIME = os.environ.get('WAA_TEST_PCAGENT_RUNTIME', RUNTIME)
 @unittest.skipUnless(RUNTIME, 'Prepare the pinned native client to exercise Harbor trials')
 class HarborTrialTests(unittest.IsolatedAsyncioTestCase):
     async def test_real_harbor_trial_runs_setup_agent_native_verifier_and_cleanup(self):
+        await self.run_native_trial()
+
+    async def test_setup_failure_recovers_guest_logs_after_vm_cleanup(self):
+        await self.run_native_trial(fail_setup=True)
+
+    async def run_native_trial(self, *, fail_setup=False):
         from harbor.models.trial.config import TrialConfig
         from harbor.trial.trial import Trial
+        from kubevirt_windows.control import OWNER_LABEL
         from kubevirt_windows.environment import KubeVirtWindowsEnvironment
         from PIL import Image
         from waa_benchmark.adapter import materialize
@@ -45,6 +52,8 @@ class HarborTrialTests(unittest.IsolatedAsyncioTestCase):
                       'evaluator': {'func': 'exact_match',
                                     'result': {'type': 'vm_command_line', 'command': ['cmd', '/c', 'echo finished']},
                                     'expected': {'type': 'rule', 'rules': {'expected': 'finished'}}}}
+            if fail_setup:
+                config['config'][0]['type'] = 'missing_fixture_setup_method'
             native = task / 'environment/native-task.json'
             native.write_text(json.dumps(config))
             (task / 'instruction.md').write_text(config['instruction'])
@@ -101,18 +110,34 @@ class HarborTrialTests(unittest.IsolatedAsyncioTestCase):
             endpoint = f'http://127.0.0.1:{server.server_port}'
             control = Mock()
             control.guest_endpoints = AsyncMock(return_value={5000: endpoint, 9222: endpoint, 8080: endpoint})
+            control.get, control.stop, control.delete, control.close = (AsyncMock() for _ in range(4))
             settings = Mock(guest_protocol='waa', guest_port=5000, guest_node_port=0, extra_guest_ports=(9222, 8080),
-                            namespace='bench', image='golden', command_timeout=30)
+                            namespace='bench', image='golden', command_timeout=30, transfer_timeout=30)
             transport = Mock()
             transport.execute = AsyncMock(return_value={'stdout': '', 'stderr': '', 'return_code': 0})
-            transport.list_files = AsyncMock(return_value=[])
+            files = {'C:/logs/agent/guest.log': 'guest diagnostics',
+                     'C:/logs/artifacts/debug.txt': 'guest artifact'}
+            transport.list_files = AsyncMock(side_effect=lambda source: [
+                path[len(source) + 1:] for path in files if path.startswith(source + '/')])
+            transport.close, transport.upload_dir = AsyncMock(), AsyncMock()
+
+            async def download(source, target):
+                control.stop.assert_not_awaited()
+                Path(target).parent.mkdir(parents=True, exist_ok=True)
+                Path(target).write_text(files[source])
+
+            transport.download_file = AsyncMock(side_effect=download)
 
             async def start(environment, force_build=False):
                 environment._started = True
+                environment._created = True
                 environment.transport = transport
+                control.get.return_value = {'labels': {OWNER_LABEL: environment.token[:12]}}
+                # Host-native output must survive error recovery's guest downloads.
+                environment.trial_paths.agent_dir.mkdir(parents=True, exist_ok=True)
+                (environment.trial_paths.agent_dir / 'host.log').write_text('host diagnostics')
 
-            async def stop(environment, delete=True):
-                environment._started = False
+            real_stop = KubeVirtWindowsEnvironment.stop
 
             real_spawn = asyncio.create_subprocess_exec
 
@@ -139,19 +164,34 @@ class HarborTrialTests(unittest.IsolatedAsyncioTestCase):
                     patch('kubevirt_windows.environment.Settings.from_env', return_value=settings), \
                     patch('kubevirt_windows.environment.KubeVirtControl', return_value=control), \
                     patch.object(KubeVirtWindowsEnvironment, 'start', start), \
-                    patch.object(KubeVirtWindowsEnvironment, 'stop', autospec=True, side_effect=stop) as cleanup, \
+                    patch.object(KubeVirtWindowsEnvironment, 'stop', autospec=True, side_effect=real_stop) as cleanup, \
                     patch('waa_benchmark.environment.asyncio.create_subprocess_exec', side_effect=spawn):
                 trial = await Trial.create(trial_config)
                 result = await trial.run()
-                self.assertIsNone(result.exception_info, result.exception_info)
-                self.assertEqual(result.verifier_result.rewards, {'reward': 1})
-                self.assertEqual(result.agent_result.metadata['steps'], 2)
-                cleanup.assert_awaited_once()
-            self.assertEqual(len(predictions), 2)
-            for path in ['/setup/create_folder', '/update_computer', '/execute']:
-                self.assertIn(path, seen)
+                if fail_setup:
+                    self.assertIn('Native WAA setup failed', result.exception_info.exception_message)
+                    self.assertEqual(cleanup.await_count, 2)
+                else:
+                    self.assertIsNone(result.exception_info, result.exception_info)
+                    self.assertEqual(result.verifier_result.rewards, {'reward': 1})
+                    self.assertEqual(result.agent_result.metadata['steps'], 2)
+                    cleanup.assert_awaited_once()
+                control.stop.assert_awaited_once()
+                control.delete.assert_awaited_once()
+                if trial.agent_environment._log_snapshot is not None:
+                    self.addCleanup(trial.agent_environment._log_snapshot.cleanup)
+            self.assertEqual(len(predictions), 0 if fail_setup else 2)
+            if not fail_setup:
+                for path in ['/setup/create_folder', '/update_computer', '/execute']:
+                    self.assertIn(path, seen)
             result_dir = root / 'trials/waa-native-fixture'
             self.assertTrue((result_dir / 'result.json').is_file())
-            self.assertEqual(float((result_dir / 'verifier/reward.txt').read_text()), 1)
-            self.assertTrue((result_dir / 'agent/native/traj.jsonl').is_file())
+            self.assertEqual((result_dir / 'agent/guest.log').read_text(), 'guest diagnostics')
+            self.assertEqual((result_dir / 'agent/host.log').read_text(), 'host diagnostics')
+            artifact_dir = trial.paths.host_artifact_path('main', 'C:/logs/artifacts')
+            self.assertEqual((artifact_dir / 'debug.txt').read_text(), 'guest artifact')
+            self.assertNotIn('Failed to download logs', (result_dir / 'trial.log').read_text())
+            if not fail_setup:
+                self.assertEqual(float((result_dir / 'verifier/reward.txt').read_text()), 1)
+                self.assertTrue((result_dir / 'agent/native/traj.jsonl').is_file())
             self.assertTrue((result_dir / 'waa-worker.log').is_file())

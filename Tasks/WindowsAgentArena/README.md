@@ -119,6 +119,11 @@ the VM/client session. Native artifacts live in `agent/native/`: WAA uses
 `traj.jsonl`/`traj.html`; V2 uses `traj.jsonl`/`traj.md`/`results.json`; both retain
 `result.txt`. Zero and negative finite native rewards are preserved. Read Harbor's
 reward and exception results together to distinguish scores from infrastructure errors.
+Before stopping the VM, the shared Windows backend snapshots `C:/logs/agent`,
+`C:/logs/verifier`, and `C:/logs/artifacts` so Harbor can recover guest logs even
+after a native setup failure has already deleted the VM. Collection respects
+Harbor's log filters. Snapshot failures or the configured transfer timeout do
+not prevent VM cleanup; host-native trajectories remain in `agent/native/`.
 
 ## Materialize for direct Harbor use
 

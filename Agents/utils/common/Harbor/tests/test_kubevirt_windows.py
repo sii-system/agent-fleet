@@ -142,13 +142,15 @@ class EnvironmentTests(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(patcher.stop)
 
     def environment(self, **config):
-        return KubeVirtWindowsEnvironment(
+        environment = KubeVirtWindowsEnvironment(
             environment_dir=self.root / "environment",
             environment_name="windows-test",
             session_id="test-trial",
             trial_paths=TrialPaths(self.root / "trial"),
             task_env_config=EnvironmentConfig(os="windows", **config),
         )
+        self.addCleanup(lambda: environment._log_snapshot.cleanup() if environment._log_snapshot else None)
+        return environment
 
     async def test_real_harbor_contract_and_env_precedence(self):
         environment = self.environment(env={"SOURCE": "persistent"})
@@ -319,13 +321,15 @@ class EnvironmentTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_stop_refuses_vm_owned_by_another_trial(self):
         environment = self.environment()
-        environment._created = True
+        environment._created = environment._started = True
+        environment.transport = AsyncMock()
         environment.control = AsyncMock()
         environment.control.get.return_value = {"labels": {OWNER_LABEL: "another-trial"}}
         with self.assertRaisesRegex(RuntimeError, "ownership"):
             await environment.stop()
         environment.control.stop.assert_not_awaited()
         environment.control.delete.assert_not_awaited()
+        environment.transport.list_files.assert_not_awaited()
 
     async def test_retained_vm_cannot_be_started_again(self):
         environment = self.environment()
@@ -466,6 +470,133 @@ class EnvironmentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             sources, ["C:/logs/a.log", "C:/logs/nested/b.log", "C:/logs/reward.txt"]
         )
+
+    def running_environment(self, files):
+        environment = self.environment()
+        environment._created = environment._started = True
+        environment.control = AsyncMock()
+        environment.control.get.return_value = {"labels": {OWNER_LABEL: environment.token[:12]}}
+        environment.transport = AsyncMock()
+
+        async def list_files(source):
+            prefix = source + "/"
+            return [path[len(prefix):] for path in files if path.startswith(prefix)]
+
+        async def download(source, target):
+            environment.control.stop.assert_not_awaited()
+            target = Path(target)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(files[source])
+
+        environment.transport.list_files.side_effect = list_files
+        environment.transport.download_file.side_effect = download
+        return environment
+
+    async def test_log_download_after_stop_uses_snapshot_and_preserves_host_outputs(self):
+        for delete in (True, False):
+            with self.subTest(delete=delete):
+                environment = self.running_environment({
+                    "C:/logs/agent/agent.log": "guest agent",
+                    "C:/logs/agent/private.log": "private",
+                    "C:/logs/agent/nested/debug.log": "debug",
+                    "C:/logs/verifier/reward.txt": "0",
+                    "C:/logs/artifacts/result.txt": "artifact",
+                })
+                # The guest transport's own temporary directory is removed by stop().
+                environment._local_dir = tempfile.TemporaryDirectory()
+                agent_dir = self.root / f"output-{delete}" / "agent"
+                (agent_dir / "native").mkdir(parents=True)
+                (agent_dir / "native/traj.jsonl").write_text("host trajectory")
+                await environment.stop(delete=delete)
+                self.assertFalse(environment._started)
+                self.assertIsNone(environment._local_dir)
+                environment.control.stop.assert_awaited_once()
+                self.assertEqual(environment.control.delete.await_count, int(delete))
+                environment.transport.close.assert_awaited_once()
+                downloads = environment.transport.download_file.await_count
+                await environment.download_dir_filtered(
+                    source_dir="C:/logs/agent", target_dir=agent_dir,
+                    include=["*.log"], exclude=["private*"],
+                )
+                await environment.download_dir_filtered(
+                    source_dir="C:/logs/verifier", target_dir=self.root / "verifier",
+                    exclude=["*"], protect=["reward.txt"],
+                )
+                await environment.download_dir("C:/logs/artifacts", self.root / "artifacts")
+                await environment.download_file("C:/logs/agent/nested/debug.log", self.root / "single.log")
+                self.assertEqual((agent_dir / "agent.log").read_text(), "guest agent")
+                self.assertEqual((agent_dir / "nested/debug.log").read_text(), "debug")
+                self.assertFalse((agent_dir / "private.log").exists())
+                self.assertEqual((agent_dir / "native/traj.jsonl").read_text(), "host trajectory")
+                self.assertEqual((self.root / "verifier/reward.txt").read_text(), "0")
+                self.assertEqual((self.root / "artifacts/result.txt").read_text(), "artifact")
+                self.assertEqual((self.root / "single.log").read_text(), "debug")
+                await environment.stop(delete=delete)
+                self.assertEqual(environment.transport.download_file.await_count, downloads)
+
+    async def test_snapshot_failure_keeps_completed_files_and_does_not_block_cleanup(self):
+        environment = self.running_environment({
+            "C:/logs/agent/complete.log": "complete",
+            "C:/logs/agent/interrupted.log": "partial",
+            "C:/logs/artifacts/result.txt": "artifact",
+        })
+        download = environment.transport.download_file.side_effect
+
+        async def fail_partial(source, target):
+            await download(source, target)
+            if source.endswith("interrupted.log"):
+                raise RuntimeError("guest disconnected")
+
+        environment.transport.download_file.side_effect = fail_partial
+        with self.assertLogs(environment.logger, level="ERROR"):
+            await environment.stop()
+        environment.control.delete.assert_awaited_once()
+        await environment.download_dir("C:/logs/agent", self.root / "saved")
+        self.assertEqual((self.root / "saved/complete.log").read_text(), "complete")
+        self.assertFalse((self.root / "saved/interrupted.log").exists())
+        await environment.download_dir("C:/logs/artifacts", self.root / "artifacts")
+        self.assertEqual((self.root / "artifacts/result.txt").read_text(), "artifact")
+
+    async def test_snapshot_timeout_does_not_block_vm_cleanup(self):
+        environment = self.running_environment({})
+        environment.settings = replace(environment.settings, transfer_timeout=0.01)
+
+        async def hang(*_):
+            await asyncio.Event().wait()
+
+        environment.transport.list_files.side_effect = hang
+        with self.assertLogs(environment.logger, level="WARNING"):
+            await asyncio.wait_for(environment.stop(), timeout=1)
+        environment.control.stop.assert_awaited_once()
+        environment.control.delete.assert_awaited_once()
+        environment.transport.close.assert_awaited_once()
+
+    async def test_cancellation_during_snapshot_still_deletes_vm(self):
+        environment = self.running_environment({})
+        environment.transport.list_files.side_effect = asyncio.CancelledError
+        with self.assertRaises(asyncio.CancelledError):
+            await environment.stop()
+        environment.control.stop.assert_awaited_once()
+        environment.control.delete.assert_awaited_once()
+        environment.transport.close.assert_awaited_once()
+
+    async def test_snapshot_disk_error_does_not_block_vm_cleanup(self):
+        environment = self.running_environment({})
+        with patch('kubevirt_windows.environment.tempfile.TemporaryDirectory', side_effect=OSError('disk full')), \
+                self.assertLogs(environment.logger, level='ERROR'):
+            await environment.stop()
+        environment.control.stop.assert_awaited_once()
+        environment.control.delete.assert_awaited_once()
+
+    async def test_cached_download_still_rejects_host_symlink_escape(self):
+        environment = self.running_environment({"C:/logs/agent/nested/debug.log": "debug"})
+        await environment.stop()
+        target = self.root / "out"
+        target.mkdir()
+        (target / "nested").symlink_to(self.root, target_is_directory=True)
+        with self.assertRaisesRegex(ValueError, "escape"):
+            await environment.download_dir("C:/logs/agent", target)
+        self.assertFalse((self.root / "debug.log").exists())
 
     async def test_download_cannot_follow_host_symlink(self):
         environment = self.environment()

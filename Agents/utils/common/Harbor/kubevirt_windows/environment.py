@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import shutil
 import tempfile
 import uuid
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 import httpx
 from harbor.environments.base import BaseEnvironment, ExecResult
@@ -36,6 +37,7 @@ class KubeVirtWindowsEnvironment(BaseEnvironment):
         self._created = False
         self._create_attempted = False
         self._local_dir = None
+        self._log_snapshot = None
         self.transport = None
         self._started = False
         super().__init__(*args, **kwargs)
@@ -218,7 +220,12 @@ class KubeVirtWindowsEnvironment(BaseEnvironment):
             if vm.get("labels", {}).get(OWNER_LABEL) != self.token[:12]:
                 raise RuntimeError(f"VM ownership mismatch: {self.vm_name}")
             try:
-                await self.control.stop(self.vm_name)
+                # Startup failures can stop the VM before Harbor recovers logs.
+                # Keep a separate snapshot alive until this environment is freed.
+                try:
+                    await self._preserve_logs()
+                finally:
+                    await self.control.stop(self.vm_name)
             finally:
                 if delete:
                     await self.control.delete(self.vm_name, owner=self.token[:12])
@@ -233,6 +240,35 @@ class KubeVirtWindowsEnvironment(BaseEnvironment):
                     await self.transport.close()
             finally:
                 await self.control.close()
+
+    async def _preserve_logs(self):
+        if not self._started or self.transport is None or self._log_snapshot is not None:
+            return
+        try:
+            self._log_snapshot = tempfile.TemporaryDirectory(prefix="harbor-windows-logs-")
+            root = Path(self._log_snapshot.name)
+            for name in ("agent", "verifier", "artifacts"):
+                (root / name).mkdir()
+            # Bound the entire snapshot, including a guest that stopped responding.
+            async with asyncio.timeout(self.settings.transfer_timeout):
+                for name in ("agent", "verifier", "artifacts"):
+                    try:
+                        await self.download_dir(f"C:/logs/{name}", root / name)
+                    except Exception:
+                        self.logger.exception("Failed to preserve Windows %s logs before VM cleanup", name)
+        except TimeoutError:
+            self.logger.warning("Windows log snapshot timed out; continuing VM cleanup")
+        except Exception:
+            self.logger.exception("Failed to preserve Windows logs; continuing VM cleanup")
+
+    def _cached_log_path(self, source_path):
+        if self._started or self._log_snapshot is None:
+            return None
+        try:
+            relative = PureWindowsPath(windows_path(source_path)).relative_to("C:/logs")
+        except ValueError:
+            return None
+        return Path(self._log_snapshot.name).joinpath(*relative.parts)
 
     def _guest(self):
         if not self._started or self.transport is None:
@@ -275,7 +311,19 @@ class KubeVirtWindowsEnvironment(BaseEnvironment):
         await self._guest().upload_dir(source_dir, target_dir)
 
     async def download_file(self, source_path, target_path):
-        await self._guest().download_file(source_path, target_path)
+        cached = self._cached_log_path(source_path)
+        if cached is not None:
+            target = Path(target_path)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(cached, target)
+        else:
+            try:
+                await self._guest().download_file(source_path, target_path)
+            except BaseException:
+                # Do not present an interrupted snapshot transfer as a complete file.
+                if self._log_snapshot is not None and Path(target_path).is_relative_to(self._log_snapshot.name):
+                    Path(target_path).unlink(missing_ok=True)
+                raise
 
     async def download_dir(self, source_dir, target_dir):
         await self.download_dir_filtered(source_dir=source_dir, target_dir=target_dir)
@@ -288,7 +336,13 @@ class KubeVirtWindowsEnvironment(BaseEnvironment):
     async def download_dir_filtered(
         self, *, source_dir, target_dir, include=None, exclude=None, protect=None
     ):
-        paths = await self._guest().list_files(source_dir)
+        cached = self._cached_log_path(source_dir)
+        if cached is not None:
+            if not cached.is_dir():
+                raise FileNotFoundError(source_dir)
+            paths = [path.relative_to(cached).as_posix() for path in sorted(cached.rglob("*")) if path.is_file()]
+        else:
+            paths = await self._guest().list_files(source_dir)
         selected = filter_paths_by_patterns(paths, include=include, exclude=exclude)
         selected = list(
             dict.fromkeys(selected + [p for p in paths if p in (protect or [])])
