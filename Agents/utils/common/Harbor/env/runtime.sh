@@ -16,6 +16,15 @@ WORKERS_FAILED_FILE="${RUNTIME_DIR}/workers.failed"
 
 # shellcheck source=rollout_config.sh
 source "$SCRIPT_DIR/env/rollout_config.sh"
+# Fixed benchmarks resolve task/verifier placeholders from host exports.
+# Rollout workers derive endpoints per request; leave their host overrides
+# unset unless configured explicitly. Evaluate this after custom RL config.
+if [[ "$ROLLOUT" != "1" ]]; then
+  export OPENAI_API_KEY="${OPENAI_API_KEY-$API_KEY}"
+  export OPENAI_BASE_URL="${OPENAI_BASE_URL-${BASE_URL:+${BASE_URL}/v1}}"
+  export ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY-$API_KEY}"
+  export ANTHROPIC_BASE_URL="${ANTHROPIC_BASE_URL-$BASE_URL}"
+fi
 # shellcheck source=environment_config.sh
 source "$SCRIPT_DIR/env/environment_config.sh"
 

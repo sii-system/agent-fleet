@@ -86,7 +86,8 @@ The optional `revision` input selects the checkout, including upstream PR refs
 such as `refs/pull/227/head`, while the workflow uses upstream's
 `self-hosted-env` credentials. Dispatch only trusted revisions. Empty revision
 uses the workflow commit. Scheduled runs retain their normal checkout and
-random selection.
+random selection. The workflow preserves its task selector before checking out
+the requested revision so older revisions can use the replay inputs too.
 
 Both workflows repair run artifact ownership before checkout and after
 cleanup, before artifact staging. Runner users need noninteractive sudo

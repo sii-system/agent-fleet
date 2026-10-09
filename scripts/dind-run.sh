@@ -373,7 +373,7 @@ for optional in PI_VERSION PI_PROVIDER PI_THINKING_LEVEL OPIK_API_KEY OPIK_WORKS
     run_env+=("$optional=${!optional}")
   fi
 done
-for optional in HARBOR_TEMPERATURE HARBOR_TOP_P HARBOR_MAX_TOKENS; do
+for optional in HARBOR_TEMPERATURE HARBOR_TOP_P HARBOR_MAX_TOKENS OPENAI_API_KEY OPENAI_BASE_URL ANTHROPIC_API_KEY ANTHROPIC_BASE_URL; do
   if [[ ${!optional+x} ]]; then
     run_env+=("$optional=${!optional}")
   fi

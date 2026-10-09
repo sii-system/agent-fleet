@@ -93,6 +93,21 @@ class HarborEnvAliasTests(unittest.TestCase):
         ):
             self.assertEqual(env[name], "")
 
+    def test_rollout_does_not_inherit_fixed_benchmark_provider_defaults(self) -> None:
+        env = self.load_env(
+            ROLLOUT="1", BASE_URL="https://listener.invalid", API_KEY="fake-listener-key"
+        )
+        for name in (
+            "OPENAI_API_KEY", "OPENAI_BASE_URL", "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL",
+        ):
+            self.assertNotIn(name, env)
+        for value in ("https://explicit-provider.invalid", ""):
+            env = self.load_env(
+                ROLLOUT="1", BASE_URL="https://listener.invalid",
+                ANTHROPIC_BASE_URL=value,
+            )
+            self.assertEqual(env["ANTHROPIC_BASE_URL"], value)
+
     def test_summary_and_analyzer_have_independent_opt_in_defaults(self) -> None:
         env = self.load_env()
         self.assertEqual(env["HARBOR_SUMMARY_ENABLED"], "1")

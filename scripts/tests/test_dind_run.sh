@@ -51,6 +51,7 @@ chmod +x "$PROJECT_DIR/scripts/setup.sh" "$PROJECT_DIR/scripts/run_fleet.sh"
 export DIND_TEST_ASSUME_HOST=1
 unset BASE_URL API_KEY MODEL
 unset ANTHROPIC_BASE_URL AUTH_TOKEN ANTHROPIC_AUTH_TOKEN HARBOR_MODEL
+unset OPENAI_API_KEY OPENAI_BASE_URL ANTHROPIC_API_KEY
 unset DSH_PROVIDER DSH_PERMISSION_MODE
 unset DSH_CONTEXT_WINDOW DSH_TEMPERATURE DSH_TOP_P
 unset DSH_SDK_MINIMAL_MAX_TOKENS
@@ -246,6 +247,10 @@ MIN_TEST_INCLUDE_TASK=custom-canary \
 HARBOR_TEMPERATURE=0.2 \
 HARBOR_TOP_P= \
 HARBOR_MAX_TOKENS=8192 \
+OPENAI_API_KEY=fake-provider-key \
+OPENAI_BASE_URL= \
+ANTHROPIC_API_KEY= \
+ANTHROPIC_BASE_URL=https://provider.invalid \
 "$PROJECT_DIR/scripts/dind-run.sh" --taskset terminalbench21 --agent claude-code --workers 1 > "$LOG"
 
 grep -q -- '--registry-mirror=https://docker.m.daocloud.io' "$LOG"
@@ -302,6 +307,10 @@ for expected_env in \
   "HARBOR_TEMPERATURE=0.2" \
   "HARBOR_TOP_P=" \
   "HARBOR_MAX_TOKENS=8192" \
+  "OPENAI_API_KEY=fake-provider-key" \
+  "OPENAI_BASE_URL=" \
+  "ANTHROPIC_API_KEY=" \
+  "ANTHROPIC_BASE_URL=https://provider.invalid" \
   "OPIK_API_KEY=opik-local" \
   "PIP_INDEX_URL=https://packages.example.com/simple" \
   "UV_INDEX_URL=https://uv.example.com/simple" \

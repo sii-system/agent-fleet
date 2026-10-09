@@ -62,7 +62,22 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.revision || github.sha }}
+          ref: ${{ github.sha }}
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Preserve nightly task selector
+        run: |
+          set -euo pipefail
+          selector="$(mktemp "$RUNNER_TEMP/harbor-nightly-select.XXXXXX.py")"
+          cp .github/scripts/harbor_nightly_select.py "$selector"
+          printf 'HARBOR_NIGHTLY_SELECTOR=%s\n' "$selector" >> "$GITHUB_ENV"
+
+      - name: Check out requested revision
+        if: ${{ inputs.revision != '' }}
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.revision }}
           submodules: recursive
           persist-credentials: false
 
@@ -134,7 +149,7 @@ jobs:
             benchmark="$(printf '%s\n' "${benchmarks[@]}" | awk 'NF' | shuf -n 1)"
           fi
           mapfile -t selection < <("$HARBOR_NIGHTLY_PYTHON" \
-            .github/scripts/harbor_nightly_select.py \
+            "$HARBOR_NIGHTLY_SELECTOR" \
             --repo-root "$GITHUB_WORKSPACE" \
             --benchmark "$benchmark" \
             --tasks "${INPUT_TASKS:-}")
@@ -203,10 +218,15 @@ jobs:
           # Keep Analyzer artifacts and detached Pi homes inside this run.
           export HARBOR_ANALYZER_OUTPUT_DIR="$OUTPUT_PATH/analyzer"
 
+          launch_args=(--taskset "$BENCHMARK" --agent "$AGENT" --workers "$TOTAL_WORKERS")
+          if [[ "$BENCHMARK" == "smith" ]]; then
+            launch_args+=(--task "$HARBOR_INCLUDE_TASKS")
+            export HARBOR_INCLUDE_TASKS=""
+          fi
           status=0
           timeout --signal=TERM --kill-after=5m 450m \
             script -e -q -c \
-              "$(printf '%q ' scripts/run_fleet.sh --taskset "$BENCHMARK" --agent "$AGENT" --workers "$TOTAL_WORKERS")" \
+              "$(printf '%q ' scripts/run_fleet.sh "${launch_args[@]}")" \
               /dev/null || status=$?
           if (( status == 124 || status == 137 )); then
             echo "::error::Harbor exceeded its 450-minute budget" >&2

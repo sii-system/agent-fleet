@@ -236,9 +236,9 @@ Typical dataset paths:
 | `MODEL` | Model name passed to Harbor |
 | `BASE_URL` | Model gateway base URL |
 | `API_KEY` | Model gateway API key |
-| `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` | Exported host defaults from `API_KEY` for task/verifier placeholders; explicit values, including empty values, win |
-| `OPENAI_BASE_URL` | Exported host default from the normalized `BASE_URL` plus `/v1`; explicit values, including empty values, win |
-| `ANTHROPIC_BASE_URL` | Exported host default from the normalized, versionless `BASE_URL`; explicit values, including empty values, win |
+| `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` | Fixed-benchmark host defaults from `API_KEY` for task/verifier placeholders; explicit values, including empty values, win |
+| `OPENAI_BASE_URL` | Fixed-benchmark host default from the normalized `BASE_URL` plus `/v1`; explicit values, including empty values, win |
+| `ANTHROPIC_BASE_URL` | Fixed-benchmark host default from the normalized, versionless `BASE_URL`; explicit values, including empty values, win |
 | `HARBOR_TEMPERATURE` | OpenCode or DSH sampling temperature for fixed benchmark runs; unset globally and defaults to `1.0` for DSH |
 | `HARBOR_TOP_P` | OpenCode or DSH nucleus-sampling value for fixed benchmark runs; unset globally and defaults to `0.95` for DSH |
 | `HARBOR_MAX_TOKENS` | Maximum output tokens for OpenCode, Claude Code, or Pi fixed benchmark runs; defaults to existing agent limits when unset |

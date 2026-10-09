@@ -104,6 +104,8 @@ Explicit provider values in the configuration or shell, including empty values,
 take precedence. Harbor uses these exports to resolve the environment and
 verifier variables declared by each task. The gateway must support those
 tasks' API routes and requested models.
+These automatic exports apply to fixed benchmarks. Rollout mode preserves
+explicit provider overrides and derives its agent endpoints per request.
 
 Point the runner at your infrastructure. `config.env` is a committed template;
 copy it to a git-ignored `config.local.env` (sourced after, and overriding,

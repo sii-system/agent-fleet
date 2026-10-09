@@ -1,6 +1,7 @@
 import importlib.util
 import os
 import subprocess
+import sys
 import tempfile
 import textwrap
 import unittest
@@ -122,7 +123,7 @@ class WorkflowTest(unittest.TestCase):
         self.assertIn(
             "HARBOR_INCLUDE_TASKS: ${{ steps.params.outputs.tasks }}", self.workflow
         )
-        self.assertIn('scripts/run_fleet.sh --taskset "$BENCHMARK"', self.workflow)
+        self.assertIn('--taskset "$BENCHMARK"', self.workflow)
         self.assertIn("Verify sampled tasks completed", self.workflow)
         self.assertIn("--expected-trials", self.workflow)
 
@@ -202,6 +203,7 @@ class WorkflowTest(unittest.TestCase):
                             "INPUT_TASKS": tasks,
                             "SMITH_DATASET_PATH": str(root / "absent"),
                             "HARBOR_NIGHTLY_PYTHON": str(fake_python),
+                            "HARBOR_NIGHTLY_SELECTOR": str(SELECTOR),
                             "GITHUB_WORKSPACE": str(ROOT),
                             "GITHUB_OUTPUT": str(output),
                             "RUN_ID": "test-replay",
@@ -211,6 +213,67 @@ class WorkflowTest(unittest.TestCase):
                     if expected == 0:
                         self.assertIn(f"benchmark={benchmark}\n", output.read_text())
                         self.assertIn("task_count=1\n", output.read_text())
+
+    def test_selector_survives_checkout_of_an_older_revision(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            control = root / ".github/scripts/harbor_nightly_select.py"
+            control.parent.mkdir(parents=True)
+            control.write_text(SELECTOR.read_text())
+            task_file = root / selector.LOCAL_TASK_LISTS["seta"]
+            task_file.parent.mkdir(parents=True)
+            task_file.write_text("task-a\n")
+            (root / ".github/harbor-nightly-benchmarks.txt").write_text("seta\n")
+            runner_temp = root / "runner-temp"
+            runner_temp.mkdir()
+            env_file, output = root / "env", root / "output"
+            env = {
+                **os.environ, "RUNNER_TEMP": str(runner_temp),
+                "GITHUB_ENV": str(env_file), "GITHUB_OUTPUT": str(output),
+                "GITHUB_WORKSPACE": str(root), "RUN_ID": "old-revision-test",
+                "INPUT_AGENT": "claude-code", "INPUT_BENCHMARK": "seta",
+                "INPUT_TASKS": "task-a", "HARBOR_NIGHTLY_PYTHON": sys.executable,
+                "SMITH_DATASET_PATH": str(root / "absent"),
+            }
+            subprocess.run(
+                ["bash", "-c", self.step_script("Preserve nightly task selector")],
+                cwd=root, env=env, check=True, capture_output=True,
+            )
+            name, value = env_file.read_text().strip().split("=", 1)
+            env[name] = value
+            control.write_text('raise SystemExit("old selector has no --tasks")\n')
+            result = subprocess.run(
+                ["bash", "-c", self.step_script("Select benchmark and tasks")],
+                cwd=root, env=env, check=False, capture_output=True, text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("tasks=task-a\n", output.read_text())
+
+    def test_smith_launches_only_sampled_tasks(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            launcher = root / "script"
+            launcher.write_text(
+                '#!/usr/bin/env bash\nset -euo pipefail\n'
+                'printf "%s\\n" "$*" "$HARBOR_INCLUDE_TASKS" > "$CAPTURE"\n'
+            )
+            launcher.chmod(0o755)
+            capture = root / "capture"
+            result = subprocess.run(
+                ["bash", "-c", self.step_script("Run Harbor benchmark")],
+                cwd=ROOT, capture_output=True, text=True, check=False,
+                env={
+                    **os.environ, "PATH": f"{root}:{os.environ['PATH']}",
+                    "API_KEY": "fake-key", "BASE_URL_RAW": "https://gateway.invalid/v1",
+                    "BENCHMARK": "smith", "AGENT": "claude-code", "TOTAL_WORKERS": "10",
+                    "HARBOR_INCLUDE_TASKS": "task-a,task-b", "CAPTURE": str(capture),
+                    "OUTPUT_PATH": str(root), "GITHUB_OUTPUT": str(root / "output"),
+                },
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            captured = capture.read_text()
+            self.assertIn("--task task-a\\,task-b", captured)
+            self.assertTrue(captured.endswith("\n\n"), captured)
 
     def test_health_reports_registry_and_smith_failures(self):
         script = self.step_script("Verify sampled tasks completed")

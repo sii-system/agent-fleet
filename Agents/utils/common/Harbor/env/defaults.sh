@@ -83,13 +83,6 @@ if [[ -n "$BASE_URL" ]]; then
   BASE_URL="${BASE_URL%/chat/completions}"
   BASE_URL="${BASE_URL%/v1}"
 fi
-# Harbor resolves task environment/verifier placeholders from the exported
-# host environment. Default provider settings to the shared gateway, preserving
-# explicit overrides (including empty values) after config loading.
-export OPENAI_API_KEY="${OPENAI_API_KEY-$API_KEY}"
-export OPENAI_BASE_URL="${OPENAI_BASE_URL-${BASE_URL:+${BASE_URL}/v1}}"
-export ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY-$API_KEY}"
-export ANTHROPIC_BASE_URL="${ANTHROPIC_BASE_URL-$BASE_URL}"
 HARBOR_ANTHROPIC_BASE_URL="${HARBOR_ANTHROPIC_BASE_URL:-${ANTHROPIC_BASE_URL:-${BASE_URL%/}}}"
 HARBOR_ANTHROPIC_BASE_URL="${HARBOR_ANTHROPIC_BASE_URL%/}"
 HARBOR_ANTHROPIC_BASE_URL="${HARBOR_ANTHROPIC_BASE_URL%/v1}"
