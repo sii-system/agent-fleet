@@ -49,20 +49,30 @@ def render_build_dockerfile(
                     source_line,
                     rustup_init_url=rustup_init_url,
                     pytorch_index_url=pytorch_index_url,
+                    conda_defaults_url=package_build_args.get("CONDA_DEFAULTS_URL", ""),
+                    conda_channels_url=package_build_args.get("CONDA_CHANNELS_URL", ""),
                     shell_context=active_instruction == "RUN",
                 )
             )
             continue
 
-        line = rewrite_package_source_urls(
-            source_line,
-            rustup_init_url=rustup_init_url,
-            pytorch_index_url=pytorch_index_url,
-        )
         if active_instruction is None:
             instruction = DOCKERFILE_INSTRUCTION.match(source_line)
             if instruction:
                 active_instruction = instruction.group("name").upper()
+        line = rewrite_package_source_urls(
+            source_line,
+            rustup_init_url=rustup_init_url,
+            pytorch_index_url=pytorch_index_url,
+            conda_defaults_url=(
+                package_build_args.get("CONDA_DEFAULTS_URL", "")
+                if active_instruction == "RUN" else ""
+            ),
+            conda_channels_url=(
+                package_build_args.get("CONDA_CHANNELS_URL", "")
+                if active_instruction == "RUN" else ""
+            ),
+        )
 
         match = FROM_LINE.match(line)
         if match:

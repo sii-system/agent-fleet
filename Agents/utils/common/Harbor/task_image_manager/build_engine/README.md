@@ -63,6 +63,7 @@ Sandbox startup are outside the build engine's responsibility.
 | `dockerfile_renderer/strategies/apt/` | APT runtime strategy and its fixed shell/AWK assets |
 | `dockerfile_renderer/strategies/download/` | curl/wget runtime strategy and its fixed shell/AWK assets |
 | `dockerfile_renderer/strategies/packages.py` | Package-source validation, arguments, and context rewrites |
+| `dockerfile_renderer/strategies/conda.py` | Reviewed conda URL rewrites and transient channel configuration |
 | `dockerfile_renderer/strategies/git.py` | Transient Git mirror configuration |
 | `frontend/` | Prepare the instrumentation frontend and add build-only RUN mounts |
 | `executor.py` | Execute Buildx, export the OCI archive, and manage process lifetime |
@@ -109,6 +110,35 @@ at a third-party mirror or a cache gateway. Empty leaves the ecosystem
 default. Pip, npm, Go, Cargo, and Rustup use the same build-argument path and
 are not part of APT interception. These arguments are not stored in the
 published image.
+
+Gateway selection also supplies `CONDA_DEFAULTS_URL` and `CONDA_CHANNELS_URL`.
+These are renderer inputs, not native conda settings. During each `RUN`, the
+frontend mounts a content-addressed system config at
+`/etc/conda/condarc.d/99-agent-fleet-gateway.yaml`. It maps `defaults` to
+Gateway `main`/`r` and `conda-forge` through `custom_channels`. The config does
+not set `channels`, channel priority, platform, package versions, or unrelated
+channel aliases. Conda, mamba and micromamba use their normal rc discovery;
+authored user/prefix config and `--no-rc`/explicit rc-file settings can take
+precedence. The mount disappears after `RUN` and is absent from the final image.
+
+Explicit official and TUNA channel URLs for `main`, `r`, and `conda-forge`
+are rewritten in Dockerfile commands, including JSON-form RUN and RUN heredocs,
+and in a temporary copy of shell scripts, YAML environment files, and condarc
+files. Channel order, package specifications, and original task inputs stay
+unchanged. COPY/ADD heredoc contents keep their authored bytes. Runtime ENV,
+CMD, and ENTRYPOINT URLs also keep their authored transport. Rewritten
+context files can be copied into the image, as with the existing Rustup/PyTorch
+context strategy. Credential/query/token URLs, other channels, installers,
+and unsupported subdirs keep their authored transport. Dynamically generated
+explicit URLs and config that bypasses rc discovery remain outside this strategy.
+The current Gateway supports `linux-64` and `noarch`; this does not add channels
+or platforms to its allowlist. An operator can override or explicitly disable
+either renderer input through the existing build-argument JSON setting.
+
+The channel mapping and rc precedence follow the upstream
+[Conda context](https://github.com/conda/conda/blob/main/conda/base/context.py)
+and [libmamba configuration](https://github.com/mamba-org/mamba/blob/main/libmamba/src/api/configuration.cpp)
+contracts.
 
 When `HARBOR_TASK_IMAGE_GITHUB_MIRROR_URL` names a GitHub Smart HTTP mirror
 prefix, preparation mounts a transient Git `url.*.insteadOf` config as

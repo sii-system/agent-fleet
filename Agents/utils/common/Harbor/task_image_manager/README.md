@@ -101,6 +101,11 @@ curl/wget source settings for that preparation attempt. The mappings follow the
 Docker Hub and base-image Registry settings remain separate: the HTTP Gateway
 does not proxy OCI image pulls.
 
+Conda routing covers `defaults` (`main`/`r`) and `conda-forge` on `linux-64` and
+`noarch`, using temporary conda/mamba channel config and reviewed channel URL
+rewrites. See [build-time inputs](build_engine/README.md#build-time-inputs) for
+rc precedence, explicit URLs, and unsupported cases.
+
 When the health check fails, preparation keeps the original source settings,
 including caller-supplied mirrors and existing defaults. Source selection runs
 once per preparation attempt. Subsequent build, Registry, or manifest failures
