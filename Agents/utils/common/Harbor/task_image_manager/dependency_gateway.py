@@ -57,6 +57,8 @@ def gateway_source_overrides(cache: str, origin: str) -> dict[str, str]:
         "pytorch_index_url": cache + "/pytorch",
         "pub_hosted_url": cache + "/dart-pub",
         "julia_pkg_server": cache + "/julia-pkg",
+        "conda_defaults_url": cache + "/conda-defaults",
+        "conda_channels_url": cache + "/conda-channels",
         "github_mirror_url": origin + "/v1/git/github/",
         "download_source_url": cache,
     }

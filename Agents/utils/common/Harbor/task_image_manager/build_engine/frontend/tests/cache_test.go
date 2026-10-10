@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/moby/buildkit/client/llb"
+	"github.com/moby/buildkit/solver/pb"
 	"github.com/stretchr/testify/require"
 )
 
@@ -18,6 +19,7 @@ func TestOpenSandboxCacheIdentity(t *testing.T) {
 		"OPENSANDBOX_DOWNLOAD_REWRITER":    "download-rewriter-v1",
 		"OPENSANDBOX_DOWNLOAD_SOURCE":      "download-source-v1",
 		"OPENSANDBOX_GITHUB_MIRROR_CONFIG": "gitconfig-v1",
+		"OPENSANDBOX_CONDA_CONFIG":         "condarc-v1",
 	}
 	state := llb.Scratch().AddEnv("PATH", "/custom/bin").Dir("/work").User("1000:1000")
 	marshal := func() []byte {
@@ -40,6 +42,34 @@ func TestOpenSandboxCacheIdentity(t *testing.T) {
 		require.NotEqual(t, original, marshal(), key)
 		values[key] = value
 	}
+}
+
+func TestOpenSandboxCondaMountIsTransient(t *testing.T) {
+	require.Empty(t, opensandboxCondaOptions(map[string]string{}))
+	state := llb.Scratch().AddEnv("PATH", "/custom/bin")
+	opts := opensandboxCondaOptions(map[string]string{"OPENSANDBOX_CONDA_CONFIG": "condarc-v1"})
+	result := state.Run(append([]llb.RunOption{llb.Args([]string{"conda", "install", "six"})}, opts...)...).Root()
+	def, err := result.Marshal(context.Background())
+	require.NoError(t, err)
+	found := false
+	for _, dt := range def.Def {
+		var op pb.Op
+		require.NoError(t, op.Unmarshal(dt))
+		if exec := op.GetExec(); exec != nil {
+			for _, mount := range exec.Mounts {
+				if mount.Dest == "/etc/conda/condarc.d/99-agent-fleet-gateway.yaml" {
+					found = true
+					require.Equal(t, pb.MountType_SECRET, mount.MountType)
+					require.Equal(t, "condarc-v1", mount.SecretOpt.ID)
+					require.EqualValues(t, 0444, mount.SecretOpt.Mode)
+				}
+			}
+		}
+	}
+	require.True(t, found)
+	path, _, err := result.GetEnv(context.Background(), "PATH")
+	require.NoError(t, err)
+	require.Equal(t, "/custom/bin", path)
 }
 
 func TestOpenSandboxDownloadRuntimeIsAllOrNothing(t *testing.T) {

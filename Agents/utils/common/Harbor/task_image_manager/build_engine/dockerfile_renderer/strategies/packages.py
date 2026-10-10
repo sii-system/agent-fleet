@@ -9,6 +9,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from ....source_urls import validate_source_url
+from .conda import rewrite_conda_source_urls
 
 DEFAULT_PIP_INDEX_URL = "https://pypi.tuna.tsinghua.edu.cn/simple"
 DEFAULT_NPM_REGISTRY = "https://registry.npmmirror.com"
@@ -108,6 +109,13 @@ def package_source_build_args(
         build_args["PUB_HOSTED_URL"] = pub_hosted_url
     if julia_pkg_server:
         build_args["JULIA_PKG_SERVER"] = julia_pkg_server
+    for attribute, name in (
+        ("conda_defaults_url", "CONDA_DEFAULTS_URL"),
+        ("conda_channels_url", "CONDA_CHANNELS_URL"),
+    ):
+        value = getattr(args, attribute, "").strip()
+        if value:
+            build_args[name] = validate_source_url(value, "conda channel root", build_network)
     parsed_pip_index = urlparse(pip_index)
     if parsed_pip_index.scheme == "http":
         build_args["PIP_TRUSTED_HOST"] = parsed_pip_index.hostname or ""
@@ -163,6 +171,8 @@ def rewrite_package_source_urls(
     *,
     rustup_init_url: str = "",
     pytorch_index_url: str = "",
+    conda_defaults_url: str = "",
+    conda_channels_url: str = "",
     shell_context: bool = True,
 ) -> str:
     """Rewrite the configured package sources in ``source``.
@@ -197,7 +207,7 @@ def rewrite_package_source_urls(
             else line
             for line in rewritten.splitlines(keepends=True)
         )
-    return rewritten
+    return rewrite_conda_source_urls(rewritten, conda_defaults_url, conda_channels_url)
 
 
 def materialize_package_source_context(
@@ -206,30 +216,41 @@ def materialize_package_source_context(
     *,
     rustup_init_url: str = "",
     pytorch_index_url: str = "",
+    conda_defaults_url: str = "",
+    conda_channels_url: str = "",
 ) -> tuple[Path, tuple[str, ...]]:
     """Copy and exactly rewrite reviewed package origins in build scripts."""
-    if not rustup_init_url and not pytorch_index_url:
+    if not any((rustup_init_url, pytorch_index_url, conda_defaults_url, conda_channels_url)):
         return source_dir, ()
     rewritten: dict[Path, str] = {}
     for path in source_dir.rglob("*"):
+        is_script = path.name == "Dockerfile" or path.suffix in {".sh", ".bash", ".zsh"}
+        is_conda_config = (
+            (conda_defaults_url or conda_channels_url)
+            and (path.suffix in {".yaml", ".yml"} or path.name in {".condarc", ".mambarc", "condarc"})
+        )
         if (
             path.is_symlink()
             or not path.is_file()
-            or (
-                path.name != "Dockerfile"
-                and path.suffix not in {".sh", ".bash", ".zsh"}
-            )
+            or not (is_script or is_conda_config)
         ):
             continue
         try:
             original = path.read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError):
             continue
-        updated = rewrite_package_source_urls(
-            original,
-            rustup_init_url=rustup_init_url,
-            pytorch_index_url=pytorch_index_url,
-        )
+        if is_script:
+            updated = rewrite_package_source_urls(
+                original,
+                rustup_init_url=rustup_init_url,
+                pytorch_index_url=pytorch_index_url,
+                # The Dockerfile renderer owns RUN structure; context copies
+                # must not rewrite conda URLs in runtime ENV/CMD or COPY data.
+                conda_defaults_url=conda_defaults_url if path.name != "Dockerfile" else "",
+                conda_channels_url=conda_channels_url if path.name != "Dockerfile" else "",
+            )
+        else:
+            updated = rewrite_conda_source_urls(original, conda_defaults_url, conda_channels_url)
         if updated != original:
             rewritten[path.relative_to(source_dir)] = updated
     if not rewritten:

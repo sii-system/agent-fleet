@@ -170,6 +170,25 @@ class FrontendContractTest(unittest.TestCase):
                 "download-wrapper.sh",
             )
 
+    def test_optional_conda_config_is_content_addressed_and_duplicates_rejected(self):
+        from task_image_manager.build_engine.dockerfile_renderer.strategies.conda import (
+            materialize_conda_config,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            secrets = materialize_apt_runtime_assets(root, "")
+            self.assertNotIn("OPENSANDBOX_CONDA_CONFIG", prepare_frontend(
+                secrets, root, build_contexts={}
+            ))
+            conda = materialize_conda_config(root / "conda", "http://gateway/defaults", "http://gateway/channels")
+            secrets.update(conda)
+            args = prepare_frontend(secrets, root, build_contexts={})
+            self.assertEqual(args["OPENSANDBOX_CONDA_CONFIG"], next(iter(conda)))
+            secrets.update(materialize_conda_config(root / "other", "http://other/defaults"))
+            with self.assertRaisesRegex(ValueError, "at most one conda"):
+                prepare_frontend(secrets, root, build_contexts={})
+
     def test_cache_miss_hit_and_corruption_rebuild(self):
         # Exercise the real cache while replacing only the expensive compiler.
         with (
