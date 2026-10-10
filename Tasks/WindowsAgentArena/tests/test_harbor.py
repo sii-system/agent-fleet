@@ -31,7 +31,14 @@ class HarborTrialTests(unittest.IsolatedAsyncioTestCase):
     async def test_setup_failure_recovers_guest_logs_after_vm_cleanup(self):
         await self.run_native_trial(fail_setup=True)
 
-    async def run_native_trial(self, *, fail_setup=False):
+    async def test_docker_trial_runs_native_agent_and_verifier(self):
+        await self.run_native_trial(backend="docker")
+
+    async def test_docker_setup_failure_preserves_guest_logs(self):
+        await self.run_native_trial(backend="docker", fail_setup=True)
+
+    async def run_native_trial(self, *, fail_setup=False, backend="kubevirt"):
+        from docker_windows.environment import DockerWindowsEnvironment
         from harbor.models.trial.config import TrialConfig
         from harbor.trial.trial import Trial
         from kubevirt_windows.control import OWNER_LABEL
@@ -39,6 +46,12 @@ class HarborTrialTests(unittest.IsolatedAsyncioTestCase):
         from PIL import Image
         from waa_benchmark.adapter import materialize
         from waa_benchmark.dataset import BENCHMARKS, digest
+
+        environment_class = DockerWindowsEnvironment if backend == "docker" else KubeVirtWindowsEnvironment
+        backend_module = "docker_windows.environment" if backend == "docker" else "kubevirt_windows.environment"
+        control_class = "DockerControl" if backend == "docker" else "KubeVirtControl"
+        environment_path = ("waa_benchmark.docker_environment:WAADockerEnvironment" if backend == "docker"
+                            else "waa_benchmark.environment:WAAEnvironment")
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -111,6 +124,7 @@ class HarborTrialTests(unittest.IsolatedAsyncioTestCase):
             control = Mock()
             control.guest_endpoints = AsyncMock(return_value={5000: endpoint, 9222: endpoint, 8080: endpoint})
             control.get, control.stop, control.delete, control.close = (AsyncMock() for _ in range(4))
+            control.logs = AsyncMock()
             settings = Mock(guest_protocol='waa', guest_port=5000, guest_node_port=0, extra_guest_ports=(9222, 8080),
                             namespace='bench', image='golden', command_timeout=30, transfer_timeout=30)
             transport = Mock()
@@ -131,13 +145,14 @@ class HarborTrialTests(unittest.IsolatedAsyncioTestCase):
             async def start(environment, force_build=False):
                 environment._started = True
                 environment._created = True
+                environment._create_attempted = True
                 environment.transport = transport
                 control.get.return_value = {'labels': {OWNER_LABEL: environment.token[:12]}}
                 # Host-native output must survive error recovery's guest downloads.
                 environment.trial_paths.agent_dir.mkdir(parents=True, exist_ok=True)
                 (environment.trial_paths.agent_dir / 'host.log').write_text('host diagnostics')
 
-            real_stop = KubeVirtWindowsEnvironment.stop
+            real_stop = environment_class.stop
 
             real_spawn = asyncio.create_subprocess_exec
 
@@ -151,7 +166,7 @@ class HarborTrialTests(unittest.IsolatedAsyncioTestCase):
 
             trial_config = TrialConfig.model_validate({
                 'trial_name': 'waa-native-fixture', 'trials_dir': str(root / 'trials'), 'task': {'path': str(task)},
-                'environment': {'import_path': 'waa_benchmark.environment:WAAEnvironment', 'kwargs': {
+                'environment': {'import_path': environment_path, 'kwargs': {
                     'runtime': RUNTIME, 'pcagent_runtime': PCAGENT_RUNTIME, 'screen_size': [1280, 720]}},
                 'agent': {'import_path': 'Agents.WindowsAgentArena.agent:WAAAgent', 'model_name': 'fake-model',
                           'kwargs': {'max_steps': 3, 'pause': 0}},
@@ -161,10 +176,10 @@ class HarborTrialTests(unittest.IsolatedAsyncioTestCase):
                          'NO_PROXY': '127.0.0.1,localhost', 'no_proxy': '127.0.0.1,localhost',
                          'ALL_PROXY': '', 'all_proxy': '', 'HTTP_PROXY': '', 'http_proxy': '', 'HTTPS_PROXY': '', 'https_proxy': '',
                          'PYTHONDONTWRITEBYTECODE': '1'}), \
-                    patch('kubevirt_windows.environment.Settings.from_env', return_value=settings), \
-                    patch('kubevirt_windows.environment.KubeVirtControl', return_value=control), \
-                    patch.object(KubeVirtWindowsEnvironment, 'start', start), \
-                    patch.object(KubeVirtWindowsEnvironment, 'stop', autospec=True, side_effect=real_stop) as cleanup, \
+                    patch(backend_module + '.Settings.from_env', return_value=settings), \
+                    patch(backend_module + '.' + control_class, return_value=control), \
+                    patch.object(environment_class, 'start', start), \
+                    patch.object(environment_class, 'stop', autospec=True, side_effect=real_stop) as cleanup, \
                     patch('waa_benchmark.environment.asyncio.create_subprocess_exec', side_effect=spawn):
                 trial = await Trial.create(trial_config)
                 result = await trial.run()
@@ -176,7 +191,8 @@ class HarborTrialTests(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(result.verifier_result.rewards, {'reward': 1})
                     self.assertEqual(result.agent_result.metadata['steps'], 2)
                     cleanup.assert_awaited_once()
-                control.stop.assert_awaited_once()
+                if backend == "kubevirt":
+                    control.stop.assert_awaited_once()
                 control.delete.assert_awaited_once()
                 if trial.agent_environment._log_snapshot is not None:
                     self.addCleanup(trial.agent_environment._log_snapshot.cleanup)

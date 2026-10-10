@@ -265,6 +265,13 @@ class HarborLauncherTests(unittest.TestCase):
     setUp = Fixture.setUp
     tasks = Fixture.tasks
 
+    def test_docker_backend_selection_and_environment_default(self):
+        with patch.dict(os.environ, {"HARBOR_WAA_BACKEND": "docker", "OPIK_URL": ""}):
+            args = parser().parse_args(["--cache", ".", "--all"])
+            cmd = command(args, self.root, self.tasks(), self.root, self.root)
+            self.assertIn("waa_benchmark.docker_environment:WAADockerEnvironment", cmd)
+            self.assertEqual(parser().parse_args(["--cache", ".", "--all", "--backend", "kubevirt"]).backend, "kubevirt")
+
     def test_command_uses_harbor_integrations_and_passes_native_options(self):
         args = parser().parse_args(['--cache', str(self.root), '--benchmark', 'waa', '--all',
                                     '--workers', '3', '--output', str(self.root / 'job'),

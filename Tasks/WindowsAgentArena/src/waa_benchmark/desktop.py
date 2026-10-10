@@ -1,4 +1,4 @@
-"""Attach the native WAA desktop environment to owned NodePort services."""
+"""Attach the native WAA desktop environment to owned guest endpoints."""
 
 from __future__ import annotations
 

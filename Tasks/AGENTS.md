@@ -166,7 +166,10 @@ WindowsAgentArena uses its own host environment and pinned native upstream clien
 Run `WindowsAgentArena/setup.sh` explicitly; startup must only validate it.
 Harbor owns trial orchestration, retries and resume. Task materialization and native setup/evaluation belong here; host agents belong under
 `Agents/WindowsAgentArena/`. Reuse the shared Windows KubeVirt backend for VM
-ownership and cleanup. See [WindowsAgentArena/README.md](WindowsAgentArena/README.md)
+ownership and cleanup, or select the local Dockur backend with
+`HARBOR_WAA_BACKEND=docker`. Docker ownership/storage belongs to
+`Agents/utils/common/Harbor/docker_windows/`; keep native agent/verifier semantics
+shared across both backends. See [WindowsAgentArena/README.md](WindowsAgentArena/README.md)
 for full runs, resume and pinned-client integration tests.
 
 Run from the repo root:

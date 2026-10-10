@@ -11,10 +11,10 @@ from harbor.verifier.base import BaseVerifier
 
 class WAAVerifier(BaseVerifier):
     async def verify(self):
-        from .environment import WAAEnvironment
+        from .environment import WAASession
 
-        if not isinstance(self.environment, WAAEnvironment):
-            raise TypeError("WAAVerifier requires WAAEnvironment attached to the agent's VM")
+        if not isinstance(self.environment, WAASession):
+            raise TypeError("WAAVerifier requires a WAA session attached to the agent's VM")
         result = await self.environment.native_request("evaluate")
         score = float(result["score"])
         if not math.isfinite(score):

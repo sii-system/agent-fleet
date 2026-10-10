@@ -57,10 +57,10 @@ class WAAAgent(BaseAgent):
         return "1"
 
     async def setup(self, environment):
-        from waa_benchmark.environment import WAAEnvironment
+        from waa_benchmark.environment import WAASession
 
-        if not isinstance(environment, WAAEnvironment):
-            raise TypeError("WAAAgent requires WAAEnvironment")
+        if not isinstance(environment, WAASession):
+            raise TypeError("WAAAgent requires a WAA session")
         if self.factory == "pcagent" and environment.action_space != "pyautogui":
             raise ValueError("PC-Agent requires pyautogui action space")
 

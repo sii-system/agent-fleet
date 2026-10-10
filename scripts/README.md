@@ -727,3 +727,9 @@ and Windows golden image first. The dedicated `Tasks/WindowsAgentArena/run.sh`
 provides domain selection and an output directory; resume uses Harbor’s CLI. The runner
 stays in the foreground; unified `--detach` prints a warning. Unified `--output`
 continues to mean a saved FleetSpec file.
+
+Select local Docker/Dockur with `HARBOR_WAA_BACKEND=docker` and
+`HARBOR_WAA_DOCKER_STORAGE=/srv/waa-v2/golden/storage`. Each trial boots an
+independent copy of shut-down prepared Windows storage. The dedicated launcher
+also accepts `--backend docker`; see the
+[Docker prerequisites and settings](../Tasks/WindowsAgentArena/README.md#docker--dockur).

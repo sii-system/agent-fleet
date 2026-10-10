@@ -15,7 +15,7 @@ from .dataset import BENCHMARKS, digest
 from .source import validate_runtime
 
 
-class WAAEnvironment(KubeVirtWindowsEnvironment):
+class WAASession:
     def __init__(self, *args, runtime, pcagent_runtime, screen_size=None, action_space="pyautogui", a11y=False,
                  native_python=None, **kwargs):
         self.runtime, self.pcagent_runtime = Path(runtime).resolve(), Path(pcagent_runtime).resolve()
@@ -35,17 +35,12 @@ class WAAEnvironment(KubeVirtWindowsEnvironment):
             raise ValueError("Native WAA task checksum mismatch")
         if self.settings.guest_protocol != "waa" or self.settings.guest_port != 5000:
             raise ValueError("WAA tasks require the WAA command server on guest port 5000")
-        if self.settings.guest_node_port or not {9222, 8080}.issubset(self.settings.extra_guest_ports):
-            raise ValueError("WAA requires dynamic NodePorts and auxiliary guest ports 9222,8080")
+        self._validate_native_ports()
         if action_space not in ("pyautogui", "code_block", "computer_13"):
             raise ValueError("Unsupported native WAA action space")
         self.screen_size = tuple(screen_size or release["screen_size"])
         if len(self.screen_size) != 2 or any(int(value) <= 0 for value in self.screen_size):
             raise ValueError("Screenshot dimensions must be positive")
-
-    @staticmethod
-    def type():
-        return "waa-kubevirt-windows"
 
     async def start(self, force_build=False):
         if self.worker is not None and self.worker.returncode is None:
@@ -116,3 +111,13 @@ class WAAEnvironment(KubeVirtWindowsEnvironment):
             await self._stop_worker()
         finally:
             await super().stop(delete=delete)
+
+
+class WAAEnvironment(WAASession, KubeVirtWindowsEnvironment):
+    @staticmethod
+    def type():
+        return "waa-kubevirt-windows"
+
+    def _validate_native_ports(self):
+        if self.settings.guest_node_port or not {9222, 8080}.issubset(self.settings.extra_guest_ports):
+            raise ValueError("WAA requires dynamic NodePorts and auxiliary guest ports 9222,8080")
