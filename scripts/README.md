@@ -727,3 +727,18 @@ and Windows golden image first. The dedicated `Tasks/WindowsAgentArena/run.sh`
 provides domain selection and an output directory; resume uses Harbor’s CLI. The runner
 stays in the foreground; unified `--detach` prints a warning. Unified `--output`
 continues to mean a saved FleetSpec file.
+
+### Agents' Last Exam
+
+ALE uses the same explicit setup and Harbor launch workflow. Run
+`./Tasks/AgentsLastExam/setup.sh`, configure `HARBOR_ALE_IMAGE_MAP` and the prepared
+Linux/Windows agent entrypoints, then run
+`./scripts/run_fleet.sh --taskset ale --workers 4`. FleetSpec and prompt mode
+support `ale`, `ale-command` (default), custom `module:Class` Harbor agents and
+exact `--task` selection. The dedicated `Tasks/AgentsLastExam/run.sh` also accepts
+`--all`, `--domain`, `--os`, `--workers`, `--model` and `--output`.
+It covers Linux and Windows CPU tasks and excludes GPU tasks; Linux prefers SBX
+with Docker fallback and Windows defaults to the shared KubeVirt backend.
+Set `HARBOR_ALE_WINDOWS_BACKEND=docker` to run Windows tasks on local
+Docker/Dockur using each snapshot's `docker_storage` image-map field. Linux keeps
+SBX with Docker fallback. See [ALE setup, images, runs and resume](../Tasks/AgentsLastExam/README.md).

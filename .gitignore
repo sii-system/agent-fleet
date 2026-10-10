@@ -5,6 +5,7 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 Tasks/WindowsAgentArena/uv.lock
+Tasks/AgentsLastExam/uv.lock
 
 # Node/build artifacts
 node_modules/

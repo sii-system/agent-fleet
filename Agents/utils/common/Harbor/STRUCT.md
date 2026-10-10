@@ -23,6 +23,8 @@ Agents/utils/common/Harbor/
 ├── qz_task_instruction.py      # Exact QZ setup-prefix handoff before agent run
 ├── run_kubevirt_windows.sh     # Windows-only Harbor launcher; skips Linux installers
 ├── kubevirt_windows/           # KubeVirt/CDI lifecycle, WAA/ALE Windows transports, environment and agent bridge
+├── docker_windows/             # Local Dockur lifecycle, owned storage and Windows environment
+├── windows_guest.py            # Shared Windows execution, transfers and log recovery
 ├── KUBEVIRT_WINDOWS_README.md  # Windows image, guest transport, and consumer contracts
 ├── prepare_local_deps.sh       # Thin Python launcher
 ├── prepare_local_deps.py       # Package/cache preparation implementation

@@ -19,7 +19,7 @@ class ALETransport(WindowsTransport):
 
     async def _cmd(self, command, params, *, timeout=60):
         raw = await self._request(
-            "POST", "/cmd", timeout=timeout,
+            "POST", "/cmd", timeout=timeout, first_sse_event=True,
             json={"command": command, "params": params},
         )
         # CUA returns data: JSON even with Content-Type: text/plain. Ignore
@@ -54,8 +54,11 @@ class ALETransport(WindowsTransport):
                 "-ExecutionPolicy Bypass -EncodedCommand " + encoded_powershell(script)},
             timeout=timeout,
         )
-        if type(result.get("return_code")) is not int or result["return_code"] != 0:
-            raise RuntimeError("ALE PowerShell helper failed")
+        code = result.get("return_code")
+        if type(code) is not int:
+            raise RuntimeError("ALE PowerShell helper failed (missing or invalid return_code)")
+        if code != 0:
+            raise RuntimeError(f"ALE PowerShell helper failed (return_code={code})")
         return result.get("stdout")
 
     async def upload_file(self, source, target):

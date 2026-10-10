@@ -233,6 +233,20 @@ exit "${STUB_EXIT:-0}"
             response=self.response(spec={"schema_version": 1, "taskset": "waa", "agent": "pi"}))
         self.assertNotEqual(result.returncode, 0)
 
+    def test_prompt_routes_ale_default_and_custom_agents(self):
+        for agent in (None, "ale-command", "custom:Agent"):
+            spec = {"schema_version": 1, "taskset": "ale", "workers": 2, "task": "visual_media/example"}
+            if agent:
+                spec["agent"] = agent
+            result = self.run_goal("--prompt", "Run ALE", "--dry-run", response=self.response(spec=spec))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("AgentsLastExam/run.sh", result.stdout)
+            self.assertIn("--workers 2", result.stdout)
+            self.assertIn("--task visual_media/example", result.stdout)
+        rejected = self.run_goal("--prompt", "Run ALE with pi", "--dry-run",
+            response=self.response(spec={"schema_version": 1, "taskset": "ale", "agent": "pi"}))
+        self.assertNotEqual(rejected.returncode, 0)
+
     def test_prompt_routes_supported_harbor_agents(self):
         for agent in ("pi", "dsh-sdk-minimal"):
             with self.subTest(agent=agent):

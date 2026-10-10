@@ -1,10 +1,10 @@
 """KubeVirt-native VM lifecycle over the Kubernetes API server.
 
 A KubeVirt Windows trial is a `VirtualMachine` (kubevirt.io/v1) that boots
-an independent CDI clone of a Windows golden-image PVC (SATA bus, since the
-image carries no virtio storage driver), uses the pod network via masquerade
-with the guest HTTP port declared, and is reachable from the runner through a NodePort
-Service. The control plane talks only to the kube-apiserver over HTTPS using
+an independent CDI clone or native ephemeral overlay of a Windows golden-image
+PVC (SATA bus, since the image carries no virtio storage driver). It uses the
+pod network via masquerade with the guest HTTP port declared and is reachable
+from the runner through a NodePort Service. The control plane talks only to the kube-apiserver over HTTPS using
 mTLS credentials loaded from a kubeconfig; it never shells out to `kubectl`.
 """
 
@@ -27,6 +27,8 @@ DEFAULT_CPU_CORES = 2
 DEFAULT_CPU_SOCKETS = 1
 DEFAULT_MEMORY_GUEST = "4Gi"
 DEFAULT_DISK_BUS = "sata"  # Windows golden images lack a virtio storage driver
+DISK_MODE_CLONE = "clone"
+DISK_MODE_OVERLAY = "overlay"
 
 _KUBEVIRT_VM_GROUP = "kubevirt.io/v1"
 _SUBRESOURCE_GROUP = "apis/subresources.kubevirt.io/v1"
@@ -91,6 +93,7 @@ class Settings:
     transfer_timeout: int = 300
     guest_protocol: str = "waa"
     extra_guest_ports: tuple[int, ...] = ()
+    disk_mode: str = DISK_MODE_CLONE
 
     @property
     def guest_port(self):
@@ -161,6 +164,16 @@ class Settings:
         disk_bus = os.environ.get("HARBOR_KUBEVIRT_DISK_BUS", DEFAULT_DISK_BUS)
         if disk_bus not in ("sata", "virtio", "scsi"):
             raise ValueError("disk_bus must be one of: sata, virtio, scsi")
+        disk_mode = os.environ.get("HARBOR_KUBEVIRT_DISK_MODE", DISK_MODE_CLONE)
+        if disk_mode not in (DISK_MODE_CLONE, DISK_MODE_OVERLAY):
+            raise ValueError("HARBOR_KUBEVIRT_DISK_MODE must be clone or overlay")
+        if disk_mode == DISK_MODE_OVERLAY:
+            for suffix in ("BASE", "DIR", "RUNNER_IMAGE"):
+                if os.environ.get("HARBOR_KUBEVIRT_OVERLAY_" + suffix):
+                    raise ValueError(
+                        "Node-local overlay settings are unsupported; remove "
+                        "HARBOR_KUBEVIRT_OVERLAY_* and use a golden PVC in HARBOR_KUBEVIRT_IMAGE"
+                    )
         return cls(
             cluster=Cluster(
                 api_server=api_server,
@@ -173,6 +186,7 @@ class Settings:
             node=node,
             storage_class=os.environ.get("HARBOR_KUBEVIRT_STORAGE_CLASS", ""),
             disk_bus=disk_bus,
+            disk_mode=disk_mode,
             waa_port=waa_port,
             waa_node_port=waa_node_port,
             start_timeout=start_timeout,
@@ -266,14 +280,17 @@ def build_create_request(
     memory_mb: int | None = None,
     disk_bus: str | None = None,
 ) -> dict:
-    """Build a VM with its own CDI-managed persistent clone of the golden PVC.
+    """Build a VM with a persistent clone or native ephemeral COW root disk.
 
-    KubeVirt owns the DataVolume template and CDI sizes the new PVC from its
-    source. Deleting the VM cascades to the clone; stopping it retains the disk.
+    Clone mode uses a CDI-managed DataVolume sized from its source; stopping
+    the VM retains the clone. Overlay mode uses a read-only backing PVC and a
+    KubeVirt-managed writable layer that is discarded when the VMI stops.
     The pod-network masquerade interface declares the WAA port; a NodePort
     Service (created by the control plane) exposes it to the runner.
     """
     disk_bus = disk_bus or settings.disk_bus
+    if settings.disk_mode not in (DISK_MODE_CLONE, DISK_MODE_OVERLAY):
+        raise ValueError("disk_mode must be clone or overlay")
     validate_image(settings.image)
     if not name or not RFC1123_NAME_RE.fullmatch(name):
         raise ValueError("VM name must be a lowercase RFC1123 DNS subdomain")
@@ -286,8 +303,17 @@ def build_create_request(
     memory = f"{memory_mb}Mi" if memory_mb is not None else DEFAULT_MEMORY_GUEST
 
     spec = jsonable(_WINDOWS_SPEC_BASE)
+    # ALE's Windows 10 image deadlocks in a kernel spinlock with interrupts
+    # disabled when nested virtualization is exposed: the guest initializes
+    # Hyper-V/virtualization support, then never acquires a lock. The WAA
+    # Windows 11 image tolerates it, but disabling vmx/svm is safe for both and
+    # is required for ALE. Nested Windows guests are not a supported workload.
     spec["domain"]["cpu"] = {
         "cores": cores, "sockets": DEFAULT_CPU_SOCKETS, "threads": 1,
+        "features": [
+            {"name": "vmx", "policy": "disable"},
+            {"name": "svm", "policy": "disable"},
+        ],
     }
     spec["domain"]["devices"]["interfaces"][0]["ports"] = [
         {"name": settings.guest_protocol, "port": settings.guest_port, "protocol": "TCP"}
@@ -317,9 +343,19 @@ def build_create_request(
     if settings.node:
         spec["nodeSelector"] = {"kubernetes.io/hostname": settings.node}
 
+    if settings.disk_mode == DISK_MODE_OVERLAY:
+        # KubeVirt creates a private qcow2 layer and mounts its backing PVC.
+        # Never use hostDisk for qcow2: its QEMU driver interprets files as raw.
+        spec["volumes"][0] = {
+            "name": "disk0",
+            "ephemeral": {"persistentVolumeClaim": {
+                "claimName": settings.image, "readOnly": True,
+            }},
+        }
+
     vm_labels = dict(labels or {})
     vm_labels.setdefault("kubevirt.io/domain", name)
-    return {
+    request = {
         "apiVersion": _KUBEVIRT_VM_GROUP,
         "kind": "VirtualMachine",
         "metadata": {
@@ -353,6 +389,10 @@ def build_create_request(
             },
         },
     }
+
+    if settings.disk_mode == DISK_MODE_OVERLAY:
+        del request["spec"]["dataVolumeTemplates"]
+    return request
 
 
 def jsonable(value):

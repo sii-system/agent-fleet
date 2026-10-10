@@ -56,26 +56,47 @@ class WindowsTransport:
     async def close(self):
         await self.client.aclose()
 
-    async def _request(self, method, path, *, timeout=60, target=None, **kwargs):
+    async def _request(self, method, path, *, timeout=60, target=None,
+                       first_sse_event=False, **kwargs):
         try:
             async with asyncio.timeout(timeout):
-                async with self.client.stream(method, path, timeout=timeout, **kwargs) as response:
-                    if response.status_code != 200:
-                        raise RuntimeError(f"{self.protocol} {path} failed (HTTP {response.status_code})")
-                    if target is not None:
-                        with target.open("wb") as output:
-                            async for chunk in response.aiter_bytes(65536):
-                                output.write(chunk)
-                        return b""
-                    output = bytearray()
-                    async for chunk in response.aiter_bytes(65536):
-                        if len(output) + len(chunk) > 16 * 1024 * 1024:
-                            raise RuntimeError(f"{self.protocol} control response exceeded its output limit")
-                        output.extend(chunk)
-                    return bytes(output)
-        except httpx.HTTPError:
+                for attempt in range(3):
+                    try:
+                        async with self.client.stream(method, path, timeout=timeout, **kwargs) as response:
+                            if response.status_code != 200:
+                                raise RuntimeError(f"{self.protocol} {path} failed (HTTP {response.status_code})")
+                            if target is not None:
+                                with target.open("wb") as output:
+                                    async for chunk in response.aiter_bytes(65536):
+                                        output.write(chunk)
+                                return b""
+                            output = bytearray()
+                            event_start = 0
+                            # Fixed-size buffering can wait past a complete SSE
+                            # event when the server keeps its stream open.
+                            async for chunk in response.aiter_bytes():
+                                if len(output) + len(chunk) > 16 * 1024 * 1024:
+                                    raise RuntimeError(f"{self.protocol} control response exceeded its output limit")
+                                output.extend(chunk)
+                                if first_sse_event:
+                                    while boundary := re.search(rb"\r?\n\r?\n", output[event_start:]):
+                                        end = event_start + boundary.end()
+                                        event = bytes(output[event_start:end]).removeprefix(b"\xef\xbb\xbf")
+                                        if any(line.startswith(b"data:") for line in event.splitlines()):
+                                            return bytes(output[:end])
+                                        event_start = end
+                            return bytes(output)
+                    except (httpx.ConnectError, httpx.ConnectTimeout):
+                        # No request was sent. Never replay commands after a
+                        # read/write error: they may already have taken effect.
+                        if attempt == 2:
+                            raise
+                        await asyncio.sleep(0.5 * (attempt + 1))
+        except httpx.HTTPError as error:
             # Response bodies and commands may contain guest credentials.
-            raise RuntimeError(f"{self.protocol} {path} transport failed") from None
+            raise RuntimeError(
+                f"{self.protocol} {path} transport failed ({type(error).__name__})"
+            ) from None
 
     async def powershell(self, script, *, timeout=60):
         # Guest subprocess decoding may use the Python locale. Emit ASCII

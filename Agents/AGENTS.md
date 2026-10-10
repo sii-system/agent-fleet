@@ -94,7 +94,12 @@ and optionally set `HARBOR_KUBEVIRT_GUEST_PORT` (default 5000).
 ALE support covers Windows tasks; SSH/WinRM and other benchmark images are
 outside this backend. Agents can be
 image-provided or provisioned with the optional pinned local preparation
-manifest. ALE benchmark adapters still belong to the consuming project.
+manifest. The native ALE Linux/Windows CPU benchmark adapter and launch commands
+live in [Tasks/AgentsLastExam](../Tasks/AgentsLastExam/README.md).
+ALE can also select the shared Docker/Dockur Windows backend with
+`HARBOR_ALE_WINDOWS_BACKEND=docker`, using ALE CUA and per-snapshot golden storage.
+Guest execution/transfer and log recovery are shared in `windows_guest.py`; Docker
+owns its labeled container and independent storage copy.
 Do not route Windows runs through the Linux runtime installers.
 
 ### Monitor, Analyzer, and Fixer
