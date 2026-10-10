@@ -20,6 +20,7 @@ from harbor.utils.path_filter import filter_paths_by_patterns
 
 from .ale import ALETransport
 from .control import (
+    DISK_MODE_OVERLAY,
     OWNER_LABEL,
     KubeVirtControl,
     PlatformAPIError,
@@ -132,7 +133,11 @@ class KubeVirtWindowsEnvironment(BaseEnvironment):
                             "vm": self.vm_name,
                             "namespace": self.settings.namespace,
                             "source_pvc": self.settings.image,
-                            "root_datavolume": self.vm_name + "-root",
+                            "root_datavolume": (
+                                None if self.settings.disk_mode == DISK_MODE_OVERLAY
+                                else self.vm_name + "-root"
+                            ),
+                            "disk_mode": self.settings.disk_mode,
                             "node": self.settings.node,
                             "guest_protocol": self.settings.guest_protocol,
                             "labels": {OWNER_LABEL: tag},
@@ -219,6 +224,12 @@ class KubeVirtWindowsEnvironment(BaseEnvironment):
                 return
             if vm.get("labels", {}).get(OWNER_LABEL) != self.token[:12]:
                 raise RuntimeError(f"VM ownership mismatch: {self.vm_name}")
+            if not delete and self.settings.disk_mode == DISK_MODE_OVERLAY:
+                # A native ephemeral disk is destroyed when its VMI stops.
+                # Keep the owned VM running so retain/debug preserves writes.
+                await self._preserve_logs()
+                self.logger.info("Retaining running overlay VM %s", self.vm_name)
+                return
             try:
                 # Startup failures can stop the VM before Harbor recovers logs.
                 # Keep a separate snapshot alive until this environment is freed.

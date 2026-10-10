@@ -21,8 +21,8 @@ directly by another project's Harbor configuration.
 
 The control plane follows KubeVirt's own API surface and talks **only** to the
 kube-apiserver over HTTPS; it never shells out to `kubectl`, `virtctl`, or a
-client library. Each trial is a fresh `VirtualMachine` (`kubevirt.io/v1`) that
-owns a **CDI DataVolume clone** of a golden-image PVC in the same namespace.
+client library. Each trial is a fresh `VirtualMachine` (`kubevirt.io/v1`).
+By default it owns a **CDI DataVolume clone** of a golden-image PVC in the same namespace.
 `HARBOR_KUBEVIRT_IMAGE` identifies that source PVC. Each VM attaches only its
 unique `<vm-name>-root` clone; task writes never reach the golden image or another
 trial. KubeVirt manages clone creation through `spec.dataVolumeTemplates` and
@@ -31,11 +31,13 @@ Stopping a retained VM preserves its clone; deleting the VM garbage-collects
 its DataVolume and PVC. The storage class's reclaim policy controls removal of
 the underlying storage.
 
-The cluster must have CDI and a provisioner/storage profile capable of PVC
+Clone mode requires CDI and a provisioner/storage profile capable of PVC
 cloning. `HARBOR_KUBEVIRT_STORAGE_CLASS` selects target storage; when omitted,
 CDI uses the cluster's default virtualization/storage class. See the
 [CDI storage and PVC cloning contract](https://github.com/kubevirt/containerized-data-importer/blob/main/doc/datavolumes.md).
 `HARBOR_KUBEVIRT_NODE` is an optional scheduling constraint for node-local storage.
+To avoid per-trial cloning, select [native overlay mode](#overlay-disk-mode-avoid-per-trial-clone);
+it uses the same golden PVC and lets KubeVirt manage each trial's writable layer.
 
 - Create: `POST /apis/kubevirt.io/v1/namespaces/{ns}/virtualmachines`
 - Read status + pod IP: `GET .../virtualmachineinstances/{name}` (`status.interfaces[].ipAddress`)
@@ -96,6 +98,12 @@ transport to `node_ip:node_port`.
 
 ## ALE Windows guest contract
 
+The native ALE Linux/Windows CPU benchmark adapter is in
+[Tasks/AgentsLastExam](../../../../Tasks/AgentsLastExam/README.md). It converts
+all CPU task variants and retains native setup, reference staging and grading
+through Harbor. Windows trials use this backend; Linux trials prefer SBX with Docker
+fallback. GPU tasks are excluded.
+
 Set `HARBOR_KUBEVIRT_GUEST_PROTOCOL=ale` for an imported ALE Windows image.
 The source PVC must include the applications and task data expected by the
 selected Windows tasks. Preserve the CUA server's startup and interactive
@@ -109,7 +117,12 @@ Responses contain SSE `data:` JSON records, including when the content type is
 `return_code`. The backend sends encoded PowerShell helper commands and uses the
 same detached `execute.ps1` supervisor as WAA for cmd.exe semantics, per-command
 working directories/environment, long runs, and process-tree timeout/cancellation.
-It does not retry commands after ambiguous transport failures.
+The client returns after the first complete SSE result, without waiting for the
+server to close the stream. Guest requests retry connection establishment at
+most twice, within the original request deadline. Read/write failures and failed
+command responses are not retried because commands may already have executed.
+Transport errors report the HTTP exception type; unsuccessful PowerShell helpers
+report their exit code. Response bodies and command contents remain redacted.
 
 Binary transfers use CUA `write_bytes` (`path`, `content_b64`) and `read_bytes`
 (`path`, `offset`, `length`; response `content_b64`). Uploads stage 1 MiB chunks,
@@ -125,6 +138,10 @@ and CUA's
 and [file interface](https://github.com/trycua/cua/blob/0f29c142d7fe3e05ea0ce276cee11b3a9725ba01/libs/python/computer-server/computer_server/handlers/base.py).
 This supports ALE's image-local CUA HTTP service without cloud-provider auth.
 Controller credentials are never forwarded to the guest.
+
+The shared VM manifest disables guest `vmx` and `svm` CPU features. Nested
+virtualization inside Windows guests is unsupported; prepare task software
+without relying on a nested hypervisor.
 
 Example using externally adapted Windows Harbor tasks:
 
@@ -182,6 +199,7 @@ Optional settings:
 | `HARBOR_KUBEVIRT_NODE` | empty | Optional node hostname constraint, for example for node-local storage |
 | `HARBOR_KUBEVIRT_NAMESPACE` | `default` | Namespace for the VM and guest Service |
 | `HARBOR_KUBEVIRT_DISK_BUS` | `sata` | Root disk bus (sata/virtio/scsi); Windows golden images need SATA |
+| `HARBOR_KUBEVIRT_DISK_MODE` | `clone` | Root disk backend: persistent CDI clone (`clone`) or KubeVirt native ephemeral COW layer over the selected golden PVC (`overlay`) |
 | `HARBOR_KUBEVIRT_GUEST_PROTOCOL` | `waa` | `waa` or `ale`; ALE Windows CUA protocol |
 | `HARBOR_KUBEVIRT_GUEST_PORT` | `5000` | Guest HTTP port; falls back to `HARBOR_KUBEVIRT_WAA_PORT` when unset |
 | `HARBOR_KUBEVIRT_GUEST_NODE_PORT` | auto | Optional explicit nodePort; falls back to `HARBOR_KUBEVIRT_WAA_NODE_PORT` when unset |
@@ -213,6 +231,45 @@ clone's disk capacity from the golden PVC; `storage_mb` is rejected. Create
 defines a stopped VM and its DataVolume template, then the backend requests
 power-on. It supports CPU/memory limit policies, not Kubernetes request
 or guarantee policies.
+
+### Overlay disk mode (avoid per-trial clone)
+
+Set `HARBOR_KUBEVIRT_DISK_MODE=overlay` to use KubeVirt's native
+[ephemeral PVC volume](https://kubevirt.io/user-guide/storage/disks_and_volumes/#ephemeral).
+KubeVirt creates an independent writable qcow2 layer for each running VM over
+its read-only golden PVC. This avoids a CDI clone for each trial; KubeVirt
+mounts the backing PVC and manages the layer's creation and cleanup. No helper
+pods, node host paths, or shell commands are involved.
+
+```bash
+export HARBOR_KUBEVIRT_DISK_MODE=overlay
+export HARBOR_KUBEVIRT_IMAGE=ale-cpu-free     # existing golden PVC, not a file path
+# Pin the node when required by a local/RWO golden PVC's storage constraints:
+export HARBOR_KUBEVIRT_NODE=cpu-nat-184
+```
+
+- **Preparation.** Import the golden image into a PVC using the existing image
+  preparation guide. Filesystem PVCs must contain the raw `disk.img` expected by
+  KubeVirt. Preserve the guest server, applications, licenses, and task data.
+- **Image selection.** The backing PVC is always `HARBOR_KUBEVIRT_IMAGE` for
+  direct Windows runs. ALE selects each task's free/licensed PVC from its image
+  map, exactly as it does in clone mode. Each PVC remains unmodified.
+- **Scheduling.** Golden PVC access modes and node affinity still apply. Local
+  or RWO PVCs may require all concurrent trials to run on the same node. The node
+  needs enough ephemeral disk space for each trial's writes.
+- **Retention.** A native overlay survives guest OS reboots but is discarded
+  when the VMI stops or is recreated. `stop(delete=False)` keeps an owned overlay
+  VM running for inspection and disconnects the runner. Delete it explicitly
+  afterward to release resources. Use the default `clone` mode when the disk
+  must survive a platform-level VM stop/restart.
+- **Cleanup.** Deleting the owned trial VM lets KubeVirt reclaim its private
+  overlay; the golden PVC is never deleted. Failed deletion preserves retry
+  state, and ownership mismatches never stop or delete the VM.
+
+The former node-local `HARBOR_KUBEVIRT_OVERLAY_BASE`, `OVERLAY_DIR`, and
+`OVERLAY_RUNNER_IMAGE` settings are unsupported. Remove them and select an
+existing golden PVC. Clone mode remains the default; its speed depends on the
+storage class and CDI clone strategy (host copy, snapshot, or CSI clone).
 
 Select this environment through Harbor's supported import path:
 

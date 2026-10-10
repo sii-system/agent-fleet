@@ -12,6 +12,7 @@ Benchmarks, task lists, and automated task workflows.
 | [`SWE-verify/`](./SWE-verify/) | SWE-bench Verified task list for Harbor. |
 | [`SWE-smith/`](./SWE-smith/) | SWE-Smith task list for Harbor. |
 | [`TMax/`](./TMax/) | TMax Harbor registry dataset entrypoint. |
+| [`AgentsLastExam/`](./AgentsLastExam/) | Native ALE Linux/Windows CPU variants through Harbor with SBX/Docker and KubeVirt. |
 | [`Terminal-bench-2/`](./Terminal-bench-2/) | Terminal-Bench task lists for Harbor. |
 | [`SETA/`](./SETA/) | SETA task lists. |
 | [`BrowseComp/`](./BrowseComp/) | BrowseComp native Harbor tasks; automatic startup or manual CSV preparation. |

@@ -101,6 +101,90 @@ class ALETransportTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(RuntimeError, "limit"):
             await self.guest.powershell("echo x")
 
+    async def test_connection_failures_retry_before_sending_command(self):
+        for failure in (httpx.ConnectError, httpx.ConnectTimeout):
+            attempts = []
+
+            def handler(request, attempts=attempts, failure=failure):
+                attempts.append(request)
+                if len(attempts) < 3:
+                    raise failure("fake-secret", request=request)
+                return httpx.Response(200, text=sse({"success": True, "return_code": 0, "stdout": ""}))
+
+            await self.guest.client.aclose()
+            self.guest.client = httpx.AsyncClient(
+                base_url="http://192.0.2.10:5000", transport=httpx.MockTransport(handler),
+            )
+            with patch("kubevirt_windows.transport.asyncio.sleep", new_callable=AsyncMock):
+                self.assertEqual(await self.guest.powershell("echo x"), "")
+            self.assertEqual(len(attempts), 3)
+            self.assertTrue(all(request.content == attempts[0].content for request in attempts))
+
+    async def test_transport_failures_are_bounded_and_redacted(self):
+        for failure, expected_attempts in (
+            (httpx.ConnectError, 3), (httpx.ConnectTimeout, 3),
+            (httpx.ReadError, 1), (httpx.ReadTimeout, 1),
+            (httpx.WriteError, 1), (httpx.WriteTimeout, 1),
+            (httpx.RemoteProtocolError, 1), (httpx.PoolTimeout, 1),
+        ):
+            attempts = []
+
+            def handler(request, attempts=attempts, failure=failure):
+                attempts.append(request)
+                raise failure("fake-secret", request=request)
+
+            await self.guest.client.aclose()
+            self.guest.client = httpx.AsyncClient(
+                base_url="http://192.0.2.10:5000", transport=httpx.MockTransport(handler),
+            )
+            with (patch("kubevirt_windows.transport.asyncio.sleep", new_callable=AsyncMock),
+                  self.assertRaisesRegex(RuntimeError, failure.__name__) as caught):
+                await self.guest.powershell("fake-secret")
+            self.assertNotIn("fake-secret", str(caught.exception))
+            self.assertEqual(len(attempts), expected_attempts)
+
+    async def test_connection_retry_respects_original_deadline_and_cancellation(self):
+        attempts = []
+
+        def handler(request):
+            attempts.append(request)
+            raise httpx.ConnectError("fake-secret", request=request)
+
+        await self.guest.client.aclose()
+        self.guest.client = httpx.AsyncClient(
+            base_url="http://192.0.2.10:5000", transport=httpx.MockTransport(handler),
+        )
+        with self.assertRaises(TimeoutError):
+            await self.guest.powershell("echo x", timeout=0.02)
+        self.assertEqual(len(attempts), 1)
+        with (patch("kubevirt_windows.transport.asyncio.sleep", new_callable=AsyncMock,
+                    side_effect=asyncio.CancelledError),
+              self.assertRaises(asyncio.CancelledError)):
+            await self.guest.powershell("echo x")
+        self.assertEqual(len(attempts), 2)
+
+    async def test_helper_failures_report_only_exit_code(self):
+        for code, diagnostic in ((7, "return_code=7"), (None, "invalid return_code"),
+                                 ("fake-secret", "invalid return_code")):
+            await self.respond(httpx.Response(200, text=sse({
+                "success": True, "return_code": code, "stdout": "fake-secret", "stderr": "fake-secret",
+            })))
+            with self.assertRaisesRegex(RuntimeError, diagnostic) as caught:
+                await self.guest.powershell("fake-secret")
+            self.assertNotIn("fake-secret", str(caught.exception))
+
+    async def test_read_failure_after_partial_event_does_not_replay_command(self):
+        class BrokenStream(httpx.AsyncByteStream):
+            async def __aiter__(self):
+                yield b'data: {"success":'
+                raise httpx.ReadError("fake-secret")
+
+        await self.respond(httpx.Response(200, stream=BrokenStream()))
+        with self.assertRaisesRegex(RuntimeError, "ReadError") as caught:
+            await self.guest.powershell("echo x")
+        self.assertNotIn("fake-secret", str(caught.exception))
+        self.assertEqual(len(self.requests), 1)
+
     async def test_supervised_execution_preserves_request_data_and_exit_code(self):
         captured = {}
 
@@ -200,6 +284,50 @@ class ALETransportTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ALELoopbackTests(unittest.IsolatedAsyncioTestCase):
+    async def test_cmd_returns_first_event_while_server_keeps_stream_open(self):
+        release = threading.Event()
+        calls = []
+
+        class Handler(BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def log_message(self, *_):
+                pass
+
+            def do_POST(self):
+                calls.append(self.rfile.read(int(self.headers["Content-Length"])))
+                self.send_response(200)
+                # Native CUA can label SSE as text/plain.
+                self.send_header("Content-Type", "text/plain")
+                self.send_header("Transfer-Encoding", "chunked")
+                self.end_headers()
+                wire = ('\ufeff: heartbeat\r\n\r\nevent: result\r\n'
+                        'data: {"success":true,\r\ndata: "return_code":0,"stdout":"5Lu75Yqh4pyT"}\r\n\r\n').encode()
+                for byte in wire:
+                    self.wfile.write(b"1\r\n" + bytes([byte]) + b"\r\n")
+                    self.wfile.flush()
+                release.wait(5)
+                self.close_connection = True
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=lambda: server.serve_forever(poll_interval=0.01), daemon=True)
+        thread.start()
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                guest = ALETransport(SimpleNamespace(waa_port=5000), "trial", "127.0.0.1",
+                                     Path(tmp), guest_port=server.server_port)
+                try:
+                    self.assertEqual(await guest.powershell("echo x", timeout=1), "任务✓")
+                    self.assertFalse(release.is_set())
+                    self.assertEqual(len(calls), 1)
+                finally:
+                    await guest.close()
+        finally:
+            release.set()
+            server.shutdown()
+            server.server_close()
+            thread.join()
+
     async def test_real_http_sse_and_chunked_binary_roundtrip(self):
         files = {}
         calls = []

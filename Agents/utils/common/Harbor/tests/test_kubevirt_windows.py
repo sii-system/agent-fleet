@@ -21,8 +21,10 @@ from harbor.models.task.config import EnvironmentConfig
 from harbor.models.trial.paths import TrialPaths
 from kubevirt_windows.agent import WindowsCommandAgent
 from kubevirt_windows.control import (
+    DISK_MODE_OVERLAY,
     OWNER_LABEL,
     Cluster,
+    PlatformAPIError,
     Settings,
 )
 from kubevirt_windows.environment import KubeVirtWindowsEnvironment
@@ -247,6 +249,98 @@ class EnvironmentTests(unittest.IsolatedAsyncioTestCase):
         environment.control.delete.assert_awaited_once_with(
             environment.vm_name, owner=environment.token[:12]
         )
+
+    def overlay_environment(self):
+        with patch.object(Settings, "from_env", return_value=replace(
+                self.settings, disk_mode=DISK_MODE_OVERLAY)):
+            environment = self.environment()
+        environment.control = AsyncMock()
+        environment.control.get.return_value = {
+            "labels": {OWNER_LABEL: environment.token[:12]},
+            "ready": True, "ip": "192.0.2.10",
+        }
+        environment.control.expose_guest.return_value = "192.0.2.10:30050"
+        return environment
+
+    async def test_overlay_start_records_native_disk_and_deletes_owned_vm(self):
+        environment = self.overlay_environment()
+        with patch("kubevirt_windows.environment.WAATransport") as transport:
+            transport.return_value = AsyncMock()
+            await environment.start()
+        metadata = json.loads((self.root / "trial/kubevirt.json").read_text())
+        self.assertEqual(metadata["disk_mode"], "overlay")
+        self.assertIsNone(metadata["root_datavolume"])
+        self.assertEqual(metadata["source_pvc"], self.settings.image)
+        await environment.stop()
+        environment.control.delete.assert_awaited_once_with(
+            environment.vm_name, owner=environment.token[:12])
+        self.assertFalse(environment._created)
+        self.assertFalse(environment._create_attempted)
+
+    async def test_retained_overlay_keeps_vm_running_and_closes_local_resources(self):
+        environment = self.overlay_environment()
+        environment._created = True
+        environment.transport = AsyncMock()
+        environment._local_dir = tempfile.TemporaryDirectory()
+        await environment.stop(delete=False)
+        environment.control.stop.assert_not_awaited()
+        environment.control.delete.assert_not_awaited()
+        environment.transport.close.assert_awaited_once()
+        environment.control.close.assert_awaited_once()
+        self.assertIsNone(environment._local_dir)
+        self.assertTrue(environment._created)
+        with self.assertRaisesRegex(RuntimeError, "retained"):
+            await environment.start()
+        await environment.stop(delete=True)
+        environment.control.delete.assert_awaited_once()
+        self.assertFalse(environment._created)
+
+    async def test_overlay_ownership_mismatch_never_mutates_vm(self):
+        environment = self.overlay_environment()
+        environment._created = True
+        environment.control.get.return_value = {"labels": {OWNER_LABEL: "other"}}
+        with self.assertRaisesRegex(RuntimeError, "ownership"):
+            await environment.stop()
+        environment.control.stop.assert_not_awaited()
+        environment.control.delete.assert_not_awaited()
+        self.assertTrue(environment._created)
+
+    async def test_overlay_delete_failure_preserves_retry_state(self):
+        environment = self.overlay_environment()
+        environment._created = environment._create_attempted = True
+        environment.control.delete.side_effect = [RuntimeError("delete failed"), None]
+        with self.assertRaisesRegex(RuntimeError, "delete failed"):
+            await environment.stop()
+        self.assertTrue(environment._created)
+        self.assertTrue(environment._create_attempted)
+        await environment.stop()
+        self.assertEqual(environment.control.delete.await_count, 2)
+        self.assertFalse(environment._created)
+        self.assertFalse(environment._create_attempted)
+
+    async def test_overlay_start_cancel_or_timeout_cleans_partially_created_vm(self):
+        for failure in (asyncio.CancelledError(), TimeoutError("create timed out")):
+            with self.subTest(failure=type(failure).__name__):
+                environment = self.overlay_environment()
+                environment.control.create.side_effect = failure
+                with self.assertRaises(type(failure)):
+                    await environment.start()
+                environment.control.delete.assert_awaited_once_with(
+                    environment.vm_name, owner=environment.token[:12])
+                self.assertFalse(environment._create_attempted)
+                self.assertIsNone(environment._local_dir)
+
+    async def test_overlay_create_failure_without_vm_cleans_service_only(self):
+        environment = self.overlay_environment()
+        environment.control.create.side_effect = RuntimeError("POST failed")
+        environment.control.get.side_effect = PlatformAPIError("missing", code=404)
+        with self.assertRaisesRegex(RuntimeError, "POST failed"):
+            await environment.start()
+        environment.control.delete.assert_not_awaited()
+        environment.control.delete_service.assert_awaited_once_with(
+            environment.vm_name, owner=environment.token[:12])
+        self.assertFalse(environment._create_attempted)
+        self.assertIsNone(environment._local_dir)
 
     async def test_failed_start_cleans_up(self):
         environment = self.environment()
@@ -556,6 +650,15 @@ class EnvironmentTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse((self.root / "saved/interrupted.log").exists())
         await environment.download_dir("C:/logs/artifacts", self.root / "artifacts")
         self.assertEqual((self.root / "artifacts/result.txt").read_text(), "artifact")
+
+    async def test_retained_overlay_preserves_logs_without_stopping_vm(self):
+        environment = self.running_environment({"C:/logs/agent/agent.log": "guest agent"})
+        environment.settings = replace(environment.settings, disk_mode=DISK_MODE_OVERLAY)
+        await environment.stop(delete=False)
+        environment.control.stop.assert_not_awaited()
+        environment.control.delete.assert_not_awaited()
+        await environment.download_dir("C:/logs/agent", self.root / "saved-overlay")
+        self.assertEqual((self.root / "saved-overlay/agent.log").read_text(), "guest agent")
 
     async def test_snapshot_timeout_does_not_block_vm_cleanup(self):
         environment = self.running_environment({})

@@ -95,6 +95,11 @@ WindowsAgentArena or WAA requests use taskset waa. WindowsAgentArena-V2,
 WAA-V2, WAA-2 or WAA2 requests use taskset waa-v2. Both are full Harbor benchmarks. It supports pcagent (default) or an explicitly named module:factory
 custom agent. Other agents are unsupported for these tasksets; return ready=false.
 
+Agents' Last Exam or ALE requests use taskset ale, a full Linux/Windows CPU Harbor
+benchmark with GPU tasks excluded. Its default agent is ale-command, using
+image-provided entrypoints, or an explicitly named module:Class Harbor agent.
+Other agent aliases are unsupported for this taskset; return ready=false.
+
 Harbor tasksets include seta, smith, terminalbench21, sweverify,
 agent-fleet-swe-rebench-v2, registry ids, and explicit local paths. Supported
 Harbor agents are claude-code, opencode, pi, and dsh-sdk-minimal.
@@ -108,7 +113,7 @@ Preserve explicit registry ids and local paths exactly.
 Copy task names exactly as written. Join multiple explicit names with commas.
 Never invent or complete a task name, and never infer a taskset from task names.
 Task selection is supported only for seta, smith, terminalbench21, sweverify,
-agent-fleet-swe-rebench-v2, explicit local paths, waa, waa-v2, waa2, pinchbench, and clawbio. If
+agent-fleet-swe-rebench-v2, explicit local paths, waa, waa-v2, waa2, ale, pinchbench, and clawbio. If
 exact tasks are requested for another registry id, return ready=false.
 
 Return one specs element for each explicitly requested run. For example, a run
@@ -203,6 +208,8 @@ if ! specs="$(jq -ce -L "$SCRIPT_DIR" '
     then ((has("agent") | not) or .agent == "openclaw")
     elif .taskset == "waa" or .taskset == "waa-v2" or .taskset == "waa2"
     then ((has("agent") | not) or .agent == "pcagent" or (.agent | contains(":")))
+    elif .taskset == "ale"
+    then ((has("agent") | not) or .agent == "ale-command" or (.agent | contains(":")))
     else ((has("agent") | not) or .agent == "claude-code" or .agent == "opencode" or .agent == "pi" or .agent == "dsh-sdk-minimal")
     end;
   .specs | map(

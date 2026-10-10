@@ -87,6 +87,9 @@ exit "${STUB_EXIT:-0}"
         waa = self.repo / "Tasks/WindowsAgentArena/run.sh"
         waa.parent.mkdir(parents=True)
         waa.write_text("#!/usr/bin/env bash\nset -euo pipefail\nprintf 'runner=waa\\nargs=%s\\n' \"$*\"\n", encoding="utf-8")
+        ale = self.repo / "Tasks/AgentsLastExam/run.sh"
+        ale.parent.mkdir(parents=True)
+        ale.write_text("#!/usr/bin/env bash\nset -euo pipefail\nprintf 'runner=ale\\nargs=%s\\n' \"$*\"\n", encoding="utf-8")
 
     def tearDown(self):
         self.temp_dir.cleanup()
@@ -134,6 +137,25 @@ exit "${STUB_EXIT:-0}"
         self.assertIn("runner=waa", result.stdout)
         self.assertIn("--agent pcagent --all --workers 3", result.stdout)
         self.assertNotIn("runner=harbor", result.stdout)
+
+    def test_ale_full_and_selected_runs_use_benchmark_workflow(self):
+        full = self.run_fleet("--taskset", "ale", "--workers", "3")
+        self.assertEqual(full.returncode, 0, full.stderr)
+        self.assertIn("runner=ale", full.stdout)
+        self.assertIn("--agent ale-command --all --workers 3", full.stdout)
+        output = self.root / "ale-spec.json"
+        selected = self.run_fleet("--taskset", "ale", "--task", "visual_media/example,computing_math/linux",
+                                  "--agent", "custom:Agent", "--output", str(output))
+        self.assertEqual(selected.returncode, 0, selected.stderr)
+        self.assertIn("--agent custom:Agent --task visual_media/example,computing_math/linux", selected.stdout)
+        self.assertEqual(json.loads(output.read_text())["taskset"], "ale")
+        replay = self.run_fleet("--spec", str(output))
+        self.assertEqual(replay.returncode, 0, replay.stderr)
+        self.assertIn("runner=ale", replay.stdout)
+        self.assertIn("--agent custom:Agent --task visual_media/example,computing_math/linux", replay.stdout)
+        dry = self.run_fleet("--taskset", "ale", "--task", "visual_media/example", "--validate-task-selection")
+        self.assertEqual(dry.returncode, 0, dry.stderr)
+        self.assertIn("--dry-run", dry.stdout)
 
     def test_waa_releases_route_to_separate_harbor_adapters(self):
         for taskset, benchmark in (("waa", "waa"), ("waa-v2", "waa-v2"), ("waa2", "waa-v2")):

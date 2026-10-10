@@ -13,6 +13,38 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  ale-native-checks:
+    name: ALE native Harbor adapter
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@83679a892e2d95755f2dac6acb0bfd1e9ac5d548 # v6.1.0
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: Tasks/AgentsLastExam/pyproject.toml
+      - name: Prepare native driver and run the Harbor trial regression
+        env:
+          PYTHONPATH: Tasks/AgentsLastExam:Agents/utils/common/Harbor:.
+          PYTHONDONTWRITEBYTECODE: "1"
+          ALE_TEST_SOURCE: /tmp/ale-source
+          ALE_TEST_PYTHON: /tmp/ale-native/bin/python
+          UV_PROJECT_ENVIRONMENT: /tmp/ale-host
+        run: |
+          set -euo pipefail
+          uv sync --python 3.12 --project Tasks/AgentsLastExam
+          uv venv --python 3.12 /tmp/ale-native
+          uv pip install --python "$ALE_TEST_PYTHON" cua-bench==0.2.7 pydantic requests
+          git init "$ALE_TEST_SOURCE"
+          git -C "$ALE_TEST_SOURCE" fetch --depth 1 https://github.com/rdi-berkeley/agents-last-exam.git d9abc0734b56ea34116c5bfcbdd0b808269ab9e2
+          git -C "$ALE_TEST_SOURCE" checkout --detach FETCH_HEAD
+          /tmp/ale-host/bin/python -m unittest discover -s Tasks/AgentsLastExam/tests -v
+
   portable-checks:
     name: Portable tests
     runs-on: ubuntu-24.04
@@ -67,6 +99,7 @@ jobs:
           set -euo pipefail
           python -m unittest discover -s Tasks/Pinchbench/tests -v
           python -m unittest discover -s Tasks/clawBio/tests -v
+          PYTHONPATH=Tasks/AgentsLastExam:Agents/utils/common/Harbor:. python -m unittest discover -s Tasks/AgentsLastExam/tests -v
           python -m unittest discover -s Tasks/WindowsAgentArena/tests -v
           python -m unittest discover -s Agents/utils/web_search/tests -v
 

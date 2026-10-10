@@ -18,6 +18,7 @@ from kubevirt_windows.control import (
     DEFAULT_CPU_CORES,
     DEFAULT_DISK_BUS,
     DEFAULT_MEMORY_GUEST,
+    DISK_MODE_OVERLAY,
     OWNER_LABEL,
     KubeVirtControl,
     Settings,
@@ -59,6 +60,24 @@ class SettingsTests(unittest.TestCase):
         with patch("pathlib.Path.open", side_effect=AssertionError("Unexpected file read")):
             self.assertEqual(make_settings().image, "windows-golden")
         self.assertEqual(dict(os.environ), before)
+
+    def test_overlay_mode_preserves_client_key_from_kubeconfig(self):
+        # Codex's overlay loop previously reused `key` as the OVERLAY_* loop
+        # variable, overwriting the mTLS client key with a 12-char suffix and
+        # breaking every overlay-mode apiserver connection. Guard the regression.
+        fake_pem = "-----BEGIN RSA PRIVATE KEY-----\nMIIEogIBAAK\n-----END RSA PRIVATE KEY-----\n"
+        with _pristine_harbor_env(), patch(
+            "kubevirt_windows.control._load_kubeconfig",
+            return_value=("https://cluster.example", "fake-ca", "fake-cert", fake_pem),
+        ):
+            os.environ.update({
+                **VALID_ENV,
+                "HARBOR_KUBEVIRT_DISK_MODE": "overlay",
+            })
+            settings = Settings.from_env()
+        self.assertEqual(settings.disk_mode, DISK_MODE_OVERLAY)
+        self.assertEqual(settings.cluster.client_key_data, fake_pem)
+        self.assertNotIn("RUNNER_IMAGE", settings.cluster.client_key_data)
 
     def test_rejects_legacy_host_disk_path(self):
         with self.assertRaisesRegex(ValueError, "golden-image PVC"):
@@ -197,6 +216,10 @@ class CreateRequestTests(unittest.TestCase):
         domain = spec["spec"]["template"]["spec"]["domain"]
         self.assertEqual(domain["cpu"], {
             "cores": 8, "sockets": 1, "threads": 1,
+            "features": [
+                {"name": "vmx", "policy": "disable"},
+                {"name": "svm", "policy": "disable"},
+            ],
         })
         self.assertEqual(domain["resources"]["limits"]["memory"], "16384Mi")
 
@@ -500,6 +523,82 @@ class KubeVirtControlTests(unittest.IsolatedAsyncioTestCase):
         async with control:
             self.assertFalse(await control.ping())
 
+
+
+
+class OverlayDiskTests(unittest.IsolatedAsyncioTestCase):
+    def overlay_settings(self, **overrides):
+        return make_settings({"HARBOR_KUBEVIRT_DISK_MODE": "overlay", **overrides})
+
+    def test_overlay_uses_existing_pvc_without_requiring_node_pin(self):
+        settings = self.overlay_settings(HARBOR_KUBEVIRT_NODE="")
+        self.assertEqual(settings.disk_mode, DISK_MODE_OVERLAY)
+        spec = build_create_request(settings, "trial-a")["spec"]["template"]["spec"]
+        self.assertNotIn("nodeSelector", spec)
+
+    def test_rejects_invalid_mode_and_legacy_node_local_settings(self):
+        with self.assertRaisesRegex(ValueError, "clone or overlay"):
+            make_settings({"HARBOR_KUBEVIRT_DISK_MODE": "invalid"})
+        for key, value in (("BASE", "/data4/golden/base.qcow2"),
+                           ("DIR", "/data4/overlays"), ("RUNNER_IMAGE", "example/helper")):
+            with self.subTest(key=key), self.assertRaisesRegex(ValueError, "golden PVC"):
+                self.overlay_settings(**{"HARBOR_KUBEVIRT_OVERLAY_" + key: value})
+
+    def test_overlay_mounts_readonly_backing_pvc_without_host_disk_or_clone(self):
+        request = build_create_request(
+            self.overlay_settings(), "trial-ov", {OWNER_LABEL: "abc"},
+            cpus=8, memory_mb=16384,
+        )
+        spec = request["spec"]
+        self.assertNotIn("dataVolumeTemplates", spec)
+        vm = spec["template"]["spec"]
+        self.assertEqual(vm["volumes"][0], {
+            "name": "disk0", "ephemeral": {"persistentVolumeClaim": {
+                "claimName": "windows-golden", "readOnly": True,
+            }},
+        })
+        self.assertIn("cloudInitNoCloud", vm["volumes"][1])
+        self.assertEqual(vm["domain"]["devices"]["disks"][0]["disk"]["bus"], "sata")
+        self.assertEqual(vm["domain"]["cpu"]["cores"], 8)
+        self.assertEqual(vm["domain"]["resources"]["limits"]["memory"], "16384Mi")
+        self.assertEqual(request["metadata"]["labels"][OWNER_LABEL], "abc")
+        self.assertEqual(vm["nodeSelector"], {"kubernetes.io/hostname": "cpu-nat-391"})
+
+    def test_overlay_rejects_host_paths_and_shell_characters_as_image(self):
+        for image in ("/data4/Windows images/base.qcow2", "golden; touch /tmp/x"):
+            with self.subTest(image=image), self.assertRaises(ValueError):
+                self.overlay_settings(HARBOR_KUBEVIRT_IMAGE=image)
+
+    def test_overlay_uses_the_selected_image_for_each_trial(self):
+        requests = [build_create_request(
+            self.overlay_settings(HARBOR_KUBEVIRT_IMAGE=image), name,
+        ) for image, name in (("ale-cpu-free", "trial-a"), ("ale-cpu-license", "trial-b"))]
+        claims = [r["spec"]["template"]["spec"]["volumes"][0]["ephemeral"][
+            "persistentVolumeClaim"]["claimName"] for r in requests]
+        self.assertEqual(claims, ["ale-cpu-free", "ale-cpu-license"])
+        self.assertNotEqual(requests[0]["metadata"]["name"], requests[1]["metadata"]["name"])
+
+    async def test_overlay_creation_only_posts_vm_and_never_provisions_helpers(self):
+        calls = []
+
+        def handler(request):
+            calls.append((request.method, request.url.path))
+            self.assertTrue(request.url.path.endswith("/virtualmachines"))
+            self.assertEqual(request.method, "POST")
+            body = json.loads(request.content)
+            self.assertNotIn("dataVolumeTemplates", body["spec"])
+            self.assertEqual(body["spec"]["template"]["spec"]["volumes"][0][
+                "ephemeral"]["persistentVolumeClaim"]["claimName"], "windows-golden")
+            return httpx.Response(201, json={"metadata": {"name": "trial-ov"}})
+
+        control = KubeVirtControl(self.overlay_settings())
+        control._client = httpx.AsyncClient(base_url="https://cluster.example",
+                                          transport=httpx.MockTransport(handler))
+        try:
+            self.assertEqual(await control.create("trial-ov"), {"name": "trial-ov"})
+        finally:
+            await control.close()
+        self.assertEqual(len(calls), 1)
 
 
 if __name__ == "__main__":
