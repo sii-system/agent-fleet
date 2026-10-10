@@ -212,6 +212,7 @@ jobs:
           HARBOR_AGENT_SETUP_TIMEOUT_MULTIPLIER: "2.0"
           HARBOR_RETRY_EXCLUDE_EXCEPTIONS: RewardFileNotFoundError,RewardFileEmptyError,VerifierOutputParseError,AgentSetupTimeoutError
           HARBOR_ONLINE_ANALYSIS: "1"
+          HARBOR_ANALYZER_ENABLED: "1"
           HARBOR_ZELLIJ_KEEP_ON_FAILURE: "0"
           BENCHMARK_TIMEOUT: 450m
         run: |

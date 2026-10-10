@@ -4,6 +4,14 @@
 four hours. `harbor-e2e-validation.yml` runs all Terminal-Bench 2.1 tasks on its
 schedule; a manual dispatch defaults to its four-task canary set.
 
+Both workflows enable the Pi-backed Harbor Analyzer with
+`HARBOR_ANALYZER_ENABLED=1` for scheduled and manual runs. It uses the existing
+nightly gateway credentials and model unless analyzer-specific overrides are
+configured, adding model requests and analysis time. Analyzer reports are
+included under `analyzer/` in the run artifacts and feed the published
+`summary.md`. This is separate from the console-only `HARBOR_ONLINE_ANALYSIS`
+setting.
+
 ## Model availability
 
 Both workflows use the `self-hosted-env` environment:
