@@ -88,7 +88,8 @@ async def evaluate(task, session):
             native = {"task": "tasks/fixture/roundtrip", "variant": 0, "os": os_type, "cpus": 4, "memory_mb": 16384,
                       "snapshot": "cpu-free" if windows else "cpu-free-ubuntu",
                       "image_family": "ale-win10" if windows else "ale-ubuntu22", "requires_gpu": False,
-                      "resolution": [1024, 768], "revision": REVISION, "source_sha256": source_digest(source)}
+                      "resolution": [1024, 768], "timeout": 60,
+                      "revision": REVISION, "source_sha256": source_digest(source)}
             (task / "environment/ale.json").write_text(json.dumps(native))
             mapping = root / "images.json"
             mapping.write_text(json.dumps({

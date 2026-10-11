@@ -30,7 +30,10 @@ class ALECommandAgent(BaseAgent):
 
     async def setup(self, environment):
         if environment.os == TaskOS.WINDOWS:
-            self.windows = WindowsCommandAgent(*self.windows_args[0], **self.windows_args[1])
+            kwargs = dict(self.windows_args[1])
+            if kwargs["agent_timeout_sec"] is None:
+                kwargs["agent_timeout_sec"] = environment.native["timeout"]
+            self.windows = WindowsCommandAgent(*self.windows_args[0], **kwargs)
             await self.windows.setup(environment)
         elif not self.linux_command.strip():
             raise ValueError("Set HARBOR_ALE_LINUX_AGENT_COMMAND to a Linux agent entrypoint")
