@@ -22,7 +22,8 @@ class CUAProxy:
         self.profile = profile
 
     async def start(self):
-        result = await self.backend.exec(f"mkdir -p -- {shlex.quote(self.guest_dir)} /logs/agent /logs/verifier /logs/artifacts",
+        directories = shlex.join([self.guest_dir, "/logs/agent", "/logs/verifier", "/logs/artifacts"])
+        result = await self.backend.exec(f"mkdir -p -- {directories} && chmod 0777 {directories}",
                                          cwd="/", user="root", timeout_sec=60)
         if result.return_code:
             raise RuntimeError("Failed to prepare ALE sandbox directories")

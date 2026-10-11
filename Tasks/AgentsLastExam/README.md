@@ -88,10 +88,19 @@ platform-level VM stop discards the layer. Free/licensed PVC mappings still appl
 
 ### Windows on Docker / Dockur
 
-Select `--windows-backend docker` (`--backend docker` is an alias), or set
+Use the same `--backend docker` option as WAA (`--windows-backend docker` is
+an alias), or set
 `HARBOR_ALE_WINDOWS_BACKEND=docker` for the unified launcher, FleetSpec and prompt
 mode. The Windows default remains `kubevirt`. Linux keeps its independent
 `--linux-backend auto|sbx|docker` choice, and GPU tasks remain excluded.
+
+Run `./Tasks/AgentsLastExam/setup.sh` first, prepare the golden storage and image
+map, then use `run.sh --backend docker --all --os windows --dry-run` before the
+first one-worker run. Setup owns host dependencies; launch only validates the
+prepared environment. Harbor owns concurrency, retries, results and resume, as
+in [WAA's Docker workflow](../WindowsAgentArena/README.md#docker--dockur).
+ALE uses that same shared Dockur lifecycle and guest I/O, selecting ALE's CUA
+protocol and each task's mapped snapshot.
 
 Use a native x86_64 Linux host with local rootful Docker, GNU `cp`, `/dev/kvm`
 and `/dev/net/tun`. Prepare **separate, shut-down golden Dockur storage** for the
@@ -264,7 +273,7 @@ Portable and loopback tests do not establish live benchmark parity. A complete
 run needs a prepared ALE SBX template or Docker image, Windows CPU/licensed images, native task
 data, judge credentials and agent entrypoints. These are operator-provided assets.
 
-Docker validation booted an independent copy of the local ALE Windows disk with
+The original Docker canary booted an independent copy of the local ALE Windows disk with
 prepared UEFI state on the pinned public Dockur runtime, using normal startup
 settings. Command exit codes, binary transfer, log recovery after stop, and
 container/storage deletion passed. This checks the Windows runtime and ALE CUA

@@ -18,3 +18,15 @@
 Custom Harbor agents can replace the default command agent. Native dependencies
 run outside the Harbor interpreter. Grading remains in unchanged ALE source;
 no alternate scheduler, reporting or resume implementation belongs here.
+
+Windows Docker reuses WAA's `docker_windows.environment.DockerWindowsEnvironment`
+and `windows_guest.WindowsGuestIO`. `ALEEnvironment` selects the native snapshot's
+`docker_storage` and supplies ALE settings/transport; the shared backend owns
+container creation, disk copying, readiness, guest I/O and cleanup. ALE keeps
+one mixed-OS environment so Linux and Windows variants can share a Harbor job.
+
+The workflow follows WAA: explicit `setup.sh`, prepared-state validation in
+`run.sh`, selection and backend handoff in `launch.py`, then Harbor orchestration.
+`--backend docker` (alias `--windows-backend docker`) selects Windows Dockur;
+`--linux-backend` remains independent. The resolved Windows backend is stored
+in Harbor environment kwargs, so resume keeps the original selection.

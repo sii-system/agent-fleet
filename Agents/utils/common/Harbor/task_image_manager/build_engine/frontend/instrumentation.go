@@ -119,6 +119,17 @@ func opensandboxGitMirrorOptions(values map[string]string) []llb.RunOption {
 	return nil
 }
 
+// Normal conda/mamba rc discovery reads this system config only during RUN.
+// It maps defaults and conda-forge without overriding channel order, priority,
+// user configs, explicit rc-file/no-rc options, or unrelated named channels.
+func opensandboxCondaOptions(values map[string]string) []llb.RunOption {
+	if config := values["OPENSANDBOX_CONDA_CONFIG"]; config != "" {
+		return []llb.RunOption{llb.AddSecret("/etc/conda/condarc.d/99-agent-fleet-gateway.yaml",
+			llb.SecretID(config), llb.SecretFileOpt(0, 0, 0444))}
+	}
+	return nil
+}
+
 // opensandboxIdentityOptions adds two pieces shared by the runtime adapters.
 // The identity secret ID is derived from the frontend digest. BuildKit does not
 // hash secret contents into ExecOp cache keys, so content-addressed secret IDs
@@ -173,6 +184,7 @@ func opensandboxRunOptions(state llb.State, values map[string]string) ([]llb.Run
 		options = append(options, opensandboxDownloadOptions(values)...)
 	}
 	options = append(options, opensandboxGitMirrorOptions(values)...)
+	options = append(options, opensandboxCondaOptions(values)...)
 
 	identityOptions, err := opensandboxIdentityOptions(values)
 	if err != nil {

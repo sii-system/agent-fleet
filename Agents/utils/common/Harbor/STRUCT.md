@@ -23,8 +23,8 @@ Agents/utils/common/Harbor/
 ├── qz_task_instruction.py      # Exact QZ setup-prefix handoff before agent run
 ├── run_kubevirt_windows.sh     # Windows-only Harbor launcher; skips Linux installers
 ├── kubevirt_windows/           # KubeVirt/CDI lifecycle, WAA/ALE Windows transports, environment and agent bridge
-├── docker_windows/             # Local Dockur lifecycle, owned storage and Windows environment
-├── windows_guest.py            # Shared Windows execution, transfers and log recovery
+├── docker_windows/             # Local Dockur Windows lifecycle and isolated storage per trial
+├── windows_guest.py            # Shared Windows command/file operations and log recovery
 ├── KUBEVIRT_WINDOWS_README.md  # Windows image, guest transport, and consumer contracts
 ├── prepare_local_deps.sh       # Thin Python launcher
 ├── prepare_local_deps.py       # Package/cache preparation implementation
@@ -239,7 +239,7 @@ Typical dataset paths:
 | `BASE_URL` | Model gateway base URL |
 | `API_KEY` | Model gateway API key |
 | `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` | Fixed-benchmark host defaults from `API_KEY` for task/verifier placeholders; explicit values, including empty values, win |
-| `OPENAI_BASE_URL` | Fixed-benchmark host default from the normalized `BASE_URL` plus `/v1`; explicit values, including empty values, win |
+| `OPENAI_BASE_URL` / `OPENAI_API_BASE` | Fixed-benchmark host defaults from the normalized `BASE_URL` plus `/v1`; explicit values, including empty values, win independently |
 | `ANTHROPIC_BASE_URL` | Fixed-benchmark host default from the normalized, versionless `BASE_URL`; explicit values, including empty values, win |
 | `HARBOR_TEMPERATURE` | OpenCode or DSH sampling temperature for fixed benchmark runs; unset globally and defaults to `1.0` for DSH |
 | `HARBOR_TOP_P` | OpenCode or DSH nucleus-sampling value for fixed benchmark runs; unset globally and defaults to `0.95` for DSH |

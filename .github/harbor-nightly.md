@@ -4,6 +4,14 @@
 four hours. `harbor-e2e-validation.yml` runs all Terminal-Bench 2.1 tasks on its
 schedule; a manual dispatch defaults to its four-task canary set.
 
+Both workflows enable the Pi-backed Harbor Analyzer with
+`HARBOR_ANALYZER_ENABLED=1` for scheduled and manual runs. It uses the existing
+nightly gateway credentials and model unless analyzer-specific overrides are
+configured, adding model requests and analysis time. Analyzer reports are
+included under `analyzer/` in the run artifacts and feed the published
+`summary.md`. This is separate from the console-only `HARBOR_ONLINE_ANALYSIS`
+setting.
+
 ## Model availability
 
 Both workflows use the `self-hosted-env` environment:
@@ -12,6 +20,13 @@ Both workflows use the `self-hosted-env` environment:
 - `LLM_REVIEW_API_KEY`: gateway credential (secret).
 - `HARBOR_NIGHTLY_MODEL`: optional nightly-specific model name. When unset,
   the workflows fall back to `LLM_REVIEW_MODEL`.
+
+Both workflows pass the gateway through `BASE_URL` and `API_KEY`. The shared
+Harbor environment also defaults verifier `OPENAI_API_KEY` to `API_KEY` and
+`OPENAI_BASE_URL` / `OPENAI_API_BASE` to the normalized API root plus `/v1`.
+This includes SWE Atlas Q&A's required `OPENAI_API_BASE` placeholder. Explicit
+provider settings, including empty values, take precedence; no separate
+nightly verifier secret is needed.
 
 Prefer a maintained gateway alias over a short-lived deployment ID when the
 provider offers one for the intended model. Confirm that the credential can

@@ -17,6 +17,7 @@ GITHUB_MIRROR_CONFIG_MOUNT_ID = "opensandbox-github-mirror-gitconfig"
 DOWNLOAD_WRAPPER_SECRET_PREFIX = "opensandbox-download-wrapper"
 DOWNLOAD_REWRITER_SECRET_PREFIX = "opensandbox-download-url-rewriter"
 DOWNLOAD_SOURCE_SECRET_PREFIX = "opensandbox-download-source"
+CONDA_CONFIG_SECRET_PREFIX = "opensandbox-conda-config"
 
 
 def source_identity() -> str:
@@ -214,4 +215,11 @@ def prepare_frontend(
         raise ValueError("expected at most one GitHub mirror runtime secret")
     if git_config_matches:
         args["OPENSANDBOX_GITHUB_MIRROR_CONFIG"] = git_config_matches[0]
+    conda_config_matches = [
+        name for name in secret_files if name.startswith(CONDA_CONFIG_SECRET_PREFIX + "-")
+    ]
+    if len(conda_config_matches) > 1:
+        raise ValueError("expected at most one conda runtime config secret")
+    if conda_config_matches:
+        args["OPENSANDBOX_CONDA_CONFIG"] = conda_config_matches[0]
     return args

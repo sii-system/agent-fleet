@@ -204,6 +204,7 @@ jobs:
           HARBOR_MAX_RETRIES: "0"
           MIN_TEST: "0"
           HARBOR_ONLINE_ANALYSIS: "0"
+          HARBOR_ANALYZER_ENABLED: "1"
           HARBOR_ZELLIJ_CLOSE_ON_COMPLETE: "1"
           HARBOR_ZELLIJ_KEEP_ON_FAILURE: "0"
         run: |

@@ -34,6 +34,7 @@ Every `RUN` receives these build-only inputs:
 | `shadow` | Provide invocation-local writable state on tmpfs |
 | optional `curl`, `wget` | Route explicit HTTP(S) arguments through one configured third-party source |
 | optional `/etc/gitconfig` | Apply the configured GitHub mirror for the current RUN |
+| optional `/etc/conda/condarc.d/99-agent-fleet-gateway.yaml` | Map defaults and conda-forge using normal conda/mamba rc discovery |
 
 Wrapper, rewriter, and Gateway-root secret IDs include content digests because BuildKit
 does not include secret contents in cache keys. The mounted files, PATH change,

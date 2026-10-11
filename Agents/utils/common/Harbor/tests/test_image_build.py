@@ -129,6 +129,40 @@ class ImageBuildTest(unittest.TestCase):
                 self.assertEqual(list(self.work.iterdir()), [])
                 self.assertEqual(self.dockerfile.read_text(), self.original)
 
+    def test_conda_uses_effective_build_args_for_context_rendering_and_temporary_config(self):
+        self.original = "FROM ubuntu:24.04\nRUN conda install -c https://repo.anaconda.com/pkgs/main six\n"
+        self.dockerfile.write_text(self.original)
+        env_source = "channels:\n  - https://conda.anaconda.org/conda-forge\n"
+        (self.context / "env.yml").write_text(env_source)
+        self.options["package_build_args"] = {
+            "CONDA_DEFAULTS_URL": "http://gateway/defaults",
+            "CONDA_CHANNELS_URL": "http://gateway/channels",
+        }
+        self.options["build_args"].update({
+            "CONDA_DEFAULTS_URL": "http://explicit/defaults",
+            "CONDA_CHANNELS_URL": "http://explicit/channels",
+        })
+        with build_image(**self.options):
+            inputs = self.build.call_args.kwargs
+            self.assertIn("http://explicit/defaults/main", inputs["dockerfile"].read_text())
+            self.assertIn("http://explicit/channels/conda-forge", (inputs["environment_dir"] / "env.yml").read_text())
+            config = next(path for key, path in inputs["secret_files"].items() if key.startswith("opensandbox-conda-config-"))
+            self.assertIn("http://explicit/defaults/main", config.read_text())
+            self.assertNotIn("http://gateway", config.read_text())
+            self.assertEqual((self.context / "env.yml").read_text(), env_source)
+            self.assertEqual(self.dockerfile.read_text(), self.original)
+        self.assertFalse(config.exists())
+
+    def test_explicit_empty_conda_roots_disable_config_and_rewrites(self):
+        self.original = "FROM ubuntu:24.04\nRUN conda install -c https://repo.anaconda.com/pkgs/main six\n"
+        self.dockerfile.write_text(self.original)
+        self.options["package_build_args"] = {"CONDA_DEFAULTS_URL": "http://gateway/defaults"}
+        self.options["build_args"]["CONDA_DEFAULTS_URL"] = ""
+        with build_image(**self.options):
+            inputs = self.build.call_args.kwargs
+            self.assertIn("https://repo.anaconda.com/pkgs/main", inputs["dockerfile"].read_text())
+            self.assertFalse(any(key.startswith("opensandbox-conda-config-") for key in inputs["secret_files"]))
+
 
 if __name__ == "__main__":
     unittest.main()

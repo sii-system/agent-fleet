@@ -14,8 +14,10 @@ Usage: Tasks/WindowsAgentArena/run.sh --all [--workers N] [--output DIR] [-- HAR
 
 Run the official WAA (154 tasks) or WAA-V2 (141 tasks) Harbor benchmark using PC-Agent or a
 custom reset/predict agent. Run setup.sh first. See Tasks/WindowsAgentArena/README.md
-for the prepared Windows image, cluster prerequisites, custom agents and results.
+for the prepared Windows image, backend prerequisites, custom agents and results.
 Select --benchmark waa or waa-v2 (default). Pass native Harbor options after --.
+Select --backend docker for Dockur, or kubevirt (default).
+HARBOR_WAA_BACKEND=docker also selects Dockur through run_fleet.sh/FleetSpec.
 Example: -- --ak max_steps=30 --max-retries 2
 Resume with Harbor: <WAA_ENV>/bin/harbor jobs resume --job-path DIR.
 HELP

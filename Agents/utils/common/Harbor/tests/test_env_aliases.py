@@ -63,6 +63,9 @@ class HarborEnvAliasTests(unittest.TestCase):
                         env["OPENAI_BASE_URL"], "https://gateway.invalid/v1"
                     )
                     self.assertEqual(
+                        env["OPENAI_API_BASE"], "https://gateway.invalid/v1"
+                    )
+                    self.assertEqual(
                         env["ANTHROPIC_BASE_URL"], "https://gateway.invalid"
                     )
                     self.assertEqual(env["BASE_URL"], "https://gateway.invalid")
@@ -72,7 +75,7 @@ class HarborEnvAliasTests(unittest.TestCase):
             with self.subTest(value=value):
                 overrides = dict.fromkeys(
                     (
-                        "OPENAI_API_KEY", "OPENAI_BASE_URL",
+                        "OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_API_BASE",
                         "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL",
                     ),
                     value,
@@ -88,7 +91,7 @@ class HarborEnvAliasTests(unittest.TestCase):
     def test_empty_shared_settings_do_not_create_provider_credentials(self) -> None:
         env = self.load_env(BASE_URL="", API_KEY="")
         for name in (
-            "API_KEY", "OPENAI_API_KEY", "OPENAI_BASE_URL",
+            "API_KEY", "OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_API_BASE",
             "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL",
         ):
             self.assertEqual(env[name], "")
@@ -98,15 +101,18 @@ class HarborEnvAliasTests(unittest.TestCase):
             ROLLOUT="1", BASE_URL="https://listener.invalid", API_KEY="fake-listener-key"
         )
         for name in (
-            "OPENAI_API_KEY", "OPENAI_BASE_URL", "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL",
+            "OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_API_BASE",
+            "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL",
         ):
             self.assertNotIn(name, env)
         for value in ("https://explicit-provider.invalid", ""):
             env = self.load_env(
                 ROLLOUT="1", BASE_URL="https://listener.invalid",
                 ANTHROPIC_BASE_URL=value,
+                OPENAI_API_BASE=value,
             )
             self.assertEqual(env["ANTHROPIC_BASE_URL"], value)
+            self.assertEqual(env["OPENAI_API_BASE"], value)
 
     def test_summary_and_analyzer_have_independent_opt_in_defaults(self) -> None:
         env = self.load_env()

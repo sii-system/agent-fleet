@@ -20,6 +20,8 @@ REPO = Path(__file__).resolve().parents[4]
 def parser():
     cli = argparse.ArgumentParser(description=__doc__)
     cli.add_argument("--benchmark", choices=BENCHMARKS, default="waa-v2")
+    cli.add_argument("--backend", choices=("kubevirt", "docker"),
+                     default=os.environ.get("HARBOR_WAA_BACKEND", "kubevirt"))
     cli.add_argument("--cache", type=Path, required=True)
     cli.add_argument("--runtime", type=Path)
     select = cli.add_mutually_exclusive_group(required=True)
@@ -51,7 +53,8 @@ def command(args, dataset, tasks, runtime, pcagent_runtime):
         cmd = [os.environ.get("HARBOR_CLI_BIN", str(Path(sys.executable).with_name("harbor")))]
     cmd += ["run", "--path", str(dataset), "--n-concurrent", str(args.workers),
             "--agent", "Agents.WindowsAgentArena.agent:WAAAgent", "--ak", f"factory={args.agent}",
-            "--env", "waa_benchmark.environment:WAAEnvironment", "--ek", f"runtime={runtime}",
+            "--env", ("waa_benchmark.docker_environment:WAADockerEnvironment" if args.backend == "docker"
+                       else "waa_benchmark.environment:WAAEnvironment"), "--ek", f"runtime={runtime}",
             "--ek", f"pcagent_runtime={pcagent_runtime}", "--ek", f"native_python={sys.executable}",
             "--verifier", "waa_benchmark.verifier:WAAVerifier"]
     if args.model:
@@ -73,6 +76,8 @@ def main():
     args = cli.parse_args()
     if args.workers < 1:
         cli.error("--workers must be positive")
+    if args.backend not in ("kubevirt", "docker"):
+        cli.error("HARBOR_WAA_BACKEND must be kubevirt or docker")
     environment_marker(Path(sys.prefix), REPO / "Tasks/WindowsAgentArena/uv.lock")
     runtime = (args.runtime or args.cache / "runtime" / BENCHMARKS[args.benchmark]["revision"]).resolve()
     pcagent_runtime = runtime if args.benchmark == "waa-v2" else args.cache / "runtime" / BENCHMARKS["waa-v2"]["revision"]
@@ -84,7 +89,8 @@ def main():
     cmd = command(args, dataset, tasks, runtime, pcagent_runtime)
     if args.dry_run:
         # Harbor options can contain credentials; do not render them.
-        print(json.dumps({"benchmark": args.benchmark, "selected": [t.key for t in tasks], "agent": args.agent}, indent=2))
+        print(json.dumps({"benchmark": args.benchmark, "backend": args.backend,
+                          "selected": [t.key for t in tasks], "agent": args.agent}, indent=2))
         return
     if args.agent == "pcagent" and (not args.model or not os.environ.get("OPENAI_API_KEY")):
         cli.error("PC-Agent requires MODEL/--model and OPENAI_API_KEY or API_KEY")

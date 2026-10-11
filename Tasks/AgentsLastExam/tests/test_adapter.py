@@ -29,6 +29,8 @@ from kubevirt_windows.control import (
 )
 from kubevirt_windows.environment import KubeVirtWindowsEnvironment
 
+from Agents.AgentsLastExam.agent import ALECommandAgent
+
 
 def record(gpu=False, os_type="windows"):
     return {"task": "tasks/visual_media/example", "variant": 3, "os": os_type,
@@ -418,6 +420,20 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
             await environment.exec("echo hello")
         self.assertEqual(environment.backend.exec.call_args.kwargs["user"], "other-user")
         self.assertEqual(environment.backend.exec.call_args.kwargs["env"]["HARBOR_MODEL"], "fake-model")
+
+    async def test_windows_agent_uses_native_budget_and_preserves_explicit_timeout(self):
+        for override, expected in ((None, 7200), (9000, 9000), (120, 120)):
+            with self.subTest(override=override):
+                environment = self.environment()
+                environment.backend._started = True
+                transport = Mock(upload_file=AsyncMock(), execute=AsyncMock(
+                    return_value={"stdout": "", "stderr": "", "return_code": 0}))
+                environment.backend.transport = transport
+                agent = ALECommandAgent(logs_dir=self.root / "logs", command="echo fixture",
+                                        agent_timeout_sec=override)
+                await agent.setup(environment)
+                await agent.run("fixture", environment, SimpleNamespace(metadata=None))
+                self.assertEqual(transport.execute.call_args.kwargs["timeout"], expected)
 
     async def test_cancelled_phase_terminates_worker_before_vm_cleanup(self):
         environment = self.environment()

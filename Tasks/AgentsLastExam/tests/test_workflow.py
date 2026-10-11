@@ -68,12 +68,20 @@ class WorkflowTests(unittest.TestCase):
     def test_windows_backend_handoff_and_environment_default(self):
         with patch.dict(os.environ, {"HARBOR_ALE_WINDOWS_BACKEND": "docker"}):
             args = self.arguments("--all")
+            override = self.arguments("--backend", "kubevirt")
+        self.assertEqual(override.windows_backend, "kubevirt")
+        self.assertEqual(args.linux_backend, "auto")
         self.assertEqual(args.windows_backend, "docker")
         self.assertIn("windows_backend=docker", command(args))
         self.assertEqual(self.arguments("--backend", "docker").windows_backend, "docker")
         self.assertEqual(self.arguments("--windows-backend", "kubevirt").windows_backend, "kubevirt")
         image, _ = self.launch(["--all", "--windows-backend", "docker"])
         self.assertEqual(image.call_args.args[2], "docker")
+        image, execute = self.launch(["--all", "--backend", "docker", "--os", "linux"], prepared=True)
+        self.assertEqual(image.call_count, 1)
+        self.assertEqual(image.call_args.args[0]["os"], "linux")
+        self.assertIn("windows_backend=docker", execute.call_args.args[1])
+        self.assertIn("linux_backend=auto", execute.call_args.args[1])
 
     def launch(self, args, *, prepared=False):
         marker = {"source": str(self.root), "dataset": str(self.dataset), "native_python": sys.executable}

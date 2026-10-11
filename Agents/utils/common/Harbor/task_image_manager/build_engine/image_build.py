@@ -11,9 +11,11 @@ from pathlib import Path
 
 from ..oci import oci_archive_image_config
 from ..registry import log
+from ..source_urls import validate_source_url
 from .base_images import resolve_base_image_contexts
 from .dockerfile_renderer.renderer import render_build_dockerfile
 from .dockerfile_renderer.strategies.apt import materialize_apt_runtime_assets
+from .dockerfile_renderer.strategies.conda import materialize_conda_config
 from .dockerfile_renderer.strategies.download import materialize_download_runtime_assets
 from .dockerfile_renderer.strategies.git import (
     GITHUB_MIRROR_CONFIG_MOUNT_ID,
@@ -64,11 +66,22 @@ def build_image(
         prefix="image-build-", dir=temporary_root
     ) as temporary_dir:
         temporary = Path(temporary_dir)
+        rendered_package_args = dict(package_build_args)
+        for name in ("CONDA_DEFAULTS_URL", "CONDA_CHANNELS_URL"):
+            value = build_args.get(name, package_build_args.get(name, ""))
+            if value:
+                value = validate_source_url(value, "conda channel root", build_network)
+            if name in package_build_args or value:
+                rendered_package_args[name] = value
+        conda_defaults_url = rendered_package_args.get("CONDA_DEFAULTS_URL", "")
+        conda_channels_url = rendered_package_args.get("CONDA_CHANNELS_URL", "")
         build_context, rewritten_scripts = materialize_package_source_context(
             context_dir,
             temporary / "context",
             rustup_init_url=rustup_init_url,
             pytorch_index_url=pytorch_index_url,
+            conda_defaults_url=conda_defaults_url,
+            conda_channels_url=conda_channels_url,
         )
         if rewritten_scripts:
             log(
@@ -99,6 +112,9 @@ def build_image(
             temporary / "apt-runtime",
             download_source_url,
         )
+        runtime_secrets.update(materialize_conda_config(
+            temporary / "conda-runtime", conda_defaults_url, conda_channels_url
+        ))
         if download_source_url:
             runtime_secrets.update(
                 materialize_download_runtime_assets(
@@ -116,7 +132,7 @@ def build_image(
             render_build_dockerfile(
                 dockerfile_source,
                 dockerhub_mirror_prefix=dockerhub_mirror_prefix,
-                package_build_args=package_build_args,
+                package_build_args=rendered_package_args,
                 rustup_init_url=rustup_init_url,
                 pytorch_index_url=pytorch_index_url,
                 base_image_replacements=base_image_replacements,

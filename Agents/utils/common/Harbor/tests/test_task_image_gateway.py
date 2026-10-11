@@ -67,6 +67,12 @@ class GatewaySourcesTest(unittest.TestCase):
         self.assertEqual(
             build_args["JULIA_PKG_SERVER"], "https://gateway.example/v1/cache/julia-pkg"
         )
+        self.assertEqual(
+            build_args["CONDA_DEFAULTS_URL"], "https://gateway.example/v1/cache/conda-defaults"
+        )
+        self.assertEqual(
+            build_args["CONDA_CHANNELS_URL"], "https://gateway.example/v1/cache/conda-channels"
+        )
 
     def test_unreachable_gateway_keeps_every_original_source(self):
         args = self.args()
