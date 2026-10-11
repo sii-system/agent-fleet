@@ -237,7 +237,7 @@ Typical dataset paths:
 | `BASE_URL` | Model gateway base URL |
 | `API_KEY` | Model gateway API key |
 | `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` | Fixed-benchmark host defaults from `API_KEY` for task/verifier placeholders; explicit values, including empty values, win |
-| `OPENAI_BASE_URL` | Fixed-benchmark host default from the normalized `BASE_URL` plus `/v1`; explicit values, including empty values, win |
+| `OPENAI_BASE_URL` / `OPENAI_API_BASE` | Fixed-benchmark host defaults from the normalized `BASE_URL` plus `/v1`; explicit values, including empty values, win independently |
 | `ANTHROPIC_BASE_URL` | Fixed-benchmark host default from the normalized, versionless `BASE_URL`; explicit values, including empty values, win |
 | `HARBOR_TEMPERATURE` | OpenCode or DSH sampling temperature for fixed benchmark runs; unset globally and defaults to `1.0` for DSH |
 | `HARBOR_TOP_P` | OpenCode or DSH nucleus-sampling value for fixed benchmark runs; unset globally and defaults to `0.95` for DSH |

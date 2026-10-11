@@ -22,6 +22,7 @@ source "$SCRIPT_DIR/env/rollout_config.sh"
 if [[ "$ROLLOUT" != "1" ]]; then
   export OPENAI_API_KEY="${OPENAI_API_KEY-$API_KEY}"
   export OPENAI_BASE_URL="${OPENAI_BASE_URL-${BASE_URL:+${BASE_URL}/v1}}"
+  export OPENAI_API_BASE="${OPENAI_API_BASE-${BASE_URL:+${BASE_URL}/v1}}"
   export ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY-$API_KEY}"
   export ANTHROPIC_BASE_URL="${ANTHROPIC_BASE_URL-$BASE_URL}"
 fi

@@ -16,6 +16,7 @@ CONFIG_NAMES = (
     "ANTHROPIC_API_KEY",
     "ANTHROPIC_AUTH_TOKEN",
     "OPENAI_BASE_URL",
+    "OPENAI_API_BASE",
     "OPENAI_API_KEY",
     "HARBOR_MODEL",
     "HARBOR_API_BASE",
@@ -194,14 +195,16 @@ class ConfigLoaderTest(unittest.TestCase):
         command = (
             'agent_fleet_load_config "$2"; '
             'export AGENT_FLEET_CONFIG_LOADED_ROOT="$3"; source "$4"; '
-            'printf "%s|%s|%s|%s" "$OPENAI_API_KEY" "$OPENAI_BASE_URL" '
-            '"$ANTHROPIC_API_KEY" "$ANTHROPIC_BASE_URL"'
+            'printf "%s|%s|%s|%s|%s" "$OPENAI_API_KEY" "$OPENAI_BASE_URL" '
+            '"$ANTHROPIC_API_KEY" "$ANTHROPIC_BASE_URL" "$OPENAI_API_BASE"'
         )
         for runtime, expected in (
-            ({}, "fake-provider-key|https://saved.example.invalid/v1|fake-saved-key|"),
+            ({}, ("fake-provider-key|https://saved.example.invalid/v1|fake-saved-key|"
+                  "|https://saved.example.invalid/v1")),
             (
-                {"OPENAI_API_KEY": "", "API_KEY": "fake-runtime-key"},
-                "|https://saved.example.invalid/v1|fake-runtime-key|",
+                {"OPENAI_API_KEY": "", "API_KEY": "fake-runtime-key",
+                 "OPENAI_API_BASE": ""},
+                "|https://saved.example.invalid/v1|fake-runtime-key||",
             ),
         ):
             with self.subTest(runtime=runtime):

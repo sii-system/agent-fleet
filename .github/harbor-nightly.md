@@ -21,6 +21,13 @@ Both workflows use the `self-hosted-env` environment:
 - `HARBOR_NIGHTLY_MODEL`: optional nightly-specific model name. When unset,
   the workflows fall back to `LLM_REVIEW_MODEL`.
 
+Both workflows pass the gateway through `BASE_URL` and `API_KEY`. The shared
+Harbor environment also defaults verifier `OPENAI_API_KEY` to `API_KEY` and
+`OPENAI_BASE_URL` / `OPENAI_API_BASE` to the normalized API root plus `/v1`.
+This includes SWE Atlas Q&A's required `OPENAI_API_BASE` placeholder. Explicit
+provider settings, including empty values, take precedence; no separate
+nightly verifier secret is needed.
+
 Prefer a maintained gateway alias over a short-lived deployment ID when the
 provider offers one for the intended model. Confirm that the credential can
 use that alias before changing it. The nightly-specific variable lets the
