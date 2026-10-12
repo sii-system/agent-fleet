@@ -184,6 +184,21 @@ class HarborOpikE2BSmokeTest(unittest.TestCase):
         )
         self.assertIn("use HARBOR_ENVIRONMENT_TYPE=docker", completed.stdout)
 
+    def test_pi_exception_uses_model_provider_with_conflicting_provider_setting(self) -> None:
+        completed = self.run_dry_run("docker", "pi", dry_run=False, extra_env={
+            "HARBOR_MODEL": "selected/test-model", "PI_PROVIDER": "unused",
+            "PI_MODELS_CONFIG": '{"providers":{'
+                '"selected":{"baseUrl":"https://selected.example:8443/v1"},'
+                '"unused":{"baseUrl":"https://unused.example/v1"}}}',
+        })
+        self.assertEqual(completed.returncode, 0, completed.stdout)
+        self.assertIn("FAKE_HARBOR_ARG=--allow-agent-host\nFAKE_HARBOR_ARG=selected.example",
+                      completed.stdout)
+        self.assertNotIn("FAKE_HARBOR_ARG=--allow-agent-host\nFAKE_HARBOR_ARG=unused.example",
+                         completed.stdout)
+        self.assertNotIn("FAKE_HARBOR_ARG=--allow-agent-host\nFAKE_HARBOR_ARG=model.example",
+                         completed.stdout)
+
     def test_pi_docker_dry_run_still_builds_command(self) -> None:
         completed = self.run_dry_run("docker", "pi")
         self.assertEqual(completed.returncode, 0, completed.stdout)

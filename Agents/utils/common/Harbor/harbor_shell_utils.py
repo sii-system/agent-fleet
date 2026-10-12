@@ -66,7 +66,9 @@ def agent_model_host(environ: Mapping[str, str] | None = None) -> str:
     elif agent == "pi":
         raw = values.get("PI_MODELS_CONFIG", "")
         if raw:
-            provider = values.get("PI_PROVIDER", "")
+            model_provider, separator, _ = values.get("HARBOR_MODEL", "").partition("/")
+            # AgentFleetPi.run selects the provider from its qualified model.
+            provider = model_provider if separator else values.get("PI_PROVIDER", "")
             config = json.loads(raw).get("providers", {}).get(provider, {})
             base_url = config.get("baseUrl", base_url)
     elif agent != "claude-code":

@@ -96,6 +96,29 @@ class HarborShellUtilsTest(unittest.TestCase):
                     "AGENT": "claude-code", "HARBOR_ANTHROPIC_BASE_URL": url,
                 }), "")
 
+    def test_pi_model_provider_prefix_overrides_provider_setting(self):
+        for provider_setting in (None, "", "unused", "selected"):
+            with self.subTest(provider_setting=provider_setting):
+                values = {
+                    "AGENT": "pi", "HARBOR_MODEL": "selected/model",
+                    "HARBOR_ANTHROPIC_BASE_URL": "https://fallback.example",
+                    "PI_MODELS_CONFIG": json.dumps({"providers": {
+                        "selected": {"baseUrl": "https://selected.example/v1"},
+                        "unused": {"baseUrl": "https://unused.example/v1"},
+                    }}),
+                }
+                if provider_setting is not None:
+                    values["PI_PROVIDER"] = provider_setting
+                self.assertEqual(harbor_shell_utils.agent_model_host(values), "selected.example")
+
+    def test_pi_unqualified_model_uses_provider_setting(self):
+        self.assertEqual(harbor_shell_utils.agent_model_host({
+            "AGENT": "pi", "HARBOR_MODEL": "model", "PI_PROVIDER": "selected",
+            "PI_MODELS_CONFIG": json.dumps({"providers": {
+                "selected": {"baseUrl": "https://selected.example/v1"},
+            }}),
+        }), "selected.example")
+
     def test_invalid_model_config_cli_does_not_print_credentials(self):
         error = io.StringIO()
         with patch.dict("os.environ", {
