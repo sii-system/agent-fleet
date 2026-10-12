@@ -13,7 +13,7 @@ from pathlib import Path
 
 
 class GuestHTTPTests(unittest.TestCase):
-    def forward(self, content_type, body, streaming=False):
+    def forward(self, content_type, body, streaming=False, path="/cmd"):
         release = threading.Event()
         class Handler(BaseHTTPRequestHandler):
             protocol_version = "HTTP/1.1"
@@ -43,7 +43,7 @@ class GuestHTTPTests(unittest.TestCase):
         try:
             with tempfile.TemporaryDirectory() as tmp:
                 root = Path(tmp)
-                (root / "request.json").write_text(json.dumps({"url": f"http://127.0.0.1:{server.server_port}/cmd",
+                (root / "request.json").write_text(json.dumps({"url": f"http://127.0.0.1:{server.server_port}{path}",
                     "method": "POST", "headers": {"Content-Type": "application/octet-stream"},
                     "body": base64.b64encode(b"binary request\x00\xff").decode(), "timeout": 2}))
                 result = subprocess.run([sys.executable, "-m", "ale_adapter.guest_http", str(root / "request.json"),
@@ -63,3 +63,13 @@ class GuestHTTPTests(unittest.TestCase):
 
     def test_sse_returns_after_first_event_without_waiting_for_eof(self):
         self.forward("text/event-stream", b'data: {"success": true}\n\n', streaming=True)
+
+    def test_text_plain_cmd_returns_without_waiting_for_eof(self):
+        for path in ("/cmd", "/cmd?request=fixture"):
+            with self.subTest(path=path):
+                self.forward("text/plain; charset=utf-8",
+                             b': keepalive\n\ndata: {"success": true}\n\n',
+                             streaming=True, path=path)
+
+    def test_other_endpoints_preserve_sse_like_binary_content(self):
+        self.forward("application/octet-stream", b"data: binary\n\n\x00\xfftail", path="/screenshot")

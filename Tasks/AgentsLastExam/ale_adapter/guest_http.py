@@ -6,6 +6,7 @@ import sys
 import urllib.error
 import urllib.request
 from pathlib import Path
+from urllib.parse import urlsplit
 
 
 def main():
@@ -20,7 +21,8 @@ def main():
     except urllib.error.HTTPError as error:
         response = error
     with response:
-        if "text/event-stream" in response.headers.get("Content-Type", ""):
+        # ALE /cmd also sends SSE as text/plain and may keep the stream open.
+        if urlsplit(request["url"]).path == "/cmd" or "text/event-stream" in response.headers.get("Content-Type", ""):
             lines, data_seen = [], False
             while line := response.readline():
                 lines.append(line)
