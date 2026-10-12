@@ -13,7 +13,9 @@ and reuses the complete E2B environment implementation.
 Verified end to end against the live service (2026-08-13, template
 ``agent_fleet_probe``): create, get_info, exec with cwd/env/user overrides,
 file write/read round-trip, and kill all pass through the official SDK with
-the mappings below. The qz-specific deltas:
+the mappings below. A later capacity probe verified 100 simultaneously active
+Sandboxes when create requests used the platform-confirmed rolling window of
+10. The qz-specific deltas:
 
 - ``POST /v1/sandboxes`` accepts E2B ``NewSandbox`` bodies; ``templateID`` is
   required. Templates are registered on the platform (image + spec + key
@@ -28,6 +30,12 @@ the mappings below. The qz-specific deltas:
   the ``sbx-`` prefix and does not consume ``hostTemplate``; the unprefixed
   host lands on the platform gateway's own auth (401), so ``get_host`` is
   patched here.
+- One current QZ type group has a single node that accepts at most 10
+  simultaneous create requests and rejects excess requests instead of queuing
+  them. A runner-wide file-backed rolling window shapes create traffic without
+  limiting the number of already-active Sandboxes. Operators can raise
+  ``QZ_CREATE_CONCURRENCY`` after QZ confirms additional create capacity;
+  benchmark users only select their normal worker count.
 """
 
 from __future__ import annotations
@@ -42,6 +50,7 @@ from harbor.environments.capabilities import (
     EnvironmentResourceCapabilities,
 )
 from harbor.environments.e2b import E2BEnvironment
+from qz_create_limiter import qz_create_concurrency, qz_create_slot
 from qz_template_resolver import (
     MAPPING_ENV_VAR,
     QzTemplateResolutionError,
@@ -335,20 +344,22 @@ class QzSandboxEnvironment(E2BEnvironment):
         timeout_sec = qz_sandbox_timeout_sec()
         # Pass the qz connection explicitly so sandbox creation is immune to
         # ambient E2B_* values on a mixed-provider host.
-        return await AsyncSandbox.create(
-            template=self._template_name,
-            api_key=os.environ.get("E2B_API_KEY") or None,
-            api_url=os.environ.get("E2B_API_URL") or None,
-            metadata={
-                "environment_name": self.environment_name,
-                "session_id": self.session_id,
-            },
-            timeout=timeout_sec,
-            allow_internet_access=(
-                self.network_policy.network_mode != NetworkMode.NO_NETWORK
-            ),
-            network=self._sandbox_create_network_options(),
-        )
+        api_url = os.environ.get("E2B_API_URL", "")
+        async with qz_create_slot(api_url):
+            return await AsyncSandbox.create(
+                template=self._template_name,
+                api_key=os.environ.get("E2B_API_KEY") or None,
+                api_url=api_url or None,
+                metadata={
+                    "environment_name": self.environment_name,
+                    "session_id": self.session_id,
+                },
+                timeout=timeout_sec,
+                allow_internet_access=(
+                    self.network_policy.network_mode != NetworkMode.NO_NETWORK
+                ),
+                network=self._sandbox_create_network_options(),
+            )
 
     async def _create_sandbox(self) -> None:
         self._sandbox = await self._allocate_sandbox()
@@ -408,5 +419,9 @@ class QzSandboxEnvironment(E2BEnvironment):
                 ) from exc
         try:
             qz_sandbox_timeout_sec()
+        except ValueError as exc:
+            raise SystemExit(str(exc)) from exc
+        try:
+            qz_create_concurrency()
         except ValueError as exc:
             raise SystemExit(str(exc)) from exc

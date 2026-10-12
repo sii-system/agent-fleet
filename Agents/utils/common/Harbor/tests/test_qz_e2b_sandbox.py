@@ -185,6 +185,7 @@ def retry_dependency_stubs():
 
 
 QZ_VARS = (
+    "QZ_CREATE_CONCURRENCY",
     "QZ_SANDBOX_API_KEY",
     "QZ_SANDBOX_API_URL",
     "SBX_API_KEY",
@@ -385,6 +386,20 @@ class PreflightTest(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 self.module.QzSandboxEnvironment.preflight()
             self.assertNotIn("E2B_API_KEY", os.environ)
+
+    def test_preflight_rejects_invalid_create_concurrency(self):
+        cleaned = {name: "" for name in QZ_VARS}
+        cleaned.update(
+            {
+                "SBX_API_KEY": "sbx_secret",
+                "QZ_CREATE_CONCURRENCY": "0",
+            }
+        )
+        with (
+            patch.dict(os.environ, cleaned, clear=False),
+            self.assertRaisesRegex(SystemExit, "QZ_CREATE_CONCURRENCY"),
+        ):
+            self.module.QzSandboxEnvironment.preflight()
 
     def test_init_applies_mapping_before_super(self):
         cleaned = {name: "" for name in QZ_VARS}
