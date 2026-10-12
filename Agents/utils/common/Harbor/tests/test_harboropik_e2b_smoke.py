@@ -76,6 +76,7 @@ class HarborOpikE2BSmokeTest(unittest.TestCase):
                     "DATASET_NAME": "auto",
                     "HARBOR_DRY_RUN": "1" if dry_run else "0",
                     "HARBOR_OPIK_BIN": str(fake_harbor),
+                    "HARBOR_OPIK_PYTHON": str(fake_harbor),
                     "HARBOR_CLI_BIN": str(fake_harbor),
                     "HARBOR_RUNNER_PREPARE": "0",
                     "HARBOR_SKIP_DOCKERHUB_PREFLIGHT": "1",
@@ -124,6 +125,7 @@ class HarborOpikE2BSmokeTest(unittest.TestCase):
         self.assertIn("--env e2b", completed.stdout)
         self.assertIn("-a oracle", completed.stdout)
         self.assertIn("harbor run", completed.stdout)
+        self.assertNotIn("--allow-agent-host", completed.stdout)
         self.assertNotIn("opik harbor run", completed.stdout.lower())
         self.assertNotIn("--mounts-json", completed.stdout)
         self.assertNotIn("--extra-docker-compose", completed.stdout)
@@ -147,6 +149,28 @@ class HarborOpikE2BSmokeTest(unittest.TestCase):
         self.assertEqual(completed.returncode, 0, completed.stdout)
         self.assertIn("[INFO] environment: e2b", completed.stdout)
         self.assertIn("skip unprivileged Docker Compose overlay", completed.stdout)
+
+    def test_model_gateway_exception_reaches_both_command_builders(self) -> None:
+        for agent in ("claude-code", "opencode", "pi", "dsh-sdk-minimal"):
+            with self.subTest(agent=agent):
+                completed = self.run_dry_run("docker", agent, dry_run=False)
+                self.assertEqual(completed.returncode, 0, completed.stdout)
+                self.assertIn("FAKE_HARBOR_ARG=--allow-agent-host\nFAKE_HARBOR_ARG=model.example",
+                              completed.stdout)
+                self.assertNotIn("--allow-host", completed.stdout)
+                self.assertNotIn("--allow-verifier-host", completed.stdout)
+
+    def test_opencode_exception_uses_selected_provider_base_url(self) -> None:
+        completed = self.run_dry_run("docker", "opencode", extra_env={
+            "HARBOR_MODEL": "custom/test-model",
+            "OPENCODE_CONFIG_CONTENT": '{"provider":{"custom":{"options":'
+                '{"baseURL":"https://selected.example:8443/v1"}},'
+                '"unused":{"options":{"baseURL":"https://unused.example/v1"}}}}',
+        })
+        self.assertEqual(completed.returncode, 0, completed.stdout)
+        self.assertRegex(completed.stdout, r"--allow-agent-host\s+selected\.example")
+        self.assertNotRegex(completed.stdout, r"--allow-agent-host\s+model\.example")
+        self.assertNotRegex(completed.stdout, r"--allow-agent-host\s+unused\.example")
 
     def test_pi_e2b_fails_cleanly_with_clear_message(self) -> None:
         completed = self.run_dry_run(

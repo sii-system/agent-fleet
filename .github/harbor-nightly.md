@@ -44,6 +44,19 @@ are not logged.
 A model that disappears mid-run can still fail trials. The preflight checks
 availability at startup; it does not change models or weaken the health gate.
 
+The shared launcher passes the active model gateway hostname through Harbor's
+`--allow-agent-host`. This lets agent model requests reach the configured
+gateway when a task uses `no-network` or an allowlist that excludes it. For
+example, Snorkel tasks can allow `api.portkey.ai` while the nightly uses a
+different gateway; Datacurve tasks can disable agent network access entirely.
+Host preflight can pass in both cases while in-task model calls reset.
+
+The exception applies only during agent execution. Harbor preserves existing
+task allowlist entries and verifier policies; public agent policies remain
+public. Only the selected model provider's configured hostname is added,
+without URL credentials, ports, paths, or unused provider endpoints. This
+does not address provider rate limits or model/input compatibility errors.
+
 The random catalog currently excludes GAIA because the nightly model supports
 text input only. On 2026-10-07, GAIA image reads received HTTP 400 with
 `Model only supports text input`; text-only preflight requests still passed.

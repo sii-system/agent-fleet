@@ -606,6 +606,16 @@ append_environment_backend_args() {
   fi
 }
 
+append_agent_model_gateway_host() {
+  local model_host
+  model_host="$(python3 "$SCRIPT_DIR/harbor_shell_utils.py" agent-model-host)" || return 1
+  if [[ -n "$model_host" ]]; then
+    # Harbor merges this host into the agent execution phase only. Task
+    # allowlists and verifier policies remain owned by Harbor/task.toml.
+    cmd+=( --allow-agent-host "$model_host" )
+  fi
+}
+
 ensure_trace_plugin_source_if_needed() {
   if [[ "$HARBOR_DRY_RUN" == "1" ]]; then
     return 0
@@ -1376,6 +1386,7 @@ run_harbor() {
   model_host="$(
     python3 "$SCRIPT_DIR/harbor_shell_utils.py" url-hostname "$model_base_url"
   )"
+  append_agent_model_gateway_host || return 1
   no_proxy_value="127.0.0.1,localhost,host.docker.internal"
   if [[ -n "$opik_host" ]]; then
     no_proxy_value="$no_proxy_value,$opik_host"
@@ -1716,6 +1727,7 @@ run_opencode_task() {
       --timeout-multiplier "$HARBOR_TIMEOUT_MULTIPLIER"
       --agent-setup-timeout-multiplier "$HARBOR_AGENT_SETUP_TIMEOUT_MULTIPLIER"
     )
+    append_agent_model_gateway_host || return 1
     # Same rule as the Claude builder: no Opik endpoint or credentials in
     # trace-off task environments.
     if harbor_trace_to_opik_enabled; then
