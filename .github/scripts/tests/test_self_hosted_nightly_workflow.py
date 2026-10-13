@@ -248,35 +248,6 @@ class WorkflowTest(unittest.TestCase):
                     "PASS" if expected_status == 0 else "FAIL", report.read_text()
                 )
 
-    def test_stages_redacted_downloads_without_modifying_originals(self):
-        script = self.step_script("Stage and redact artifacts")
-        with tempfile.TemporaryDirectory() as tmp:
-            output = Path(tmp) / "run"
-            output.mkdir()
-            original = "fake-api-credential fake-opik-credential\n"
-            (output / "summary.txt").write_text(original)
-            env_file = Path(tmp) / "env"
-            result = subprocess.run(
-                ["bash", "-c", script],
-                cwd=ROOT,
-                capture_output=True,
-                text=True,
-                check=False,
-                env={
-                    **os.environ,
-                    "RUNNER_TEMP": tmp,
-                    "OUTPUT_PATH": str(output),
-                    "GITHUB_ENV": str(env_file),
-                    "GITHUB_WORKSPACE": str(ROOT),
-                    "API_KEY": "fake-api-credential",
-                    "OPIK_API_KEY": "fake-opik-credential",
-                },
-            )
-            self.assertEqual(result.returncode, 0, result.stderr)
-            staged = Path(env_file.read_text().strip().split("=", 1)[1])
-            self.assertEqual((staged / "summary.txt").read_text(), "*** ***\n")
-            self.assertEqual((output / "summary.txt").read_text(), original)
-
     def test_staging_redacts_saved_credentials_and_structured_overrides(self):
         script = self.step_script("Stage and redact artifacts")
         with tempfile.TemporaryDirectory() as tmp:

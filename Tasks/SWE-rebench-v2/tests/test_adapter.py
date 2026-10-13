@@ -89,6 +89,25 @@ def test_generated_task_uses_builder_base_image(tmp_path: Path) -> None:
         assert script.stat().st_mode & 0o111
 
 
+def test_generated_verifier_keeps_portable_python_and_log_handoff(tmp_path: Path) -> None:
+    adapter = SWERebenchV2Adapter(tmp_path, source="sample.json")
+    task_dir, _ = adapter.generate_task(_record())
+    script = (task_dir / "tests/test.sh").read_text()
+
+    select_python = script.index('PARSER_PYTHON="${HARBOR_VERIFIER_PYTHON:-}"')
+    unpack_python = script.index('tar -xzf "$bundle_archive"')
+    grade = script.index('"$PARSER_PYTHON" /tests/parser.py')
+    assert select_python < unpack_python < grade
+    assert "HARBOR_VERIFIER_RUNTIME_BUNDLE_ARCHIVE" in script
+    assert "HARBOR_VERIFIER_RUNTIME_BUNDLE_ROOT" in script
+
+    redirect = script.index('exec > >(tee "$LOG_FILE") 2>&1')
+    capture_tee = script.index('tee_pid="$!"')
+    restore = script.index('exec 1>&3 2>&4')
+    flush = script.index('wait "$tee_pid"')
+    assert redirect < capture_tee < restore < flush < grade
+
+
 def test_oracle_patch_preserves_trailing_blank_context_line(tmp_path: Path) -> None:
     record = _record()
     record["patch"] = (

@@ -47,6 +47,8 @@ class WorkflowPolicyTest(unittest.TestCase):
                 )
                 for job in workflow["jobs"].values():
                     self.assertNotIn("permissions", job)
+                    if name == "self-hosted-llm-pr-review.yml":
+                        self.assertTrue({"self-hosted", "container", "code-review"}.issubset(job["runs-on"]))
                     checkouts = [
                         step for step in job["steps"]
                         if step.get("uses", "").startswith("actions/checkout@")

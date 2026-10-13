@@ -29,6 +29,7 @@ class SummaryPublishingTest(unittest.TestCase):
         return {
             'API_KEY': 'fake-llm-secret-for-test', 'OPIK_API_KEY': 'fake-opik-secret-for-test',
             'GITHUB_WORKSPACE': str(ROOT), 'RUNNER_TEMP': str(root),
+            'GITHUB_ENV': str(root / 'env'),
             'OUTPUT_PATH': str(run), 'GITHUB_OUTPUT': str(root / 'outputs'),
             'GITHUB_STEP_SUMMARY': str(root / 'summary.md'),
             'HEALTH_SUMMARY': str(root / 'health.md'), 'JOB_STATUS': 'failure',
@@ -36,6 +37,19 @@ class SummaryPublishingTest(unittest.TestCase):
             'STAGED_ARTIFACTS': '', 'ARTIFACT_OUTCOME': 'skipped', 'ARTIFACT_URL': '',
             'RUN_URL': 'https://example.invalid/run', 'PREPARED_SUMMARY': '',
         }
+
+    def test_stages_redacted_downloads_without_modifying_originals(self):
+        for workflow in WORKFLOWS:
+            with self.subTest(workflow=workflow.name), tempfile.TemporaryDirectory() as tmp:
+                env = self.environment(Path(tmp))
+                source = Path(env['OUTPUT_PATH']) / 'summary.txt'
+                original = env['API_KEY'] + ' ' + env['OPIK_API_KEY'] + '\n'
+                source.write_text(original)
+                result = self.run_step(workflow, 'Stage and redact artifacts', env)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                staged = Path(Path(env['GITHUB_ENV']).read_text().strip().split('=', 1)[1])
+                self.assertEqual((staged / 'summary.txt').read_text(), '*** ***\n')
+                self.assertEqual(source.read_text(), original)
 
     def test_failed_artifact_staging_still_publishes_the_redacted_joint_report(self):
         for workflow in WORKFLOWS:
