@@ -198,6 +198,27 @@ class HarborOpikE2BSmokeTest(unittest.TestCase):
                          completed.stdout)
         self.assertNotIn("FAKE_HARBOR_ARG=--allow-agent-host\nFAKE_HARBOR_ARG=model.example",
                          completed.stdout)
+        for name in ("NO_PROXY", "no_proxy"):
+            value = next(line.split("=", 2)[2] for line in completed.stdout.splitlines()
+                         if line.startswith(f"FAKE_HARBOR_ARG={name}="))
+            self.assertIn("selected.example", value.split(","))
+            self.assertNotIn("unused.example", value.split(","))
+            self.assertNotIn("model.example", value.split(","))
+
+    def test_rollout_request_endpoints_do_not_add_agent_network_exceptions(self) -> None:
+        for agent in ("claude-code", "opencode", "pi"):
+            with self.subTest(agent=agent):
+                completed = self.run_dry_run("docker", agent, dry_run=False, extra_env={
+                    "ROLLOUT": "1", "RL_AGENT": agent,
+                    "RL_API_BASE": "https://caller.example/v1",
+                    "BASE_URL": "https://caller.example",
+                    "HARBOR_ANTHROPIC_BASE_URL": "https://caller.example",
+                })
+                self.assertEqual(completed.returncode, 0, completed.stdout)
+                self.assertIn("FAKE_HARBOR_ARG=run", completed.stdout)
+                self.assertNotIn("--allow-agent-host", completed.stdout)
+                self.assertNotIn("--allow-host", completed.stdout)
+                self.assertNotIn("--allow-verifier-host", completed.stdout)
 
     def test_pi_docker_dry_run_still_builds_command(self) -> None:
         completed = self.run_dry_run("docker", "pi")

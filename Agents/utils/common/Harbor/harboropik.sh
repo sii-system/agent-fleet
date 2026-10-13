@@ -607,6 +607,9 @@ append_environment_backend_args() {
 }
 
 append_agent_model_gateway_host() {
+  # Rollout endpoints can come from /run_trial payloads. They must not grant
+  # network access; this automatic exception is for fixed host-configured runs.
+  [[ "$ROLLOUT" != "1" ]] || return 0
   local model_host
   model_host="$(python3 "$SCRIPT_DIR/harbor_shell_utils.py" agent-model-host)" || return 1
   if [[ -n "$model_host" ]]; then
@@ -1371,7 +1374,7 @@ run_harbor() {
     fi
   fi
 
-  local opik_host wheel_host model_host model_base_url no_proxy_value
+  local opik_host wheel_host model_host no_proxy_value
   opik_host="$(
     python3 "$SCRIPT_DIR/harbor_shell_utils.py" url-hostname "$OPIK_URL_OVERRIDE"
   )"
@@ -1379,12 +1382,8 @@ run_harbor() {
     python3 "$SCRIPT_DIR/harbor_shell_utils.py" url-hostname \
       "${HARBOR_LOCAL_WHEEL_SERVER_URL:-}"
   )"
-  model_base_url="$HARBOR_ANTHROPIC_BASE_URL"
-  if harbor_agent_is_dsh; then
-    model_base_url="$BASE_URL"
-  fi
   model_host="$(
-    python3 "$SCRIPT_DIR/harbor_shell_utils.py" url-hostname "$model_base_url"
+    python3 "$SCRIPT_DIR/harbor_shell_utils.py" agent-model-host
   )"
   append_agent_model_gateway_host || return 1
   no_proxy_value="127.0.0.1,localhost,host.docker.internal"
