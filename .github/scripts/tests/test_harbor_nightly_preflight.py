@@ -117,16 +117,6 @@ class PreflightTest(unittest.TestCase):
             probe.assert_not_called()
             self.assertIn("::error::", output.getvalue())
 
-    def test_workflows_check_the_same_model_before_setup_and_trials(self):
-        for name in ("harbor-e2e-validation.yml", "harbor-self-hosted-nightly.yml"):
-            workflow = (ROOT / ".github/workflows" / name).read_text()
-            step = workflow.split("      - name: Check nightly model availability\n")[1].split("      - name:")[0]
-            self.assertIn("timeout-minutes: 3", step)
-            self.assertIn("harbor_nightly_preflight.py", step)
-            self.assertLess(workflow.index("Check nightly model availability"),
-                            workflow.index("Validate prerequisites"))
-            self.assertEqual(workflow.count("MODEL: ${{ vars.HARBOR_NIGHTLY_MODEL || vars.LLM_REVIEW_MODEL }}"), 2)
-
 
 if __name__ == "__main__":
     unittest.main()

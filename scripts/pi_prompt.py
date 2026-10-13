@@ -152,21 +152,14 @@ def final_assistant_message(events: list[dict[str, Any]]) -> dict[str, Any] | No
 
 
 def provider_error(events: list[dict[str, Any]]) -> str:
-    retry_errors = [
-        str(event.get("finalError") or "")
-        for event in events
-        if event.get("type") == "auto_retry_end"
-    ]
-    retry_errors = [message for message in retry_errors if message]
-    if retry_errors:
-        return retry_errors[-1]
-    message_errors = [
-        str((event.get("message") or {}).get("errorMessage") or "")
-        for event in events
-        if isinstance(event.get("message"), dict)
-    ]
-    message_errors = [message for message in message_errors if message]
-    return message_errors[-1] if message_errors else ""
+    retry_error = message_error = ""
+    for event in events:
+        if event.get("type") == "auto_retry_end" and event.get("finalError"):
+            retry_error = str(event["finalError"])
+        message = event.get("message")
+        if isinstance(message, dict) and message.get("errorMessage"):
+            message_error = str(message["errorMessage"])
+    return retry_error or message_error
 
 
 def validate_event_stream(events: list[dict[str, Any]]) -> dict[str, Any]:
@@ -178,15 +171,11 @@ def validate_event_stream(events: list[dict[str, Any]]) -> dict[str, Any]:
     if len(session_ids) != 1:
         raise PromptFailure("Pi session lifecycle was not observed exactly once")
 
-    agent_start = sum(event.get("type") == "agent_start" for event in events)
-    agent_end = sum(event.get("type") == "agent_end" for event in events)
-    if agent_start < 1 or agent_start != agent_end:
-        raise PromptFailure("Pi agent lifecycle is incomplete")
-
-    turn_start = sum(event.get("type") == "turn_start" for event in events)
-    turn_end = sum(event.get("type") == "turn_end" for event in events)
-    if turn_start < 1 or turn_start != turn_end:
-        raise PromptFailure("Pi turn lifecycle is incomplete")
+    for lifecycle in ("agent", "turn"):
+        starts = sum(event.get("type") == f"{lifecycle}_start" for event in events)
+        ends = sum(event.get("type") == f"{lifecycle}_end" for event in events)
+        if starts < 1 or starts != ends:
+            raise PromptFailure(f"Pi {lifecycle} lifecycle is incomplete")
 
     error = provider_error(events)
     if error:

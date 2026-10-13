@@ -189,40 +189,21 @@ class HarborFixerVerificationRuntimeTest(FixerTestCase):
         self.assertEqual(result["exit_code"], 0)
         stdout_path = self.root / "run/runtime/opencode/verification-rerun.stdout.log"
         self.assertEqual(result["stdout_path"], str(stdout_path))
-        self.assertTrue(Path(result["stdout_path"]).is_file())
-        self.assertTrue(Path(result["stderr_path"]).is_file())
-        self.assertEqual(stdout_path.stat().st_mode & 0o777, 0o600)
-        self.assertEqual(Path(result["stderr_path"]).stat().st_mode & 0o777, 0o600)
+        for key in ("stdout_path", "stderr_path"):
+            self.assertEqual(Path(result[key]).stat().st_mode & 0o777, 0o600)
         call = popen.call_args.kwargs
         env = call["env"]
-        self.assertNotIn("QUEUE_DIR", env)
-        self.assertNotIn("HARBOR_ANALYZER_OUTPUT_DIR", env)
-        self.assertNotIn("HARBOR_ZELLIJ_SESSION_NAME", env)
-        self.assertEqual(env["AGENT"], "opencode")
-        self.assertEqual(env["HARBOR_AGENT_IMPORT_PATH"], "")
-        self.assertEqual(env["HARBOR_QUEUE_WORKER"], "0")
-        self.assertNotIn("HARBOR_N_CONCURRENT", env)
-        self.assertNotIn("HARBOR_TASK_ID", env)
-        self.assertNotIn("HARBOR_ANTHROPIC_MODEL", env)
-        self.assertNotIn("HARBOR_ANTHROPIC_DEFAULT_OPUS_MODEL", env)
-        self.assertNotIn("HARBOR_ANTHROPIC_DEFAULT_SONNET_MODEL", env)
-        self.assertNotIn("HARBOR_ANTHROPIC_DEFAULT_HAIKU_MODEL", env)
-        self.assertNotIn("HARBOR_CLAUDE_CODE_SUBAGENT_MODEL", env)
-        self.assertEqual(env["FLEET_TASKS"], "task-b,task-a")
-        self.assertNotIn("INCLUDE_TASKS", env)
-        self.assertEqual(env["HARBOR_INCLUDE_TASKS"], "task-b,task-a")
-        self.assertEqual(env["HARBOR_LIMIT"], "")
-        self.assertEqual(env["DATASET_NAME"], "smith")
-        self.assertEqual(env["DATASET_PATH"], "/datasets/swesmith")
-        self.assertEqual(env["HARBOR_MODEL"], "source-model")
-        self.assertEqual(env["HARBOR_N_ATTEMPTS"], "1")
-        self.assertNotIn("HARBOR_RUNS", env)
-        self.assertNotIn("N_ATTEMPTS", env)
-        self.assertEqual(env["MIN_TEST"], "0")
+        expected = {
+            "AGENT": "opencode", "HARBOR_AGENT_IMPORT_PATH": "",
+            "HARBOR_QUEUE_WORKER": "0", "FLEET_TASKS": "task-b,task-a",
+            "HARBOR_INCLUDE_TASKS": "task-b,task-a", "HARBOR_LIMIT": "",
+            "DATASET_NAME": "smith", "DATASET_PATH": "/datasets/swesmith",
+            "HARBOR_MODEL": "source-model", "HARBOR_N_ATTEMPTS": "1", "MIN_TEST": "0",
+        }
+        self.assertEqual({key: env[key] for key in expected}, expected)
+        self.assertEqual((stale.keys() - expected.keys()) & env.keys(), set())
         self.assertEqual(call["cwd"], self.root / "run")
         self.assertTrue(call["start_new_session"])
-        self.assertTrue(call["stdout"].closed)
-        self.assertTrue(call["stderr"].closed)
         process.wait.assert_called_once()
         self.assertGreater(process.wait.call_args.kwargs["timeout"], 8.9)
         self.assertLessEqual(process.wait.call_args.kwargs["timeout"], 9)

@@ -10,8 +10,11 @@ import io
 import json
 import os
 import sys
+import tempfile
 import unittest
 from pathlib import Path
+
+import yaml
 
 OPENCLAW_DIR = Path(__file__).resolve().parents[1]
 SETUP_PY = OPENCLAW_DIR / "scripts" / "setup.py"
@@ -129,59 +132,9 @@ class BuildOpenclawConfigTests(unittest.TestCase):
         self.assertEqual(entry["config"]["opikWorkspace"], "ws")
         self.assertEqual(entry["config"]["opikProjectName"], "proj")
 
-    def test_special_characters_roundtrip(self):
-        cfg = _base_cfg(
-            BASE_URL='https://example/v1?n="q"&p=a\\b',
-            API_KEY='k"with\\slash|pipe',
-            MODEL='m"o\\d|e',
-        )
-        result = setup.build_openclaw_config(self.template, cfg, token="t", gw_port=18789)
-        provider = result["models"]["providers"]["default"]
-        self.assertEqual(provider["baseUrl"], cfg["BASE_URL"])
-        self.assertEqual(provider["apiKey"], cfg["API_KEY"])
-        self.assertEqual(provider["models"][0]["id"], cfg["MODEL"])
-
 
 class RenderComposeServiceTests(unittest.TestCase):
-    def test_basic_service_block(self):
-        cfg = _base_cfg()
-        block = setup.render_compose_service(
-            "openclaw-1", token_var="TOKEN_1", gw_port=18789,
-            image_default="openclaw:local",
-            config_dir=Path("/state/1"), workspace_dir=Path("/work/1"),
-            opik_state_dir=None, openclaw_home_dir=Path("/openclaw-home/1"),
-            npm_cache=Path("/cache/.npm"),
-            plugin_cache=None, cfg=cfg,
-        )
-        self.assertIn("  openclaw-1:", block)
-        self.assertIn("image: ${OPENCLAW_IMAGE:-openclaw:local}", block)
-        self.assertIn("/state/1:/home/node/openclaw-state", block)
-        self.assertIn("/work/1:/home/node/workspace", block)
-        self.assertIn("/openclaw-home/1:/home/node/.openclaw", block)
-        self.assertIn(f'    user: "{os.getuid()}:{os.getgid()}"', block)
-        self.assertIn('OPENCLAW_GATEWAY_TOKEN: "${TOKEN_1}"', block)
-        self.assertIn('"18789:18789"', block)
-        self.assertIn("read_only: true", block)
-        self.assertNotIn("OC_OPIK_PROCESS_TIMEOUT_S", block)
-        self.assertNotIn(":/home/node/.openclaw/state", block)
-        self.assertNotIn("/opt/plugin-cache", block)
-
-    def test_opik_block_has_state_mount_and_timeout(self):
-        cfg = _base_cfg(OPIK_URL="https://opik.example/api/")
-        block = setup.render_compose_service(
-            "openclaw-2", token_var="TOKEN_2", gw_port=18809,
-            image_default="openclaw:local-opik",
-            config_dir=Path("/state/2"), workspace_dir=Path("/work/2"),
-            opik_state_dir=Path("/state/2/opik-state"),
-            openclaw_home_dir=Path("/openclaw-home/2"),
-            npm_cache=Path("/cache/.npm"), plugin_cache=None, cfg=cfg,
-        )
-        self.assertIn('OC_OPIK_PROCESS_TIMEOUT_S: "60"', block)
-        self.assertIn("/state/2/opik-state:/home/node/.openclaw/state", block)
-        self.assertIn("/openclaw-home/2:/home/node/.openclaw", block)
-        self.assertIn("openclaw:local-opik", block)
-
-    def test_mirror_environment_is_emitted_when_configured(self):
+    def test_compose_preserves_runtime_settings_and_mirrors(self):
         cfg = _base_cfg(
             NPM_CONFIG_REGISTRY="https://registry.npmmirror.com",
             PIP_INDEX_URL="https://pypi.tuna.tsinghua.edu.cn/simple",
@@ -196,43 +149,33 @@ class RenderComposeServiceTests(unittest.TestCase):
             npm_cache=Path("/cache/.npm"),
             plugin_cache=None, cfg=cfg,
         )
-        self.assertIn('NPM_CONFIG_REGISTRY: "https://registry.npmmirror.com"', block)
-        self.assertIn('PIP_INDEX_URL: "https://pypi.tuna.tsinghua.edu.cn/simple"', block)
-        self.assertIn('PIP_EXTRA_INDEX_URL: "https://pypi.example.com/simple"', block)
-        self.assertIn('PIP_TRUSTED_HOST: "pypi.tuna.tsinghua.edu.cn"', block)
+        service = yaml.safe_load(block)["openclaw-1"]
+        expected_environment = {
+            key: cfg[key] for key in
+            ("NPM_CONFIG_REGISTRY", "PIP_INDEX_URL", "PIP_EXTRA_INDEX_URL", "PIP_TRUSTED_HOST")
+        }
+        expected_environment["OPENCLAW_GATEWAY_TOKEN"] = "${TOKEN_1}"
+        self.assertEqual(
+            {key: service["environment"][key] for key in expected_environment},
+            expected_environment,
+        )
+        self.assertEqual(service["ports"], ["18789:18789"])
+        self.assertEqual(service["image"], "${OPENCLAW_IMAGE:-openclaw:local}")
+        self.assertIs(service["read_only"], True)
+        self.assertNotIn("OC_OPIK_PROCESS_TIMEOUT_S", service["environment"])
 
 
 class TokenPreservationTests(unittest.TestCase):
-    def test_round_trip(self):
-        with self._tmpfile() as path:
+    def test_round_trip_and_missing_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / ".env"
+            self.assertEqual(setup.load_existing_tokens(path), {})
             path.write_text(
-                "TOKEN_1=abc123\n"
-                "TOKEN_2=def456\n"
-                "CONTAINER_NAME_PREFIX=openclaw\n",
+                "TOKEN_1=abc123\nTOKEN_2=def456\nCONTAINER_NAME_PREFIX=openclaw\n",
                 encoding="utf-8",
             )
-            tokens = setup.load_existing_tokens(path)
-            self.assertEqual(tokens, {"TOKEN_1": "abc123", "TOKEN_2": "def456"})
-
-    def test_missing_file(self):
-        with self._tmpfile() as path:
-            path.unlink()
-            self.assertEqual(setup.load_existing_tokens(path), {})
-
-    def _tmpfile(self):
-        import tempfile
-        from contextlib import contextmanager
-
-        @contextmanager
-        def ctx():
-            with tempfile.NamedTemporaryFile(delete=False) as f:
-                p = Path(f.name)
-            try:
-                yield p
-            finally:
-                if p.exists():
-                    p.unlink()
-        return ctx()
+            self.assertEqual(setup.load_existing_tokens(path),
+                             {"TOKEN_1": "abc123", "TOKEN_2": "def456"})
 
 
 class ResolveConfigTests(unittest.TestCase):

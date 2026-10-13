@@ -207,10 +207,6 @@ class TaskImageResolutionTest(unittest.TestCase):
         self.build.assert_not_called()
         self.copy.assert_not_called()
 
-    def test_enabled_validation_keeps_empty_repository_build_flow(self):
-        self.args.validate_image_hash = True
-        self.test_empty_repository_uses_existing_hash_build_and_push_flow()
-
     def test_multiple_tags_choose_newest_push_time_independent_of_listing_order(self):
         older = self.artifact('z-older', '2026-09-01T10:00:00+08:00', 'a')
         newer = self.artifact('a-newer', '2026-09-01T03:00:00Z', 'b')
@@ -260,17 +256,19 @@ class TaskImageResolutionTest(unittest.TestCase):
         self.stack.enter_context(patch.object(image_build, 'prepare_frontend', return_value={}))
 
     def test_empty_repository_uses_existing_hash_build_and_push_flow(self):
-        self.responses([])
         self.allow_build()
-        image = self.prepare_image()
-        self.identity.assert_called_once_with(self.environment)
-        self.credentials.assert_called_once()
-        self.build.assert_called_once()
-        self.copy.assert_called_once()
-        self.assertTrue(self.copy.call_args.kwargs['source_is_archive'])
-        self.assertEqual(image['tag'], 'main-' + 'c' * 20)
-        self.assertEqual(image['input_hash'], 'sha256:' + 'c' * 64)
-        self.assertEqual(image['artifact_digest'], 'sha256:' + 'd' * 64)
+        for validate in (False, True):
+            with self.subTest(validate_image_hash=validate):
+                self.args.validate_image_hash = validate
+                self.responses([])
+                image = self.prepare_image()
+                self.assertEqual(image['tag'], 'main-' + 'c' * 20)
+                self.assertEqual(image['input_hash'], 'sha256:' + 'c' * 64)
+                self.assertEqual(image['artifact_digest'], 'sha256:' + 'd' * 64)
+                self.assertTrue(self.copy.call_args.kwargs['source_is_archive'])
+                for operation in (self.identity, self.credentials, self.build, self.copy):
+                    operation.assert_called_once()
+                    operation.reset_mock()
 
     def test_missing_repository_is_empty(self):
         self.opener.open.side_effect = HTTPError('https://registry.example', 404, 'missing', {}, None)

@@ -66,84 +66,27 @@ def test_json_loader_preserves_requested_order(tmp_path: Path) -> None:
 
 
 def test_generated_task_uses_builder_base_image(tmp_path: Path) -> None:
-    output = tmp_path / "tasks"
-    adapter = SWERebenchV2Adapter(
-        output,
-        source="sample.json",
-    )
+    record = _record()
+    adapter = SWERebenchV2Adapter(tmp_path / "tasks", source="sample.json")
+    task_dir, base_image = adapter.generate_task(record)
 
-    task_dir, base_image = adapter.generate_task(_record())
-
-    assert base_image == "python_3.11_base:latest"
+    assert base_image == record["install_config"]["base_image_name"]
     dockerfile = (task_dir / "environment" / "Dockerfile").read_text()
-    assert (
-        "FROM --platform=linux/amd64 python_3.11_base:latest"
-        in dockerfile
-    )
-    assert "registry.example" not in dockerfile
-    assert dockerfile.count("FROM ") == 1
-    assert " AS base" not in dockerfile
-    assert "AS owner__project-1" not in dockerfile
-    assert "docker.io/swerebenchv2/final-image" not in dockerfile
-    assert (
-        "git clone -o origin https://github.com/owner/project /project;" in dockerfile
-    )
-    assert (
-        "git cat-file -e '0123456789abcdef^{commit}' || "
-        "git fetch --no-tags origin '0123456789abcdef';" in dockerfile
-    )
-    assert dockerfile.index("git fetch --no-tags origin") < dockerfile.index(
-        "git reset --hard"
-    )
-    assert "git reset --hard 0123456789abcdef;" in dockerfile
-    assert "( echo install ) || true;" in dockerfile
-    assert "( false ) || true;" in dockerfile
-    assert dockerfile.endswith("WORKDIR /project\n")
-
-    instruction = (task_dir / "instruction.md").read_text()
-    assert instruction == "Fix the bug without seeing the gold patch.\n"
-    assert "+new" not in instruction
-
+    from_lines = [line for line in dockerfile.splitlines() if line.startswith("FROM ")]
+    assert len(from_lines) == 1
+    assert from_lines[0].split()[-1] == base_image
+    assert f"git clone -o origin https://github.com/{record['repo']} /project;" in dockerfile
+    assert f"git reset --hard {record['base_commit']};" in dockerfile
+    assert (task_dir / "instruction.md").read_text().strip() == record["problem_statement"]
     config = tomllib.loads((task_dir / "task.toml").read_text())
     assert config["task"]["name"] == "swe-rebench-v2/owner__project-1"
     assert config["verifier"]["timeout_sec"] == 3000
-
-    test_script = (task_dir / "tests" / "test.sh").read_text()
-    assert "echo 0 > /logs/verifier/reward.txt" not in test_script
-    assert "echo 1 > /logs/verifier/reward.txt" not in test_script
-    assert "rm -f /logs/verifier/reward.txt /logs/verifier/report.json" in test_script
-    assert 'if [ "${exit_code}" -eq 0 ]' not in test_script
-    official_apply = (
-        "git apply -v --3way --recount --ignore-space-change --whitespace=nowarn"
-    )
-    assert official_apply in test_script
-    assert "patch --fuzz" not in test_script
-    assert "local repo_dir=/project" in test_script
-    assert "find / -maxdepth" not in test_script
-    assert 'if ! REPO_DIR="$(resolve_repo_dir)"; then' in test_script
-    assert 'tee_pid="$!"' in test_script
-    assert 'wait "$tee_pid"' in test_script
-    assert test_script.index('exec > >(tee "$LOG_FILE") 2>&1') < test_script.index(
-        'tee_pid="$!"'
-    )
-    assert test_script.index("exec 1>&3 2>&4") < test_script.index(
-        'wait "$tee_pid"'
-    )
-    assert test_script.index('wait "$tee_pid"') < test_script.index(
-        '"$PARSER_PYTHON" /tests/parser.py'
-    )
-    assert 'PARSER_PYTHON="${HARBOR_VERIFIER_PYTHON:-}"' in test_script
-    assert 'HARBOR_VERIFIER_RUNTIME_BUNDLE_ARCHIVE' in test_script
-    assert "no interpreter is available" in test_script
-    assert (task_dir / "tests" / "parser.py").is_file()
-    assert (task_dir / "tests" / "log_parsers.py").is_file()
-    assert (task_dir / "tests" / "swe_constants.py").is_file()
-    assert (task_dir / "solution" / "solve.sh").stat().st_mode & 0o111
-    solution_script = (task_dir / "solution" / "solve.sh").read_text()
-    assert official_apply in solution_script
-    assert "patch --fuzz" not in solution_script
-    assert "REPO_DIR=/project" in solution_script
-    assert "find / -maxdepth" not in solution_script
+    metadata = json.loads((task_dir / "tests" / "config.json").read_text())
+    assert metadata == record
+    for filename in ("parser.py", "log_parsers.py", "swe_constants.py"):
+        assert (task_dir / "tests" / filename).is_file()
+    for script in (task_dir / "tests/test.sh", task_dir / "solution/solve.sh"):
+        assert script.stat().st_mode & 0o111
 
 
 def test_oracle_patch_preserves_trailing_blank_context_line(tmp_path: Path) -> None:

@@ -414,15 +414,6 @@ exec {shlex.quote(str(self.bin_dir / "pi"))} "$@"
         self.assertIn("arg=<--no-skills>", captured)
         self.assertIn("arg=<--no-context-files>", captured)
         self.assertIn("arg=<--no-approve>", captured)
-        self.assertIn("Terminus-2", captured)
-        self.assertIn("return ready=false", captured)
-        self.assertIn("never infer a taskset", captured)
-        self.assertIn("another registry id", captured)
-        self.assertIn("Map unqualified or official SWE-rebench-V2", captured)
-        self.assertIn("third-party TaskTrove dataset", captured)
-        self.assertIn("dsh-sdk-minimal", captured)
-        self.assertIn('"specs"', captured)
-        self.assertIn('"maxItems": 16', captured)
 
     def test_auth_token_supplies_a_missing_prompt_api_key(self):
         (self.repo / "config.env").write_text("", encoding="utf-8")

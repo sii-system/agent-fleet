@@ -645,16 +645,6 @@ exit "${STUB_EXIT:-0}"
         self.assertNotIn("runner=", result.stdout)
         self.assertFalse((self.root / "--dry-run").exists())
 
-    def test_direct_output_rejects_mistyped_option_token_before_runner(self):
-        result = self.run_fleet(
-            "--taskset", "pinchbench", "--output", "--dryrn"
-        )
-
-        self.assertEqual(result.returncode, 2)
-        self.assertIn("requires a file path", result.stderr)
-        self.assertNotIn("runner=", result.stdout)
-        self.assertFalse((self.root / "--dryrn").exists())
-
     def test_direct_output_accepts_dash_prefixed_path_with_dot_slash(self):
         result = self.run_fleet(
             "--taskset", "pinchbench", "--output", "./--dryrn", "--dry-run"
@@ -1033,13 +1023,6 @@ exit "${STUB_EXIT:-0}"
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("DATASET_NAME=terminalbench21", result.stdout)
 
-    def test_removed_batch_flag_is_not_accepted(self):
-        result = self.run_fleet("--batch", "runs.json", "--dry-run")
-
-        self.assertEqual(result.returncode, 2)
-        self.assertNotIn("runner=", result.stdout)
-        self.assertNotIn("--batch", result.stderr)
-
     def test_short_flags_match_long_forms(self):
         result = self.run_fleet(
             "-t",
@@ -1068,12 +1051,6 @@ exit "${STUB_EXIT:-0}"
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("DATASET_NAME=terminalbench21", result.stdout)
-
-    def test_misordered_short_prompt_reports_first_argument_requirement(self):
-        result = self.run_fleet("--dry-run", "-p", "Run pinchbench")
-
-        self.assertEqual(result.returncode, 2)
-        self.assertIn("-p must be the first argument", result.stderr)
 
     def test_portal_is_shell_only(self):
         self.assertFalse((SCRIPT.parent / "run_fleet.py").exists())

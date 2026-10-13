@@ -47,8 +47,7 @@ class AutoSummaryTests(unittest.TestCase):
         self.assertFalse((self.root / "analyzer").exists())
         self.assertFalse((self.root / "fixer").exists())
 
-    @unittest.skipUnless("fork" in multiprocessing.get_all_start_methods(), "requires fork")
-    def test_concurrent_completion_hooks_publish_only_once(self):
+    def _assert_concurrent_hooks_publish_only_once(self):
         counter = self.root / "model-calls.txt"
         result = self.model.return_value
 
@@ -75,9 +74,14 @@ class AutoSummaryTests(unittest.TestCase):
         self.assertEqual(counter.read_text(), "called\n")
         self.assertTrue((self.root / "benchmark-summary/summary-output.json").is_file())
 
+    @unittest.skipUnless("fork" in multiprocessing.get_all_start_methods(), "requires fork")
+    def test_concurrent_completion_hooks_publish_only_once(self):
+        self._assert_concurrent_hooks_publish_only_once()
+
+    @unittest.skipUnless("fork" in multiprocessing.get_all_start_methods(), "requires fork")
     def test_concurrent_analyzer_and_queue_hooks_publish_only_once(self):
         os.environ["HARBOR_ANALYZER_ENABLED"] = "1"
-        self.test_concurrent_completion_hooks_publish_only_once()
+        self._assert_concurrent_hooks_publish_only_once()
 
     def test_new_terminal_report_is_not_hidden_by_previous_completion_marker(self):
         self.assertTrue(auto_summary.auto_summary(self.root))

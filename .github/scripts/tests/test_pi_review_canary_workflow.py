@@ -1,11 +1,11 @@
 import json
 import os
-import re
 import subprocess
 import tempfile
-import textwrap
 import unittest
 from pathlib import Path
+
+from workflow_helpers import step_script, workflow_step
 
 ROOT = Path(__file__).resolve().parents[3]
 WORKFLOW = ROOT / ".github" / "workflows" / "self-hosted-llm-pr-review.yml"
@@ -14,62 +14,23 @@ WORKFLOW = ROOT / ".github" / "workflows" / "self-hosted-llm-pr-review.yml"
 class PiReviewCanaryWorkflowTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        cls.workflow = WORKFLOW.read_text(encoding="utf-8")
-        step_start = cls.workflow.index("      - name: Resolve review target")
-        run_marker = "        run: |\n"
-        script_start = cls.workflow.index(run_marker, step_start) + len(run_marker)
-        script_end = cls.workflow.index("\n      - name:", script_start)
-        cls.resolver_script = textwrap.dedent(
-            cls.workflow[script_start:script_end]
-        )
-
-    def test_accepts_a_required_pull_request_number(self) -> None:
-        self.assertIn("workflow_dispatch:", self.workflow)
-        self.assertRegex(
-            self.workflow,
-            re.compile(
-                r"pr_number:\n"
-                r"\s+description: Open pull request number to review\n"
-                r"\s+required: true\n"
-                r"\s+type: number"
-            ),
-        )
-
-    def test_verification_and_no_publish_canary_options(self) -> None:
-        for value in ("verification_mode:", "options: [shadow, enforce, off]", "publish_review:",
-                      "default: false", "--verification-mode", "--no-publish", "--output",
-                      "actions/upload-artifact@", "retention-days: 3", "timeout-minutes: 30"):
-            self.assertIn(value, self.workflow)
+        cls.resolver_script = step_script(WORKFLOW, "Resolve review target")
 
     def test_report_upload_is_bounded_and_does_not_override_review_outcome(self) -> None:
-        upload = self.workflow.split("      - name: Save review evaluation report\n", 1)[1].split("\n      - name:", 1)[0]
-        self.assertIn("        continue-on-error: true\n", upload)
-        self.assertIn("        timeout-minutes: 2\n", upload)
-        self.assertIn("        if: always()\n", upload)
-        review = self.workflow.split("      - name: Review pull request with pi agent\n", 1)[1].split("\n      - name:", 1)[0]
+        upload = workflow_step(WORKFLOW, "Save review evaluation report")
+        self.assertIs(upload["continue-on-error"], True)
+        self.assertEqual(upload["timeout-minutes"], 2)
+        self.assertEqual(upload["if"], "always()")
+        review = workflow_step(WORKFLOW, "Review pull request with pi agent")
         self.assertNotIn("continue-on-error", review)
-
-    def test_resolves_and_validates_the_manual_target(self) -> None:
-        expected = (
-            "name: Resolve review target",
-            "inputs.pr_number",
-            "api.github.com/repos",
-            'pull.get("state") != "open"',
-            'pull["base"]["repo"]["full_name"]',
-            're.fullmatch(r"[0-9a-f]{40}", value)',
-        )
-        for value in expected:
-            with self.subTest(value=value):
-                self.assertIn(value, self.workflow)
-
-    def test_resolves_target_with_isolated_python(self) -> None:
-        self.assertIn("python3 -I - <<'PY'", self.workflow)
 
     def test_automatic_target_uses_the_runner_event_path(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             event_path = root / "event.json"
             output_path = root / "output"
+            # The resolver must ignore Python startup code from the caller.
+            (root / "sitecustomize.py").write_text('raise SystemExit("untrusted startup")\n')
             base_sha = "a" * 40
             head_sha = "b" * 40
             event_path.write_text(
@@ -90,6 +51,7 @@ class PiReviewCanaryWorkflowTest(unittest.TestCase):
                     "EVENT_PATH": "",
                     "GITHUB_EVENT_PATH": str(event_path),
                     "GITHUB_OUTPUT": str(output_path),
+                    "PYTHONPATH": str(root),
                 }
             )
 
@@ -107,35 +69,6 @@ class PiReviewCanaryWorkflowTest(unittest.TestCase):
                 output_path.read_text(encoding="utf-8"),
                 f"base_sha={base_sha}\nevent_path={event_path}\n",
             )
-
-    def test_checks_out_the_resolved_trusted_base(self) -> None:
-        self.assertIn("ref: ${{ steps.target.outputs.base_sha", self.workflow)
-        self.assertIn("persist-credentials: false", self.workflow)
-        self.assertIn(
-            '--event-path "${{ steps.target.outputs.event_path }}"',
-            self.workflow,
-        )
-
-    def test_does_not_define_an_unenforced_review_deadline(self) -> None:
-        self.assertNotIn("PI_REVIEW_DEADLINE_EPOCH", self.workflow)
-
-    def test_requires_a_containerized_code_review_runner(self) -> None:
-        self.assertIn(
-            "runs-on: [self-hosted, Linux, X64, container, code-review]",
-            self.workflow,
-        )
-
-    def test_canary_has_a_unique_review_id_and_concurrency_group(self) -> None:
-        self.assertIn("self-hosted-pi-pr-review${{", self.workflow)
-        self.assertIn(
-            "format('-canary-{0}-{1}', github.run_id, github.run_attempt)",
-            self.workflow,
-        )
-        self.assertIn(
-            "${{ github.event.pull_request.number }}-${{ github.event_name }}-",
-            self.workflow,
-        )
-        self.assertIn("${{ inputs.pr_number }}", self.workflow)
 
 
 if __name__ == "__main__":

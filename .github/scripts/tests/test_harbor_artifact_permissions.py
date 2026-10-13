@@ -3,9 +3,10 @@ import shutil
 import stat
 import subprocess
 import tempfile
-import textwrap
 import unittest
 from pathlib import Path
+
+from workflow_helpers import step_script, workflow_step, workflow_steps
 
 ROOT = Path(__file__).resolve().parents[3]
 WORKFLOWS = (
@@ -16,19 +17,9 @@ RECOVERY = "Repair stale Harbor artifact permissions"
 REPAIR = "Repair Harbor artifact permissions"
 
 
-def step(workflow, name):
-    return workflow.split(f"      - name: {name}\n", 1)[1].split(
-        "\n      - name:", 1
-    )[0]
-
-
-def script(workflow, name):
-    return textwrap.dedent(step(workflow, name).split("        run: |\n", 1)[1])
-
-
 class ArtifactPermissionsTest(unittest.TestCase):
     def setUp(self):
-        self.script = script(WORKFLOWS[0].read_text(), RECOVERY)
+        self.script = step_script(WORKFLOWS[0], RECOVERY)
 
     def run_repair(self, path, **environment):
         return subprocess.run(
@@ -41,30 +32,23 @@ class ArtifactPermissionsTest(unittest.TestCase):
             timeout=10,
         )
 
-    def test_bootstrap_and_final_repairs_stay_in_sync_and_run_before_consumers(self):
+    def test_repairs_run_before_checkout_and_artifact_consumers(self):
         for path in WORKFLOWS:
             with self.subTest(workflow=path.name):
-                workflow = path.read_text()
-                self.assertEqual(script(workflow, RECOVERY), self.script)
-                self.assertEqual(script(workflow, REPAIR), self.script)
-                self.assertLess(workflow.index(RECOVERY), workflow.index("Check out repository"))
-                recovery = step(workflow, RECOVERY)
-                self.assertIn("working-directory: ${{ runner.temp }}", recovery)
-                self.assertIn("ARTIFACT_DIR: ${{ github.workspace }}/runs", recovery)
-                repair = step(workflow, REPAIR)
-                self.assertIn("always() && steps.params.outputs.output_path != ''", repair)
-                self.assertIn("ARTIFACT_DIR: ${{ steps.params.outputs.output_path }}", repair)
-                self.assertLess(workflow.index(REPAIR), workflow.index("Stage and redact artifacts"))
+                names = [step.get("name") for step in workflow_steps(path)]
+                self.assertLess(names.index(RECOVERY), names.index("Check out repository"))
+                recovery = workflow_step(path, RECOVERY)
+                self.assertEqual(recovery["working-directory"], "${{ runner.temp }}")
+                self.assertEqual(recovery["env"]["ARTIFACT_DIR"], "${{ github.workspace }}/runs")
+                repair = workflow_step(path, REPAIR)
+                self.assertIn("always()", repair["if"])
+                self.assertEqual(repair["env"]["ARTIFACT_DIR"], "${{ steps.params.outputs.output_path }}")
+                self.assertLess(names.index(REPAIR), names.index("Stage and redact artifacts"))
                 self.assertIn(
                     "steps.permissions.outcome == 'success'",
-                    step(workflow, "Stage and redact artifacts"),
+                    workflow_step(path, "Stage and redact artifacts")["if"],
                 )
-                self.assertIn(
-                    "steps.stage.outcome == 'success'",
-                    step(workflow, "Upload run artifacts"),
-                )
-                if "- name: Clean up" in workflow:
-                    self.assertLess(workflow.index("- name: Clean up"), workflow.index(REPAIR))
+                self.assertLess(names.index("Clean up"), names.index(REPAIR))
 
     def test_missing_output_is_a_noop_even_without_checkout(self):
         with tempfile.TemporaryDirectory() as tmp:

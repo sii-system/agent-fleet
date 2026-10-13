@@ -79,55 +79,24 @@ class BenchmarkSummaryTests(unittest.TestCase):
                     },
                 },
             )
-            _write_json(
-                first_report,
-                {
-                    "tasks": [
-                        _analysis(
-                            "1",
-                            attempt_id="attempt-1",
-                            status="analysis_complete",
-                            final_class="env_fail",
-                            root_cause_code="dependency_install_failed",
-                            root_cause_summary="Dependency installation failed.",
-                        ),
-                        _analysis(
-                            "2",
-                            attempt_id="attempt-1",
-                            status="analysis_failed",
-                            final_class="unknown",
-                            root_cause_code="insufficient_evidence",
-                            root_cause_summary=(
-                                "Analyzer subagent did not return a valid analysis: "
-                                "child_task_json_validation_failed"
-                            ),
-                        ),
-                    ]
-                },
-            )
-            _write_json(
-                second_report,
-                {
-                    "tasks": [
-                        _analysis(
-                            "1",
-                            attempt_id="attempt-1",
-                            status="analysis_complete",
-                            final_class="model_fail",
-                            root_cause_code="model_output_incorrect",
-                            root_cause_summary="The model produced an incorrect answer.",
-                        ),
-                        _analysis(
-                            "3",
-                            attempt_id="attempt-1",
-                            status="analysis_complete",
-                            final_class="infra_fail",
-                            root_cause_code="container_runtime_failed",
-                            root_cause_summary="The task container did not start.",
-                        ),
-                    ]
-                },
-            )
+            analyses = [
+                _analysis(index, attempt_id="attempt-1", status=status,
+                          final_class=classification, root_cause_code=code,
+                          root_cause_summary=description)
+                for index, status, classification, code, description in (
+                    ("1", "analysis_complete", "env_fail", "dependency_install_failed",
+                     "Dependency installation failed."),
+                    ("2", "analysis_failed", "unknown", "insufficient_evidence",
+                     "Analyzer subagent did not return a valid analysis: child_task_json_validation_failed"),
+                    # The second publication replaces task 1's earlier finding.
+                    ("1", "analysis_complete", "model_fail", "model_output_incorrect",
+                     "The model produced an incorrect answer."),
+                    ("3", "analysis_complete", "infra_fail", "container_runtime_failed",
+                     "The task container did not start."),
+                )
+            ]
+            _write_json(first_report, {"tasks": analyses[:2]})
+            _write_json(second_report, {"tasks": analyses[2:]})
             _write_json(
                 manifest_path,
                 {
@@ -182,15 +151,12 @@ class BenchmarkSummaryTests(unittest.TestCase):
                 "The task's root cause remains undetermined.",
                 summary,
             )
-            self.assertNotIn("## Key Findings", summary)
-            self.assertNotIn("## Analysis Notes", summary)
-
+            # These options are the summary process's execution policy.
             kwargs = run_pi.call_args.kwargs
-            self.assertTrue(kwargs["prompt_in_stdin"])
-            self.assertTrue(kwargs["no_tools"])
-            self.assertTrue(kwargs["no_builtin_tools"])
-            self.assertTrue(kwargs["disable_extensions"])
-            self.assertTrue(kwargs["disable_skills"])
+            for option in ("prompt_in_stdin", "no_tools", "no_builtin_tools",
+                           "disable_extensions", "disable_skills"):
+                with self.subTest(option=option):
+                    self.assertTrue(kwargs[option])
             summary_input = json.loads(
                 (root_path / "benchmark-summary" / "summary-input.json").read_text(
                     encoding="utf-8"

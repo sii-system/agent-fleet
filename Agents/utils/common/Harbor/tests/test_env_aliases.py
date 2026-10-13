@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import subprocess
 import tempfile
 import unittest
@@ -49,26 +48,26 @@ class HarborEnvAliasTests(unittest.TestCase):
             self.assertNotIn(old, env)
 
     def test_provider_credentials_use_shared_gateway_for_all_agents(self) -> None:
-        for agent in ("claude-code", "opencode", "pi", "dsh-sdk-minimal", "oracle"):
-            for suffix in ("", "/", "/v1", "/v1/", "/v1/chat/completions/"):
-                with self.subTest(agent=agent, suffix=suffix):
-                    env = self.load_env(
-                        AGENT=agent,
-                        BASE_URL="https://gateway.invalid" + suffix,
-                        API_KEY="fake-shared-key",
-                    )
-                    self.assertEqual(env["OPENAI_API_KEY"], "fake-shared-key")
-                    self.assertEqual(env["ANTHROPIC_API_KEY"], "fake-shared-key")
-                    self.assertEqual(
-                        env["OPENAI_BASE_URL"], "https://gateway.invalid/v1"
-                    )
-                    self.assertEqual(
-                        env["OPENAI_API_BASE"], "https://gateway.invalid/v1"
-                    )
-                    self.assertEqual(
-                        env["ANTHROPIC_BASE_URL"], "https://gateway.invalid"
-                    )
-                    self.assertEqual(env["BASE_URL"], "https://gateway.invalid")
+        # Agent choice and URL normalization are independent; cover each once.
+        cases = [(agent, "") for agent in
+                 ("claude-code", "opencode", "pi", "dsh-sdk-minimal", "oracle")]
+        cases += [("claude-code", suffix) for suffix in
+                  ("/", "/v1", "/v1/", "/v1/chat/completions/")]
+        expected = {
+            "OPENAI_API_KEY": "fake-shared-key",
+            "ANTHROPIC_API_KEY": "fake-shared-key",
+            "OPENAI_BASE_URL": "https://gateway.invalid/v1",
+            "OPENAI_API_BASE": "https://gateway.invalid/v1",
+            "ANTHROPIC_BASE_URL": "https://gateway.invalid",
+            "BASE_URL": "https://gateway.invalid",
+        }
+        for agent, suffix in cases:
+            with self.subTest(agent=agent, suffix=suffix):
+                env = self.load_env(
+                    AGENT=agent, BASE_URL="https://gateway.invalid" + suffix,
+                    API_KEY="fake-shared-key",
+                )
+                self.assertEqual({key: env[key] for key in expected}, expected)
 
     def test_explicit_provider_credentials_including_empty_values_win(self) -> None:
         for value in ("provider-override", ""):
@@ -256,51 +255,37 @@ class HarborEnvAliasTests(unittest.TestCase):
                 self.assertEqual(env["OPIK_BASE"], base)
 
     def test_queue_worker_preserves_attempts_and_retries_in_child(self) -> None:
-        source = (HARBOR_DIR / "run_harbor_worker.sh").read_text()
-        worker = re.search(
-            r"^run_claimed_task\(\) \{\n.*?^\}\n", source, re.MULTILINE | re.DOTALL
-        )
-        self.assertIsNotNone(worker)
-        for overrides in (
-            {"HARBOR_N_ATTEMPTS": "2", "HARBOR_MAX_RETRIES": "0"},
-            {"HARBOR_RUNS": "3", "MAX_RETRIES": "1"},
-            {"N_ATTEMPTS": "4", "MAX_RETRIES": "0"},
-        ):
-            with (
-                self.subTest(overrides=overrides),
-                tempfile.TemporaryDirectory() as tmp,
-            ):
-                env = self.load_env(AGENT="opencode", **overrides)
-                expected = (env["HARBOR_N_ATTEMPTS"], env["HARBOR_MAX_RETRIES"])
-                (Path(tmp) / "harboropik.sh").write_text(
-                    '#!/usr/bin/env bash\nset -euo pipefail\nsource "$HARBOR_TEST_ENV"\n'
-                    "python3 -c 'import json, os; print(json.dumps(dict(os.environ)))'\n"
-                )
-                result = subprocess.run(
-                    [
-                        "bash",
-                        "-c",
-                        worker[0] + "\n"
-                        "harbor_agent_is_opencode() { return 0; }\n"
-                        "seta_online_early_stop_enabled() { return 1; }\n"
-                        'run_claimed_task task-a "$HOME/jobs" 1',
-                    ],
-                    env={
-                        **env,
-                        "SCRIPT_DIR": tmp,
-                        "HOME": tmp,
-                        "HARBOR_TEST_ENV": str(HARBOR_DIR / "env.sh"),
-                    },
-                    capture_output=True,
-                    text=True,
-                    check=True,
-                )
-                child = json.loads(result.stdout)
-                self.assertEqual(
-                    (child["HARBOR_N_ATTEMPTS"], child["HARBOR_MAX_RETRIES"]), expected
-                )
-                self.assertEqual(child["HARBOR_INCLUDE_TASKS"], "task-a")
-                self.assertEqual(child["HARBOR_N_CONCURRENT"], "1")
+        with tempfile.TemporaryDirectory() as tmp:
+            env = self.load_env(
+                AGENT="opencode", OUTPUT_PATH=tmp, DATASET_NAME="auto",
+                DATASET_PATH=tmp, LOCAL_WHEEL_DIR=f"{tmp}/missing-cache",
+                HARBOR_ENVIRONMENT_TYPE="e2b", HARBOR_DRY_RUN="1",
+                HARBOR_N_ATTEMPTS="2", HARBOR_MAX_RETRIES="0",
+            )
+            # Supply a ready queue and exercise the actual worker entrypoint.
+            for key, contents in (("TASK_FILE", "task-a\n"), ("WORKERS_READY_FILE", "")):
+                path = Path(env[key])
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(contents)
+            result = subprocess.run(
+                ["bash", str(HARBOR_DIR / "run_harbor_worker.sh"), "1"],
+                env={**env, "HOME": tmp}, capture_output=True, text=True,
+                check=True, timeout=10,
+            )
+            commands = self.opencode_commands(result.stdout)
+            self.assertEqual(len(commands), 2)
+            for command in commands:
+                for option, value in (("-k", "1"), ("--max-retries", "0"), ("-i", "task-a")):
+                    self.assertEqual(command[command.index(option) + 1], value)
+            self.assertIn("task-a", (Path(env["QUEUE_DIR"]) / "done.txt").read_text())
+
+    @staticmethod
+    def opencode_commands(output):
+        commands = []
+        for section in output.split("[INFO] attempt ")[1:]:
+            # Dry-run emits one argv token per indented line.
+            commands.append([line.strip() for line in section.splitlines() if line[:1].isspace()])
+        return commands
 
     def test_opencode_runs_each_attempt_once_for_local_and_registry_datasets(
         self,
@@ -332,14 +317,15 @@ class HarborEnvAliasTests(unittest.TestCase):
                     check=True,
                 )
                 self.assertEqual(result.stdout.count("[INFO] attempt "), 3)
-                self.assertEqual(result.stdout.count("  -k\n  1\n"), 3)
+                commands = self.opencode_commands(result.stdout)
+                self.assertEqual([command[command.index("-k") + 1] for command in commands], ["1"] * 3)
                 self.assertIn("attempt 3/3 trial_id=attempt-3", result.stdout)
                 task = (
                     "terminal-bench/fix-git"
                     if dataset == "terminalbench21"
                     else "fix-git"
                 )
-                self.assertEqual(result.stdout.count(f"  -i\n  {task}\n"), 3)
+                self.assertEqual([command[command.index("-i") + 1] for command in commands], [task] * 3)
 
 
 if __name__ == "__main__":

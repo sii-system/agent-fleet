@@ -77,6 +77,11 @@ MIN_TEST=1 ./scripts/run_fleet.sh --taskset terminalbench21 --agent claude-code 
 
 ## Development Checks
 
+Test behavior changes and demonstrated regressions. Avoid duplicating docs or
+workflow text, asserting incidental mock calls, or multiplying independent
+inputs into Cartesian matrices. Keep security, serialization, process-lifecycle,
+and concurrency checks when those are the behavior under test.
+
 Run affected suites before committing. From the repo root, repository/setup/CI
 tests are:
 
