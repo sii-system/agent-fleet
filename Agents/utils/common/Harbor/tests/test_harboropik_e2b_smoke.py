@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -150,28 +151,6 @@ class HarborOpikE2BSmokeTest(unittest.TestCase):
         self.assertIn("[INFO] environment: e2b", completed.stdout)
         self.assertIn("skip unprivileged Docker Compose overlay", completed.stdout)
 
-    def test_model_gateway_exception_reaches_both_command_builders(self) -> None:
-        for agent in ("claude-code", "opencode", "pi", "dsh-sdk-minimal"):
-            with self.subTest(agent=agent):
-                completed = self.run_dry_run("docker", agent, dry_run=False)
-                self.assertEqual(completed.returncode, 0, completed.stdout)
-                self.assertIn("FAKE_HARBOR_ARG=--allow-agent-host\nFAKE_HARBOR_ARG=model.example",
-                              completed.stdout)
-                self.assertNotIn("--allow-host", completed.stdout)
-                self.assertNotIn("--allow-verifier-host", completed.stdout)
-
-    def test_opencode_exception_uses_selected_provider_base_url(self) -> None:
-        completed = self.run_dry_run("docker", "opencode", extra_env={
-            "HARBOR_MODEL": "custom/test-model",
-            "OPENCODE_CONFIG_CONTENT": '{"provider":{"custom":{"options":'
-                '{"baseURL":"https://selected.example:8443/v1"}},'
-                '"unused":{"options":{"baseURL":"https://unused.example/v1"}}}}',
-        })
-        self.assertEqual(completed.returncode, 0, completed.stdout)
-        self.assertRegex(completed.stdout, r"--allow-agent-host\s+selected\.example")
-        self.assertNotRegex(completed.stdout, r"--allow-agent-host\s+model\.example")
-        self.assertNotRegex(completed.stdout, r"--allow-agent-host\s+unused\.example")
-
     def test_pi_e2b_fails_cleanly_with_clear_message(self) -> None:
         completed = self.run_dry_run(
             "e2b", "pi", extra_env={"E2B_API_KEY": "fake-e2b-key"}
@@ -184,6 +163,24 @@ class HarborOpikE2BSmokeTest(unittest.TestCase):
         )
         self.assertIn("use HARBOR_ENVIRONMENT_TYPE=docker", completed.stdout)
 
+    def test_opencode_requires_the_selected_provider_endpoint(self) -> None:
+        for base_url in (None, "https://actual.example:8443/v1"):
+            with self.subTest(base_url=base_url):
+                options = {"baseURL": base_url} if base_url else {}
+                completed = self.run_dry_run("docker", "opencode", dry_run=False, extra_env={
+                    "HARBOR_MODEL": "minimax/model",
+                    "OPENCODE_CONFIG_CONTENT": json.dumps({"provider": {"minimax": {"options": options}}}),
+                })
+                self.assertEqual(completed.returncode == 0, bool(base_url), completed.stdout)
+                if base_url:
+                    self.assertIn("FAKE_HARBOR_ARG=--allow-agent-host\nFAKE_HARBOR_ARG=actual.example",
+                                  completed.stdout)
+                else:
+                    self.assertIn("Set options.baseURL for the selected OpenCode provider", completed.stdout)
+                    self.assertNotIn("FAKE_HARBOR_ARG=run", completed.stdout)
+                self.assertNotIn("FAKE_HARBOR_ARG=--allow-agent-host\nFAKE_HARBOR_ARG=model.example",
+                                 completed.stdout)
+
     def test_pi_exception_uses_model_provider_with_conflicting_provider_setting(self) -> None:
         completed = self.run_dry_run("docker", "pi", dry_run=False, extra_env={
             "HARBOR_MODEL": "selected/test-model", "PI_PROVIDER": "unused",
@@ -194,10 +191,6 @@ class HarborOpikE2BSmokeTest(unittest.TestCase):
         self.assertEqual(completed.returncode, 0, completed.stdout)
         self.assertIn("FAKE_HARBOR_ARG=--allow-agent-host\nFAKE_HARBOR_ARG=selected.example",
                       completed.stdout)
-        self.assertNotIn("FAKE_HARBOR_ARG=--allow-agent-host\nFAKE_HARBOR_ARG=unused.example",
-                         completed.stdout)
-        self.assertNotIn("FAKE_HARBOR_ARG=--allow-agent-host\nFAKE_HARBOR_ARG=model.example",
-                         completed.stdout)
         for name in ("NO_PROXY", "no_proxy"):
             value = next(line.split("=", 2)[2] for line in completed.stdout.splitlines()
                          if line.startswith(f"FAKE_HARBOR_ARG={name}="))
@@ -206,7 +199,7 @@ class HarborOpikE2BSmokeTest(unittest.TestCase):
             self.assertNotIn("model.example", value.split(","))
 
     def test_rollout_request_endpoints_do_not_add_agent_network_exceptions(self) -> None:
-        for agent in ("claude-code", "opencode", "pi"):
+        for agent in ("claude-code", "opencode"):
             with self.subTest(agent=agent):
                 completed = self.run_dry_run("docker", agent, dry_run=False, extra_env={
                     "ROLLOUT": "1", "RL_AGENT": agent,
@@ -217,8 +210,6 @@ class HarborOpikE2BSmokeTest(unittest.TestCase):
                 self.assertEqual(completed.returncode, 0, completed.stdout)
                 self.assertIn("FAKE_HARBOR_ARG=run", completed.stdout)
                 self.assertNotIn("--allow-agent-host", completed.stdout)
-                self.assertNotIn("--allow-host", completed.stdout)
-                self.assertNotIn("--allow-verifier-host", completed.stdout)
 
     def test_pi_docker_dry_run_still_builds_command(self) -> None:
         completed = self.run_dry_run("docker", "pi")

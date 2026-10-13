@@ -65,6 +65,17 @@ fixed-run exception, including explicit provider configuration overrides.
 Malformed provider JSON stops launch with a sanitized error rather than
 allowing a guessed host; the agent needs valid provider configuration to run.
 
+Fixed OpenCode runs require `options.baseURL` in the selected provider's
+`OPENCODE_CONFIG_CONTENT`. The default custom-provider configuration supplies
+it automatically. For explicit built-in provider configurations, set the
+actual API endpoint: providers such as MiniMax can ignore the Anthropic
+gateway variable. A missing override stops launch with a configuration hint
+and adds no exception for an unused gateway. For example:
+
+```json
+{"provider":{"minimax":{"options":{"baseURL":"https://api.example.invalid/v1"}}}}
+```
+
 The random catalog currently excludes GAIA because the nightly model supports
 text input only. On 2026-10-07, GAIA image reads received HTTP 400 with
 `Model only supports text input`; text-only preflight requests still passed.

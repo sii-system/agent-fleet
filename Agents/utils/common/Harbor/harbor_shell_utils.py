@@ -49,6 +49,10 @@ def url_hostname(value: str) -> str:
     return urlparse(value).hostname or ""
 
 
+class OpenCodeBaseURLRequired(ValueError):
+    """The selected provider needs an explicit endpoint for its exception."""
+
+
 def agent_model_host(environ: Mapping[str, str] | None = None) -> str:
     """Return only the configured active model host, never URL credentials."""
     values = os.environ if environ is None else environ
@@ -58,11 +62,14 @@ def agent_model_host(environ: Mapping[str, str] | None = None) -> str:
         base_url = values.get("BASE_URL", "")
     elif agent == "opencode":
         raw = values.get("OPENCODE_CONFIG_CONTENT", "")
-        if raw:
-            provider = values.get("HARBOR_MODEL", "").partition("/")[0]
-            options = json.loads(raw).get("provider", {}).get(provider, {}).get("options", {})
-            # Match the selected provider; do not allow unused provider hosts.
-            base_url = options.get("baseURL", base_url)
+        provider = values.get("HARBOR_MODEL", "").partition("/")[0]
+        config = json.loads(raw) if raw else {}
+        options = config.get("provider", {}).get(provider, {}).get("options", {})
+        # Built-in providers can ignore ANTHROPIC_BASE_URL. Require an explicit
+        # selected-provider endpoint instead of inferring another gateway.
+        if "baseURL" not in options:
+            raise OpenCodeBaseURLRequired
+        base_url = options["baseURL"]
     elif agent == "pi":
         raw = values.get("PI_MODELS_CONFIG", "")
         if raw:
@@ -178,6 +185,9 @@ def main() -> int:
     elif args.command == "agent-model-host":
         try:
             print(agent_model_host())
+        except OpenCodeBaseURLRequired:
+            print("Set options.baseURL for the selected OpenCode provider", file=sys.stderr)
+            return 1
         except (ValueError, TypeError, AttributeError):
             print("Invalid model gateway configuration", file=sys.stderr)
             return 1

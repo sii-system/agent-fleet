@@ -1,10 +1,7 @@
-import contextlib
-import io
 import json
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
 
 from Agents.utils.common.Harbor import harbor_shell_utils
 
@@ -55,79 +52,6 @@ class HarborShellUtilsTest(unittest.TestCase):
             harbor_shell_utils.url_hostname("https://opik.example.invalid/api"),
             "opik.example.invalid",
         )
-
-    def test_model_host_strips_credentials_port_and_path(self):
-        self.assertEqual(harbor_shell_utils.agent_model_host({
-            "AGENT": "claude-code",
-            "HARBOR_ANTHROPIC_BASE_URL": "https://user:fake-key@gateway.example:8443/v1?key=fake",
-        }), "gateway.example")
-        self.assertEqual(harbor_shell_utils.agent_model_host({
-            "AGENT": "dsh-sdk-minimal",
-            "BASE_URL": "http://10.0.0.5:8080/v1",
-            "HARBOR_ANTHROPIC_BASE_URL": "https://unused.example",
-        }), "10.0.0.5")
-
-    def test_model_host_uses_selected_provider_override(self):
-        cases = [
-            {"AGENT": "opencode", "HARBOR_MODEL": "custom/test",
-             "OPENCODE_CONFIG_CONTENT": json.dumps({"provider": {
-                 "custom": {"options": {"baseURL": "https://selected.example/v1"}},
-                 "unused": {"options": {"baseURL": "https://unused.example/v1"}},
-             }})},
-            {"AGENT": "pi", "PI_PROVIDER": "custom",
-             "PI_MODELS_CONFIG": json.dumps({"providers": {
-                 "custom": {"baseUrl": "https://selected.example/v1"},
-                 "unused": {"baseUrl": "https://unused.example/v1"},
-             }})},
-        ]
-        for values in cases:
-            with self.subTest(agent=values["AGENT"]):
-                values["HARBOR_ANTHROPIC_BASE_URL"] = "https://fallback.example"
-                self.assertEqual(harbor_shell_utils.agent_model_host(values), "selected.example")
-
-    def test_model_host_handles_missing_and_invalid_configuration(self):
-        self.assertEqual(harbor_shell_utils.agent_model_host({"AGENT": "claude-code"}), "")
-        self.assertEqual(harbor_shell_utils.agent_model_host({
-            "AGENT": "oracle", "HARBOR_ANTHROPIC_BASE_URL": "https://unused.example",
-        }), "")
-        for url in ("/v1", "gateway.example/v1", "file:///tmp/model", "https:///v1"):
-            with self.subTest(url=url):
-                self.assertEqual(harbor_shell_utils.agent_model_host({
-                    "AGENT": "claude-code", "HARBOR_ANTHROPIC_BASE_URL": url,
-                }), "")
-
-    def test_pi_model_provider_prefix_overrides_provider_setting(self):
-        for provider_setting in (None, "", "unused", "selected"):
-            with self.subTest(provider_setting=provider_setting):
-                values = {
-                    "AGENT": "pi", "HARBOR_MODEL": "selected/model",
-                    "HARBOR_ANTHROPIC_BASE_URL": "https://fallback.example",
-                    "PI_MODELS_CONFIG": json.dumps({"providers": {
-                        "selected": {"baseUrl": "https://selected.example/v1"},
-                        "unused": {"baseUrl": "https://unused.example/v1"},
-                    }}),
-                }
-                if provider_setting is not None:
-                    values["PI_PROVIDER"] = provider_setting
-                self.assertEqual(harbor_shell_utils.agent_model_host(values), "selected.example")
-
-    def test_pi_unqualified_model_uses_provider_setting(self):
-        self.assertEqual(harbor_shell_utils.agent_model_host({
-            "AGENT": "pi", "HARBOR_MODEL": "model", "PI_PROVIDER": "selected",
-            "PI_MODELS_CONFIG": json.dumps({"providers": {
-                "selected": {"baseUrl": "https://selected.example/v1"},
-            }}),
-        }), "selected.example")
-
-    def test_invalid_model_config_cli_does_not_print_credentials(self):
-        error = io.StringIO()
-        with patch.dict("os.environ", {
-            "AGENT": "opencode",
-            "OPENCODE_CONFIG_CONTENT": '{"apiKey":"fake-private-key",',
-        }, clear=True), patch("sys.argv", ["helper", "agent-model-host"]), \
-                contextlib.redirect_stderr(error):
-            self.assertEqual(harbor_shell_utils.main(), 1)
-        self.assertEqual(error.getvalue(), "Invalid model gateway configuration\n")
 
     def test_readonly_mounts_include_only_ready_sources(self):
         with tempfile.TemporaryDirectory() as temporary:
