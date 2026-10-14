@@ -1,0 +1,5 @@
+# Atlas images inherit /bin/bash, which tries to read Harbor's sh binary as a
+# script and exits 126. Let Harbor's default sh -c keepalive execute directly.
+services:
+  main:
+    entrypoint: []

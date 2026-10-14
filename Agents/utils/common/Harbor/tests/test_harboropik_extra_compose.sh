@@ -254,6 +254,20 @@ if unexpected in args:
 PY
 }
 
+assert_verifier_path_preserved() {
+  python3 - "$1" <<'PY'
+import sys
+from pathlib import Path
+
+args = [part.decode() for part in Path(sys.argv[1]).read_bytes().split(b"\0") if part]
+verifier_env = [args[index + 1] for index, arg in enumerate(args[:-1]) if arg == "--ve"]
+if any(value.startswith("PATH=") for value in verifier_env):
+    raise SystemExit("Docker verifier must preserve the task image PATH")
+if not any(value.startswith("HARBOR_VERIFIER_PATH_PREPEND=") for value in verifier_env):
+    raise SystemExit("Docker verifier is missing its offline-tool PATH prefix")
+PY
+}
+
 assert_mount_source_absent() {
   local capture_file="$1"
   local needle="$2"
@@ -348,7 +362,7 @@ run_harboropik() {
     HARBOR_CLI_BIN="$capture_bin" \
     HARBOR_OPIK_PYTHON="$capture_bin" \
     HARBOR_RUNNER_PREPARE="0" \
-    OPENCODE_CONFIG_CONTENT="{}" \
+    OPENCODE_CONFIG_CONTENT='{"provider":{"custom":{"options":{"baseURL":"http://llm.example/v1"}}}}' \
     bash "$HARBOR_DIR/harboropik.sh" >"$log_file" 2>&1; then
     cat "$log_file" >&2
     return 1
@@ -426,6 +440,10 @@ main() {
     "$claude_capture" \
     "--ve" \
     "HARBOR_VERIFIER_UV_BIN_DIR=/opt/tb-uv-backup/bin"
+  assert_arg_pair \
+    "$claude_capture" "--ve" \
+    "HARBOR_VERIFIER_PATH_PREPEND=/root/.local/bin:/home/oai/.local/bin:/home/agent/.local/bin:/home/ubuntu/.local/bin:/opt/tb-uv-backup/bin"
+  assert_verifier_path_preserved "$claude_capture"
 
   registry_capture="$tmp/claude-registry.args"
   run_harboropik \
@@ -459,6 +477,7 @@ main() {
     "$opencode_capture" \
     "--ve" \
     "HARBOR_VERIFIER_UV_BIN_DIR=/opt/tb-uv-backup/bin"
+  assert_verifier_path_preserved "$opencode_capture"
 
   pi_capture="$tmp/pi-default.args"
   run_harboropik \

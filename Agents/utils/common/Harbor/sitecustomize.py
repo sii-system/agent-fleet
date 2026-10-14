@@ -4,6 +4,11 @@ import os
 
 environment_type = os.environ.get("HARBOR_ENVIRONMENT_TYPE", "docker").strip().lower()
 
+if environment_type == "docker":
+    from docker_runtime import patch_docker_runtime_from_env
+
+    patch_docker_runtime_from_env()
+
 if environment_type in {"e2b", "qz"}:
     from e2b_runtime import patch_e2b_runtime_from_env
 

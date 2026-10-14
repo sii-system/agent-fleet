@@ -793,8 +793,10 @@ def _patch_claude_code_fallback() -> None:
     ClaudeCode._opik_fallback_patch_applied = True
 
 
+from docker_runtime import patch_docker_runtime_from_env
 from e2b_runtime import patch_e2b_runtime_from_env
 
+patch_docker_runtime_from_env()
 patch_e2b_runtime_from_env()
 if (
     os.environ.get("HARBOR_ENVIRONMENT_TYPE", "docker").strip().lower() == "qz"

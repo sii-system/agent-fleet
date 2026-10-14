@@ -99,6 +99,30 @@ into a temporary backup before installing Harbor's pinned npm package.
 Without this step npm returned `EEXIST`, causing all 20 sampled RuneBench
 tasks on 2026-10-07 to fail during agent setup.
 
+### RuneBench verifier PATH
+
+The RuneBench image installs Bun under `/root/.bun/bin`. Docker verifier
+execution prepends the runner's offline uv tools inside the container shell,
+preserving the image PATH and any explicit task PATH. Replacing PATH with
+generic system directories hid Bun on 2026-10-13: all 20 sampled verifier
+scripts failed with `bun: command not found` and produced no rewards. The
+same run also had 17 agent timeouts; restoring scoring does not resolve those
+timeouts or establish model success.
+
+### SWE Atlas image startup
+
+`ghcr.io/scaleapi/swe-atlas` images inherit `/bin/bash` as their entrypoint.
+Harbor's default `sh -c "sleep infinity"` command then makes Bash interpret
+the `sh` executable as a script, failing with exit 126 before agent setup.
+The shared Docker startup hook clears that inherited entrypoint for this image
+repository. Its overlay precedes task and caller Compose overrides, so their
+explicit startup settings retain precedence. It handles tagged and digest
+image references, including registry tasks and local replays.
+
+On 2026-10-13 one sample had 16 exit-126 errors and four startup timeouts; the
+next sample had 20 exit-126 errors. The entrypoint fix addresses exit 126.
+Investigate image pulls or startup timing separately if timeouts recur.
+
 ## Docker registry failures
 
 A reachable registry endpoint does not prove that all task images are

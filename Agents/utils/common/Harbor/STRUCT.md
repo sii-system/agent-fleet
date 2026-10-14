@@ -18,6 +18,7 @@ Agents/utils/common/Harbor/
 ├── run_harbor_worker.sh        # Worker loop for one zellij pane
 ├── run_harbor_registry.sh      # Registry runner with optional final-pane hold
 ├── harboropik.sh               # Harbor CLI orchestration with Opik setup
+├── docker_runtime.py           # Docker verifier PATH and SWE Atlas keepalive compatibility
 ├── harbor_shell_utils.py       # Event, JSON, URL, and mount helpers
 ├── qz_repository_environment_plan.py # Repository/revision final-image plan producer
 ├── qz_task_instruction.py      # Exact QZ setup-prefix handoff before agent run
