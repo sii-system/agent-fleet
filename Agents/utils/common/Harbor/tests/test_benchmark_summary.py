@@ -71,8 +71,8 @@ class BenchmarkSummaryTests(unittest.TestCase):
                     "benchmark_status": "completed",
                     "evidence": {"elapsed_since_run_start": 5025},
                     "task_summary": {
-                        "complete_success": 7,
-                        "complete_failed": 1,
+                        "complete_success": 6,
+                        "complete_failed": 2,
                         "complete_unknown": 1,
                         "not_complete": 1,
                         "total_evaluated": 10,
@@ -93,6 +93,8 @@ class BenchmarkSummaryTests(unittest.TestCase):
                      "The model produced an incorrect answer."),
                     ("3", "analysis_complete", "infra_fail", "container_runtime_failed",
                      "The task container did not start."),
+                    ("4", "analysis_complete", "env_fail", "dependency_install_failed",
+                     "A required dependency was unavailable."),
                 )
             ]
             _write_json(first_report, {"tasks": analyses[:2]})
@@ -108,7 +110,7 @@ class BenchmarkSummaryTests(unittest.TestCase):
                 },
             )
             model_output = {
-                "summary": "Two task failures were analyzed; one analysis failed.",
+                "summary": "Three task failures were analyzed; one analysis failed.",
                 "analysis_summary": [
                     {"group_id": "G1", "summary": "The model returned an incorrect answer."},
                     {
@@ -116,10 +118,16 @@ class BenchmarkSummaryTests(unittest.TestCase):
                         "summary": "Analyzer retries ended because its response was invalid.",
                     },
                     {"group_id": "G3", "summary": "The task container failed to start."},
+                    {"group_id": "G4", "summary": "A required dependency was unavailable."},
                 ],
                 "recommended_actions": [
                     {"group_ids": ["G1"], "action": "Review the model and verifier output."},
-                    {"group_ids": ["G2"], "action": "Rerun Analyzer or inspect the task."},
+                    {"group_ids": ["G4"], "action": "Install the missing dependency."},
+                    # The infrastructure group is last; consider every referenced group.
+                    {
+                        "group_ids": ["G1", "G2", "G3"],
+                        "action": "Restore the task container and review affected tasks.",
+                    },
                 ],
             }
 
@@ -135,16 +143,49 @@ class BenchmarkSummaryTests(unittest.TestCase):
                 )
 
             summary = output_path.read_text(encoding="utf-8")
-            self.assertIn("Two task failures were analyzed; one analysis failed.", summary)
+            self.assertIn("Three task failures were analyzed; one analysis failed.", summary)
             self.assertIn("| Runtime | 1h 23m 45s |", summary)
-            self.assertIn("| Success rate | 70.00% (7/10) |", summary)
-            self.assertIn("| Failure rate | 30.00% (3/10) |", summary)
-            self.assertIn("| Analysis complete | 2 |", summary)
-            self.assertIn("| Environment failure | 0 |", summary)
+            self.assertIn("| Success rate | 60.00% (6/10) |", summary)
+            self.assertIn("| Failure rate | 40.00% (4/10) |", summary)
+            self.assertIn("| Analysis complete | 3 |", summary)
+            self.assertIn("| Environment failure | 1 |", summary)
             self.assertIn("| Infrastructure failure | 1 |", summary)
             self.assertIn("| Model failure | 1 |", summary)
             self.assertIn("| Unknown root cause | 0 |", summary)
             self.assertIn("| Analysis failed | 1 |", summary)
+            findings = summary.split("## Analyzer Findings\n", 1)[1].split(
+                "## Analysis Summary\n", 1
+            )[0]
+            finding_labels = [
+                line.split("|")[1].strip()
+                for line in findings.splitlines()
+                if line.startswith("| ") and not line.startswith("| ---")
+            ][1:]
+            self.assertEqual(
+                finding_labels[:3],
+                ["Analysis complete", "Infrastructure failure", "Model failure"],
+            )
+            diagnosis_positions = [
+                summary.index(f"**{label} - ")
+                for label in (
+                    "Infrastructure failure", "Environment failure",
+                    "Model failure", "Analysis failed",
+                )
+            ]
+            self.assertEqual(diagnosis_positions, sorted(diagnosis_positions))
+            actions = summary.split("## Recommended Actions\n", 1)[1]
+            self.assertEqual(
+                [
+                    line.split(":** ", 1)[1]
+                    for line in actions.splitlines()
+                    if line[:1].isdigit()
+                ],
+                [
+                    "Restore the task container and review affected tasks.",
+                    "Install the missing dependency.",
+                    "Review the model and verifier output.",
+                ],
+            )
             self.assertIn(
                 "**Analysis failed - `task-2 (attempt-1)`:** "
                 "Analyzer retries ended because its response was invalid. "
