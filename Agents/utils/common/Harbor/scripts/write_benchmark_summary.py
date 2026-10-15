@@ -382,8 +382,8 @@ def _inline_tasks(tasks: list[str]) -> str:
 
 def _analysis_priority(group: dict[str, Any]) -> int:
     if group["analysis_status"] != "analysis_complete":
-        return 2
-    return {"infra_fail": 0, "model_fail": 1}.get(group["final_class"], 2)
+        return 3
+    return {"infra_fail": 0, "env_fail": 1, "model_fail": 2}.get(group["final_class"], 3)
 
 
 def _render_markdown(
@@ -493,7 +493,7 @@ def _render_markdown(
         model_output["recommended_actions"],
         key=lambda action: min(
             (_analysis_priority(groups[group_id]) for group_id in action["group_ids"]),
-            default=2,
+            default=3,
         ),
     )
     if actions:
