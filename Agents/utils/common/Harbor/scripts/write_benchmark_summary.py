@@ -380,6 +380,12 @@ def _inline_tasks(tasks: list[str]) -> str:
     return ", ".join(f"`{task.replace('`', '')}`" for task in tasks)
 
 
+def _analysis_priority(group: dict[str, Any]) -> int:
+    if group["analysis_status"] != "analysis_complete":
+        return 2
+    return {"infra_fail": 0, "model_fail": 1}.get(group["final_class"], 2)
+
+
 def _render_markdown(
     payload: dict[str, Any],
     model_output: dict[str, Any],
@@ -388,7 +394,10 @@ def _render_markdown(
 ) -> str:
     run = payload["run"]
     findings = payload["analyzer_findings"]
-    groups = {group["group_id"]: group for group in payload["analysis_groups"]}
+    groups = {
+        group["group_id"]: group
+        for group in sorted(payload["analysis_groups"], key=_analysis_priority)
+    }
     model_summaries = {
         item["group_id"]: " ".join(item["summary"].split())
         for item in model_output["analysis_summary"]
@@ -436,10 +445,10 @@ def _render_markdown(
         "",
         "| Finding | Tasks |",
         "| --- | ---: |",
-        f"| Analysis complete | {findings['analysis_complete']} |",
-        f"| Environment failure | {findings['env_fail']} |",
         f"| Infrastructure failure | {findings['infra_fail']} |",
         f"| Model failure | {findings['model_fail']} |",
+        f"| Analysis complete | {findings['analysis_complete']} |",
+        f"| Environment failure | {findings['env_fail']} |",
         f"| Unknown root cause | {findings['unknown']} |",
         f"| Analysis failed | {findings['analysis_failed']} |",
         "",
@@ -480,7 +489,13 @@ def _render_markdown(
         lines.append("No failed task required Analyzer work.")
 
     lines.extend(["", f"{heading} Recommended Actions", ""])
-    actions = model_output["recommended_actions"]
+    actions = sorted(
+        model_output["recommended_actions"],
+        key=lambda action: min(
+            (_analysis_priority(groups[group_id]) for group_id in action["group_ids"]),
+            default=2,
+        ),
+    )
     if actions:
         for index, item in enumerate(actions, start=1):
             tasks = []
