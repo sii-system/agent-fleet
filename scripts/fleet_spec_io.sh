@@ -44,29 +44,6 @@ fleet_spec_require_jq() {
   }
 }
 
-fleet_spec_load() {
-  local source="$1" spec_json
-  fleet_spec_require_jq || return
-  if [[ "$source" == "-" ]]; then
-    spec_json="$(cat)"
-  elif [[ -f "$source" && -r "$source" ]]; then
-    spec_json="$(cat -- "$source")"
-  else
-    printf '[ERROR] FleetSpec is not readable: %s\n' "$source" >&2
-    return 2
-  fi
-
-  if ! FLEET_SPEC_JSON="$(jq -ces -L "$FLEET_SPEC_IO_DIR" '
-    include "fleet_spec_validate";
-    if length == 1 then (.[0] | fleet_spec_v1)
-    else error("invalid FleetSpec") end
-  ' <<<"$spec_json" 2>/dev/null)"; then
-    printf '[ERROR] invalid FleetSpec v1: %s\n' "$source" >&2
-    printf '[ERROR] expected schema_version=1, taskset, optional task/agent/workers, and no other fields\n' >&2
-    return 2
-  fi
-}
-
 fleet_spec_load_many() {
   local source spec_json normalized
   local normalized_inputs=()

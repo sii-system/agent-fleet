@@ -27,7 +27,6 @@ from Agents.utils.common.Harbor.scripts.analyzer_subagent import (
 )
 from Agents.utils.common.Harbor.scripts.harbor_analyzer import runner as analyzer_runner
 from Agents.utils.common.Harbor.scripts.harbor_analyzer.pi import (
-    _models_config,
     dispatch_to_child,
 )
 from Agents.utils.common.Harbor.scripts.harbor_analyzer.runner import (
@@ -209,19 +208,6 @@ class HarborAnalyzerRuntimeTest(unittest.TestCase):
         self.assertIsNone(result.report)
         self.assertEqual(result.block_reason, "pi_model_not_configured")
 
-    def test_models_config_uses_bearer_auth_header_for_custom_provider(self) -> None:
-        config = _models_config(
-            provider="harbor-analyzer",
-            model="glm-5.2-fp8",
-            base_url="https://example.test/v1",
-            api_key_env="HARBOR_ANALYZER_API_KEY",
-        )
-
-        provider = config["providers"]["harbor-analyzer"]
-        self.assertEqual(provider["api"], "openai-completions")
-        self.assertEqual(provider["apiKey"], "$HARBOR_ANALYZER_API_KEY")
-        self.assertTrue(provider["authHeader"])
-
     def test_dispatch_drops_cumulative_message_updates(self) -> None:
         with tempfile.TemporaryDirectory() as root:
             root_path = Path(root)
@@ -260,6 +246,12 @@ class HarborAnalyzerRuntimeTest(unittest.TestCase):
                     agent_name="harbor_analyzer_pi_subagent",
                     timeout_seconds=5,
                 )
+
+            models_path = root_path / "out" / ".pi-analyzer-home" / ("sha256-" + "2" * 64) / "models.json"
+            provider = json.loads(models_path.read_text())["providers"]["harbor-analyzer"]
+            self.assertEqual(provider["api"], "openai-completions")
+            self.assertEqual(provider["apiKey"], "$HARBOR_ANALYZER_API_KEY")
+            self.assertTrue(provider["authHeader"])
 
             events_path = Path(result.provenance["events_path"])
             self.assertEqual(result.report, report)

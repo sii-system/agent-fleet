@@ -105,16 +105,16 @@ class QzTemplateResolverTest(unittest.TestCase):
             ),
             patch.object(
                 resolver,
-                "resolve_task_template",
-                return_value="template-1",
+                "resolve_task_environment",
+                return_value=resolver.ResolvedTaskEnvironment("template-1", (), None),
             ) as resolve,
         ):
-            template_id = resolver.resolve_task_template_from_environment(
+            environment = resolver.resolve_task_environment_from_environment(
                 Path("mapping.json"),
                 "task-a",
             )
 
-        self.assertEqual(template_id, "template-1")
+        self.assertEqual(environment.template_id, "template-1")
         self.assertEqual(resolve.call_args.args[2].api_key, "sbx_legacy")
 
     def test_resolve_cached_id_rejects_mismatched_api_response(self):

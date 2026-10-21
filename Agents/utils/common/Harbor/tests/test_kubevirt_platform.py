@@ -402,7 +402,7 @@ class KubeVirtControlTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertTrue(any(p.endswith("/services/trial-waa") for p in paths))
 
-    async def test_expose_waa_creates_nodeport_and_returns_endpoint(self):
+    async def test_expose_guest_creates_nodeport_and_returns_endpoint(self):
         def handler(request: httpx.Request) -> httpx.Response:
             path = request.url.path
             if path.endswith("/services/trial-waa"):
@@ -429,7 +429,7 @@ class KubeVirtControlTests(unittest.IsolatedAsyncioTestCase):
 
         control = self._control(handler)
         async with control:
-            endpoint = await control.expose_waa("trial", owner="abc")
+            endpoint = await control.expose_guest("trial", owner="abc")
         self.assertEqual(endpoint, "10.254.73.30:30050")
 
     async def test_ale_service_uses_guest_ports_and_cleans_up(self):

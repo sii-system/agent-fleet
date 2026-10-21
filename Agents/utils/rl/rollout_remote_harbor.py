@@ -141,11 +141,6 @@ def _first_nonempty(*values: Any) -> str:
     return ""
 
 
-def _safe_slug(value: str, *, fallback: str = "default") -> str:
-    slug = re.sub(r"[^A-Za-z0-9._-]+", "-", value.strip()).strip("-")
-    return slug or fallback
-
-
 def _is_relative_path(value: Path) -> bool:
     return not value.is_absolute() and ".." not in value.parts
 

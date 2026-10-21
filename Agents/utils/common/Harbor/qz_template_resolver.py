@@ -355,23 +355,6 @@ def resolve_task_environment(
     )
 
 
-def resolve_task_template_from_environment(
-    mapping_path: Path,
-    task_name: str,
-) -> str:
-    """Resolve using QZ credentials held only in the process environment."""
-    try:
-        return resolve_task_template(
-            mapping_path,
-            task_name,
-            manager.client_from_environment(),
-        )
-    except manager.QzTemplateError as exc:
-        raise QzTemplateResolutionError(
-            f"live QZ Template lookup failed for task {task_name!r}: {exc}"
-        ) from exc
-
-
 def resolve_task_environment_from_environment(
     mapping_path: Path,
     task_name: str,

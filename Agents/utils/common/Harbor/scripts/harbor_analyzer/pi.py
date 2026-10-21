@@ -9,13 +9,9 @@ from typing import Any
 
 from harbor_pi_runtime import (
     PiProcessResult,
-    models_config,
     normalized_base_url,
     run_pi_json_process,
     write_text_atomic,
-)
-from harbor_pi_runtime import (
-    load_final_json_from_event_stream as _load_final_json_from_event_stream,
 )
 
 PI_EXTENSION_PATH = Path(__file__).resolve().parent / "pi_extensions" / "analyzer_path_gate.ts"
@@ -33,35 +29,6 @@ class DispatchResult:
     provenance: dict[str, Any]
     block_reason: str | None
     stderr_tail: str
-
-
-def _models_config(
-    *,
-    provider: str,
-    model: str,
-    base_url: str,
-    api_key_env: str,
-) -> dict[str, Any]:
-    """Keep the Analyzer's existing model-config helper contract."""
-
-    return models_config(
-        provider=provider,
-        model=model,
-        base_url=base_url,
-        api_key_env=api_key_env,
-        display_name="Harbor Analyzer",
-        auth_header=True,
-    )
-
-
-def load_final_json_from_event_stream(path: Path) -> dict[str, Any] | None:
-    return _load_final_json_from_event_stream(path)
-
-
-def load_report_from_event_stream(path: Path) -> dict[str, Any] | None:
-    """Backward-compatible alias for callers that only need the final JSON."""
-
-    return load_final_json_from_event_stream(path)
 
 
 def _existing_paths(paths: list[Path | None]) -> list[str]:

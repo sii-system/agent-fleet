@@ -591,10 +591,6 @@ class KubeVirtControl:
                 raise
         await self.delete_service(name, owner=owner)
 
-    async def expose_waa(self, name: str, *, owner: str) -> str:
-        """Compatibility entrypoint for existing WAA callers."""
-        return await self.expose_guest(name, owner=owner)
-
     async def expose_guest(self, name: str, *, owner: str) -> str:
         """Expose the selected guest server and return ``host:port``."""
         vm = await self.get(name)
@@ -710,12 +706,3 @@ class KubeVirtControl:
                 f"Guest Service delete failed ({response.status_code}): {response.text[:200]}",
                 code=response.status_code,
             )
-
-    async def available_ips(self) -> list:
-        """KubeVirt allocates pod IPs automatically; no pre-allocator exists."""
-        return []
-
-
-def raise_for_platform(response: httpx.Response) -> None:
-    """Compatibility shim: raise on non-2xx HTTP status."""
-    response.raise_for_status()

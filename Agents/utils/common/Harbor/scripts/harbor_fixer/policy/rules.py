@@ -53,13 +53,6 @@ def _is_assignment(token: str) -> bool:
     return bool(name) and name.replace("_", "a").isalnum()
 
 
-def parse_simple_argv(action: dict[str, Any]) -> list[str] | None:
-    """Return the exact argv from a valid command action."""
-
-    analysis = analyze_command(action)
-    return list(analysis.argv) if analysis.classification == "static_argv" else None
-
-
 def normalize_argv(argv: list[str]) -> list[str]:
     """Unwrap narrow execution forms for deterministic deny matching."""
 
