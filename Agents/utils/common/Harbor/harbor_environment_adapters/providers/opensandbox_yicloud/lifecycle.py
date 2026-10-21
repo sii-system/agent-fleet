@@ -29,6 +29,15 @@ _monotonic = time.monotonic
 
 
 _AUXILIARY_LOOPS = weakref.WeakSet()
+_SANDBOX_LISTINGS = weakref.WeakKeyDictionary()
+
+
+class _SandboxListing:
+    def __init__(self) -> None:
+        self.lock = asyncio.Lock()
+        self.users = 0
+        self.started_at = 0.0
+        self.ids: set[str] | None = None
 
 
 def _configure_auxiliary_pool() -> None:
@@ -222,18 +231,47 @@ class YiCloudLifecycleMixin:
         sandbox = self._sandbox_service
         if sandbox is None or not sandbox_ids:
             return True
-        deadline = time.monotonic() + self._cleanup_wait_sec
-        while time.monotonic() < deadline:
-            remaining = await self._listed_sandbox_ids(sandbox_ids)
-            if not remaining:
-                return True
-            await asyncio.sleep(3)
-        return False
+        timeout = asyncio.timeout(self._cleanup_wait_sec)
+        try:
+            async with timeout:
+                while True:
+                    remaining = await self._listed_sandbox_ids(sandbox_ids)
+                    if not remaining:
+                        return True
+                    await asyncio.sleep(3)
+        except TimeoutError:
+            if not timeout.expired():
+                raise
+            return False
 
     async def _listed_sandbox_ids(self, sandbox_ids: set[str]) -> set[str]:
         sandbox = self._sandbox_service
         if sandbox is None or not sandbox_ids:
             return set()
+        loop = asyncio.get_running_loop()
+        requested_at = loop.time()
+        listings = _SANDBOX_LISTINGS.setdefault(loop, {})
+        key = (id(sandbox), self._project_name, self._environment_id)
+        listing = listings.setdefault(key, _SandboxListing())
+        listing.users += 1
+        try:
+            async with listing.lock:
+                if listing.ids is None or listing.started_at < requested_at:
+                    listing.ids = None
+                    # Admit callers already queued on this loop before scanning.
+                    await asyncio.sleep(0)
+                    listing.started_at = loop.time()
+                    listing.ids = await self._scan_sandbox_ids()
+                return sandbox_ids & listing.ids
+        finally:
+            listing.users -= 1
+            if not listing.users:
+                del listings[key]
+                if not listings:
+                    del _SANDBOX_LISTINGS[loop]
+
+    async def _scan_sandbox_ids(self) -> set[str]:
+        sandbox = self._sandbox_service
         remaining: set[str] = set()
         offset = 0
         while True:
@@ -251,7 +289,6 @@ class YiCloudLifecycleMixin:
             remaining.update(
                 str(getattr(item, "Id", "") or "")
                 for item in items
-                if str(getattr(item, "Id", "") or "") in sandbox_ids
             )
             if len(items) < 100:
                 return remaining

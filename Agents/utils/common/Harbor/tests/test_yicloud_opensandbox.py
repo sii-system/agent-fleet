@@ -96,6 +96,183 @@ class Request:
         self.__dict__.update(kwargs)
 
 
+class SandboxListingTest(unittest.IsolatedAsyncioTestCase):
+    def instance(self, sandbox, project="project", environment="environment"):
+        instance = object.__new__(yicloud_opensandbox.YiCloudOpenSandboxEnvironment)
+        instance._sandbox_service = sandbox
+        instance._project_name = project
+        instance._environment_id = environment
+        instance._cleanup_wait_sec = 1
+        return instance
+
+    def sandbox(self, list_page):
+        return SimpleNamespace(
+            models=SimpleNamespace(ListSandboxesReq=Request),
+            list_sandboxes=Mock(side_effect=list_page),
+        )
+
+    async def test_concurrent_confirmations_share_a_paginated_environment_scan(self):
+        items = [SimpleNamespace(Id=f"sbx-{index}") for index in range(10000)]
+        sandbox = self.sandbox(lambda _, req: SimpleNamespace(
+            Items=items[req.Offset:req.Offset + req.Limit],
+        ))
+        instances = [self.instance(sandbox) for _ in range(100)]
+        results = await asyncio.gather(*(
+            instance._listed_sandbox_ids({f"sbx-{index}", "deleted"})
+            for index, instance in enumerate(instances)
+        ))
+        self.assertEqual(results, [{f"sbx-{index}"} for index in range(100)])
+        self.assertEqual(sandbox.list_sandboxes.call_count, 101)
+
+    async def test_caller_arriving_after_first_page_requires_a_fresh_scan(self):
+        page_read, release = threading.Event(), threading.Event()
+        created = False
+
+        def list_page(_, req):
+            if req.Offset == 100:
+                page_read.set()
+                if not release.wait(2):
+                    raise TimeoutError("test page was not released")
+                return SimpleNamespace(Items=[])
+            if created:
+                return SimpleNamespace(Items=[SimpleNamespace(Id="new-sandbox")])
+            return SimpleNamespace(Items=[SimpleNamespace(Id=f"old-{i}") for i in range(100)])
+
+        sandbox = self.sandbox(list_page)
+        first = asyncio.create_task(self.instance(sandbox)._listed_sandbox_ids({"deleted"}))
+        try:
+            self.assertTrue(await asyncio.to_thread(page_read.wait, 1))
+            created = True
+            late = asyncio.create_task(
+                self.instance(sandbox)._listed_sandbox_ids({"new-sandbox"}),
+            )
+            await asyncio.sleep(0)
+        finally:
+            release.set()
+        self.assertEqual(await first, set())
+        self.assertEqual(await late, {"new-sandbox"})
+
+    async def test_listing_scopes_do_not_mix_services_projects_or_environments(self):
+        def list_page(_, req):
+            return SimpleNamespace(Items=[SimpleNamespace(Id=f"{req.ProjectName}/{req.EnvironmentId}")])
+
+        sandbox = self.sandbox(list_page)
+        other = self.sandbox(list_page)
+        instances = [
+            self.instance(sandbox), self.instance(sandbox),
+            self.instance(sandbox, project="other"),
+            self.instance(sandbox, environment="other"), self.instance(other),
+        ]
+        results = await asyncio.gather(*(
+            instance._listed_sandbox_ids({"project/environment", "other/environment", "project/other"})
+            for instance in instances
+        ))
+        self.assertEqual(results, [
+            {"project/environment"}, {"project/environment"},
+            {"other/environment"}, {"project/other"}, {"project/environment"},
+        ])
+        self.assertEqual(sandbox.list_sandboxes.call_count, 3)
+        self.assertEqual(other.list_sandboxes.call_count, 1)
+
+    async def test_followup_confirmation_does_not_reuse_a_completed_scan(self):
+        items = []
+        sandbox = self.sandbox(lambda *_: SimpleNamespace(Items=list(items)))
+        instance = self.instance(sandbox)
+        self.assertEqual(await instance._listed_sandbox_ids({"new-sandbox"}), set())
+        items.append(SimpleNamespace(Id="new-sandbox"))
+        self.assertEqual(await instance._listed_sandbox_ids({"new-sandbox"}), {"new-sandbox"})
+
+    async def test_concurrent_confirmations_share_an_empty_environment_scan(self):
+        sandbox = self.sandbox(lambda *_: SimpleNamespace(Items=[]))
+        results = await asyncio.gather(*(
+            self.instance(sandbox)._listed_sandbox_ids({f"deleted-{index}"})
+            for index in range(100)
+        ))
+        self.assertEqual(results, [set() for _ in range(100)])
+        self.assertEqual(sandbox.list_sandboxes.call_count, 1)
+
+    async def test_failed_page_never_confirms_absence_and_next_call_can_retry(self):
+        sandbox = self.sandbox(lambda *_: None)
+        sandbox.list_sandboxes.side_effect = [
+            SimpleNamespace(Items=[SimpleNamespace(Id=f"sbx-{i}") for i in range(100)]),
+            ConnectionError("listing disconnected"), SimpleNamespace(Items=[]),
+        ]
+        instance = self.instance(sandbox)
+        with self.assertRaisesRegex(ConnectionError, "listing disconnected"):
+            await instance._listed_sandbox_ids({"deleted"})
+        self.assertEqual(await instance._listed_sandbox_ids({"deleted"}), set())
+
+    async def test_cancelled_waiter_does_not_cancel_another_confirmation(self):
+        started, release = threading.Event(), threading.Event()
+
+        def list_page(*_):
+            started.set()
+            if not release.wait(2):
+                raise TimeoutError("test page was not released")
+            return SimpleNamespace(Items=[SimpleNamespace(Id="still-present")])
+
+        sandbox = self.sandbox(list_page)
+        first = asyncio.create_task(self.instance(sandbox)._listed_sandbox_ids({"still-present"}))
+        survivor = asyncio.create_task(self.instance(sandbox)._listed_sandbox_ids({"still-present"}))
+        try:
+            self.assertTrue(await asyncio.to_thread(started.wait, 1))
+            first.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await first
+        finally:
+            release.set()
+        self.assertEqual(await survivor, {"still-present"})
+
+    async def test_cancelled_queued_waiter_leaves_the_scan_available(self):
+        started, release = threading.Event(), threading.Event()
+
+        def list_page(*_):
+            started.set()
+            if not release.wait(2):
+                raise TimeoutError("test page was not released")
+            return SimpleNamespace(Items=[])
+
+        sandbox = self.sandbox(list_page)
+        owner = asyncio.create_task(self.instance(sandbox)._listed_sandbox_ids({"deleted"}))
+        queued = asyncio.create_task(self.instance(sandbox)._listed_sandbox_ids({"deleted"}))
+        try:
+            self.assertTrue(await asyncio.to_thread(started.wait, 1))
+            queued.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await queued
+        finally:
+            release.set()
+        self.assertEqual(await owner, set())
+        self.assertEqual(sandbox.list_sandboxes.call_count, 1)
+
+    async def test_cleanup_budget_bounds_a_slow_scan_without_cancelling_peers(self):
+        started, release = threading.Event(), threading.Event()
+
+        def list_page(*_):
+            started.set()
+            if not release.wait(2):
+                raise TimeoutError("test page was not released")
+            return SimpleNamespace(Items=[])
+
+        sandbox = self.sandbox(list_page)
+        instance = self.instance(sandbox)
+        instance._cleanup_wait_sec = 0.05
+        first = asyncio.create_task(instance._wait_for_sandbox_ids_absent({"deleted"}))
+        survivor = asyncio.create_task(self.instance(sandbox)._listed_sandbox_ids({"deleted"}))
+        try:
+            self.assertTrue(await asyncio.to_thread(started.wait, 1))
+            self.assertFalse(await asyncio.wait_for(first, 0.5))
+        finally:
+            release.set()
+        self.assertEqual(await survivor, set())
+
+    async def test_cleanup_does_not_swallow_an_sdk_timeout(self):
+        sandbox = self.sandbox(lambda *_: None)
+        sandbox.list_sandboxes.side_effect = TimeoutError("SDK request timed out")
+        with self.assertRaisesRegex(TimeoutError, "SDK request timed out"):
+            await self.instance(sandbox)._wait_for_sandbox_ids_absent({"deleted"})
+
+
 class DirectoryPackingDispatchTest(unittest.IsolatedAsyncioTestCase):
     async def test_only_native_async_offloads_http_packing(self):
         instance = object.__new__(yicloud_opensandbox.YiCloudOpenSandboxEnvironment)
