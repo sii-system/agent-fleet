@@ -9,6 +9,7 @@ from .config import (
     models_config,
     normalized_base_url,
 )
+from .failures import PiInvocationError, retryable_pi_failure
 from .process import (
     PiProcessResult,
     load_final_json_from_event_stream,
@@ -17,6 +18,7 @@ from .process import (
 )
 
 __all__ = [
+    "PiInvocationError",
     "PiProcessResult",
     "PiRuntimeConfig",
     "base_url_from_env",
@@ -26,6 +28,7 @@ __all__ = [
     "models_config",
     "normalized_base_url",
     "retry_delay_seconds",
+    "retryable_pi_failure",
     "run_pi_json_process",
     "sleep_before_retry",
     "write_text_atomic",

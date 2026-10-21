@@ -137,7 +137,7 @@ def _load_tool_access_ranges(tool_access_audit_path: str | Path | None) -> list[
     return ranges
 
 
-def _validate_fix_references_are_grounded(
+def _validate_evidence_references_are_grounded(
     report: dict[str, Any],
     *,
     index: int,
@@ -146,32 +146,38 @@ def _validate_fix_references_are_grounded(
 ) -> None:
     if tool_access_audit_path is None:
         return
-    if report.get("analysis_status") != "analysis_complete" or report.get("final_class") not in ENV_INFRA_CLASSES:
-        return
-    fix_references = report.get("fix_references")
-    if not isinstance(fix_references, list) or not fix_references:
+    if report.get("analysis_status") != "analysis_complete":
         return
     accessed_ranges = _load_tool_access_ranges(tool_access_audit_path)
-    for reference_index, reference in enumerate(fix_references):
-        if not isinstance(reference, dict):
+    for field, label in (("observations", "observation"), ("fix_references", "fix_reference")):
+        if field == "fix_references" and report.get("final_class") not in ENV_INFRA_CLASSES:
             continue
-        path = reference.get("path")
-        line_start = reference.get("line_start")
-        line_end = reference.get("line_end")
-        if not isinstance(path, str) or not isinstance(line_start, int) or not isinstance(line_end, int):
+        references = report.get(field)
+        if not isinstance(references, list):
             continue
-        normalized_path = _normalize_path(path)
-        grounded = _range_fully_covered(
-            line_start,
-            line_end,
-            [
-                (accessed_start, accessed_end)
-                for accessed_path, accessed_start, accessed_end in accessed_ranges
-                if accessed_path == normalized_path
-            ],
-        )
-        if not grounded:
-            errors.append(f"task_{index}_fix_reference_{reference_index}_not_grounded_in_tool_audit")
+        for reference_index, reference in enumerate(references):
+            grounded = False
+            if isinstance(reference, dict):
+                path = reference.get("path")
+                line_start = reference.get("line_start")
+                line_end = reference.get("line_end")
+                if (
+                    isinstance(path, str) and path
+                    and type(line_start) is int and type(line_end) is int
+                    and 0 < line_start <= line_end
+                ):
+                    normalized_path = _normalize_path(path)
+                    grounded = _range_fully_covered(
+                        line_start,
+                        line_end,
+                        [
+                            (accessed_start, accessed_end)
+                            for accessed_path, accessed_start, accessed_end in accessed_ranges
+                            if accessed_path == normalized_path
+                        ],
+                    )
+            if not grounded:
+                errors.append(f"task_{index}_{label}_{reference_index}_not_grounded_in_tool_audit")
 
 
 def _validate_task_report(
@@ -292,7 +298,7 @@ def _validate_task_report(
                 f"task_{index}_fix_reference_{reference_index}",
                 errors,
             )
-    _validate_fix_references_are_grounded(
+    _validate_evidence_references_are_grounded(
         report,
         index=index,
         tool_access_audit_path=tool_access_audit_path,

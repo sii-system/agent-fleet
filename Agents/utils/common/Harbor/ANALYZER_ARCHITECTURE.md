@@ -55,6 +55,18 @@ Analyzer Pi is launched as an isolated subprocess with:
 The path gate is defense-in-depth; the analyzer prompt is not treated as a
 security boundary.
 
+Evidence reads reject files larger than 32 MiB and bound each read/search
+response to 48 KiB. Individual lines are capped at 8 KiB: ordinary reads retain
+the head and tail, while grep retains an excerpt around the match. Redaction
+happens before clipping. Truncated responses retain original line numbers;
+the access audit records only the line ranges included in the response.
+Every observation, as well as env/infra root-cause references, must be covered
+by that attempt's access audit. Citations that bridge unread gaps fail validation
+and use the existing bounded correction retry.
+Search context and match counts are capped as well, so long JSONL trajectories
+cannot bypass the limits by occupying a single line. Use smaller task artifacts
+when a full trajectory exceeds the file limit.
+
 ### Retry policy
 
 Each task currently gets at most two Pi attempts.
@@ -62,10 +74,20 @@ Each task currently gets at most two Pi attempts.
 Retryable harness failures:
 
 - `pi_dispatch_timeout`;
-- `pi_provider_request_failed:*`;
+- transient `pi_provider_request_failed:*` errors, including rate limits,
+  connection failures, and provider server errors;
 - `pi_final_message_truncated`;
 - `pi_final_message_invalid_json`;
 - task JSON validation failures.
+
+Unchanged requests are not retried for provider authentication, permission,
+missing-model, invalid-request, context-window, or request-size errors
+(HTTP 400/401/403/404/413/422). These failures still publish an `analysis_failed`
+task with an `unknown` root cause. The first-pass prompt asks for compact JSON
+and requires checking deliberate verifier/fixture changes before attributing
+agent-time/verifier-time differences to a task defect. When that setup is
+unavailable, a mismatch alone produces `unknown` with the missing evidence
+identified, rather than an unsupported environment-defect diagnosis.
 
 If all attempts fail, the task is reported as:
 

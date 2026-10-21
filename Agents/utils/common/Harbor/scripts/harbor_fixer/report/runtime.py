@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from harbor_pi_runtime import sleep_before_retry
+from harbor_pi_runtime import PiInvocationError, sleep_before_retry
 
 from ..agent_invocation import AgentInvoker
 from ..artifact_io import write_text
@@ -94,12 +94,16 @@ def generate_report_summary(
     prompt = REPORT_MAIN_AGENT_PROMPT
     for attempt in range(1, max_attempts + 1):
         raw = ""
+        retryable = True
         try:
             raw = invoker.invoke(
                 prompt, summary_input, attempt=attempt, label="report-main-agent"
             )
         except Exception as exc:  # noqa: BLE001 - provider retry boundary
             error = f"{type(exc).__name__}: report summary invocation failed"
+            if isinstance(exc, PiInvocationError):
+                retryable = exc.retryable
+                error += f" ({exc.block_reason})"
         else:
             raw_path = (
                 output_dir / "raw-report-main-agent-output" / f"attempt-{attempt}.txt"
@@ -129,6 +133,8 @@ def generate_report_summary(
         errors.append(
             {"stage": "report_main_agent", "attempt": attempt, "error": error}
         )
+        if not retryable:
+            break
         if attempt < max_attempts:
             sleep_before_retry(attempt)
     return _fallback_summary(summary_input, errors), raw_paths

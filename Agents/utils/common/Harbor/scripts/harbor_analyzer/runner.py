@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from harbor_pi_runtime import sleep_before_retry
+from harbor_pi_runtime import retryable_pi_failure, sleep_before_retry
 
 from . import PROMPT_VERSION, SCHEMA_VERSION, TAXONOMY_VERSION
 from .contract import validate_handover
@@ -30,14 +30,6 @@ from .validation import validate_final_json, validate_task_analysis
 AGENT_NAME = "harbor_analyzer_pi_subagent"
 MAX_TASK_ATTEMPTS = 2
 MAX_RETRY_TIMEOUT_SECONDS = 1800
-RETRYABLE_BLOCK_REASONS = {
-    "pi_dispatch_timeout",
-    "pi_final_message_invalid_json",
-    "pi_final_message_truncated",
-}
-RETRYABLE_BLOCK_REASON_PREFIXES = (
-    "pi_provider_request_failed:",
-)
 
 
 @dataclass(frozen=True)
@@ -104,9 +96,7 @@ def task_analysis_timeout_budget_seconds(timeout_seconds: int) -> int:
 
 
 def _is_retryable_block_reason(reason: str) -> bool:
-    return reason in RETRYABLE_BLOCK_REASONS or any(
-        reason.startswith(prefix) for prefix in RETRYABLE_BLOCK_REASON_PREFIXES
-    )
+    return retryable_pi_failure(reason)
 
 
 def _retry_timeout_seconds(reason: str, timeout_seconds: int) -> int:

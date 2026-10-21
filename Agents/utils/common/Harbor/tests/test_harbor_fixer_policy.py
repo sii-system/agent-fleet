@@ -22,6 +22,8 @@ from fixer_test_support import (
     make_fix_plan,
 )
 from harbor_fixer.policy import run_policy_preflight
+from harbor_fixer.policy.agent import evaluate_agent
+from harbor_pi_runtime import PiInvocationError
 
 
 def _command(template: dict, action_id: str, executable: str, *arguments: str) -> dict:
@@ -51,6 +53,20 @@ def _file_edit(action_id: str, cwd: str, path: str) -> dict:
 
 
 class HarborFixerPolicyTest(FixerTestCase):
+    def test_permanent_provider_error_denies_without_retrying(self):
+        invoker = mock.Mock()
+        invoker.invoke.side_effect = PiInvocationError(
+            "pi_provider_request_failed:401_authenticationerror", label="policy", attempt=1
+        )
+        with mock.patch("harbor_fixer.policy.agent.sleep_before_retry") as backoff:
+            decision = evaluate_agent(invoker, {
+                "tier": "T3", "plan_id": "plan-1", "action": {"action_id": "action-1"},
+            })
+        self.assertEqual(decision["decision"], "deny")
+        self.assertEqual(decision["source"], "policy_agent_fallback")
+        self.assertEqual(invoker.invoke.call_count, 1)
+        backoff.assert_not_called()
+
     def setUp(self) -> None:
         super().setUp()
         self.workspace = self.root / "workspace"

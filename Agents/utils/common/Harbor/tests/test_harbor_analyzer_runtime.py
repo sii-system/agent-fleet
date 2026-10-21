@@ -717,6 +717,16 @@ class HarborAnalyzerRuntimeTest(unittest.TestCase):
                 report = task_analysis(HANDOVER_ID, RUN_ID, payload["tasks"][0])
                 analysis_id = kwargs["analysis_id"]
                 dispatch_output_dir = kwargs["output_dir"]
+                evidence_path = run_dir / "jobs/demo/job.log"
+                evidence_path.parent.mkdir(parents=True, exist_ok=True)
+                evidence_path.write_text("The expected answer was not produced.\n")
+                report["observations"][0]["path"] = str(evidence_path)
+                audit_path = dispatch_output_dir / "analyzer-tool-access" / f"{analysis_id}.jsonl"
+                audit_path.parent.mkdir(parents=True, exist_ok=True)
+                audit_path.write_text(json.dumps({
+                    "tool": "read", "allowed": True,
+                    "resolved_path": str(evidence_path), "line_start": 1, "line_end": 1,
+                }) + "\n")
                 return SimpleNamespace(
                     report=report,
                     block_reason=None,
@@ -724,7 +734,7 @@ class HarborAnalyzerRuntimeTest(unittest.TestCase):
                         "analysis_id": analysis_id,
                         "events_path": str(dispatch_output_dir / "analyzer-subagent-events" / f"{analysis_id}.jsonl"),
                         "stderr_path": str(dispatch_output_dir / "analyzer-subagent-stderr" / f"{analysis_id}.txt"),
-                        "tool_access_audit_path": str(dispatch_output_dir / "analyzer-tool-access" / f"{analysis_id}.jsonl"),
+                        "tool_access_audit_path": str(audit_path),
                     },
                 )
 
@@ -764,9 +774,7 @@ class HarborAnalyzerRuntimeTest(unittest.TestCase):
                 SimpleNamespace(
                     report=task_analysis(HANDOVER_ID, RUN_ID, payload["tasks"][0]),
                     block_reason=None,
-                    provenance={
-                        "tool_access_audit_path": str(output_dir / "tool-access.jsonl")
-                    },
+                    provenance={},
                 ),
             ]
 
@@ -789,6 +797,31 @@ class HarborAnalyzerRuntimeTest(unittest.TestCase):
                 "attempts"
             ]
             self.assertEqual(attempts[0]["retry_delay_seconds"], 2.0)
+
+    def test_permanent_provider_failure_publishes_unknown_without_repeating_request(self):
+        with tempfile.TemporaryDirectory() as root:
+            run_dir = Path(root) / "run"
+            queue_dir = run_dir / "queue"
+            output_dir = Path(root) / "analyzer"
+            payload = handover(run_dir, queue_dir)
+            config = AnalyzerConfig(run_dir=run_dir, queue_dir=queue_dir, output_dir=output_dir)
+            with (
+                mock.patch.object(analyzer_runner, "dispatch_to_child", return_value=SimpleNamespace(
+                    report=None,
+                    block_reason="pi_provider_request_failed:413_message_request_body_exceeded",
+                    provenance={},
+                )) as dispatch,
+                mock.patch.object(analyzer_runner, "sleep_before_retry") as backoff,
+            ):
+                result, code = run_handover(
+                    payload, handover_path=run_dir / "handover.json", config=config
+                )
+            self.assertEqual(code, 3)
+            task_result = result["tasks"][0]
+            self.assertEqual(task_result["analysis_status"], "analysis_failed")
+            self.assertEqual(task_result["final_class"], "unknown")
+            self.assertEqual(dispatch.call_count, 1)
+            backoff.assert_not_called()
 
     def test_write_outputs_publishes_one_latest_artifact_manifest(self) -> None:
         with tempfile.TemporaryDirectory() as root:

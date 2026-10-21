@@ -39,6 +39,7 @@ from harbor_fixer.validation import (
     validate_report_summary,
 )
 from harbor_fixer.verifier import run_verification_from_paths
+from harbor_pi_runtime import PiInvocationError
 
 
 def _verification_result() -> dict:
@@ -132,6 +133,20 @@ def _write_generation_fixture(root: Path) -> tuple[Path, Path, Path]:
 
 
 class HarborFixerReportTest(FixerTestCase):
+    def test_permanent_provider_error_uses_deterministic_summary_without_retry(self):
+        invoker = mock.Mock()
+        invoker.invoke.side_effect = PiInvocationError(
+            "pi_provider_request_failed:413_message_request_body_exceeded", label="report", attempt=1
+        )
+        with mock.patch("harbor_fixer.report.runtime.sleep_before_retry") as backoff:
+            result, raw_paths = generate_report_summary(invoker, {}, self.root / "report")
+        self.assertEqual(result["status"], "failed")
+        self.assertIn("Deterministic fallback", result["text"])
+        self.assertEqual(len(result["generation_errors"]), 1)
+        self.assertEqual(raw_paths, [])
+        self.assertEqual(invoker.invoke.call_count, 1)
+        backoff.assert_not_called()
+
     def test_report_contains_summary_changes_and_remaining_issues(self) -> None:
         fix_plan = make_fix_plan()
         exec_result = make_exec_result(fix_plan=fix_plan)

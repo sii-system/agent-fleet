@@ -500,6 +500,13 @@ corresponding `HARBOR_FIXER_*` defaults loaded by `env.sh`.
 Analyzer and Fixer Agent retries use bounded exponential backoff, starting at
 one second and capped at 30 seconds. Override these values with
 `HARBOR_AGENT_RETRY_INITIAL_SECONDS` and `HARBOR_AGENT_RETRY_MAX_SECONDS`.
+Permanent provider errors (invalid requests, authentication/permission failures,
+missing models, and context/request-size limits) stop retries for the unchanged
+input. Planning records the failure, policy evaluation denies the action, and
+report generation uses its deterministic fallback. Fixer serializes model inputs
+as compact JSON and rejects prompts larger than 512 KiB before launching Pi;
+reduce the task/evidence input when this limit is reached. This bounds the
+combined prompt in addition to the per-task and aggregate summary limits.
 
 ### Stage 2: Execution Policy
 

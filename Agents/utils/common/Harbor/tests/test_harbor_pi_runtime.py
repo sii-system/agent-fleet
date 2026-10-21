@@ -17,10 +17,12 @@ if str(SCRIPT_DIR) not in sys.path:
 
 from harbor_analyzer.pi import dispatch_to_child
 from harbor_pi_runtime import (
+    PiInvocationError,
     PiRuntimeConfig,
     base_url_from_env,
     load_final_json_from_event_stream,
     models_config,
+    retryable_pi_failure,
     run_pi_json_process,
 )
 
@@ -84,6 +86,27 @@ class HarborPiRuntimeTest(unittest.TestCase):
         self.addCleanup(self.temp_dir.cleanup)
         self.root = Path(self.temp_dir.name)
         self.pi_bin = write_fixture_pi(self.root / "fixture-pi")
+
+    def test_retry_policy_distinguishes_permanent_and_transient_provider_failures(self):
+        for detail in (
+            "404_message_model_not_found", "401_authenticationerror",
+            "403_permission_denied", "413_message_request_body_exceeded_67108864_bytes",
+            "litellm_contextwindowexceedederror", "400_badrequesterror", "422_invalid_input",
+        ):
+            with self.subTest(detail=detail):
+                self.assertFalse(retryable_pi_failure("pi_provider_request_failed:" + detail))
+        for detail in ("429_rate_limit", "503_serviceunavailableerror", "timeout", "connection_reset"):
+            with self.subTest(detail=detail):
+                self.assertTrue(retryable_pi_failure("pi_provider_request_failed:" + detail))
+        self.assertTrue(retryable_pi_failure("pi_final_message_truncated"))
+        self.assertFalse(retryable_pi_failure("pi_prompt_too_large"))
+
+    def test_invocation_errors_keep_safe_codes_without_raw_os_error_details(self):
+        error = PiInvocationError(
+            "pi_dispatch_os_error:/private/API_KEY=fake-secret", label="fixture", attempt=1
+        )
+        self.assertEqual(error.block_reason, "pi_dispatch_os_error")
+        self.assertNotIn("fake-secret", str(error))
 
     def run_runtime(self, prompt: str, **overrides: object):
         options = {

@@ -9,7 +9,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from harbor_pi_runtime import sleep_before_retry
+from harbor_pi_runtime import PiInvocationError, sleep_before_retry
 
 from .agent_invocation import AgentInvoker
 from .analyzer_inputs import build_task_inputs
@@ -70,6 +70,8 @@ def _summarize_task_with_retry(
             return payload, None
         except (RuntimeError, ValidationError) as exc:
             last_error = str(exc)
+            if isinstance(exc, PiInvocationError) and not exc.retryable:
+                break
             if raw and attempt < max_attempts:
                 prompt = build_validation_retry_prompt(
                     base_prompt=TASK_SUBAGENT_PROMPT,
@@ -198,6 +200,8 @@ def request_fix_plan(
             return payload
         except (RuntimeError, ValidationError) as exc:
             last_error = str(exc)
+            if isinstance(exc, PiInvocationError) and not exc.retryable:
+                break
             if raw and attempt < max_attempts:
                 prompt = build_validation_retry_prompt(
                     base_prompt=MAIN_AGENT_PROMPT,
@@ -207,7 +211,7 @@ def request_fix_plan(
             if attempt < max_attempts:
                 sleep_before_retry(attempt)
     raise ValidationError(
-        f"main agent failed to emit a valid fix plan after {max_attempts} attempts: {last_error}"
+        f"main agent failed to emit a valid fix plan after {attempt} attempts: {last_error}"
     )
 
 

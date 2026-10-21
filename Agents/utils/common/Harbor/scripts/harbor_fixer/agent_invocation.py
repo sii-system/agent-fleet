@@ -9,7 +9,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
-from harbor_pi_runtime import PiRuntimeConfig, run_pi_json_process, write_text_atomic
+from harbor_pi_runtime import (
+    PiInvocationError,
+    PiRuntimeConfig,
+    run_pi_json_process,
+    write_text_atomic,
+)
 
 FIXER_INPUT_MARKER = "HARBOR_FIXER_INPUT_JSON:"
 FIXER_SYSTEM_PROMPT = (
@@ -28,6 +33,7 @@ class AgentInvoker(Protocol):
 class PiInvocationConfig(PiRuntimeConfig):
     provider: str = "harbor-fixer"
     api_key_env: str = "HARBOR_FIXER_API_KEY"
+    max_prompt_bytes: int = 512 * 1024
 
 
 def _safe_path_component(value: str) -> str:
@@ -45,7 +51,7 @@ def _compose_prompt(prompt: str, payload: dict[str, Any]) -> str:
             "",
             "Read the following Harbor Fixer input JSON and return JSON only.",
             FIXER_INPUT_MARKER,
-            json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True),
+            json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True),
             "",
         ]
     )
@@ -67,6 +73,8 @@ class PiAgentInvoker:
         attempt_name = f"attempt-{attempt}"
         call_id = f"{safe_label}-{attempt_name}"
         rendered_prompt = _compose_prompt(prompt, payload)
+        if len(rendered_prompt.encode("utf-8")) > self.config.max_prompt_bytes:
+            raise PiInvocationError("pi_prompt_too_large", label=label, attempt=attempt)
         prompt_path = self.output_dir / "pi-agent-prompts" / safe_label / f"{attempt_name}.txt"
         write_text_atomic(prompt_path, rendered_prompt)
         process_record_path = self.output_dir / "active-agent-processes" / f"{call_id}.json"
@@ -119,6 +127,7 @@ class PiAgentInvoker:
             json.dumps(result.provenance, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
         )
         if result.block_reason or result.output_json is None:
-            error = (result.block_reason or "pi_final_json_missing").split(":", 1)[0]
-            raise RuntimeError(f"pi agent failed for {label} attempt {attempt}: {error}")
+            raise PiInvocationError(
+                result.block_reason or "pi_final_json_missing", label=label, attempt=attempt
+            )
         return json.dumps(result.output_json, ensure_ascii=False)

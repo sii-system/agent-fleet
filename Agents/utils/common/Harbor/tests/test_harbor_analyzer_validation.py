@@ -224,6 +224,41 @@ class HarborAnalyzerValidationTest(unittest.TestCase):
                 ),
             )
 
+    def test_observation_cannot_bridge_unread_gap_after_truncation(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            evidence_path = Path(root) / "verifier.log"
+            evidence_path.write_text("evidence\n" * 423, encoding="utf-8")
+            audit_path = Path(root) / "tool-access.jsonl"
+
+            def read_record(start, end):
+                return json.dumps({
+                    "tool": "read", "allowed": True,
+                    "resolved_path": str(evidence_path),
+                    "line_start": start, "line_end": end,
+                }) + "\n"
+
+            audit_path.write_text(read_record(1, 80) + read_record(410, 423))
+            report = env_task_analysis(evidence_path)
+            report.update(
+                final_class="model_fail", failure_stage="agent_execution",
+                root_cause_code="model_output_incorrect", fix_references=[],
+            )
+            report["observations"][0].update(line_start=405, line_end=412)
+
+            def errors():
+                return validate_task_analysis(
+                    report, handover_id=HANDOVER_ID, expected_task=analyzer_task(),
+                    tool_access_audit_path=audit_path,
+                )
+
+            self.assertIn("task_0_observation_0_not_grounded_in_tool_audit", errors())
+            report["observations"][0]["line_start"] = 410
+            self.assertEqual(errors(), [])
+            report["observations"][0]["line_start"] = 405
+            with audit_path.open("a") as audit:
+                audit.write(read_record(405, 409))
+            self.assertEqual(errors(), [])
+
     def test_validate_handover_rejects_redefined_status_policy(self) -> None:
         with tempfile.TemporaryDirectory() as root:
             run_dir = Path(root) / "run"

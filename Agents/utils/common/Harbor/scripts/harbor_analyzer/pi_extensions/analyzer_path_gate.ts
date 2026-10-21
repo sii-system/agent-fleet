@@ -1,7 +1,8 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { constants } from "node:fs";
-import { access, appendFile, lstat, readdir, readFile, realpath, stat } from "node:fs/promises";
+import { access, appendFile, lstat, readdir, realpath, stat } from "node:fs/promises";
 import path from "node:path";
+import { boundedEntries, boundedLines, matchExcerpt, MAX_TOOL_BYTES, readTextFile } from "./evidence_limits.mjs";
 
 type AllowedPath = {
 	raw: string;
@@ -18,6 +19,7 @@ type Policy = {
 const MAX_READ_LINES = 1200;
 const MAX_GREP_FILES = 5000;
 const DEFAULT_LIMIT = 200;
+const MAX_GREP_CONTEXT = 20;
 
 const readSchema = {
 	type: "object",
@@ -198,10 +200,6 @@ function redactLines(lines: string[]): { lines: string[]; redacted: boolean } {
 	return { lines: redactedLines, redacted: anyRedacted };
 }
 
-function formatLines(lines: string[], offset: number): string {
-	return lines.map((line, index) => `L${offset + index}: ${line}`).join("\n");
-}
-
 function simpleGlobToRegExp(pattern: string): RegExp {
 	const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".");
 	return new RegExp(`^${escaped}$`);
@@ -240,16 +238,6 @@ async function collectFiles(root: string, limit: number): Promise<string[]> {
 	return files;
 }
 
-function isProbablyText(buffer: Buffer): boolean {
-	return !buffer.subarray(0, 4096).includes(0);
-}
-
-async function readTextFile(file: string): Promise<string | undefined> {
-	const buffer = await readFile(file);
-	if (!isProbablyText(buffer)) return undefined;
-	return buffer.toString("utf8");
-}
-
 export default function analyzerPathGate(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "read",
@@ -278,6 +266,8 @@ export default function analyzerPathGate(pi: ExtensionAPI) {
 				const limit = Math.min(requestedLimit, MAX_READ_LINES);
 				const selected = allLines.slice(start - 1, start - 1 + limit);
 				const redacted = redactLines(selected);
+				const view = boundedLines(redacted.lines, start, MAX_TOOL_BYTES - Buffer.byteLength(resolved.absolute) - 256);
+				const truncated = view.truncated || start - 1 + view.count < allLines.length;
 				await writeAudit(policy, {
 					tool: "read",
 					requested_path: params.path,
@@ -285,13 +275,13 @@ export default function analyzerPathGate(pi: ExtensionAPI) {
 					resolved_path: resolved.real,
 					allowed: true,
 					line_start: start,
-					line_end: start + selected.length - 1,
+					line_end: view.lineEnd,
 					redacted: redacted.redacted,
-					truncated: start - 1 + limit < allLines.length,
+					truncated,
 				});
-				const header = `Path: ${resolved.absolute}\nLines: ${start}-${start + selected.length - 1}${redacted.redacted ? "\nRedaction: secret-looking values replaced with <REDACTED>" : ""}`;
-				const suffix = start - 1 + limit < allLines.length ? "\n[Output truncated by analyzer path gate]" : "";
-				return { content: [{ type: "text", text: `${header}\n${formatLines(redacted.lines, start)}${suffix}` }], details: { redacted: redacted.redacted } };
+				const header = `Path: ${resolved.absolute}\nLines: ${start}-${view.lineEnd}${redacted.redacted ? "\nRedaction: secret-looking values replaced with <REDACTED>" : ""}`;
+				const suffix = truncated ? "\n[Output truncated; narrow the evidence read or advance the line offset]" : "";
+				return { content: [{ type: "text", text: `${header}\n${view.text}${suffix}` }], details: { redacted: redacted.redacted, truncated } };
 			} catch (error: any) {
 				return { content: [{ type: "text", text: `Error reading ${params.path}: ${error?.message || error}` }], details: { error: true } };
 			}
@@ -314,12 +304,13 @@ export default function analyzerPathGate(pi: ExtensionAPI) {
 			if (!info.isDirectory()) {
 				return { content: [{ type: "text", text: `Path: ${resolved.absolute}\n(file)` }], details: {} };
 			}
-			const limit = Math.max(1, Math.floor(params.limit ?? DEFAULT_LIMIT));
+			const limit = Math.min(DEFAULT_LIMIT, Math.max(1, Math.floor(params.limit ?? DEFAULT_LIMIT)));
 			const entries = (await readdir(resolved.real, { withFileTypes: true }))
 				.sort((a, b) => a.name.localeCompare(b.name))
 				.slice(0, limit)
 				.map((entry) => `${entry.name}${entry.isDirectory() ? "/" : ""}`);
-			return { content: [{ type: "text", text: `Path: ${resolved.absolute}\n${entries.join("\n")}` }], details: { entry_count: entries.length } };
+			const view = boundedEntries(entries, MAX_TOOL_BYTES - Buffer.byteLength(resolved.absolute) - 64);
+			return { content: [{ type: "text", text: `Path: ${resolved.absolute}\n${view.text}` }], details: { entry_count: view.count, truncated: view.truncated } };
 		},
 	});
 
@@ -338,11 +329,12 @@ export default function analyzerPathGate(pi: ExtensionAPI) {
 			const info = await stat(resolved.real);
 			const candidates = info.isDirectory() ? await collectFiles(resolved.real, MAX_GREP_FILES) : [resolved.real];
 			const matcher = simpleGlobToRegExp(params.pattern || "*");
-			const limit = Math.max(1, Math.floor(params.limit ?? DEFAULT_LIMIT));
+			const limit = Math.min(DEFAULT_LIMIT, Math.max(1, Math.floor(params.limit ?? DEFAULT_LIMIT)));
 			const matches = candidates
 				.filter((file) => matcher.test(path.basename(file)) || matcher.test(path.relative(resolved.real, file)))
 				.slice(0, limit);
-			return { content: [{ type: "text", text: matches.join("\n") || "No matches" }], details: { match_count: matches.length } };
+			const view = boundedEntries(matches);
+			return { content: [{ type: "text", text: view.text || "No matches" }], details: { match_count: view.count, truncated: view.truncated } };
 		},
 	});
 
@@ -361,8 +353,8 @@ export default function analyzerPathGate(pi: ExtensionAPI) {
 			const info = await stat(resolved.real);
 			const files = info.isDirectory() ? await collectFiles(resolved.real, MAX_GREP_FILES) : [resolved.real];
 			const glob = params.glob ? simpleGlobToRegExp(params.glob) : undefined;
-			const limit = Math.max(1, Math.floor(params.limit ?? DEFAULT_LIMIT));
-			const context = Math.max(0, Math.floor(params.context ?? 0));
+			const limit = Math.min(DEFAULT_LIMIT, Math.max(1, Math.floor(params.limit ?? DEFAULT_LIMIT)));
+			const context = Math.min(MAX_GREP_CONTEXT, Math.max(0, Math.floor(params.context ?? 0)));
 			const flags = params.ignoreCase ? "i" : "";
 			let pattern: RegExp | undefined;
 			if (!params.literal) {
@@ -376,31 +368,63 @@ export default function analyzerPathGate(pi: ExtensionAPI) {
 			const output: string[] = [];
 			const matches: Array<{ path: string; resolved_path: string; line_start: number; line_end: number }> = [];
 			let redactedAny = false;
-			for (const file of files) {
-				if (output.length >= limit) break;
+			let outputBytes = 0;
+			let truncated = false;
+			let skippedFiles = 0;
+			search: for (const file of files) {
+				if (output.length >= limit || outputBytes >= MAX_TOOL_BYTES - 512) {
+					truncated = true;
+					break;
+				}
 				const rel = path.relative(resolved.real, file);
 				if (glob && !(glob.test(path.basename(file)) || glob.test(rel))) continue;
 				let text: string | undefined;
 				try {
 					text = await readTextFile(file);
 				} catch {
+					skippedFiles += 1;
 					continue;
 				}
 				if (text === undefined) continue;
 				const lines = text.split(/\r?\n/);
 				for (let index = 0; index < lines.length && output.length < limit; index++) {
 					const haystack = params.ignoreCase ? lines[index].toLowerCase() : lines[index];
-					const matched = pattern ? pattern.test(lines[index]) : haystack.includes(needle);
-					if (!matched) continue;
+					const regexMatch = pattern?.exec(lines[index]);
+					const matchIndex = pattern ? (regexMatch?.index ?? -1) : haystack.indexOf(needle);
+					if (matchIndex < 0) continue;
 					const start = Math.max(0, index - context);
 					const end = Math.min(lines.length - 1, index + context);
-					const selected = lines.slice(start, end + 1);
-					const redacted = redactLines(selected);
+					const redacted = redactLines(lines.slice(start, end + 1));
 					if (redacted.redacted) redactedAny = true;
-					output.push(`File: ${file}\n${formatLines(redacted.lines, start + 1)}`);
-					matches.push({ path: file, resolved_path: file, line_start: start + 1, line_end: end + 1 });
+					// Redact before selecting an excerpt so clipping cannot hide a credential's key.
+					const safeLine = redacted.lines[index - start];
+					const safeMatch = pattern?.exec(safeLine);
+					const safeIndex = pattern ? (safeMatch?.index ?? 0)
+						: Math.max(0, (params.ignoreCase ? safeLine.toLowerCase() : safeLine).indexOf(needle));
+					const excerpt = matchExcerpt(safeLine, safeIndex, safeMatch?.[0].length ?? needle.length);
+					truncated ||= excerpt !== safeLine;
+					redacted.lines[index - start] = excerpt;
+					const header = `File: ${file}\n`;
+					const budget = MAX_TOOL_BYTES - outputBytes - Buffer.byteLength(header) - 128;
+					let actualStart = start;
+					let view = boundedLines(redacted.lines, actualStart + 1, budget);
+					if (view.lineEnd < index + 1) {
+						// Preserve the match when preceding context consumes the remaining budget.
+						actualStart = index;
+						view = boundedLines(redacted.lines.slice(index - start), actualStart + 1, budget);
+					}
+					if (!view.count) {
+						truncated = true;
+						break search;
+					}
+					const rendered = header + view.text;
+					output.push(rendered);
+					outputBytes += Buffer.byteLength(rendered) + 5;
+					truncated ||= view.truncated;
+					matches.push({ path: file, resolved_path: file, line_start: actualStart + 1, line_end: view.lineEnd });
 				}
 			}
+			truncated ||= output.length >= limit || skippedFiles > 0;
 			await writeAudit(policy, {
 				tool: "grep",
 				requested_path: requested,
@@ -411,8 +435,16 @@ export default function analyzerPathGate(pi: ExtensionAPI) {
 				match_count: output.length,
 				matches,
 				redacted: redactedAny,
+				truncated,
+				skipped_files: skippedFiles,
 			});
-			return { content: [{ type: "text", text: output.join("\n---\n") || "No matches" }], details: { match_count: output.length, redacted: redactedAny } };
+			const suffix = skippedFiles
+				? `\n[Incomplete search: skipped ${skippedFiles} unreadable or oversized file(s)]`
+				: truncated ? "\n[Output truncated; narrow the search or reduce context]" : "";
+			return {
+				content: [{ type: "text", text: (output.join("\n---\n") || "No matches in inspected text") + suffix }],
+				details: { match_count: output.length, redacted: redactedAny, truncated, skipped_files: skippedFiles },
+			};
 		},
 	});
 }

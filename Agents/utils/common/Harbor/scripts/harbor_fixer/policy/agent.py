@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from harbor_pi_runtime import sleep_before_retry
+from harbor_pi_runtime import PiInvocationError, sleep_before_retry
 
 from ..agent_invocation import AgentInvoker
 from ..prompts import build_validation_retry_prompt
@@ -106,6 +106,8 @@ def evaluate_agent(
             }
         except Exception as exc:  # noqa: BLE001 - policy errors must fail closed
             last_error = f"{exc.__class__.__name__}: {exc}"
+            if isinstance(exc, PiInvocationError) and not exc.retryable:
+                break
             prompt = build_validation_retry_prompt(
                 base_prompt=base_prompt,
                 previous_output=previous_output,

@@ -28,6 +28,7 @@ from fixer_test_support import (
     write_fixture_pi,
 )
 from harbor_fixer import plan_generation
+from harbor_fixer.agent_invocation import PiAgentInvoker, PiInvocationConfig
 from harbor_fixer.analyzer_inputs import build_task_inputs
 from harbor_fixer.artifact_io import write_json_atomic
 from harbor_fixer.plan_generation import (
@@ -41,9 +42,63 @@ from harbor_fixer.validation import (
     validate_fix_plan_set,
     validate_task_summary,
 )
+from harbor_pi_runtime import PiInvocationError
 
 
 class HarborFixerPlanTest(FixerTestCase):
+    def test_permanent_provider_errors_stop_task_and_main_plan_retries(self):
+        task_input = build_task_inputs(write_analyzer_fixture(self.root))[0][0]
+        invoker = mock.Mock()
+        invoker.invoke.side_effect = PiInvocationError(
+            "pi_provider_request_failed:404_model_not_found", label="fixture", attempt=1
+        )
+        with mock.patch.object(plan_generation, "sleep_before_retry") as backoff:
+            summaries, errors = collect_task_summaries([task_input], invoker, self.root / "tasks")
+            self.assertEqual(summaries, [])
+            self.assertIn("404_model_not_found", errors[0]["error"])
+            self.assertEqual(invoker.invoke.call_count, 1)
+            with self.assertRaisesRegex(ValidationError, "after 1 attempts"):
+                request_fix_plan(invoker, {}, self.root / "main")
+            self.assertEqual(invoker.invoke.call_count, 2)
+            backoff.assert_not_called()
+
+    def test_fixer_prompt_is_compact_and_oversized_input_never_launches_pi(self):
+        from harbor_fixer.agent_invocation import FIXER_INPUT_MARKER, _compose_prompt
+
+        payload = {"evidence": [{"fact": "unicode 界 and a newline\n"}] * 100}
+        prompt = _compose_prompt("instructions", payload)
+        self.assertEqual(json.loads(prompt.split(FIXER_INPUT_MARKER)[1]), payload)
+        self.assertLess(len(prompt), len(json.dumps(payload, ensure_ascii=False, indent=2)))
+        output_dir = self.root / "oversized"
+        invoker = PiAgentInvoker(output_dir, PiInvocationConfig(max_prompt_bytes=100))
+        with (
+            mock.patch("harbor_fixer.agent_invocation.run_pi_json_process") as process,
+            self.assertRaises(PiInvocationError) as caught,
+        ):
+            invoker.invoke("instructions", payload, attempt=1, label="task")
+        self.assertEqual(caught.exception.block_reason, "pi_prompt_too_large")
+        self.assertFalse(caught.exception.retryable)
+        self.assertFalse(output_dir.exists())
+        process.assert_not_called()
+
+    def test_fixer_keeps_provider_failure_classification_for_retry_decisions(self):
+        from types import SimpleNamespace
+
+        result = SimpleNamespace(
+            output_json=None,
+            block_reason="pi_provider_request_failed:503_serviceunavailableerror",
+            provenance={},
+        )
+        invoker = PiAgentInvoker(self.root / "provider-failure", PiInvocationConfig())
+        with (
+            mock.patch("harbor_fixer.agent_invocation.run_pi_json_process", return_value=result),
+            self.assertRaises(PiInvocationError) as caught,
+        ):
+            invoker.invoke("instructions", {}, attempt=1, label="task")
+        self.assertEqual(caught.exception.block_reason, result.block_reason)
+        self.assertTrue(caught.exception.retryable)
+        self.assertFalse(list((self.root / "provider-failure" / "active-agent-processes").glob("*.json")))
+
     def test_task_summary_retry_identity_and_contract(self) -> None:
         analyzer_dir = write_analyzer_fixture(self.root, agent="opencode")
         env_monitor_root = self.root / "environment-monitor"

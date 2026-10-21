@@ -105,6 +105,24 @@ Classification procedure:
 5. Use unknown only when the evidence is insufficient or contradictory about whether this is
    success, model_fail, or actionable non-model failure after reading the primary task files.
    unknown means the analyzer needs user judgment; it is not an automated-action input.
+6. Before diagnosing an environment/verifier mismatch, inspect verifier setup and fixtures
+   for deliberate changes to task files or hidden test inputs. Different agent-time and
+   verifier-time seeds, shapes, weights, or other values alone do not establish a task defect.
+   A pytest traceback shows the failing test body, not all module-level setup or fixtures;
+   omitted setup may legitimately replace inputs before the test runs. An unchanged file
+   in the agent trajectory does not prove it stayed unchanged during verification.
+   If pre-test setup is unavailable and the proposed env/infra cause depends on such a
+   mismatch, use unknown with root_cause_code insufficient_or_conflicting_evidence and
+   name the missing setup evidence. Do not assert an impossible task or broken verifier
+   from the mismatch alone. Use a known failure class only when independent primary
+   evidence establishes it. Likewise, building or installing a toolchain can be part of
+   the requested task rather than an image defect.
+7. Separate recorded outcomes from hypotheses about unrecorded execution. A successful
+   agent-side self-check does not establish success on the verifier's inputs or precision
+   requirements; an approximate match is not exact recovery. Do not compare different
+   accuracy metrics as if their thresholds were equivalent. When the verifier-time
+   output artifact or execution details are absent, state that limit instead of inventing
+   its shape, contents, or a definite internal algorithm failure.
 
 Class boundary:
 - infra_fail: shared runner/host/provider problems, including Docker registry mirror 403 or
@@ -153,6 +171,9 @@ Consistency self-check before returning JSON:
   wrong agent/model output after normal environment and verifier execution.
 - fix_references paths must be exact absolute paths that exist in the current filesystem;
   never use "...", shortened paths, or paths relative to an unstated directory.
+- Every observation and fix_reference must cite only original line ranges actually returned
+  by read/grep in this attempt. After truncation, read the missing lines before citing them;
+  do not extend a citation across an unread gap or infer its range from a nearby match.
 - For env_fail or infra_fail, fix_references must be the evidence you actually used to infer
   the root cause, not repair instructions.
 - Do not include fix_goal, recommended_actions, or any instructions about how to fix the
@@ -163,6 +184,10 @@ env_infra_tasks, or fix_line_index; Python will assemble those files after all t
 analyses finish.
 
 Output completeness rules:
+- Keep the final JSON below 8,000 characters, with at most 5 observations and 5
+  fix_references. Cite concise facts instead of copying trajectories or stack traces.
+- Tool output marked truncated is partial evidence. Narrow reads/searches to the relevant
+  original lines; do not treat a missing excerpt as proof that an event never happened.
 - Always include every key shown in the JSON template below.
 - For success, model_fail, or unknown, set fix_references to [] when there is no
   env/infra root-cause evidence range.
@@ -224,8 +249,9 @@ Correction rules:
   precisely matches the evidence. If an env_fail, infra_fail, or model_fail cause is
   evidenced but not in the taxonomy, use the matching unmapped_* code and explain the
   concrete cause in root_cause_summary. For success, use scored_complete_no_failure.
-- For env_fail or infra_fail, every fix_references entry must point to a file and line range
-  you actually read or found with grep in this retry attempt.
+- Every observations entry and every fix_references entry must point to a file and line range
+  you actually read or found with grep in this retry attempt. Narrow a citation to the
+  displayed lines or explicitly read its missing lines; do not bridge an unread gap.
 
 Previous JSON:
 {previous}
