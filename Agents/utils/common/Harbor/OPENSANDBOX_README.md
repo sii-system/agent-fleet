@@ -328,6 +328,10 @@ process death. `HARBOR_ARTIFACT_LOCK_DIR` can select a shared local directory.
 Within each event loop, an async semaphore admits at most the configured number
 of downloads to the filesystem-lock loop; additional local trials wait without
 polling lock files. Admission is scoped to the resolved lock directory and limit.
+Admission ends once a file lock is acquired; the file lock alone covers the
+transfer. Finishing a transfer therefore does not wake the next local waiter
+for immediate reacquisition. Local pollers and peer processes use the same
+100 ms retry cadence; this polling protocol does not guarantee FIFO ordering.
 All cooperating workers must use the same directory and concurrency setting.
 Separate hosts/users or isolated temporary directories have separate limits.
 Do not unlink slot files while workers are running.

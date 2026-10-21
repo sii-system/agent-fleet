@@ -73,14 +73,13 @@ class ArtifactCollectionTests(unittest.IsolatedAsyncioTestCase):
         async with asyncio.timeout(1), artifact_download_slot():
             pass
 
-    async def test_local_waiters_do_not_poll_lock_files(self):
+    async def test_local_pollers_are_bounded(self):
         tasks = []
-        opens = 0
+        pollers = set()
         original_open = Path.open
 
         def count_open(path, *args, **kwargs):
-            nonlocal opens
-            opens += 1
+            pollers.add(asyncio.current_task())
             return original_open(path, *args, **kwargs)
 
         async def download():
@@ -95,17 +94,58 @@ class ArtifactCollectionTests(unittest.IsolatedAsyncioTestCase):
                     with patch.object(Path, "open", count_open):
                         tasks = [asyncio.create_task(download()) for _ in range(64)]
                         await asyncio.sleep(0.15)
-                        self.assertEqual(opens, 0, "local waiters repeatedly probed filesystem locks")
-                        tasks[0].cancel()
+                        self.assertEqual(len(pollers), 2, "local filesystem pollers exceeded admission")
+                        tasks[-1].cancel()
                         with self.assertRaises(asyncio.CancelledError):
-                            await tasks[0]
-                await asyncio.wait_for(asyncio.gather(*tasks[1:]), 2)
+                            await tasks[-1]
+                        self.assertNotIn(tasks[-1], pollers)
+                await asyncio.wait_for(asyncio.gather(*tasks[:-1]), 2)
                 async with asyncio.timeout(1), artifact_download_slot(), artifact_download_slot():
                     pass
             finally:
                 for task in tasks:
                     task.cancel()
                 await asyncio.gather(*tasks, return_exceptions=True)
+
+    async def test_peer_process_progresses_before_local_backlog_drains(self):
+        script = (
+            "import asyncio\n"
+            "from artifact_collection import artifact_download_slot\n"
+            "async def main():\n"
+            "    print('waiting', flush=True)\n"
+            "    async with artifact_download_slot():\n"
+            "        print('acquired', flush=True)\n"
+            "asyncio.run(main())\n"
+        )
+        completed = 0
+        tasks = []
+        process = None
+
+        async def download():
+            nonlocal completed
+            async with artifact_download_slot():
+                await asyncio.sleep(0.025)
+                completed += 1
+
+        try:
+            async with artifact_download_slot():
+                tasks = [asyncio.create_task(download()) for _ in range(40)]
+                process = await asyncio.create_subprocess_exec(
+                    sys.executable, "-c", script, stdout=asyncio.subprocess.PIPE,
+                    env={**os.environ, "PYTHONPATH": str(HARBOR_DIR)},
+                )
+                self.assertEqual(await asyncio.wait_for(process.stdout.readline(), 5), b"waiting\n")
+                await asyncio.sleep(0.025)
+            self.assertEqual(await asyncio.wait_for(process.stdout.readline(), 5), b"acquired\n")
+            self.assertLess(completed, len(tasks), "local handoffs starved the peer until the queue drained")
+            await asyncio.wait_for(process.wait(), 5)
+        finally:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            if process is not None and process.returncode is None:
+                process.kill()
+                await process.wait()
 
     async def test_independent_directories_have_independent_admission(self):
         async with artifact_download_slot():
