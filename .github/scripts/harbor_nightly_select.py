@@ -17,6 +17,7 @@ LOCAL_TASK_LISTS = {
     "sweverify": Path("Tasks/SWE-verify/harbor_tasks.txt"),
 }
 SAMPLE_SIZE = 20
+REGISTRY_PAGE_SIZE = 1000
 
 
 def unique_names(names: list[str]) -> list[str]:
@@ -45,16 +46,54 @@ def local_task_names(repo_root: Path, benchmark: str) -> list[str] | None:
 async def _registry_task_names(
     benchmark: str, client_factory: Callable[[], Any] | None = None
 ) -> list[str]:
-    """Read task names from Harbor's package metadata API."""
+    """Read CPU-compatible task names from Harbor's package metadata API."""
     try:
         if client_factory is None:
             from harbor.registry.client.package import PackageDatasetClient
 
             client_factory = PackageDatasetClient
         metadata = await client_factory().get_dataset_metadata(benchmark)
-        return unique_names([task_id.get_name() for task_id in metadata.task_ids])
+        gpu_refs = await registry_gpu_task_refs(metadata.dataset_version_id)
+        eligible = unique_names([
+            task_id.get_name() for task_id in metadata.task_ids
+            if task_id.ref not in gpu_refs
+        ])
+        if gpu_refs:
+            print(
+                f"Skipping {len(gpu_refs)} GPU task(s) from {benchmark}",
+                file=sys.stderr,
+            )
+        return eligible
     except Exception as exc:
         raise RuntimeError(f"unable to read Harbor metadata for {benchmark}") from exc
+
+
+async def registry_gpu_task_refs(dataset_version_id: str) -> set[str]:
+    """Read GPU counts for the same immutable task versions as the dataset."""
+    from harbor.auth.client import create_authenticated_client
+
+    if not dataset_version_id:
+        raise RuntimeError("Harbor metadata has no dataset version ID")
+    client = await create_authenticated_client()
+    gpu_refs = set()
+    start = 0
+    while True:
+        response = await (
+            client.table("dataset_version_task")
+            .select("task_version:task_version_id(content_hash,gpus:environment_config->gpus)")
+            .eq("dataset_version_id", dataset_version_id)
+            .order("task_version_id")
+            .range(start, start + REGISTRY_PAGE_SIZE - 1)
+            .execute()
+        )
+        rows = response.data
+        for row in rows:
+            version = row["task_version"]
+            if (version["gpus"] or 0) > 0:
+                gpu_refs.add(f"sha256:{version['content_hash']}")
+        if len(rows) < REGISTRY_PAGE_SIZE:
+            return gpu_refs
+        start += REGISTRY_PAGE_SIZE
 
 
 def registry_task_names(
@@ -72,12 +111,10 @@ def select_tasks(
     repo_root: Path, benchmark: str, rng: Any | None = None
 ) -> list[str]:
     available = task_names(repo_root, benchmark)
-    if len(available) < SAMPLE_SIZE:
-        raise RuntimeError(
-            f"{benchmark} has only {len(available)} selectable tasks; need {SAMPLE_SIZE}"
-        )
+    if not available:
+        raise RuntimeError(f"{benchmark} has no selectable tasks after GPU filtering")
     randomizer = rng or random.SystemRandom()
-    return randomizer.sample(available, SAMPLE_SIZE)
+    return randomizer.sample(available, min(SAMPLE_SIZE, len(available)))
 
 
 def requested_tasks(repo_root: Path, benchmark: str, tasks: str) -> list[str]:
@@ -86,7 +123,10 @@ def requested_tasks(repo_root: Path, benchmark: str, tasks: str) -> list[str]:
         raise ValueError(f"request between 1 and {SAMPLE_SIZE} unique tasks")
     missing = set(selected) - set(task_names(repo_root, benchmark))
     if missing:
-        raise ValueError("requested tasks are not present in the selected benchmark")
+        raise ValueError(
+            "requested tasks are absent from the selected benchmark or require GPUs: "
+            + ",".join(sorted(missing))
+        )
     return selected
 
 

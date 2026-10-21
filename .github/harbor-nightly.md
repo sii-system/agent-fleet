@@ -1,8 +1,16 @@
 # Self-hosted Harbor nightly operations
 
-`harbor-self-hosted-nightly.yml` samples 20 tasks from one benchmark every
+`harbor-self-hosted-nightly.yml` samples up to 20 tasks from one benchmark every
 four hours. `harbor-e2e-validation.yml` runs all Terminal-Bench 2.1 tasks on its
 schedule; a manual dispatch defaults to its four-task canary set.
+
+The random nightly excludes registry tasks whose published `environment.gpus`
+is greater than zero before sampling. CPU tasks from mixed benchmarks remain
+eligible; when fewer than 20 remain, the nightly runs all eligible tasks and
+checks completion against that count. A benchmark with no eligible tasks fails
+selection. Explicit replays reject GPU tasks before Harbor starts. The filter
+reads the resolved dataset version's metadata without downloading task archives
+or images.
 
 Both workflows enable the Pi-backed Harbor Analyzer with
 `HARBOR_ANALYZER_ENABLED=1` for scheduled and manual runs. It uses the existing
@@ -149,9 +157,9 @@ remain visible.
 
 Manual random-nightly dispatches can set `benchmark` to a catalog entry and
 `tasks` to 1–20 exact task names to replay a failing sample. Empty task input
-samples 20 tasks from the selected benchmark; empty benchmark input retains
-random selection. Explicit tasks require an explicit benchmark. Selection
-validates task membership before launching Harbor.
+samples up to 20 CPU-compatible tasks from the selected benchmark; empty
+benchmark input retains random selection. Explicit tasks require an explicit
+benchmark. Selection validates task membership before launching Harbor.
 
 The optional `revision` input selects the checkout, including upstream PR refs
 such as `refs/pull/227/head`, while the workflow uses upstream's

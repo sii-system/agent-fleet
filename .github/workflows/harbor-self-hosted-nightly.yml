@@ -8,7 +8,7 @@ name: Harbor Random Bench Nightly
         required: false
         type: string
       tasks:
-        description: Comma-separated task names; empty samples 20 tasks
+        description: Comma-separated CPU task names; empty samples up to 20 tasks
         required: false
         type: string
       revision:

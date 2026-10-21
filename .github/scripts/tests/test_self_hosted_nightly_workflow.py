@@ -21,8 +21,9 @@ SPEC.loader.exec_module(selector)
 
 
 class FakeTaskId:
-    def __init__(self, name):
+    def __init__(self, name, ref="sha256:cpu"):
         self.name = name
+        self.ref = ref
 
     def get_name(self):
         return self.name
@@ -31,8 +32,33 @@ class FakeTaskId:
 class FakeClient:
     async def get_dataset_metadata(self, _benchmark):
         return SimpleNamespace(
-            task_ids=[FakeTaskId("publisher/task-a"), FakeTaskId("publisher/task-b")]
+            task_ids=[FakeTaskId("publisher/task-a"), FakeTaskId("publisher/task-b")],
+            dataset_version_id="dataset-version",
         )
+
+
+class FakeRegistryQuery:
+    def __init__(self, rows):
+        self.rows = rows
+
+    def table(self, _name):
+        return self
+
+    def select(self, _columns):
+        return self
+
+    def eq(self, _column, _value):
+        return self
+
+    def order(self, _column):
+        return self
+
+    def range(self, start, end):
+        self.page = self.rows[start:end + 1]
+        return self
+
+    async def execute(self):
+        return SimpleNamespace(data=self.page)
 
 
 class FakeRandom:
@@ -53,10 +79,62 @@ class SelectorTest(unittest.TestCase):
             self.assertEqual(selector.task_names(root, "seta"), ["task-a", "task-b"])
 
     def test_reads_harbor_machine_metadata(self):
-        self.assertEqual(
-            selector.registry_task_names("publisher/dataset", FakeClient),
-            ["publisher/task-a", "publisher/task-b"],
-        )
+        with mock.patch.object(selector, "registry_gpu_task_refs", return_value=set()):
+            self.assertEqual(
+                selector.registry_task_names("publisher/dataset", FakeClient),
+                ["publisher/task-a", "publisher/task-b"],
+            )
+
+    def test_filters_gpu_requirements_and_keeps_cpu_tasks_from_mixed_benchmarks(self):
+        tasks = [FakeTaskId(f"publisher/task-{i}", f"sha256:{i}") for i in range(20)]
+        tasks[5].name = "publisher/gpu-parser-on-cpu"
+        rows = [
+            {"task_version": {"content_hash": str(i), "gpus": 1 if i < 5 else None}}
+            for i in range(20)
+        ]
+        rows[5]["task_version"]["gpus"] = 0
+        metadata = SimpleNamespace(task_ids=tasks, dataset_version_id="dataset-version")
+        client = SimpleNamespace(get_dataset_metadata=mock.AsyncMock(return_value=metadata))
+        with (
+            mock.patch(
+                "harbor.registry.client.package.PackageDatasetClient", return_value=client
+            ),
+            mock.patch(
+                "harbor.auth.client.create_authenticated_client",
+                return_value=FakeRegistryQuery(rows),
+            ),
+        ):
+            selected = selector.select_tasks(Path("."), "publisher/dataset", FakeRandom())
+            self.assertEqual(selected, [task.name for task in tasks[5:]])
+            with self.assertRaisesRegex(ValueError, "require GPUs: publisher/task-0"):
+                selector.requested_tasks(Path("."), "publisher/dataset", "publisher/task-0")
+
+    def test_gpu_filter_reads_all_metadata_pages(self):
+        tasks = [FakeTaskId(f"publisher/task-{i}", f"sha256:{i}") for i in range(3)]
+        rows = [
+            {"task_version": {"content_hash": str(i), "gpus": 2 if i == 2 else 0}}
+            for i in range(3)
+        ]
+        metadata = SimpleNamespace(task_ids=tasks, dataset_version_id="dataset-version")
+        client = SimpleNamespace(get_dataset_metadata=mock.AsyncMock(return_value=metadata))
+        with (
+            mock.patch.object(selector, "REGISTRY_PAGE_SIZE", 2),
+            mock.patch(
+                "harbor.auth.client.create_authenticated_client",
+                return_value=FakeRegistryQuery(rows),
+            ),
+        ):
+            self.assertEqual(
+                selector.registry_task_names("publisher/dataset", lambda: client),
+                [task.name for task in tasks[:2]],
+            )
+
+    def test_gpu_metadata_failure_stops_selection(self):
+        with (
+            mock.patch.object(selector, "registry_gpu_task_refs", side_effect=RuntimeError("offline")),
+            self.assertRaisesRegex(RuntimeError, "unable to read Harbor metadata"),
+        ):
+            selector.registry_task_names("publisher/dataset", FakeClient)
 
     def test_selects_twenty_unique_tasks(self):
         available = [f"task-{index}" for index in range(20)]
@@ -67,11 +145,17 @@ class SelectorTest(unittest.TestCase):
         self.assertEqual(len(set(selected)), 20)
         self.assertEqual(randomizer.count, 20)
 
-    def test_rejects_benchmarks_with_fewer_than_twenty_tasks(self):
+    def test_selects_all_remaining_tasks_when_fewer_than_twenty_are_eligible(self):
         available = [f"task-{index}" for index in range(19)]
+        with mock.patch.object(selector, "task_names", return_value=available):
+            self.assertEqual(
+                selector.select_tasks(Path("."), "seta", FakeRandom()), available
+            )
+
+    def test_rejects_benchmarks_with_no_eligible_tasks(self):
         with (
-            mock.patch.object(selector, "task_names", return_value=available),
-            self.assertRaisesRegex(RuntimeError, "need 20"),
+            mock.patch.object(selector, "task_names", return_value=[]),
+            self.assertRaisesRegex(RuntimeError, "no selectable tasks"),
         ):
             selector.select_tasks(Path("."), "seta", FakeRandom())
 
@@ -198,14 +282,15 @@ class WorkflowTest(unittest.TestCase):
 
     def test_health_reports_registry_and_smith_failures(self):
         script = self.step_script("Verify sampled tasks completed")
-        for benchmark, done, failed, shell_status, expected_status in (
-            ("registry", 20, 0, 0, 0),
-            ("registry", 20, 0, 1, 1),
-            ("smith", 20, 0, 0, 0),
-            ("smith", 17, 3, 0, 1),
-            ("smith", 19, 0, 0, 1),
-            ("smith", 20, 0, 1, 1),
-            ("smith", 0, 0, 0, 1),
+        for benchmark, done, failed, shell_status, expected_status, expected_tasks in (
+            ("registry", 20, 0, 0, 0, 20),
+            ("registry", 15, 0, 0, 0, 15),
+            ("registry", 20, 0, 1, 1, 20),
+            ("smith", 20, 0, 0, 0, 20),
+            ("smith", 17, 3, 0, 1, 20),
+            ("smith", 19, 0, 0, 1, 20),
+            ("smith", 20, 0, 1, 1, 20),
+            ("smith", 0, 0, 0, 1, 20),
         ):
             with (
                 self.subTest(
@@ -219,7 +304,8 @@ class WorkflowTest(unittest.TestCase):
                 output = Path(tmp) / "run"
                 output.mkdir()
                 (output / "summary.txt").write_text(
-                    "status: complete\nharbor_exit_code: 0\ntotal: 20\ncompleted: 20\nerrored: 0\n"
+                    "status: complete\nharbor_exit_code: 0\n"
+                    f"total: {expected_tasks}\ncompleted: {expected_tasks}\nerrored: 0\n"
                 )
                 if done or failed:
                     queue = output / "queue" / "worker"
@@ -236,7 +322,7 @@ class WorkflowTest(unittest.TestCase):
                     env={
                         **os.environ,
                         "BENCHMARK": benchmark,
-                        "EXPECTED_TASKS": "20",
+                        "EXPECTED_TASKS": str(expected_tasks),
                         "OUTPUT_PATH": str(output),
                         "HEALTH_SUMMARY": str(report),
                         "HARBOR_STATUS": str(shell_status),
