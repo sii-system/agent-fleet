@@ -325,6 +325,9 @@ than claiming resumability across calls.
 processes running as the same host user share advisory-lock slots under
 `${TMPDIR:-/tmp}/agent-fleet-artifacts-<uid>`; locks release on cancellation or
 process death. `HARBOR_ARTIFACT_LOCK_DIR` can select a shared local directory.
+Within each event loop, an async semaphore admits at most the configured number
+of downloads to the filesystem-lock loop; additional local trials wait without
+polling lock files. Admission is scoped to the resolved lock directory and limit.
 All cooperating workers must use the same directory and concurrency setting.
 Separate hosts/users or isolated temporary directories have separate limits.
 Do not unlink slot files while workers are running.

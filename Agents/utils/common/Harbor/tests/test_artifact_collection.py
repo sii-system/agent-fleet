@@ -5,6 +5,7 @@ import os
 import sys
 import tempfile
 import unittest
+from contextlib import AsyncExitStack
 from pathlib import Path
 from unittest.mock import patch
 
@@ -69,6 +70,58 @@ class ArtifactCollectionTests(unittest.IsolatedAsyncioTestCase):
         task.cancel()
         with self.assertRaises(asyncio.CancelledError):
             await task
+        async with asyncio.timeout(1), artifact_download_slot():
+            pass
+
+    async def test_local_waiters_do_not_poll_lock_files(self):
+        tasks = []
+        opens = 0
+        original_open = Path.open
+
+        def count_open(path, *args, **kwargs):
+            nonlocal opens
+            opens += 1
+            return original_open(path, *args, **kwargs)
+
+        async def download():
+            async with artifact_download_slot():
+                pass
+
+        with patch.dict(os.environ, {"HARBOR_ARTIFACT_DOWNLOAD_CONCURRENCY": "2"}):
+            try:
+                async with AsyncExitStack() as owners:
+                    for _ in range(2):
+                        await owners.enter_async_context(artifact_download_slot())
+                    with patch.object(Path, "open", count_open):
+                        tasks = [asyncio.create_task(download()) for _ in range(64)]
+                        await asyncio.sleep(0.15)
+                        self.assertEqual(opens, 0, "local waiters repeatedly probed filesystem locks")
+                        tasks[0].cancel()
+                        with self.assertRaises(asyncio.CancelledError):
+                            await tasks[0]
+                await asyncio.wait_for(asyncio.gather(*tasks[1:]), 2)
+                async with asyncio.timeout(1), artifact_download_slot(), artifact_download_slot():
+                    pass
+            finally:
+                for task in tasks:
+                    task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
+
+    async def test_independent_directories_have_independent_admission(self):
+        async with artifact_download_slot():
+            with patch.dict(os.environ, {
+                "HARBOR_ARTIFACT_LOCK_DIR": str(Path(self.directory.name) / "other"),
+            }):
+                async with asyncio.timeout(1), artifact_download_slot():
+                    pass
+
+    async def test_failed_lock_open_releases_admission(self):
+        with (
+            patch.object(Path, "open", side_effect=OSError("lock file unavailable")),
+            self.assertRaisesRegex(OSError, "lock file unavailable"),
+        ):
+            async with artifact_download_slot():
+                self.fail("lock acquisition unexpectedly succeeded")
         async with asyncio.timeout(1), artifact_download_slot():
             pass
 
