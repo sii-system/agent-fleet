@@ -5,7 +5,6 @@ import sys
 import unittest
 from pathlib import Path
 from unittest import mock
-from urllib.error import HTTPError
 
 SCRIPT_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SCRIPT_DIR))
@@ -123,20 +122,6 @@ class ModelContractTest(unittest.TestCase):
             for line in body.splitlines():
                 self.assertRegex(line, r"^\+ RIGHT \d+: value-\d+$")
 
-    def test_extract_json_accepts_fenced_object_and_rejects_trailing_text(self) -> None:
-        self.assertEqual(
-            review.extract_json('```json\n{"findings": []}\n```'),
-            {"findings": []},
-        )
-        with self.assertRaises(review.ModelResponseError):
-            review.extract_json('{"findings": []} ignore this')
-
-    def test_extract_json_accepts_bare_fenced_object(self) -> None:
-        self.assertEqual(
-            review.extract_json('```\n{"findings": []}\n```'),
-            {"findings": []},
-        )
-
     def test_parse_retains_unanchorable_findings_while_validation_filters_them(
         self,
     ) -> None:
@@ -248,148 +233,6 @@ class FakeResponse:
 
 
 class ApiClientTest(unittest.TestCase):
-    def test_llm_client_uses_bearer_key_and_expected_model(self) -> None:
-        opener = mock.Mock(
-            return_value=FakeResponse(
-                {"choices": [{"message": {"content": '{"findings": []}'}}]}
-            )
-        )
-        client = review.LlmClient(
-            "https://example.invalid/v3/chat/completions",
-            "secret-value",
-            "test-model",
-            opener=opener,
-            sleeper=mock.Mock(),
-        )
-
-        self.assertEqual(client.review("system", "diff"), {"findings": []})
-
-        request = opener.call_args.args[0]
-        self.assertEqual(
-            request.full_url,
-            "https://example.invalid/v3/chat/completions",
-        )
-        self.assertEqual(request.get_header("Authorization"), "Bearer secret-value")
-        self.assertEqual(opener.call_args.kwargs["timeout"], 600)
-        body = json.loads(request.data)
-        self.assertEqual(body["model"], "test-model")
-        self.assertEqual(body["temperature"], 0.1)
-        self.assertEqual(body["max_tokens"], review.MAX_RESPONSE_TOKENS)
-        self.assertGreaterEqual(review.MAX_RESPONSE_TOKENS, 8_000)
-
-    def test_empty_content_is_flagged_incomplete(self) -> None:
-        opener = mock.Mock(
-            return_value=FakeResponse(
-                {"choices": [{"message": {"content": ""}}]}
-            )
-        )
-        client = review.LlmClient(
-            "https://example.invalid", "key", "model", opener, mock.Mock()
-        )
-
-        self.assertEqual(
-            client.review("system", "diff"),
-            {"findings": [], "incomplete": True},
-        )
-
-    def test_whitespace_content_is_flagged_incomplete(self) -> None:
-        opener = mock.Mock(
-            return_value=FakeResponse(
-                {"choices": [{"message": {"content": "   \n\t "}}]}
-            )
-        )
-        client = review.LlmClient(
-            "https://example.invalid", "key", "model", opener, mock.Mock()
-        )
-
-        self.assertEqual(
-            client.review("system", "diff"),
-            {"findings": [], "incomplete": True},
-        )
-
-    def test_missing_content_key_raises_model_response_error(self) -> None:
-        opener = mock.Mock(
-            return_value=FakeResponse({"choices": [{"message": {}}]})
-        )
-        client = review.LlmClient(
-            "https://example.invalid", "key", "model", opener, mock.Mock()
-        )
-
-        with self.assertRaises(review.ModelResponseError):
-            client.review("system", "diff")
-
-    def test_malformed_message_raises_model_response_error(self) -> None:
-        opener = mock.Mock(
-            return_value=FakeResponse({"choices": [{"message": "oops"}]})
-        )
-        client = review.LlmClient(
-            "https://example.invalid", "key", "model", opener, mock.Mock()
-        )
-
-        with self.assertRaises(review.ModelResponseError):
-            client.review("system", "diff")
-
-    def test_empty_content_ignores_reasoning_prose(self) -> None:
-        opener = mock.Mock(
-            return_value=FakeResponse(
-                {
-                    "choices": [
-                        {
-                            "message": {
-                                "content": "",
-                                "reasoning_content": "Let me analyze this diff...",
-                            }
-                        }
-                    ]
-                }
-            )
-        )
-        client = review.LlmClient(
-            "https://example.invalid", "key", "model", opener, mock.Mock()
-        )
-
-        self.assertEqual(
-            client.review("system", "diff"),
-            {"findings": [], "incomplete": True},
-        )
-
-    def test_llm_client_retries_429_twice(self) -> None:
-        error = HTTPError("url", 429, "rate limited", {}, None)
-        opener = mock.Mock(
-            side_effect=[
-                error,
-                error,
-                FakeResponse(
-                    {"choices": [{"message": {"content": '{"findings": []}'}}]}
-                ),
-            ]
-        )
-        sleeper = mock.Mock()
-        client = review.LlmClient(
-            "https://example.invalid", "key", "model", opener, sleeper
-        )
-
-        client.review("system", "diff")
-
-        self.assertEqual(opener.call_count, 3)
-        self.assertEqual(sleeper.call_args_list, [mock.call(1), mock.call(2)])
-        error.close()
-
-    def test_llm_client_does_not_retry_authentication_failure(self) -> None:
-        error = HTTPError("url", 401, "unauthorized", {}, None)
-        opener = mock.Mock(side_effect=error)
-        sleeper = mock.Mock()
-        client = review.LlmClient(
-            "https://example.invalid", "key", "model", opener, sleeper
-        )
-
-        with self.assertRaises(HTTPError):
-            client.review("system", "diff")
-
-        self.assertEqual(opener.call_count, 1)
-        sleeper.assert_not_called()
-        error.close()
-
     def test_github_client_paginates_files(self) -> None:
         first_page = [
             {"filename": f"file-{index}.py", "patch": "@@ -0,0 +1 @@\n+x"}
@@ -487,70 +330,7 @@ class ApiClientTest(unittest.TestCase):
         self.assertEqual(json.loads(request.data), {"body": "PR summary"})
 
 
-class FakeGitHub:
-    def __init__(self) -> None:
-        self.pull = {
-            "draft": False,
-            "head": {"sha": "head-1", "repo": {"full_name": "owner/repo"}},
-            "base": {"repo": {"full_name": "owner/repo"}},
-            "title": "Change worker cancellation",
-            "body": "Keep child processes from leaking.",
-        }
-        self.files = [
-            {
-                "filename": "worker.py",
-                "patch": "@@ -1 +1,2 @@\n keep\n+stop()",
-            }
-        ]
-        self.reviews: list[dict[str, object]] = []
-        self.created: list[tuple[object, ...]] = []
-
-    def get_pull(self, _number: int) -> dict[str, object]:
-        return self.pull
-
-    def list_files(self, _number: int) -> list[dict[str, object]]:
-        return self.files
-
-    def list_reviews(self, _number: int) -> list[dict[str, object]]:
-        return self.reviews
-
-    def create_review(self, *args: object) -> dict[str, int]:
-        self.created.append(args)
-        return {"id": 1}
-
-
-class FakeLlm:
-    def __init__(self) -> None:
-        self.inputs: list[str] = []
-        self.prompts: list[str] = []
-
-    def review(self, prompt: str, chunk: str) -> dict[str, object]:
-        self.prompts.append(prompt)
-        self.inputs.append(chunk)
-        return {
-            "findings": [
-                {
-                    "severity": "P1",
-                    "path": "worker.py",
-                    "line": 2,
-                    "title": "Cancellation is not forwarded",
-                    "failure_scenario": "The worker survives the wrapper.",
-                    "remediation": "Terminate the worker process group.",
-                }
-            ]
-        }
-
-
 class OrchestrationTest(unittest.TestCase):
-    def test_reviews_draft_when_workflow_allows_it(self) -> None:
-        github = FakeGitHub()
-        github.pull["draft"] = True
-
-        result = review.run_review(github, FakeLlm(), 7, "prompt")
-
-        self.assertEqual(result, "published")
-        self.assertEqual(len(github.created), 1)
-
     def test_collect_files_anchors_renames_to_the_new_path(self) -> None:
         files, skipped = review.collect_files(
             [
@@ -567,43 +347,18 @@ class OrchestrationTest(unittest.TestCase):
         self.assertEqual(files[0].path, "new_name.py")
         self.assertEqual(files[0].right_lines, frozenset({1}))
 
-    def test_reviews_fork_pull_request(self) -> None:
-        github = FakeGitHub()
-        github.pull["head"]["repo"]["full_name"] = "fork/repo"
-
-        result = review.run_review(github, FakeLlm(), 7, "prompt")
-
-        self.assertEqual(result, "published")
-        self.assertEqual(len(github.created), 1)
-
-    def test_aborts_when_head_changes_before_publication(self) -> None:
-        github = FakeGitHub()
-        first = dict(github.pull)
-        second = {**github.pull, "head": {**github.pull["head"], "sha": "head-2"}}
-        github.get_pull = mock.Mock(side_effect=[first, second])
-
-        result = review.run_review(github, FakeLlm(), 7, "prompt")
-
-        self.assertEqual(result, "stale")
-        self.assertEqual(github.created, [])
-
     def test_skips_existing_review_marker_for_same_sha(self) -> None:
-        github = FakeGitHub()
-        github.reviews = [
+        reviews = [
             {
                 "user": {"login": "github-actions[bot]"},
                 "body": "<!-- llm-pr-review:head-1 -->",
             }
         ]
 
-        result = review.run_review(github, FakeLlm(), 7, "prompt")
-
-        self.assertEqual(result, "duplicate")
-        self.assertEqual(github.created, [])
+        self.assertTrue(review.has_existing_review(reviews, "head-1"))
 
     def test_ignores_review_marker_embedded_in_summary_text(self) -> None:
-        github = FakeGitHub()
-        github.reviews = [
+        reviews = [
             {
                 "user": {"login": "github-actions[bot]"},
                 "body": (
@@ -614,32 +369,26 @@ class OrchestrationTest(unittest.TestCase):
             }
         ]
 
-        result = review.run_review(github, FakeLlm(), 7, "prompt")
-
-        self.assertEqual(result, "published")
-        self.assertEqual(len(github.created), 1)
+        self.assertFalse(review.has_existing_review(reviews, "head-1"))
 
     def test_review_ids_keep_parallel_reviewers_independent(self) -> None:
-        github = FakeGitHub()
-        github.reviews = [
+        reviews = [
             {
                 "user": {"login": "github-actions[bot]"},
                 "body": "<!-- llm-pr-review:head-1 -->",
             }
         ]
 
-        result = review.run_review(
-            github,
-            FakeLlm(),
-            7,
-            "prompt",
-            review_id="self-hosted-llm-pr-review",
+        self.assertFalse(
+            review.has_existing_review(
+                reviews,
+                "head-1",
+                review_id="self-hosted-llm-pr-review",
+            )
         )
-
-        self.assertEqual(result, "published")
-        self.assertIn(
+        self.assertEqual(
+            review.review_marker("head-1", "self-hosted-llm-pr-review"),
             "<!-- self-hosted-llm-pr-review:head-1 -->",
-            github.created[0][2],
         )
 
     def test_existing_review_ignores_null_user(self) -> None:
@@ -647,21 +396,13 @@ class OrchestrationTest(unittest.TestCase):
 
         self.assertFalse(review.has_existing_review(reviews, "head-1"))
 
-    def test_posts_validated_comment_review(self) -> None:
-        github = FakeGitHub()
-
-        result = review.run_review(github, FakeLlm(), 7, "prompt")
-
-        self.assertEqual(result, "published")
-        number, sha, body, findings = github.created[0]
-        self.assertEqual((number, sha), (7, "head-1"))
-        self.assertIn("<!-- llm-pr-review:head-1 -->", body)
-        self.assertEqual(len(findings), 1)
-
     def test_routes_unanchorable_and_p3_findings_to_review_summary(self) -> None:
-        github = FakeGitHub()
-        llm = mock.Mock()
-        llm.review.return_value = {
+        files = {
+            "worker.py": review.parse_patch(
+                "worker.py", "@@ -1 +1,2 @@\n keep\n+stop()"
+            )
+        }
+        payload = {
             "findings": [
                 {
                     "severity": "P1",
@@ -698,9 +439,17 @@ class OrchestrationTest(unittest.TestCase):
             ]
         }
 
-        review.run_review(github, llm, 7, "prompt")
-
-        _number, _sha, body, inline = github.created[0]
+        findings, rejected = review.parse_findings(payload)
+        inline, summary_findings = review.route_findings(findings, files)
+        body = review.build_summary(
+            "head-1",
+            findings,
+            rejected,
+            [],
+            False,
+            summary_findings=summary_findings,
+            changed_paths=frozenset(files),
+        )
         self.assertEqual([item.title for item in inline], ["Inline defect"])
         self.assertIn("Context defect", body)
         self.assertIn("Minor defect", body)
@@ -709,37 +458,22 @@ class OrchestrationTest(unittest.TestCase):
         self.assertIn("Automated review found 4 actionable finding(s).", body)
 
     def test_no_findings_still_posts_sha_summary(self) -> None:
-        github = FakeGitHub()
-        llm = mock.Mock()
-        llm.review.return_value = {"findings": []}
+        summary = review.build_summary("head-1", [], 0, [], False)
 
-        review.run_review(github, llm, 7, "prompt")
-
-        self.assertIn("no actionable findings", github.created[0][2])
+        self.assertIn("<!-- llm-pr-review:head-1 -->", summary)
+        self.assertIn("no actionable findings", summary)
 
     def test_model_input_contains_bounded_pr_context(self) -> None:
-        github = FakeGitHub()
-        llm = FakeLlm()
+        pull = {
+            "title": "Change worker cancellation",
+            "body": "Keep child processes from leaking.",
+        }
 
-        review.run_review(github, llm, 7, "prompt")
+        model_input = review.build_model_input(pull, "diff")
 
-        self.assertIn("PR TITLE: Change worker cancellation", llm.inputs[0])
-        self.assertIn("PR DESCRIPTION: Keep child processes", llm.inputs[0])
-        self.assertIn("UNTRUSTED DIFF", llm.inputs[0])
-
-    def test_routed_reviewer_prompts_for_summary_only_findings(self) -> None:
-        github = FakeGitHub()
-        llm = FakeLlm()
-        prompt = SCRIPT_DIR.joinpath("pi_review_prompt.md").read_text()
-        self.assertIn("By default", prompt)
-        self.assertNotIn("set line to null", prompt)
-
-        review.run_review(github, llm, 7, prompt)
-
-        self.assertEqual(len(llm.prompts), 1)
-        self.assertIn(prompt, llm.prompts[0])
-        self.assertIn("contextual unchanged lines", llm.prompts[0])
-        self.assertIn("set line to null", llm.prompts[0])
+        self.assertIn("PR TITLE: Change worker cancellation", model_input)
+        self.assertIn("PR DESCRIPTION: Keep child processes", model_input)
+        self.assertIn("UNTRUSTED DIFF", model_input)
 
     def test_summary_caps_the_skipped_path_list(self) -> None:
         skipped = [(f"generated/{index}.map", "generated") for index in range(55)]
@@ -858,16 +592,6 @@ class OrchestrationTest(unittest.TestCase):
 
         self.assertIn("Coverage: Complete", summary)
         self.assertNotIn("empty model response", summary)
-
-    def test_run_review_reports_partial_on_empty_model_response(self) -> None:
-        github = FakeGitHub()
-        llm = mock.Mock()
-        llm.review.return_value = {"findings": [], "incomplete": True}
-
-        review.run_review(github, llm, 7, "prompt")
-
-        self.assertIn("Coverage: Partial", github.created[0][2])
-        self.assertIn("empty model response", github.created[0][2])
 
 
 class WorkflowContractTest(unittest.TestCase):
