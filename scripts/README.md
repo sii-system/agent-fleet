@@ -36,8 +36,7 @@ For the end-to-end quick start, see the [root README](../README.md#quick-start).
 Run setup from a complete cloned checkout. `setup.sh` sources neighboring
 repository scripts and is not a standalone download-and-run installer.
 Enter an `OPIK_URL` to use Opik, or press Enter at that prompt to continue
-without it. Setup derives and persists the internal fleet-wide tracing switch
-from that choice.
+without it. Setup saves that endpoint choice in `config.local.env`.
 
 Or pre-fill via env vars (suitable for automation):
 
@@ -65,7 +64,7 @@ dependency and is prepared separately by the runner.
 
 1. Check system dependencies and provision managed Zellij + uv
 2. Reuse existing local config, gather missing model endpoint values, and
-   gather an optional Opik endpoint while persisting the derived tracing state
+   gather and save an optional Opik endpoint
 3. Install Node.js via nvm (if missing or < 22.19)
 4. Install Pi (pinned to 0.81.1)
 5. Merge the `sii-gateway` Pi provider and default model
@@ -528,8 +527,9 @@ interfaces:
   `agent`, and `workers`. Unknown fields and invalid values are rejected.
   `task` is a normalized comma-separated string; arrays, glob matching,
   taskset inference, task files, and fuzzy matching are not supported.
-- `--task` supports `seta`, `smith`, `terminalbench21`, `sweverify`, explicit
-  local dataset paths, `pinchbench`, and `clawbio`. TMax and other arbitrary
+- `--task` supports `seta`, `smith`, `terminalbench21`, `sweverify`, `browsecomp`,
+  `deepsearchqa`, `agent-fleet-swe-rebench-v2`, `waa`, `waa-v2`, `waa2`, `ale`,
+  explicit local dataset paths, `pinchbench`, and `clawbio`. TMax and other arbitrary
   Harbor registry IDs are rejected because this MVP has no pinned local task
   catalog for them. `--task` is also rejected with `ROLLOUT=1`.
 - FleetSpec cannot set a per-run model, timeout, retry policy, or environment
@@ -559,8 +559,9 @@ interfaces:
   distinct runs may use distinct tasksets. A Prompt may request at most 16
   runs.
 - Prompt mode supports `claude-code`, `opencode`, `pi`, and `dsh-sdk-minimal`
-  for Harbor tasksets and `openclaw` for `pinchbench` or `clawbio`. Other
-  agents, including Terminus-2, are rejected.
+  for ordinary Harbor tasksets and `openclaw` for `pinchbench` or `clawbio`.
+  WAA accepts `pcagent` or `module:factory`; ALE accepts `ale-command` or
+  `module:Class`. Other agents, including Terminus-2, are rejected.
 - `pinchbench` and `clawbio` always use OpenClaw. Prompt mode rejects a
   different agent; Direct mode warns and ignores it.
 - `--prompt` must be the first argument. `--spec` cannot be combined with

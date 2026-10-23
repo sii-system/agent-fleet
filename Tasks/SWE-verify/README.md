@@ -6,5 +6,6 @@ SWE-bench Verified task list for Harbor.
 harbor_tasks.txt
 ```
 
-Use this dataset through `Agents/utils/common/Harbor/start.sh` by setting
-`DATASET_NAME=sweverify` and `DATASET_PATH` in `Agents/utils/common/Harbor/env.sh`.
+Use this task list for local runs with
+`DATASET_NAME=auto DATASET_PATH=/data/sweverify bash Agents/utils/common/Harbor/start.sh`.
+The `sweverify` alias selects the Harbor registry dataset instead.

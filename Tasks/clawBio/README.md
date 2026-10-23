@@ -135,7 +135,7 @@ MODEL="your-model" \
 ./Agents/Openclaw/scripts/setup.sh 4
 ```
 
-> **Required:** `BASE_URL` and `API_KEY` must be set via the repo-root `config.env`, environment variables, or CLI. See [Configuration Reference](#configuration-reference) for all options.
+> **Required:** Set `BASE_URL` and `API_KEY` in the ignored repo-root `config.local.env`, environment variables, or CLI. See [Configuration Reference](#configuration-reference) for all options.
 >
 > **Security:** `config/benchmark.env` is permissive. Source it only for a
 > dedicated ClawBio fleet, then stop or regenerate that fleet before other use.
