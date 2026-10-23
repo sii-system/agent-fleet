@@ -205,10 +205,14 @@ function simpleGlobToRegExp(pattern: string): RegExp {
 	return new RegExp(`^${escaped}$`);
 }
 
-async function collectFiles(root: string, limit: number): Promise<string[]> {
+async function collectFiles(root: string, limit: number): Promise<{ files: string[]; truncated: boolean }> {
 	const files: string[] = [];
+	let truncated = false;
 	async function visit(current: string) {
-		if (files.length >= limit) return;
+		if (files.length >= limit) {
+			truncated = true;
+			return;
+		}
 		let info;
 		try {
 			info = await lstat(current);
@@ -230,12 +234,15 @@ async function collectFiles(root: string, limit: number): Promise<string[]> {
 			return;
 		}
 		for (const entry of entries.sort()) {
-			if (files.length >= limit) return;
+			if (files.length >= limit) {
+				truncated = true;
+				return;
+			}
 			await visit(path.join(current, entry));
 		}
 	}
 	await visit(root);
-	return files;
+	return { files, truncated };
 }
 
 export default function analyzerPathGate(pi: ExtensionAPI) {
@@ -307,9 +314,8 @@ export default function analyzerPathGate(pi: ExtensionAPI) {
 			const limit = Math.min(DEFAULT_LIMIT, Math.max(1, Math.floor(params.limit ?? DEFAULT_LIMIT)));
 			const entries = (await readdir(resolved.real, { withFileTypes: true }))
 				.sort((a, b) => a.name.localeCompare(b.name))
-				.slice(0, limit)
 				.map((entry) => `${entry.name}${entry.isDirectory() ? "/" : ""}`);
-			const view = boundedEntries(entries, MAX_TOOL_BYTES - Buffer.byteLength(resolved.absolute) - 64);
+			const view = boundedEntries(entries, { maxBytes: MAX_TOOL_BYTES - Buffer.byteLength(resolved.absolute) - 64, limit });
 			return { content: [{ type: "text", text: `Path: ${resolved.absolute}\n${view.text}` }], details: { entry_count: view.count, truncated: view.truncated } };
 		},
 	});
@@ -327,13 +333,14 @@ export default function analyzerPathGate(pi: ExtensionAPI) {
 				return { content: [{ type: "text", text: resolved.denied }], details: { blocked: true } };
 			}
 			const info = await stat(resolved.real);
-			const candidates = info.isDirectory() ? await collectFiles(resolved.real, MAX_GREP_FILES) : [resolved.real];
+			const inventory = info.isDirectory()
+				? await collectFiles(resolved.real, MAX_GREP_FILES)
+				: { files: [resolved.real], truncated: false };
 			const matcher = simpleGlobToRegExp(params.pattern || "*");
 			const limit = Math.min(DEFAULT_LIMIT, Math.max(1, Math.floor(params.limit ?? DEFAULT_LIMIT)));
-			const matches = candidates
-				.filter((file) => matcher.test(path.basename(file)) || matcher.test(path.relative(resolved.real, file)))
-				.slice(0, limit);
-			const view = boundedEntries(matches);
+			const matches = inventory.files
+				.filter((file) => matcher.test(path.basename(file)) || matcher.test(path.relative(resolved.real, file)));
+			const view = boundedEntries(matches, { limit, incomplete: inventory.truncated });
 			return { content: [{ type: "text", text: view.text || "No matches" }], details: { match_count: view.count, truncated: view.truncated } };
 		},
 	});
@@ -351,7 +358,9 @@ export default function analyzerPathGate(pi: ExtensionAPI) {
 				return { content: [{ type: "text", text: resolved.denied }], details: { blocked: true } };
 			}
 			const info = await stat(resolved.real);
-			const files = info.isDirectory() ? await collectFiles(resolved.real, MAX_GREP_FILES) : [resolved.real];
+			const inventory = info.isDirectory()
+				? await collectFiles(resolved.real, MAX_GREP_FILES)
+				: { files: [resolved.real], truncated: false };
 			const glob = params.glob ? simpleGlobToRegExp(params.glob) : undefined;
 			const limit = Math.min(DEFAULT_LIMIT, Math.max(1, Math.floor(params.limit ?? DEFAULT_LIMIT)));
 			const context = Math.min(MAX_GREP_CONTEXT, Math.max(0, Math.floor(params.context ?? 0)));
@@ -369,9 +378,9 @@ export default function analyzerPathGate(pi: ExtensionAPI) {
 			const matches: Array<{ path: string; resolved_path: string; line_start: number; line_end: number }> = [];
 			let redactedAny = false;
 			let outputBytes = 0;
-			let truncated = false;
+			let truncated = inventory.truncated;
 			let skippedFiles = 0;
-			search: for (const file of files) {
+			search: for (const file of inventory.files) {
 				if (output.length >= limit || outputBytes >= MAX_TOOL_BYTES - 512) {
 					truncated = true;
 					break;

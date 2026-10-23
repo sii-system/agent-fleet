@@ -25,6 +25,7 @@ from harbor_pi_runtime import (
     retryable_pi_failure,
     run_pi_json_process,
 )
+from harbor_pi_runtime.process import final_output_block_reason
 
 
 def write_fixture_pi(path: Path) -> Path:
@@ -107,6 +108,23 @@ class HarborPiRuntimeTest(unittest.TestCase):
         )
         self.assertEqual(error.block_reason, "pi_dispatch_os_error")
         self.assertNotIn("fake-secret", str(error))
+
+    def test_provider_retry_status_ignores_numbers_in_error_details(self):
+        for message, retryable in (
+            ("429 rate limit exceeded: limit 400 requests per minute", True),
+            ("503 service unavailable: 404 requests queued", True),
+            ("HTTP 503: upstream returned BadRequestError", True),
+            ("rate limit exceeded: limit 400 requests per minute", True),
+            ("HTTP status code 413: retry after 429 seconds", False),
+            ("403 permission denied: limit 503 requests per minute", False),
+        ):
+            with self.subTest(message=message):
+                reason, _ = final_output_block_reason([
+                    {"message": {"role": "assistant", "errorMessage": message}},
+                ], [])
+                self.assertEqual(retryable_pi_failure(reason), retryable)
+                error = PiInvocationError(reason, label="fixture", attempt=1)
+                self.assertEqual(error.retryable, retryable)
 
     def run_runtime(self, prompt: str, **overrides: object):
         options = {

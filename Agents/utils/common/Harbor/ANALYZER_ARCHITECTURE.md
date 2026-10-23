@@ -66,6 +66,8 @@ and use the existing bounded correction retry.
 Search context and match counts are capped as well, so long JSONL trajectories
 cannot bypass the limits by occupying a single line. Use smaller task artifacts
 when a full trajectory exceeds the file limit.
+Directory inventories and searches mark entry or traversal caps as incomplete,
+including searches with no matches in the inspected files.
 
 ### Retry policy
 

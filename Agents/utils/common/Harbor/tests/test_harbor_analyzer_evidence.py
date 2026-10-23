@@ -122,3 +122,48 @@ console.log(JSON.stringify({{
         self.assertEqual(result["details"]["skipped_files"], 1)
         self.assertTrue(result["details"]["truncated"])
         self.assertIn("Incomplete search", result["content"][0]["text"])
+
+    def test_directory_tools_report_entry_caps_and_complete_boundaries(self):
+        directory = self.root / "inventory"
+        directory.mkdir()
+        for index in range(200):
+            (directory / f"entry-{index:03}.log").touch()
+        calls = [
+            ["ls", {"path": str(directory), "limit": 10000}],
+            ["find", {"path": str(directory), "pattern": "*", "limit": 10000}],
+        ]
+        complete = self.run_node(self.tool_script(calls), extension=True)
+        for result, count_key in zip(complete["results"], ("entry_count", "match_count")):
+            self.assertEqual(result["details"][count_key], 200)
+            self.assertFalse(result["details"]["truncated"])
+
+        (directory / "entry-200.log").touch()
+        capped = self.run_node(self.tool_script(calls), extension=True)
+        for result, count_key in zip(capped["results"], ("entry_count", "match_count")):
+            self.assertEqual(result["details"][count_key], 200)
+            self.assertTrue(result["details"]["truncated"])
+            self.assertIn("truncated", result["content"][0]["text"])
+            self.assertLessEqual(len(result["content"][0]["text"].encode()), 48 * 1024)
+
+        for _, params in calls:
+            params["limit"] = 2
+        limited = self.run_node(self.tool_script(calls), extension=True)
+        for result, count_key in zip(limited["results"], ("entry_count", "match_count")):
+            self.assertEqual(result["details"][count_key], 2)
+            self.assertTrue(result["details"]["truncated"])
+            self.assertIn("truncated", result["content"][0]["text"])
+
+    def test_searches_report_truncated_traversal_even_without_matches(self):
+        directory = self.root / "inventory"
+        directory.mkdir()
+        for index in range(5000):
+            (directory / f"entry-{index:04}.log").touch()
+        (directory / "zz-last.log").write_text("hidden match\n")
+        data = self.run_node(self.tool_script([
+            ["find", {"path": str(directory), "pattern": "zz-last.log"}],
+            ["grep", {"path": str(directory), "pattern": "hidden match"}],
+        ]), extension=True)
+        for result in data["results"]:
+            self.assertEqual(result["details"]["match_count"], 0)
+            self.assertTrue(result["details"]["truncated"])
+            self.assertIn("truncated", result["content"][0]["text"])

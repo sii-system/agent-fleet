@@ -47,17 +47,17 @@ export function boundedLines(lines, offset, maxBytes = MAX_TOOL_BYTES) {
 	return { text: output.join("\n"), count, truncated, lineEnd: offset + count - 1 };
 }
 
-export function boundedEntries(entries, maxBytes = MAX_TOOL_BYTES) {
+export function boundedEntries(entries, { maxBytes = MAX_TOOL_BYTES, limit = Infinity, incomplete = false } = {}) {
 	const output = [];
 	let bytes = Buffer.byteLength(TRUNCATED) + 1;
 	for (const entry of entries) {
 		const size = Buffer.byteLength(entry) + 1;
-		if (bytes + size > maxBytes) break;
+		if (output.length >= limit || bytes + size > maxBytes) break;
 		output.push(entry);
 		bytes += size;
 	}
 	const count = output.length;
-	const truncated = count < entries.length;
+	const truncated = incomplete || count < entries.length;
 	if (truncated) output.push(TRUNCATED);
 	return { text: output.join("\n"), count, truncated };
 }
