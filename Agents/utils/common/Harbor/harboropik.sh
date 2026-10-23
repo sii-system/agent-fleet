@@ -549,7 +549,6 @@ print(ref)
     --docker-config "$HARBOR_TASK_IMAGE_DOCKER_CONFIG"
     --cache-root "$HARBOR_TASK_IMAGE_CACHE_ROOT"
     --platform "$HARBOR_TASK_IMAGE_PLATFORM"
-    --tag-prefix "$HARBOR_TASK_IMAGE_TAG_PREFIX"
     --dockerhub-mirror-prefix "$HARBOR_TASK_IMAGE_DOCKERHUB_MIRROR_PREFIX"
     --base-image-registry "$HARBOR_TASK_IMAGE_BASE_IMAGE_REGISTRY"
     --build-args-json "$HARBOR_TASK_IMAGE_BUILD_ARGS_JSON"

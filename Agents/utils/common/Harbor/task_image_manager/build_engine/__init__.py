@@ -58,9 +58,6 @@ from .dockerfile_renderer.strategies.apt import (
     APT_RUNTIME_ASSET_NAMES as APT_RUNTIME_ASSET_NAMES,
 )
 from .dockerfile_renderer.strategies.apt import (
-    apt_404_requires_cache_refresh as apt_404_requires_cache_refresh,
-)
-from .dockerfile_renderer.strategies.apt import (
     apt_gateway_root_content as apt_gateway_root_content,
 )
 from .dockerfile_renderer.strategies.apt import (

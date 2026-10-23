@@ -79,7 +79,6 @@ from .build_engine import (
     DEFAULT_PLATFORM,
     DEFAULT_RUSTUP_DIST_SERVER,
     DEFAULT_RUSTUP_UPDATE_ROOT,
-    apt_404_requires_cache_refresh,
     apt_gateway_root_content,
     apt_runtime_asset_digest,
     apt_runtime_secret_ids,
@@ -144,7 +143,6 @@ __all__ = [
     "RegistryClient",
     "RegistryTarget",
     "SkopeoPublisher",
-    "apt_404_requires_cache_refresh",
     "apt_gateway_root_content",
     "apt_runtime_asset_digest",
     "apt_runtime_secret_ids",
@@ -269,10 +267,6 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
         "--platform",
         default=os.environ.get("HARBOR_TASK_IMAGE_PLATFORM", DEFAULT_PLATFORM),
         help=f"target image platform; currently only {DEFAULT_PLATFORM} is implemented",
-    )
-    parser.add_argument(
-        "--tag-prefix",
-        default=os.environ.get("HARBOR_TASK_IMAGE_TAG_PREFIX", "harbor"),
     )
     parser.add_argument(
         "--dockerhub-mirror-prefix",
@@ -437,11 +431,6 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
         "--no-cache",
         action="store_true",
         help="disable BuildKit layer cache for this build without changing image identity",
-    )
-    parser.add_argument(
-        "--retry-no-cache-on-apt-404",
-        action="store_true",
-        help="retry once without cache when a cached apt index fetches a missing package",
     )
     parser.add_argument(
         "--build-network",

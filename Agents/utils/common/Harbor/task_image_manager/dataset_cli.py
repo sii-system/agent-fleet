@@ -133,9 +133,6 @@ def parse_args(argv=None):
         args.benchmark,
         "--build-timeout-sec",
         str(args.build_timeout_sec),
-        "--tag-prefix",
-        args.benchmark,
-        "--retry-no-cache-on-apt-404",
         *task_options,
     ]
     if args.dry_run:

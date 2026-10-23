@@ -239,5 +239,5 @@ the adapter.
 The frontend is built into a source-addressed local OCI cache. Its digest and
 runtime asset IDs invalidate BuildKit `RUN` cache when a build occurs. They do
 not change the static task-image identity. Frontend preparation failure
-returns exit code 78 and stops new task dispatch for that batch. A fully
-cached task batch does not prepare the frontend.
+stops new task dispatch and returns exit code 124 for a batch; the standalone
+task CLI returns 78. A fully cached task batch does not prepare the frontend.

@@ -66,9 +66,9 @@ Cold builds honor provider-neutral source settings:
   with official GitHub used when unset.
 
 The prebuild launcher treats frontend preparation as shared infrastructure. A
-failure returns exit code 78, stops new task dispatch, and is recorded once for
-the batch instead of becoming many unrelated task failures. Fully cached task
-batches do not prepare the frontend.
+failure stops new task dispatch, is recorded once for the batch, and returns
+exit code 124. The standalone task CLI returns 78 for the same failure. Fully
+cached task batches do not prepare the frontend.
 
 ## Runtime boundary
 

@@ -25,7 +25,6 @@ from task_image_manager.task_cli import (
     OCI_LAYER_GZIP,
     RegistryTarget,
     SkopeoPublisher,
-    apt_404_requires_cache_refresh,
     apt_gateway_root_content,
     apt_runtime_asset_digest,
     apt_runtime_secret_ids,
@@ -112,13 +111,11 @@ class OpenSandboxImageManagerTest(unittest.TestCase):
                 "test-project",
                 "--build-timeout-sec",
                 "7200",
-                "--retry-no-cache-on-apt-404",
                 "--dry-run",
             ]
         )
 
         self.assertEqual(args.build_timeout_sec, 7200.0)
-        self.assertTrue(args.retry_no_cache_on_apt_404)
 
     def test_cli_accepts_single_base_image_registry(self) -> None:
         args = parse_args(
@@ -297,20 +294,6 @@ class OpenSandboxImageManagerTest(unittest.TestCase):
 
         self.assertEqual(proxy_args["HTTP_PROXY"], "http://127.0.0.1:7890")
         self.assertEqual(proxy_args["HTTPS_PROXY"], "http://127.0.0.1:7890")
-
-    def test_apt_404_cache_refresh_requires_failed_fetch(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            log_path = Path(tmp) / "build.log"
-            log_path.write_text(
-                "404  Not Found\nE: Failed to fetch package.deb\n",
-                encoding="utf-8",
-            )
-            self.assertTrue(apt_404_requires_cache_refresh(log_path))
-
-            log_path.write_text(
-                "timed out building task image after 600s\n", encoding="utf-8"
-            )
-            self.assertFalse(apt_404_requires_cache_refresh(log_path))
 
     def test_content_hash_is_stable_and_ignores_generated_files(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -582,7 +565,6 @@ networks:
                 docker_config=root / "missing-config.json",
                 cache_root=root / "cache",
                 platform="linux/amd64",
-                tag_prefix="harbor",
                 dockerhub_mirror_prefix="m.daocloud.io/docker.io",
                 build_args_json="{}",
                 bundle_manifest_output=manifest_path,
@@ -1789,7 +1771,6 @@ networks:
                 docker_config=root / "missing-config.json",
                 cache_root=root / "cache",
                 platform="linux/amd64",
-                tag_prefix="harbor",
                 dockerhub_mirror_prefix="m.daocloud.io/docker.io",
                 build_args_json="{}",
                 force=False,

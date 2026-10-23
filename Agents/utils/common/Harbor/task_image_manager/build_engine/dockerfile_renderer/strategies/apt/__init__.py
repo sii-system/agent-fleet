@@ -1,4 +1,4 @@
-"""APT runtime secret rendering and cache-refresh detection."""
+"""APT runtime secret rendering."""
 
 from __future__ import annotations
 
@@ -11,21 +11,6 @@ APT_RUNTIME_ASSET_NAMES = (
 )
 APT_GATEWAY_ROOT_SECRET_PREFIX = "opensandbox-apt-gateway-root"
 APT_RUNTIME_ASSET_DIR = Path(__file__).resolve().parent
-
-
-def apt_404_requires_cache_refresh(log_path: Path) -> bool:
-    try:
-        build_log = log_path.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return False
-    return "404  Not Found" in build_log and any(
-        marker in build_log
-        for marker in (
-            "Failed to fetch",
-            "Unable to fetch",
-            "does not have a Release file",
-        )
-    )
 
 
 def apt_gateway_root_content(dynamic_gateway_root: str) -> str:

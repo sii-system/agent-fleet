@@ -195,8 +195,12 @@ Default cache directories are unchanged so existing local state can be reused.
 | `HARBOR_OPENSANDBOX_VALIDATE_IMAGE_HASH` | `HARBOR_TASK_IMAGE_VALIDATE_HASH` |
 
 Other build/prebuild settings replace the `HARBOR_OPENSANDBOX_` prefix with
-`HARBOR_TASK_IMAGE_`; `IMAGE_REPOSITORY` and `IMAGE_TAG_PREFIX` also drop the
-redundant `IMAGE_`. Runtime inputs `HARBOR_OPENSANDBOX_IMAGE_REF` and
+`HARBOR_TASK_IMAGE_`; `IMAGE_REPOSITORY` also drops the redundant `IMAGE_`.
+The unused `--tag-prefix` / `HARBOR_TASK_IMAGE_TAG_PREFIX` setting and
+`--retry-no-cache-on-apt-404` flag have been removed. Remove them from external
+commands and job configuration; image tags remain content-derived, and failed
+builds are not retried automatically.
+Runtime inputs `HARBOR_OPENSANDBOX_IMAGE_REF` and
 `HARBOR_OPENSANDBOX_BUNDLE_MANIFEST` retain their backend-specific names.
 
 The script loads the repository configuration using the shared config loader;
