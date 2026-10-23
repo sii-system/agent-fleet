@@ -504,7 +504,10 @@ Permanent provider errors (invalid requests, authentication/permission failures,
 missing models, and context/request-size limits) stop retries for the unchanged
 input. Planning records the failure, policy evaluation denies the action, and
 report generation uses its deterministic fallback. Fixer serializes model inputs
-as compact JSON and rejects prompts larger than 512 KiB before launching Pi;
+as compact JSON. Transient process exits and malformed or incomplete event streams
+retain bounded retries. Fixer error summaries retain only known failure codes and
+provider status/error classes, excluding provider-supplied message text.
+Fixer rejects prompts larger than 512 KiB before launching Pi;
 reduce the task/evidence input when this limit is reached. This bounds the
 combined prompt in addition to the per-task and aggregate summary limits.
 

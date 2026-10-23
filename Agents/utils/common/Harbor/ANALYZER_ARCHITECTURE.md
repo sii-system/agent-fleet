@@ -76,10 +76,13 @@ Each task currently gets at most two Pi attempts.
 Retryable harness failures:
 
 - `pi_dispatch_timeout`;
+- nonzero Pi exits and transient dispatch/event-stream I/O failures;
+- malformed JSONL and missing or incomplete session/lifecycle/turn events;
 - transient `pi_provider_request_failed:*` errors, including rate limits,
   connection failures, and provider server errors;
 - `pi_final_message_truncated`;
 - `pi_final_message_invalid_json`;
+- missing final JSON;
 - task JSON validation failures.
 
 Unchanged requests are not retried for provider authentication, permission,

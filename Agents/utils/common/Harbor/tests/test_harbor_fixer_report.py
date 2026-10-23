@@ -29,6 +29,7 @@ from harbor_fixer.report import (
     generate_report_from_paths,
     generate_report_summary,
     render_fix_report,
+    render_human_report,
     run_report_from_paths,
     write_fix_report,
     write_report_markdown,
@@ -136,16 +137,35 @@ class HarborFixerReportTest(FixerTestCase):
     def test_permanent_provider_error_uses_deterministic_summary_without_retry(self):
         invoker = mock.Mock()
         invoker.invoke.side_effect = PiInvocationError(
-            "pi_provider_request_failed:413_message_request_body_exceeded", label="report", attempt=1
+            "pi_provider_request_failed:413_message_fake_provider_credential", label="report", attempt=1
         )
         with mock.patch("harbor_fixer.report.runtime.sleep_before_retry") as backoff:
             result, raw_paths = generate_report_summary(invoker, {}, self.root / "report")
         self.assertEqual(result["status"], "failed")
         self.assertIn("Deterministic fallback", result["text"])
         self.assertEqual(len(result["generation_errors"]), 1)
+        markdown = render_human_report({"summary": result}, {}, {})
+        self.assertIn("pi_provider_request_failed:413", markdown)
+        self.assertNotIn("fake_provider_credential", json.dumps(result))
+        self.assertNotIn("fake_provider_credential", markdown)
         self.assertEqual(raw_paths, [])
         self.assertEqual(invoker.invoke.call_count, 1)
         backoff.assert_not_called()
+
+    def test_transient_event_stream_failure_can_recover_report_summary(self):
+        valid = {
+            "schema_version": 1, "kind": "harbor_fixer_report_summary", "status": "success",
+            "text": "Fixture summary.", "highlights": [], "caveats": [], "generation_errors": [],
+        }
+        invoker = mock.Mock()
+        invoker.invoke.side_effect = [
+            PiInvocationError("pi_subagent_turn_invalid", label="report", attempt=1), json.dumps(valid),
+        ]
+        with mock.patch("harbor_fixer.report.runtime.sleep_before_retry"):
+            result, raw_paths = generate_report_summary(invoker, {}, self.root / "report")
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["text"], valid["text"])
+        self.assertEqual(len(raw_paths), 1)
 
     def test_report_contains_summary_changes_and_remaining_issues(self) -> None:
         fix_plan = make_fix_plan()

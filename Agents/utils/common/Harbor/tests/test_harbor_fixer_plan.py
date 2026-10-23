@@ -50,15 +50,17 @@ class HarborFixerPlanTest(FixerTestCase):
         task_input = build_task_inputs(write_analyzer_fixture(self.root))[0][0]
         invoker = mock.Mock()
         invoker.invoke.side_effect = PiInvocationError(
-            "pi_provider_request_failed:404_model_not_found", label="fixture", attempt=1
+            "pi_provider_request_failed:404_model_not_found_fake_provider_credential", label="fixture", attempt=1
         )
         with mock.patch.object(plan_generation, "sleep_before_retry") as backoff:
             summaries, errors = collect_task_summaries([task_input], invoker, self.root / "tasks")
             self.assertEqual(summaries, [])
-            self.assertIn("404_model_not_found", errors[0]["error"])
+            self.assertIn("pi_provider_request_failed:404", errors[0]["error"])
+            self.assertNotIn("fake_provider_credential", json.dumps(errors))
             self.assertEqual(invoker.invoke.call_count, 1)
-            with self.assertRaisesRegex(ValidationError, "after 1 attempts"):
+            with self.assertRaisesRegex(ValidationError, "after 1 attempts") as caught:
                 request_fix_plan(invoker, {}, self.root / "main")
+            self.assertNotIn("fake_provider_credential", str(caught.exception))
             self.assertEqual(invoker.invoke.call_count, 2)
             backoff.assert_not_called()
 
@@ -95,9 +97,31 @@ class HarborFixerPlanTest(FixerTestCase):
             self.assertRaises(PiInvocationError) as caught,
         ):
             invoker.invoke("instructions", {}, attempt=1, label="task")
-        self.assertEqual(caught.exception.block_reason, result.block_reason)
+        self.assertEqual(caught.exception.block_reason, "pi_provider_request_failed:503")
         self.assertTrue(caught.exception.retryable)
         self.assertFalse(list((self.root / "provider-failure" / "active-agent-processes").glob("*.json")))
+
+    def test_transient_harness_failures_recover_task_summary_and_main_plan(self):
+        task_input = build_task_inputs(write_analyzer_fixture(self.root))[0][0]
+        summary = task_summary_for(task_input)
+        task_invoker = mock.Mock()
+        task_invoker.invoke.side_effect = [
+            PiInvocationError("pi_dispatch_exit_code:-6", label="task", attempt=1),
+            json.dumps(summary),
+        ]
+        with mock.patch.object(plan_generation, "sleep_before_retry"):
+            summaries, errors = collect_task_summaries([task_input], task_invoker, self.root / "tasks")
+        self.assertEqual(summaries, [summary])
+        self.assertEqual(errors, [])
+        main_input = {"source": {"fixture": True}, "task_summaries": summaries, "generation_errors": []}
+        valid_plan = MainInvoker().invoke("", main_input, attempt=2, label="main")
+        main_invoker = mock.Mock()
+        main_invoker.invoke.side_effect = [
+            PiInvocationError("pi_jsonl_invalid", label="main", attempt=1), valid_plan,
+        ]
+        with mock.patch.object(plan_generation, "sleep_before_retry"):
+            result = request_fix_plan(main_invoker, main_input, self.root / "main")
+        self.assertEqual(result, json.loads(valid_plan))
 
     def test_task_summary_retry_identity_and_contract(self) -> None:
         analyzer_dir = write_analyzer_fixture(self.root, agent="opencode")
