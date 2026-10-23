@@ -92,7 +92,7 @@ Agents/utils/common/Harbor/
 └── scripts/
     ├── monitor.py              # Monitor CLI entrypoint and path resolution
     ├── controller.py           # Submit benchmark decisions and user-controlled Fixer actions
-    ├── analyzer_subagent.py    # Analyzer entrypoint for Pi/GLM-5.2 root-cause analysis
+    ├── analyzer_subagent.py    # Analyzer entrypoint for Pi-backed root-cause analysis
     ├── harbor_analyzer/        # Analyzer policy, Pi adapter, contracts, and output validation
     ├── harbor_pi_runtime/
     │   ├── config.py           # Shared Pi connection and provider configuration
@@ -537,7 +537,8 @@ Outputs:
 <OUTPUT_PATH>/online-analysis/environment-summary.json
 ```
 
-When the monitor is enabled, `start.sh` also starts
+Analyzer is disabled by default. With `HARBOR_ANALYZER_ENABLED=1` and the monitor
+enabled, `start.sh` also starts
 `scripts/analyzer_subagent.py --follow` after the monitor has produced
 `monitor/analyzer-handover-latest.json`. The analyzer consumes that latest file
 and `monitor/analyzer-handoffs/`, writes reports under `<OUTPUT_PATH>/analyzer`,

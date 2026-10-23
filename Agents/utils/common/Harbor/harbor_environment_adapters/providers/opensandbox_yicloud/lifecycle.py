@@ -464,7 +464,6 @@ class YiCloudLifecycleMixin:
         try:
             current = await self._wait_until_running(created)
             running_observed_at = _monotonic()
-            self._running_observed_at = running_observed_at
             running_elapsed_ms = (running_observed_at - ready_started_at) * 1000
             _validate_sandbox_binding(current, self._environment_id, self._image_ref)
             self.logger.info(

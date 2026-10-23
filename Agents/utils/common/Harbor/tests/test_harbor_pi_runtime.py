@@ -137,23 +137,25 @@ class HarborPiRuntimeTest(unittest.TestCase):
             self.assertEqual(base_url_from_env("HARBOR_FIXER"), "https://example.test")
             self.assertEqual(os.environ[config.api_key_env], "fake")
 
-    def test_compact_events_and_stdin_prompt(self) -> None:
-        result = self.run_runtime(
-            "stdin-prompt",
-            base_url="https://example.test",
-            prompt_in_stdin=True,
-            no_tools=True,
-            thinking_level="off",
-        )
+    def test_compact_events_preserve_stdin_and_streaming_prompts(self) -> None:
+        for delivery in ({"prompt_in_stdin": True}, {"stream_compaction": True}):
+            with self.subTest(delivery=delivery):
+                result = self.run_runtime(
+                    "fixture-prompt",
+                    base_url="https://example.test",
+                    no_tools=True,
+                    thinking_level="off",
+                    **delivery,
+                )
 
-        self.assertIsNone(result.block_reason)
-        self.assertEqual(result.output_json, {"ok": True, "prompt": "stdin-prompt"})
-        self.assertEqual(result.provenance["thinking_level"], "off")
-        self.assertEqual(result.provenance["discarded_event_counts"], {"message_update": 1})
-        self.assertNotIn(
-            "message_update",
-            (self.root / "events.jsonl").read_text(encoding="utf-8"),
-        )
+                self.assertIsNone(result.block_reason)
+                self.assertEqual(result.output_json, {"ok": True, "prompt": "fixture-prompt"})
+                self.assertEqual(result.provenance["thinking_level"], "off")
+                self.assertEqual(result.provenance["discarded_event_counts"], {"message_update": 1})
+                self.assertNotIn(
+                    "message_update",
+                    (self.root / "events.jsonl").read_text(encoding="utf-8"),
+                )
 
     def test_process_record_identifies_the_pi_process(self) -> None:
         process_record = self.root / "active-process.json"
