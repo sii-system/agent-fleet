@@ -17,6 +17,10 @@ harbor_resolve_backend_plan() {
     RL_ENVIRONMENT_TYPE="${RL_ENVIRONMENT_TYPE:-docker}" \
     HARBOR_E2B_PREBUILT_TEMPLATE="${HARBOR_E2B_PREBUILT_TEMPLATE:-}" \
     HARBOR_E2B_PREBUILT_ENVIRONMENT_SPEC="${HARBOR_E2B_PREBUILT_ENVIRONMENT_SPEC:-}" \
+    NPM_CONFIG_REGISTRY="${NPM_CONFIG_REGISTRY:-}" \
+    QZ_NODE_DIST_URL="${QZ_NODE_DIST_URL:-}" \
+    HARBOR_CC_NODE_DIST_URL="${HARBOR_CC_NODE_DIST_URL:-}" \
+    HARBOR_CC_WEB_MCP_ENABLED="${HARBOR_CC_WEB_MCP_ENABLED:-0}" \
     HARBOR_BACKEND_PLAN="${HARBOR_BACKEND_PLAN:-}" \
       python3 -S "$SCRIPT_DIR/backend_plan.py" "$@"
   )" || return 1
@@ -25,33 +29,9 @@ harbor_resolve_backend_plan() {
 }
 
 harbor_resolve_backend_plan || return 1
-if [[ "$HARBOR_CC_WEB_MCP_ENABLED" == "1" \
-  && ( "$HARBOR_ENVIRONMENT_TYPE" == "e2b" || "$HARBOR_ENVIRONMENT_TYPE" == "qz" ) ]]; then
-  echo "[ERROR] Web MCP is not supported on $HARBOR_ENVIRONMENT_TYPE: artifact delivery requires docker or opensandbox." >&2
-  return 1
-fi
-# qz does not provide Notebook-host bind mounts. Install the agent runtime
-# inside the Sandbox instead of coupling setup to a runner-local dependency
-# service. npmmirror is the regional-stability default, not the only reachable
-# source: NPM_CONFIG_REGISTRY and QZ_NODE_DIST_URL allow an explicit upstream
-# or private source. HARBOR_CC_NODE_DIST_URL reaches the agent as CC_NODE_DIST_URL.
+# Source defaults and delivery capabilities come from the selected plan.
 QZ_NODE_DIST_URL="${QZ_NODE_DIST_URL:-}"
-HARBOR_CC_NODE_DIST_URL="${HARBOR_CC_NODE_DIST_URL:-}"
-if [[ -z "$NPM_CONFIG_REGISTRY" ]]; then
-  if [[ "$HARBOR_ENVIRONMENT_TYPE" == "qz" ]]; then
-    NPM_CONFIG_REGISTRY="https://registry.npmmirror.com"
-  else
-    NPM_CONFIG_REGISTRY="https://registry.npmjs.org"
-  fi
-fi
-if [[ "$HARBOR_ENVIRONMENT_TYPE" == "qz" ]]; then
-  if [[ -n "$QZ_NODE_DIST_URL" ]]; then
-    HARBOR_CC_NODE_DIST_URL="$QZ_NODE_DIST_URL"
-  elif [[ -z "$HARBOR_CC_NODE_DIST_URL" ]]; then
-    HARBOR_CC_NODE_DIST_URL="https://registry.npmmirror.com/-/binary/node/v22.14.0/node-v22.14.0-linux-x64.tar.gz"
-  fi
-fi
-export QZ_NODE_DIST_URL HARBOR_CC_NODE_DIST_URL
+export QZ_NODE_DIST_URL
 HARBOR_OPENSANDBOX_IMAGE_REF="${HARBOR_OPENSANDBOX_IMAGE_REF:-}"
 HARBOR_OPENSANDBOX_BUNDLE_MANIFEST="${HARBOR_OPENSANDBOX_BUNDLE_MANIFEST:-}"
 YICLOUD_HARBOR_HOST="${YICLOUD_HARBOR_HOST:-}"
@@ -109,16 +89,8 @@ verifier_runtime_bundle_required() {
 }
 
 validate_verifier_runtime_bundle_transport() {
-  verifier_runtime_bundle_required || return 0
-  [[ "$HARBOR_ENVIRONMENT_TYPE" == "opensandbox" ]] || return 0
-  case "$YICLOUD_SANDBOX_UPLOAD_BACKEND" in
-    s3|auto)
-      ;;
-    *)
-      echo "[ERROR] verifier runtime bundle $VERIFIER_RUNTIME_BUNDLE_ID requires YICLOUD_SANDBOX_UPLOAD_BACKEND=s3 or auto" >&2
-      return 1
-      ;;
-  esac
+  VERIFIER_RUNTIME_BUNDLE_ID="$VERIFIER_RUNTIME_BUNDLE_ID" \
+    python3 -S "$SCRIPT_DIR/backend_launch.py" verifier-transport
 }
 
 HARBOR_TASK_IMAGE_DOCKER_CONFIG="${HARBOR_TASK_IMAGE_DOCKER_CONFIG:-$HOME/.docker/config.json}"

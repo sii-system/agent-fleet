@@ -14,6 +14,7 @@ from harbor_environment_adapters.core.config import (
     configured_backend_plan,
     rollout_backend_plan,
 )
+from harbor_environment_adapters.core.launch import launch_settings
 
 
 def main() -> int:
@@ -26,15 +27,17 @@ def main() -> int:
             if args.rollout_environment_type is not None
             else configured_backend_plan(os.environ)
         )
+        settings = launch_settings(plan, os.environ)
     except ValueError as error:
         print(f"[ERROR] {error}", file=sys.stderr)
         return 1
     # Keys are fixed and values are Shell-quoted, including custom import paths.
-    for name, value in (
-        ("HARBOR_ENVIRONMENT_TYPE", plan.environment_type),
-        ("HARBOR_ENVIRONMENT_SPEC", plan.environment_spec),
-        (PLAN_ENV, plan.to_json()),
-    ):
+    for name, value in {
+        "HARBOR_ENVIRONMENT_TYPE": plan.environment_type,
+        "HARBOR_ENVIRONMENT_SPEC": plan.environment_spec,
+        PLAN_ENV: plan.to_json(),
+        **settings,
+    }.items():
         print(f"export {name}={shlex.quote(value)}")
     return 0
 

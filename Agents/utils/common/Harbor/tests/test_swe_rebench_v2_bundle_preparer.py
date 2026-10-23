@@ -181,6 +181,7 @@ harbor_mark_workers_ready() { printf '%s\n' ready >> "$EVENT_LOG"; }
 harbor_ensure_local_wheels_server() { return 90; }
 harbor_prewarm_s3_upload_cache() { return 91; }
 HARBOR_ENVIRONMENT_TYPE=docker
+eval "$(HARBOR_ENVIRONMENT_TYPE="$HARBOR_ENVIRONMENT_TYPE" python3 -S "$(dirname "$1")/../backend_plan.py")"
 YICLOUD_SANDBOX_UPLOAD_BACKEND=auto
 HARBOR_REMOTE_WHEEL_SERVER_URLS=https://cache.example
 HARBOR_LOCAL_WHEEL_SERVER_URL=

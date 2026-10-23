@@ -49,6 +49,58 @@ def url_hostname(value: str) -> str:
     return urlparse(value).hostname or ""
 
 
+def check_http_preflight(
+    service: str, status: str, *, auth_status: str = "", timeout: str = "",
+    strict: bool = True, environ: Mapping[str, str] | None = None,
+) -> int:
+    """Classify responses after Shell performs its existing curl requests."""
+    values = os.environ if environ is None else environ
+    endpoint = values.get("OPIK_URL_OVERRIDE", "").rstrip("/")
+    if service == "opik-ingestion":
+        url = f"{endpoint}/v1/private/spans/batch"
+        if status.startswith("2") or status in {"400", "401", "403", "422"}:
+            return 0
+        if status in {"404", "405"}:
+            print(f"[ERROR] Opik ingestion endpoint returned {status}: {url}", file=sys.stderr)
+            print("[ERROR] this usually means the API prefix is wrong (expected .../api).", file=sys.stderr)
+            return 1
+        print(f"[WARN] Opik ingestion preflight returned HTTP {status} for: {url}", file=sys.stderr)
+    elif service == "opik-projects":
+        if not (status.startswith("2") or status in {"401", "403"}):
+            print(f"[ERROR] Opik project preflight returned HTTP {status}", file=sys.stderr)
+            print(f"[ERROR] endpoint: {endpoint}/v1/private/projects", file=sys.stderr)
+            return 1
+    elif service == "dockerhub":
+        registry_failed = status not in {"200", "401"}
+        auth_failed = auth_status != "200"
+        if registry_failed:
+            print(f"[WARN] cannot reach https://registry-1.docker.io/v2/ within {timeout}s "
+                  f"(status={status or '000'})", file=sys.stderr)
+        if auth_failed:
+            print(f"[WARN] cannot reach https://auth.docker.io token service within {timeout}s "
+                  f"(status={auth_status or '000'})", file=sys.stderr)
+        if registry_failed or auth_failed:
+            message = ("Docker Hub preflight failed in strict mode" if strict else
+                       "Docker Hub preflight failed; continuing because strict mode is disabled")
+            if values.get("HARBOR_ONLINE_ANALYSIS") == "1":
+                print(online_event(
+                    "preflight", "docker_registry",
+                    "connectivity_unavailable" if strict else "connectivity_degraded",
+                    "critical" if strict else "warning", strict, message, values,
+                ))
+            if strict:
+                print("[ERROR] Docker Hub preflight failed in strict mode.", file=sys.stderr)
+                print("[ERROR] fix network/proxy/registry mirror first, or set "
+                      "HARBOR_DOCKERHUB_PREFLIGHT_STRICT=0 / HARBOR_SKIP_DOCKERHUB_PREFLIGHT=1.",
+                      file=sys.stderr)
+                return 1
+            print("[WARN] Docker Hub preflight failed, continuing (strict mode disabled).", file=sys.stderr)
+            print("[WARN] if image pull fails later, set a proxy/registry mirror and retry.", file=sys.stderr)
+    else:
+        raise ValueError(f"unknown preflight service: {service}")
+    return 0
+
+
 class OpenCodeBaseURLRequired(ValueError):
     """The selected provider needs an explicit endpoint for its exception."""
 
@@ -149,6 +201,12 @@ def build_parser() -> argparse.ArgumentParser:
     field.add_argument("field")
     hostname = subparsers.add_parser("url-hostname")
     hostname.add_argument("url")
+    http = subparsers.add_parser("check-http")
+    http.add_argument("service", choices=("opik-ingestion", "opik-projects", "dockerhub"))
+    http.add_argument("status")
+    http.add_argument("--auth-status", default="")
+    http.add_argument("--timeout", default="")
+    http.add_argument("--strict", default="1")
     subparsers.add_parser("agent-model-host")
     mounts = subparsers.add_parser("readonly-mounts")
     mounts.add_argument("--mount", nargs=3, action="append", default=[])
@@ -182,6 +240,11 @@ def main() -> int:
         print(json_string_field(args.raw, args.field))
     elif args.command == "url-hostname":
         print(url_hostname(args.url))
+    elif args.command == "check-http":
+        return check_http_preflight(
+            args.service, args.status, auth_status=args.auth_status,
+            timeout=args.timeout, strict=args.strict == "1",
+        )
     elif args.command == "agent-model-host":
         try:
             print(agent_model_host())

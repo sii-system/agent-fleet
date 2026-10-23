@@ -58,7 +58,7 @@ harbor_publishes_job_dir() {
 }
 
 harbor_uses_local_opensandbox_dataset() {
-  [[ "$HARBOR_ENVIRONMENT_TYPE" == "opensandbox" ]] \
+  [[ "$HARBOR_BACKEND_TASK_IMAGES" == "1" ]] \
     && [[ -n "${DATASET_PATH:-}" ]] \
     && [[ -d "$DATASET_PATH" ]]
 }
@@ -78,8 +78,7 @@ append_native_task_config() {
 }
 
 harbor_environment_supports_claude_hook_delivery() {
-  [[ "$HARBOR_ENVIRONMENT_TYPE" == "docker" \
-    || "$HARBOR_ENVIRONMENT_TYPE" == "opensandbox" ]]
+  [[ "$HARBOR_BACKEND_READONLY_MOUNTS" == "1" ]]
 }
 
 # Both command builders use the same cached MCP artifact and task environment.
@@ -274,336 +273,56 @@ append_package_environment_args() {
   append_rust_package_mirror_env --ve
 }
 
-append_harbor_unprivileged_docker_compose() {
-  if [[ "${HARBOR_ENVIRONMENT_TYPE:-docker}" != "docker" ]]; then
-    if [[ "${HARBOR_DRY_RUN:-0}" == "1" ]]; then
-      echo "[INFO] ${HARBOR_ENVIRONMENT_TYPE} environment; skip unprivileged Docker Compose overlay"
-    fi
-    return 0
-  fi
-  cmd+=( --extra-docker-compose "$SCRIPT_DIR/overlays/unprivileged-task.yaml" )
-  if [[ "${HARBOR_DRY_RUN:-0}" == "1" ]]; then
-    echo "[INFO] Docker environment; add unprivileged Docker Compose overlay"
-  fi
+# Python owns backend policy and local artifact parsing. Only fixed names and
+# shlex-quoted values/array elements cross this internal Shell boundary.
+harbor_backend_launch() {
+  python3 -S "$SCRIPT_DIR/backend_launch.py" "$@"
 }
 
 validate_environment_backend() {
-  case "$HARBOR_ENVIRONMENT_TYPE" in
-    docker)
-      ;;
-    e2b)
-      if harbor_agent_is_pi; then
-        echo "[ERROR] AGENT=pi with HARBOR_ENVIRONMENT_TYPE=$HARBOR_ENVIRONMENT_TYPE is unsupported: Pi's pinned Node/runtime archives and local extensions require host bind mounts." >&2
-        echo "[ERROR] use HARBOR_ENVIRONMENT_TYPE=docker or opensandbox for AGENT=pi." >&2
-        exit 1
-      elif harbor_agent_is_dsh; then
-        echo "[ERROR] AGENT=dsh-sdk-minimal with HARBOR_ENVIRONMENT_TYPE=$HARBOR_ENVIRONMENT_TYPE is unsupported: its pinned runtime requires host bind mounts." >&2
-        echo "[ERROR] use HARBOR_ENVIRONMENT_TYPE=docker or opensandbox for AGENT=dsh-sdk-minimal." >&2
-        exit 1
-      fi
-      ;;
-    opensandbox)
-      local name
-      for name in YICLOUD_PUBLIC_KEY YICLOUD_SECRET_KEY YICLOUD_PROJECT_NAME; do
-        if [[ -z "${!name:-}" ]]; then
-          echo "[ERROR] required environment variable is unset: $name" >&2
-          exit 1
-        fi
-      done
-      if [[ -z "$YICLOUD_HARBOR_HOST" ]]; then
-        echo '[ERROR] required environment variable is unset: YICLOUD_HARBOR_HOST' >&2
-        exit 1
-      fi
-      if [[ -z "${YICLOUD_SANDBOX_ENVIRONMENT_ID:-}" \
-        && -z "${YICLOUD_SANDBOX_ENVIRONMENT_NAME:-}" ]]; then
-        echo '[ERROR] OpenSandbox requires YICLOUD_SANDBOX_ENVIRONMENT_ID or YICLOUD_SANDBOX_ENVIRONMENT_NAME' >&2
-        echo '[ERROR] refusing to create an instance without an explicit environment binding' >&2
-        exit 1
-      fi
-      echo "[INFO] OpenSandbox environment binding: id=${YICLOUD_SANDBOX_ENVIRONMENT_ID:-<resolved-by-name>} name=${YICLOUD_SANDBOX_ENVIRONMENT_NAME:-<lookup-by-id>}"
-      if ! resolve_opensandbox_task_image_ref; then
-        exit 1
-      fi
-      if [[ "$HARBOR_NATIVE_CONCURRENCY" != "1" && -z "$HARBOR_OPENSANDBOX_IMAGE_REF" \
-        && -z "$HARBOR_OPENSANDBOX_BUNDLE_MANIFEST" ]]; then
-        if [[ -z "$YICLOUD_HARBOR_PROJECT" ]]; then
-          echo "[ERROR] YICLOUD_HARBOR_PROJECT is required when HARBOR_OPENSANDBOX_IMAGE_REF is unset" >&2
-          exit 1
-        fi
-        if [[ ! -f "$HARBOR_TASK_IMAGE_CLI" ]]; then
-          echo "[ERROR] Harbor task image manager not found: $HARBOR_TASK_IMAGE_CLI" >&2
-          exit 1
-        fi
-      fi
-      ;;
-    qz)
-      if harbor_agent_is_pi; then
-        echo "[ERROR] AGENT=pi with HARBOR_ENVIRONMENT_TYPE=$HARBOR_ENVIRONMENT_TYPE is unsupported: Pi's pinned Node/runtime archives and local extensions require host bind mounts." >&2
-        echo "[ERROR] use HARBOR_ENVIRONMENT_TYPE=docker or opensandbox for AGENT=pi." >&2
-        exit 1
-      elif harbor_agent_is_dsh; then
-        echo "[ERROR] AGENT=dsh-sdk-minimal with HARBOR_ENVIRONMENT_TYPE=$HARBOR_ENVIRONMENT_TYPE is unsupported: its pinned runtime requires host bind mounts." >&2
-        echo "[ERROR] use HARBOR_ENVIRONMENT_TYPE=docker or opensandbox for AGENT=dsh-sdk-minimal." >&2
-        exit 1
-      fi
-      if [[ -z "${SBX_API_KEY:-}" && -z "${QZ_SANDBOX_API_KEY:-}" \
-        && "${E2B_API_KEY:-}" != sbx_* ]]; then
-        echo '[ERROR] qz sandbox requires SBX_API_KEY (or QZ_SANDBOX_API_KEY / an sbx_-prefixed E2B_API_KEY)' >&2
-        exit 1
-      fi
-      if [[ -n "${QZ_SANDBOX_TEMPLATE:-}" \
-        && -n "${QZ_SANDBOX_TEMPLATE_MAP:-}" ]]; then
-        echo '[ERROR] set only one of QZ_SANDBOX_TEMPLATE or QZ_SANDBOX_TEMPLATE_MAP' >&2
-        exit 1
-      fi
-      if [[ -z "${QZ_SANDBOX_TEMPLATE:-}" \
-        && -z "${QZ_SANDBOX_TEMPLATE_MAP:-}" ]]; then
-        echo '[ERROR] qz sandbox requires QZ_SANDBOX_TEMPLATE or QZ_SANDBOX_TEMPLATE_MAP' >&2
-        exit 1
-      fi
-      if [[ -n "${QZ_SANDBOX_TEMPLATE_MAP:-}" \
-        && ! -f "$QZ_SANDBOX_TEMPLATE_MAP" ]]; then
-        echo "[ERROR] QZ_SANDBOX_TEMPLATE_MAP not found: $QZ_SANDBOX_TEMPLATE_MAP" >&2
-        exit 1
-      fi
-      if [[ -n "${QZ_SANDBOX_TIMEOUT_SEC:-}" ]]; then
-        if [[ ! "$QZ_SANDBOX_TIMEOUT_SEC" =~ ^[0-9]+$ ]] \
-          || (( QZ_SANDBOX_TIMEOUT_SEC < 1 || QZ_SANDBOX_TIMEOUT_SEC > 14400 )); then
-          echo "[ERROR] QZ_SANDBOX_TIMEOUT_SEC must be an integer between 1 and 14400 (the platform's 4-hour cap), got: $QZ_SANDBOX_TIMEOUT_SEC" >&2
-          exit 1
-        fi
-      fi
-      case "${HARBOR_FORCE_BUILD:-0}" in
-        0|false|no|"") ;;
-        *)
-          echo '[ERROR] HARBOR_FORCE_BUILD is not supported on qz: templates are registered on the platform, not built by Harbor' >&2
-          exit 1
-          ;;
-      esac
-      if [[ -n "${QZ_SANDBOX_TEMPLATE:-}" ]]; then
-        echo "[INFO] qz sandbox fixed template: $QZ_SANDBOX_TEMPLATE"
-      else
-        echo "[INFO] qz sandbox template map: $QZ_SANDBOX_TEMPLATE_MAP"
-      fi
-      if harbor_agent_is_claude_code; then
-        echo "[INFO] qz claude-code delivery: npm registry ${NPM_CONFIG_REGISTRY:-<unset>} | node dist ${HARBOR_CC_NODE_DIST_URL:-<unset>}"
-      elif harbor_agent_is_opencode; then
-        echo "[INFO] qz opencode delivery: npm registry ${NPM_CONFIG_REGISTRY:-<unset>} | node dist ${HARBOR_CC_NODE_DIST_URL:-<unset>}"
-      fi
-      ;;
-    *)
-      echo "[ERROR] HARBOR_ENVIRONMENT_TYPE must be docker, e2b, opensandbox, or qz, got: $HARBOR_ENVIRONMENT_TYPE" >&2
-      exit 1
-      ;;
-  esac
-
-  if [[ -n "${HARBOR_E2B_SANDBOX_TIMEOUT_SEC:-}" ]] \
-    && [[ ! "$HARBOR_E2B_SANDBOX_TIMEOUT_SEC" =~ ^[1-9][0-9]*$ ]]; then
-    echo "[ERROR] HARBOR_E2B_SANDBOX_TIMEOUT_SEC must be a positive integer" >&2
-    exit 1
-  fi
-}
-
-opensandbox_task_image_ref() {
-  local task_dir="${DATASET_PATH:-}/${HARBOR_INCLUDE_TASKS:-}"
-  local task_config="$task_dir/task.toml"
-  local parser_python="${HARBOR_OPIK_PYTHON:-}"
-  [[ -f "$task_config" ]] || return 0
-  if [[ -z "$parser_python" || ! -x "$parser_python" ]]; then
-    parser_python="$(command -v python3 2>/dev/null || true)"
-  fi
-  if [[ -z "$parser_python" || ! -x "$parser_python" ]]; then
-    echo "[ERROR] Python 3 is required to read $task_config" >&2
-    return 1
-  fi
-  "$parser_python" -c '
-import sys
-from pathlib import Path
-
-sys.path.insert(0, sys.argv[1])
-from qz_template_mapping import QzTemplateMappingError, load_task_image
-
-try:
-    print(load_task_image(Path(sys.argv[2])))
-except QzTemplateMappingError as error:
-    if "missing environment.docker_image" not in str(error):
-        raise
-' "$SCRIPT_DIR" "$task_dir"
-}
-
-resolve_opensandbox_task_image_ref() {
-  if [[ "$HARBOR_ENVIRONMENT_TYPE" != "opensandbox" \
-    || "$HARBOR_NATIVE_CONCURRENCY" == "1" \
-    || -n "$HARBOR_OPENSANDBOX_IMAGE_REF" \
-    || -n "$HARBOR_OPENSANDBOX_BUNDLE_MANIFEST" ]]; then
-    return 0
-  fi
-  local task_image_ref
-  if ! task_image_ref="$(opensandbox_task_image_ref)"; then
-    echo "[ERROR] failed to read Harbor task image from task.toml" >&2
-    return 1
-  fi
-  if [[ "$task_image_ref" =~ [[:space:]] ]]; then
-    echo "[ERROR] task docker_image must be a single image reference" >&2
-    return 1
-  fi
-  if [[ -n "$task_image_ref" ]]; then
-    HARBOR_OPENSANDBOX_IMAGE_REF="$task_image_ref"
-    export HARBOR_OPENSANDBOX_IMAGE_REF
-  fi
+  local assignments
+  assignments="$(harbor_backend_launch validate "$@")" || return 1
+  eval "$assignments"
 }
 
 ensure_environment_backend() {
-  validate_environment_backend
-  if [[ "$HARBOR_ENVIRONMENT_TYPE" == "docker" ]]; then
+  validate_environment_backend --ready || return 1
+  if [[ "$HARBOR_BACKEND_HOST_DOCKER" == "1" ]]; then
     ensure_docker_daemon
     docker_hub_preflight_check
-    return 0
-  fi
-  if [[ "$HARBOR_ENVIRONMENT_TYPE" == "e2b" ]]; then
-    if [[ -z "${E2B_API_KEY:-}" ]]; then
-      echo "[ERROR] E2B_API_KEY is required when HARBOR_ENVIRONMENT_TYPE=e2b" >&2
-      exit 1
-    fi
-    echo "[INFO] using E2B environment; skip host Docker daemon and Docker Hub preflight"
-  fi
-  if [[ "$HARBOR_ENVIRONMENT_TYPE" == "qz" ]]; then
-    echo "[INFO] using qz sandbox environment; skip host Docker daemon and Docker Hub preflight"
   fi
 }
 
 prepare_opensandbox_image_ref() {
-  local automatic_bundle_manifest="$1"
-  if [[ "$HARBOR_ENVIRONMENT_TYPE" != "opensandbox" ]]; then
-    return 0
-  fi
-  if [[ "$HARBOR_NATIVE_CONCURRENCY" == "1" ]]; then
-    # Each trial resolves its own prebuilt task image in the provider.
-    if [[ -n "$HARBOR_OPENSANDBOX_IMAGE_REF$HARBOR_OPENSANDBOX_BUNDLE_MANIFEST" \
-      || "$HARBOR_FORCE_BUILD" == "1" || "$HARBOR_FORCE_BUILD" == "true" ]]; then
-      echo "[ERROR] native OpenSandbox runs require per-task prebuilt images, without global image overrides or force-build" >&2
-      return 1
-    fi
-    return 0
-  fi
-  if [[ -n "$HARBOR_OPENSANDBOX_BUNDLE_MANIFEST" ]]; then
-    if [[ ! -f "$HARBOR_OPENSANDBOX_BUNDLE_MANIFEST" ]]; then
-      echo "[ERROR] OpenSandbox Bundle Manifest not found: $HARBOR_OPENSANDBOX_BUNDLE_MANIFEST" >&2
-      exit 1
-    fi
-    if [[ -z "$HARBOR_OPENSANDBOX_IMAGE_REF" ]]; then
-      local bundle_python="${HARBOR_OPIK_PYTHON:-}"
-      if [[ -z "$bundle_python" || ! -x "$bundle_python" ]]; then
-        bundle_python="$(command -v python3)"
-      fi
-      if ! HARBOR_OPENSANDBOX_IMAGE_REF="$("$bundle_python" -c '
-import json, pathlib, sys
-path = pathlib.Path(sys.argv[1])
-bundle = json.loads(path.read_text(encoding="utf-8"))
-main = bundle.get("main") if bundle.get("schema_version") == 2 else bundle.get("main_service")
-services = bundle.get("services") or {}
-image = (services.get(main) or {}).get("image") or {}
-ref = image.get("digest_ref") if bundle.get("schema_version") == 2 else image.get("sandbox_ref")
-if not isinstance(main, str) or not isinstance(ref, str) or not ref:
-    raise SystemExit("Bundle Manifest has no valid main image sandbox_ref")
-print(ref)
-' "$HARBOR_OPENSANDBOX_BUNDLE_MANIFEST")"; then
-        echo "[ERROR] failed to resolve main image from OpenSandbox Bundle Manifest" >&2
-        exit 1
-      fi
-    fi
-    export HARBOR_OPENSANDBOX_IMAGE_REF HARBOR_OPENSANDBOX_BUNDLE_MANIFEST
-    echo "[INFO] using OpenSandbox Bundle Manifest: $HARBOR_OPENSANDBOX_BUNDLE_MANIFEST" >&2
-    return 0
-  fi
-  if [[ -n "$HARBOR_OPENSANDBOX_IMAGE_REF" ]]; then
-    # Legacy explicit single-image mode remains supported until the runtime
-    # environment consumes Bundle Manifests exclusively.
-    return 0
-  fi
-  resolve_opensandbox_task_image_ref || return 1
-  if [[ -n "$HARBOR_OPENSANDBOX_IMAGE_REF" ]]; then
-    echo "[INFO] using prebuilt Harbor task image for OpenSandbox: $HARBOR_OPENSANDBOX_IMAGE_REF" >&2
-    return 0
-  fi
-  # DATASET_NAME can have a Harbor Registry alias (for example, seta ->
-  # seta-env) while rollout workers still provide a real local DATASET_PATH.
-  # Harbor task image preparation needs the local task definition, so decide
-  # from the path itself instead of the dataset's registry capability.
-  if [[ -z "${DATASET_PATH:-}" || ! -d "$DATASET_PATH" ]]; then
-    echo "[ERROR] automatic Harbor task image preparation currently requires a local dataset path" >&2
-    exit 1
-  fi
+  local automatic_bundle_manifest="$1" assignments
+  local -a manager_args=()
+  assignments="$(harbor_backend_launch image-plan "$automatic_bundle_manifest")" || return 1
+  eval "$assignments"
+  [[ ${#manager_args[@]} -gt 0 ]] || return 0
 
   local manager_python="${HARBOR_OPIK_PYTHON:-}"
   if [[ -z "$manager_python" || ! -x "$manager_python" ]]; then
     manager_python="$(command -v python3)"
   fi
-  local -a manager_cmd=(
-    "$manager_python" "$HARBOR_TASK_IMAGE_CLI"
-    --dataset-root "$DATASET_PATH"
-    --include "$HARBOR_INCLUDE_TASKS"
-    --registry "$YICLOUD_HARBOR_HOST"
-    --project "$YICLOUD_HARBOR_PROJECT"
-    --benchmark-name "$HARBOR_TASK_IMAGE_BENCHMARK"
-    --docker-config "$HARBOR_TASK_IMAGE_DOCKER_CONFIG"
-    --cache-root "$HARBOR_TASK_IMAGE_CACHE_ROOT"
-    --platform "$HARBOR_TASK_IMAGE_PLATFORM"
-    --tag-prefix "$HARBOR_TASK_IMAGE_TAG_PREFIX"
-    --dockerhub-mirror-prefix "$HARBOR_TASK_IMAGE_DOCKERHUB_MIRROR_PREFIX"
-    --base-image-registry "$HARBOR_TASK_IMAGE_BASE_IMAGE_REGISTRY"
-    --build-args-json "$HARBOR_TASK_IMAGE_BUILD_ARGS_JSON"
-    --build-network "$HARBOR_TASK_IMAGE_BUILD_NETWORK"
-    --bundle-manifest-output "$automatic_bundle_manifest"
-  )
-  if [[ "$YICLOUD_HARBOR_TLS_VERIFY" == "1" ]]; then
-    manager_cmd+=( --registry-tls-verify )
-  fi
-  if [[ "${HARBOR_FORCE_BUILD:-0}" == "1" || "${HARBOR_FORCE_BUILD:-0}" == "true" ]]; then
-    manager_cmd+=( --force )
-  fi
-  if [[ "$HARBOR_TASK_IMAGE_BUILD_USE_PROXY" == "1" ]]; then
-    manager_cmd+=( --use-proxy )
-  fi
-  if [[ "$HARBOR_DRY_RUN" == "1" ]]; then
-    manager_cmd+=( --dry-run )
-  else
+  if [[ "$HARBOR_DRY_RUN" != "1" ]]; then
     ensure_docker_daemon
   fi
-
+  local image_ref
   echo "[INFO] preparing Harbor task image for task: $HARBOR_INCLUDE_TASKS" >&2
-  if ! HARBOR_OPENSANDBOX_IMAGE_REF="$("${manager_cmd[@]}")"; then
+  if ! image_ref="$("$manager_python" "${manager_args[@]}")"; then
     echo "[ERROR] Harbor task image preparation failed" >&2
-    exit 1
+    return 1
   fi
-  if [[ -z "$HARBOR_OPENSANDBOX_IMAGE_REF" ]]; then
-    echo "[ERROR] Harbor task image manager returned an empty image reference" >&2
-    exit 1
-  fi
-  HARBOR_OPENSANDBOX_BUNDLE_MANIFEST="$automatic_bundle_manifest"
-  if [[ ! -f "$HARBOR_OPENSANDBOX_BUNDLE_MANIFEST" ]]; then
-    echo "[ERROR] Harbor task image manager did not write Bundle Manifest: $HARBOR_OPENSANDBOX_BUNDLE_MANIFEST" >&2
-    exit 1
-  fi
-  export HARBOR_OPENSANDBOX_IMAGE_REF HARBOR_OPENSANDBOX_BUNDLE_MANIFEST
+  assignments="$(harbor_backend_launch image-result "$image_ref" "$automatic_bundle_manifest")" || return 1
+  eval "$assignments"
   echo "[INFO] Harbor task image ready: $HARBOR_OPENSANDBOX_IMAGE_REF" >&2
   echo "[INFO] OpenSandbox Bundle Manifest ready: $HARBOR_OPENSANDBOX_BUNDLE_MANIFEST" >&2
 }
 
 append_environment_backend_args() {
-  cmd+=( --env "$HARBOR_ENVIRONMENT_SPEC" )
-  if [[ "$HARBOR_ENVIRONMENT_TYPE" == "opensandbox" ]]; then
-    cmd+=(
-      --ek "image_ref=$HARBOR_OPENSANDBOX_IMAGE_REF"
-      --ek "bundle_manifest_path=$HARBOR_OPENSANDBOX_BUNDLE_MANIFEST"
-      --ek "lifecycle_minutes=$YICLOUD_SANDBOX_LIFECYCLE_MINUTES"
-    )
-  else
-    # qz needs no extra args: the adapter reads its connection and template
-    # settings from the exported qz environment variables, and the compose
-    # overlay helper self-guards on the Docker backend.
-    append_harbor_unprivileged_docker_compose
-  fi
+  local arguments
+  arguments="$(harbor_backend_launch args)" || return 1
+  eval "$arguments"
 }
 
 append_agent_model_gateway_host() {
@@ -712,7 +431,7 @@ append_verifier_uv_env() {
     prefix="$HARBOR_VERIFIER_UV_HOME/.local/bin:$prefix"
   fi
   prefix="$prefix:$HARBOR_VERIFIER_UV_BIN_DIR_MOUNT_PATH"
-  if [[ "$HARBOR_ENVIRONMENT_TYPE" == "docker" ]]; then
+  if [[ "$HARBOR_BACKEND_HOST_DOCKER" == "1" ]]; then
     cmd+=( --ve "HARBOR_VERIFIER_PATH_PREPEND=$prefix" )
   else
     cmd+=( --ve "PATH=$prefix:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" )
@@ -721,7 +440,7 @@ append_verifier_uv_env() {
 }
 
 opensandbox_verifier_tool_env_required() {
-  [[ "$HARBOR_ENVIRONMENT_TYPE" == "opensandbox" ]] \
+  [[ "$HARBOR_BACKEND_TASK_IMAGES" == "1" ]] \
     && { verifier_uv_bin_ready || verifier_runtime_bundle_required; }
 }
 
@@ -769,16 +488,12 @@ configure_e2b_verifier_tool_upload() {
   HARBOR_E2B_VERIFIER_RUNTIME_BUNDLE_SOURCE=""
   HARBOR_E2B_VERIFIER_RUNTIME_BUNDLE_TARGET=""
   HARBOR_E2B_VERIFIER_RUNTIME_BUNDLE_ROOT=""
-  if [[ "$HARBOR_ENVIRONMENT_TYPE" == "e2b" || "$HARBOR_ENVIRONMENT_TYPE" == "qz" ]] \
+  if [[ "$HARBOR_BACKEND_VERIFIER_UPLOAD" == "1" ]] \
     && verifier_uv_bin_ready; then
     HARBOR_E2B_VERIFIER_UV_SOURCE="$VERIFIER_UV_BIN_DIR_SOURCE"
-    if [[ "$HARBOR_ENVIRONMENT_TYPE" == "e2b" ]]; then
-      echo "[INFO] E2B verifier uv tools will be uploaded after sandbox start"
-    else
-      echo "[INFO] qz verifier uv tools will be uploaded after sandbox start"
-    fi
+    echo "[INFO] $HARBOR_BACKEND_DISPLAY_NAME verifier uv tools will be uploaded after sandbox start"
   fi
-  if [[ "$HARBOR_ENVIRONMENT_TYPE" == "e2b" || "$HARBOR_ENVIRONMENT_TYPE" == "qz" ]] \
+  if [[ "$HARBOR_BACKEND_VERIFIER_UPLOAD" == "1" ]] \
     && verifier_runtime_bundle_required; then
     if ! verifier_runtime_bundle_ready; then
       echo "[ERROR] verifier runtime bundle $VERIFIER_RUNTIME_BUNDLE_ID selected for $HARBOR_VERIFIER_BENCHMARK, but its archive is missing or invalid" >&2
@@ -895,22 +610,11 @@ verify_opik_ingestion_route() {
       "$spans_url"
   )"
 
-  case "$status" in
-    2*|400|401|403|422)
-      ;;
-    404|405)
-      echo "[ERROR] Opik ingestion endpoint returned $status: $spans_url" >&2
-      echo "[ERROR] this usually means the API prefix is wrong (expected .../api)." >&2
-      exit 1
-      ;;
-    *)
-      echo "[WARN] Opik ingestion preflight returned HTTP $status for: $spans_url" >&2
-      ;;
-  esac
+  python3 "$SCRIPT_DIR/harbor_shell_utils.py" check-http opik-ingestion "$status"
 }
 
 docker_hub_preflight_check() {
-  if [[ "$HARBOR_ENVIRONMENT_TYPE" != "docker" ]]; then
+  if [[ "$HARBOR_BACKEND_HOST_DOCKER" != "1" ]]; then
     return 0
   fi
   if [[ "$HARBOR_SKIP_DOCKERHUB_PREFLIGHT" == "1" ]]; then
@@ -929,35 +633,16 @@ docker_hub_preflight_check() {
 
   local registry_status
   local auth_status
-  local preflight_failed=0
   registry_status="$(
     curl --max-time "$timeout" -sS -o /dev/null -w "%{http_code}" https://registry-1.docker.io/v2/ || true
   )"
-  if [[ "$registry_status" != "200" && "$registry_status" != "401" ]]; then
-    echo "[WARN] cannot reach https://registry-1.docker.io/v2/ within ${timeout}s (status=${registry_status:-000})" >&2
-    preflight_failed=1
-  fi
-
   auth_status="$(
     curl --max-time "$timeout" -sS -o /dev/null -w "%{http_code}" \
       "https://auth.docker.io/token?service=registry.docker.io&scope=repository:library/alpine:pull" || true
   )"
-  if [[ "$auth_status" != "200" ]]; then
-    echo "[WARN] cannot reach https://auth.docker.io token service within ${timeout}s (status=${auth_status:-000})" >&2
-    preflight_failed=1
-  fi
-
-  if [[ "$preflight_failed" == "1" ]]; then
-    if [[ "$HARBOR_DOCKERHUB_PREFLIGHT_STRICT" == "1" ]]; then
-      online_env_event "preflight" "docker_registry" "connectivity_unavailable" "critical" "true" "Docker Hub preflight failed in strict mode"
-      echo "[ERROR] Docker Hub preflight failed in strict mode." >&2
-      echo "[ERROR] fix network/proxy/registry mirror first, or set HARBOR_DOCKERHUB_PREFLIGHT_STRICT=0 / HARBOR_SKIP_DOCKERHUB_PREFLIGHT=1." >&2
-      exit 1
-    fi
-    online_env_event "preflight" "docker_registry" "connectivity_degraded" "warning" "false" "Docker Hub preflight failed; continuing because strict mode is disabled"
-    echo "[WARN] Docker Hub preflight failed, continuing (strict mode disabled)." >&2
-    echo "[WARN] if image pull fails later, set a proxy/registry mirror and retry." >&2
-  fi
+  python3 "$SCRIPT_DIR/harbor_shell_utils.py" check-http dockerhub "$registry_status" \
+    --auth-status "$auth_status" --timeout "$timeout" \
+    --strict "$HARBOR_DOCKERHUB_PREFLIGHT_STRICT"
 }
 
 normalize_json_or_fail() {
@@ -1068,7 +753,7 @@ run_oracle_task() {
       --mounts-json "$verifier_mounts_json"
     )
     append_opensandbox_verifier_tool_env
-  elif [[ "$HARBOR_ENVIRONMENT_TYPE" != "e2b" && "$HARBOR_ENVIRONMENT_TYPE" != "qz" ]] \
+  elif [[ "$HARBOR_BACKEND_VERIFIER_UPLOAD" != "1" ]] \
     && { verifier_uv_bin_ready || verifier_runtime_bundle_required; }; then
     local verifier_mounts_json
     local -a verifier_mount_args=()
@@ -1093,11 +778,11 @@ run_oracle_task() {
       append_verifier_uv_env
     fi
   fi
-  if [[ "$HARBOR_ENVIRONMENT_TYPE" == "e2b" || "$HARBOR_ENVIRONMENT_TYPE" == "qz" ]] \
+  if [[ "$HARBOR_BACKEND_VERIFIER_UPLOAD" == "1" ]] \
     && verifier_uv_bin_ready; then
     append_verifier_uv_env
   fi
-  if [[ "$HARBOR_ENVIRONMENT_TYPE" != "opensandbox" ]] \
+  if [[ "$HARBOR_BACKEND_TASK_IMAGES" != "1" ]] \
     && verifier_runtime_bundle_required; then
     append_verifier_runtime_bundle_env
   fi
@@ -1195,26 +880,16 @@ run_harbor() {
         -H "authorization: ${OPIK_API_KEY}" \
         "${OPIK_URL_OVERRIDE%/}/v1/private/projects?page=1&size=1"
     )"
-    case "$_projects_status" in
-      2*|401|403)
-        ;;
-      *)
-        echo "[ERROR] Opik project preflight returned HTTP $_projects_status" >&2
-        echo "[ERROR] endpoint: ${OPIK_URL_OVERRIDE%/}/v1/private/projects" >&2
-        exit 1
-        ;;
-    esac
+    python3 "$SCRIPT_DIR/harbor_shell_utils.py" check-http opik-projects "$_projects_status"
   fi
 
   local normalized_llm_kwargs
   if ! normalized_llm_kwargs="$(normalize_json_or_fail "$HARBOR_LLM_KWARGS")"; then
     online_env_event "agent_setup" "agent_configuration" "invalid_llm_kwargs" "critical" "true" "HARBOR_LLM_KWARGS is not valid JSON"
     echo "[ERROR] HARBOR_LLM_KWARGS is not valid JSON" >&2
-    echo "[ERROR] current HARBOR_LLM_KWARGS: $HARBOR_LLM_KWARGS" >&2
     exit 1
   fi
-  if [[ "$HARBOR_ENVIRONMENT_TYPE" == "docker" || "$HARBOR_ENVIRONMENT_TYPE" == "e2b" \
-    || "$HARBOR_ENVIRONMENT_TYPE" == "opensandbox" || "$HARBOR_ENVIRONMENT_TYPE" == "qz" ]]; then
+  if [[ "$HARBOR_BACKEND_READONLY_MOUNTS" == "1" || "$HARBOR_BACKEND_VERIFIER_UPLOAD" == "1" ]]; then
     VERIFIER_UV_BIN_DIR_SOURCE="$(mktemp -d "${RUNTIME_DIR%/}/verifier-uv.${job_name}.XXXXXX" 2>/dev/null || true)"
     if [[ -n "$VERIFIER_UV_BIN_DIR_SOURCE" ]]; then
       prepare_verifier_uv_bin "$VERIFIER_UV_BIN_DIR_SOURCE" || true
@@ -1428,8 +1103,8 @@ run_harbor() {
       cmd+=( --ae "CC_OPIK_ENABLE_HOOK=false" )
     fi
   else
-    if [[ "$HARBOR_CC_OPIK_ENABLE_HOOK" == "1" && "$HARBOR_ENVIRONMENT_TYPE" == "e2b" ]]; then
-      echo "[INFO] disable realtime Claude hook for E2B because its source is a host bind mount"
+    if [[ "$HARBOR_CC_OPIK_ENABLE_HOOK" == "1" && "$HARBOR_BACKEND_READONLY_MOUNTS" != "1" ]]; then
+      echo "[INFO] disable realtime Claude hook for $HARBOR_BACKEND_DISPLAY_NAME because its source is a host bind mount"
     fi
     cmd+=( --ae "CC_OPIK_ENABLE_HOOK=false" )
   fi
@@ -1438,7 +1113,7 @@ run_harbor() {
   if harbor_agent_is_pi || harbor_agent_is_dsh; then
     agent_package_source=""
   fi
-  if [[ "$HARBOR_ENVIRONMENT_TYPE" == "docker" || "$HARBOR_ENVIRONMENT_TYPE" == "opensandbox" ]]; then
+  if [[ "$HARBOR_BACKEND_READONLY_MOUNTS" == "1" ]]; then
     local -a mount_args=()
     if [[ "$hook_mount_enabled" == "1" ]]; then
       mount_args+=( --mount "$HARBOR_CC_HOOK_SOURCE" "$HARBOR_CC_HOOK_MOUNT_PATH" always )
@@ -1486,19 +1161,18 @@ run_harbor() {
       python3 "$SCRIPT_DIR/harbor_shell_utils.py" readonly-mounts \
         "${mount_args[@]}"
     )"
-  elif [[ "$HARBOR_ENVIRONMENT_TYPE" == "e2b" ]]; then
-    echo "[INFO] E2B environment does not support host bind mounts; skip hook, dependency, and verifier uv mounts"
+  else
+    echo "[INFO] $HARBOR_BACKEND_DISPLAY_NAME environment does not support host bind mounts; skip hook, dependency, and verifier uv mounts"
   fi
   if [[ "$mounts_json" != "[]" ]]; then
     cmd+=( --mounts-json "$mounts_json" )
   fi
   if opensandbox_verifier_tool_env_required; then
     append_opensandbox_verifier_tool_env
-  elif [[ "$HARBOR_ENVIRONMENT_TYPE" == "docker" || "$HARBOR_ENVIRONMENT_TYPE" == "e2b" \
-    || "$HARBOR_ENVIRONMENT_TYPE" == "qz" ]] && verifier_uv_bin_ready; then
+  elif [[ "$HARBOR_BACKEND_TASK_IMAGES" != "1" ]] && verifier_uv_bin_ready; then
     append_verifier_uv_env
   fi
-  if [[ "$HARBOR_ENVIRONMENT_TYPE" != "opensandbox" ]] \
+  if [[ "$HARBOR_BACKEND_TASK_IMAGES" != "1" ]] \
     && verifier_runtime_bundle_required; then
     append_verifier_runtime_bundle_env
   fi
@@ -1762,7 +1436,7 @@ run_opencode_task() {
     fi
 
     local mounts_json="[]"
-    if [[ "$HARBOR_ENVIRONMENT_TYPE" == "docker" || "$HARBOR_ENVIRONMENT_TYPE" == "opensandbox" ]]; then
+    if [[ "$HARBOR_BACKEND_READONLY_MOUNTS" == "1" ]]; then
       local -a mount_args=()
       append_web_mcp_args || return 1
       if [[ -n "$HARBOR_CC_PY_WHEEL_DIR_SOURCE" ]]; then
@@ -1787,11 +1461,10 @@ run_opencode_task() {
     fi
     if opensandbox_verifier_tool_env_required; then
       append_opensandbox_verifier_tool_env
-    elif [[ "$HARBOR_ENVIRONMENT_TYPE" == "docker" || "$HARBOR_ENVIRONMENT_TYPE" == "e2b" \
-      || "$HARBOR_ENVIRONMENT_TYPE" == "qz" ]] && verifier_uv_bin_ready; then
+    elif [[ "$HARBOR_BACKEND_TASK_IMAGES" != "1" ]] && verifier_uv_bin_ready; then
       append_verifier_uv_env
     fi
-    if [[ "$HARBOR_ENVIRONMENT_TYPE" != "opensandbox" ]] \
+    if [[ "$HARBOR_BACKEND_TASK_IMAGES" != "1" ]] \
       && verifier_runtime_bundle_required; then
       append_verifier_runtime_bundle_env
     fi

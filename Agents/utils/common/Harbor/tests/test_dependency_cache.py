@@ -80,6 +80,7 @@ class DependencyCacheTests(unittest.TestCase):
                 "no_proxy": "127.0.0.1,localhost",
                 "AGENT": agent,
                 "DEPENDENCIES_SH": str(HARBOR_DIR / "env" / "dependencies.sh"),
+                "BACKEND_PLAN_PY": str(HARBOR_DIR / "backend_plan.py"),
                 "SCRIPT_DIR": str(self.scripts),
                 "NODE_FIXTURE": str(self.node_fixture),
                 "LOCAL_WHEEL_DIR": str(self.cache),
@@ -111,6 +112,7 @@ class DependencyCacheTests(unittest.TestCase):
         )
         script = r'''
 set -euo pipefail
+eval "$("$PYTHON_BIN" -S "$BACKEND_PLAN_PY")"
 source "$DEPENDENCIES_SH"
 harbor_agent_is_claude_code() { [[ "$AGENT" == claude-code ]]; }
 harbor_agent_is_opencode() { [[ "$AGENT" == opencode ]]; }

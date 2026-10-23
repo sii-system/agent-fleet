@@ -173,7 +173,7 @@ harbor_pick_remote_wheel_url() {
   # install in every task container. Prepare a complete local cache instead so
   # the tarball and npm cache are mounted together.
   if harbor_agent_is_claude_code \
-    && [[ "$HARBOR_ENVIRONMENT_TYPE" == "docker" ]]; then
+    && [[ "$HARBOR_BACKEND_HOST_DOCKER" == "1" ]]; then
     return 1
   fi
   local candidates=()
@@ -228,9 +228,7 @@ harbor_write_effective_wheel_source() {
 }
 
 harbor_apply_effective_wheel_source() {
-  if [[ "$HARBOR_ENVIRONMENT_TYPE" == "e2b" \
-    || "$HARBOR_ENVIRONMENT_TYPE" == "qz" \
-    || "$HARBOR_ENVIRONMENT_TYPE" == "opensandbox" ]]; then
+  if [[ "$HARBOR_BACKEND_REMOTE_RUNTIME" == "1" ]]; then
     # Managed Sandboxes do not provide Notebook-host bind mounts. Avoid making
     # their setup depend on inbound reachability to an ephemeral runner HTTP
     # server; use the configured Sandbox-side registry/dist source instead.
@@ -265,7 +263,7 @@ harbor_prewarm_s3_upload_sources() {
 }
 
 harbor_prewarm_s3_upload_cache() {
-  if [[ "$HARBOR_ENVIRONMENT_TYPE" != "opensandbox" \
+  if [[ "$HARBOR_BACKEND_TASK_IMAGES" != "1" \
     || ( "$YICLOUD_SANDBOX_UPLOAD_BACKEND" != "s3" \
       && "$YICLOUD_SANDBOX_UPLOAD_BACKEND" != "auto" ) ]]; then
     return 0
@@ -320,7 +318,7 @@ harbor_build_verifier_runtime_bundle() {
 harbor_prepare_verifier_runtime_bundle() {
   harbor_build_verifier_runtime_bundle || return 1
   verifier_runtime_bundle_required || return 0
-  if [[ "$HARBOR_ENVIRONMENT_TYPE" == "opensandbox" ]]; then
+  if [[ "$HARBOR_BACKEND_TASK_IMAGES" == "1" ]]; then
     harbor_prewarm_s3_upload_sources "$VERIFIER_RUNTIME_BUNDLE_ARCHIVE_SOURCE"
   fi
 }
@@ -365,7 +363,7 @@ harbor_prepare_or_select_wheels() {
   local remote_url
   remote_url="$(harbor_pick_remote_wheel_url || true)"
   if [[ -n "${remote_url:-}" ]]; then
-    if [[ "$HARBOR_ENVIRONMENT_TYPE" == "opensandbox" \
+    if [[ "$HARBOR_BACKEND_TASK_IMAGES" == "1" \
       && ( "$YICLOUD_SANDBOX_UPLOAD_BACKEND" == "s3" \
         || "$YICLOUD_SANDBOX_UPLOAD_BACKEND" == "auto" ) ]]; then
       echo "S3 upload cannot use a remote-only dependency cache" >&2
@@ -443,7 +441,7 @@ harbor_prepare_agent_runtime() {
     return 1
   fi
 
-  if [[ "$HARBOR_ENVIRONMENT_TYPE" == "e2b" || "$HARBOR_ENVIRONMENT_TYPE" == "qz" ]]; then
+  if [[ "$HARBOR_BACKEND_VERIFIER_UPLOAD" == "1" ]]; then
     mkdir -p "$RUNTIME_DIR"
     rm -f "$WORKERS_FAILED_FILE" "$HARBOR_RUNNER_PREPARE_STATUS_FILE"
     if harbor_build_verifier_runtime_bundle && harbor_validate_runner_cli; then

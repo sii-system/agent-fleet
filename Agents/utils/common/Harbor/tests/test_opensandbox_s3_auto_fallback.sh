@@ -11,6 +11,8 @@ eval "$(sed -n '/^harbor_prewarm_s3_upload_cache()/,/^}/p' "$HARBOR_DIR/env/depe
 
 mkdir -p "$tmp/deps"
 HARBOR_ENVIRONMENT_TYPE=opensandbox
+# The isolated helper consumes the same capability projection as env.sh.
+eval "$(HARBOR_ENVIRONMENT_TYPE="$HARBOR_ENVIRONMENT_TYPE" python3 -S "$HARBOR_DIR/backend_plan.py")"
 YICLOUD_SANDBOX_UPLOAD_BACKEND=auto
 LOCAL_WHEEL_DIR="$tmp/deps"
 AGENT=claude-code

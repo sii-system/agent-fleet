@@ -11,6 +11,12 @@ keeps the shared entry point and Harbor runner wrappers.
 registry, rollout, and preflight consumers. Python startup hooks read the same
 serialized plan. See [adapter handoff](harbor_environment_adapters/README.md).
 
+`core/launch.py` derives the existing launch capabilities, qz source defaults,
+backend validation, and environment arguments from that plan. `backend_launch.py`
+is the SDK-free Shell handoff. `task_image_manager/launch.py` selects explicit
+images, v1/v2 Bundle manifests, or task.toml images before generating the existing
+single-task image CLI arguments. These helpers make no remote calls.
+
 `harbor_environment_adapters/providers/opensandbox_yicloud/` owns the YiCloud
 runtime, split into adapter, configuration, client, lifecycle, services,
 execution, transfer, async commands, packing, S3 staging, and S3 profile
@@ -34,6 +40,8 @@ Agents/utils/common/Harbor/
 ├── run_harbor_worker.sh        # Worker loop for one zellij pane
 ├── run_harbor_registry.sh      # Registry runner with optional final-pane hold
 ├── harboropik.sh               # Harbor CLI orchestration with Opik setup
+├── backend_plan.py             # Shared backend selection and launch capability projection
+├── backend_launch.py           # SDK-free validation, image selection, and environment args
 ├── docker_runtime.py           # Docker verifier PATH and SWE Atlas keepalive compatibility
 ├── harbor_shell_utils.py       # Event, JSON, URL, and mount helpers
 ├── qz_repository_environment_plan.py # Repository/revision final-image plan producer
@@ -64,6 +72,7 @@ Agents/utils/common/Harbor/
 ├── compose_bundle.py            # Dockerfile/Compose to provider-neutral BundleSpec
 ├── task_image_manager/           # Image build, publish, cache, and Bundle manifest
 │   ├── task_cli.py              # Single-task arguments, output, and exit codes
+│   ├── launch.py                # Launch-time image inputs and task CLI argument planning
 │   ├── dataset_cli.py           # Dataset scheduling, failure handling, GC, and summary
 │   ├── prebuild_dataset.sh      # Config/Python selection and dataset CLI exec
 │   ├── README.md                # Image preparation contract
@@ -164,7 +173,7 @@ precedence; credentials belong in `config.local.env` or the shell environment.
 | `agent_config.sh` | Model routing, generation settings, OpenCode configuration, and agent validation |
 | `sandbox_config.sh` | Provider connections, upload settings, and preflight defaults |
 | `rollout_config.sh` | Load `RL_ENV_FILE` and derive shared rollout defaults |
-| `environment_config.sh` | Resolve the effective backend, verifier bundle, and image settings |
+| `environment_config.sh` | Delegate backend selection/policy to Python; select verifier bundle and image settings |
 | `lifecycle.sh` | Run directories, process identity, shutdown, and reset |
 | `datasets.sh` | Dataset resolution, task filtering, and queue claims |
 | `dependencies.sh` | Cache preparation/delivery, verifier bundles, and worker readiness |
@@ -188,12 +197,23 @@ including external commands required to complete them:
 | `env.sh` | `verifier_runtime/python_runtime.py` | Builds and validates the reusable static verifier-runtime primitive |
 | `env.sh` | `verifier_runtime/swe_rebench_v2_bundle_preparer/` | Composes and validates the SWE-rebench-V2 verifier bundle |
 | `harboropik.sh` and model-fusion wrappers | `harbor_shell_utils.py` | Structured events, JSON normalization, URL parsing, and read-only mount JSON |
+| `env/environment_config.sh` | `backend_plan.py`, `harbor_environment_adapters/core/launch.py` | Project the shared plan, launch capabilities, and qz source defaults |
+| `harboropik.sh` and verifier transport selector | `backend_launch.py` | Backend/agent validation, transport policy, and Harbor environment arguments |
+| `harboropik.sh` | `task_image_manager/launch.py` via `backend_launch.py` | Image precedence, v1/v2 manifest parsing, task image lookup, and image CLI arguments/result validation |
+| `harboropik.sh` | `harbor_shell_utils.py check-http` | Docker Hub and Opik preflight response classification, exit status, and online event severity |
 | `monitor_harbor.sh` | `harbor_monitor_utils.py` | Reward, success, exception, and environment statistics |
 | `Agents/utils/rl/run_rl_rollout_server.sh`, `run_rl_rollout_worker.sh`, `monitor_rl_rollout.sh` | `Agents/utils/rl/rollout_worker_utils.py` | Request headers/JSON, LLM kwargs, result assembly, and monitor rendering |
 | Mimo/OpenRouter `run_tb21.sh` | `model-fusion/router_cli_utils.py` | Wheel metadata/extraction, doctor validation, and task-list conversion |
 
 The Python command surfaces are internal implementation boundaries; operators
 continue to use the shell entry points documented in the README files.
+
+Backend helpers run with `python3 -S`, keeping provider startup hooks inactive
+while inspecting local launch inputs. Shell evaluates only their fixed variable
+names and quoted array elements after a successful exit; failures emit no partial
+assignments. Shell still owns Docker/curl processes, image CLI execution, runtime
+directories, agent argument collection, and Harbor process/exit handling. The
+image CLI uses the configured runner Python as before.
 
 ## Verifier Isolation
 
