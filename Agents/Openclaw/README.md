@@ -70,7 +70,7 @@ Selectors accept `all`, `3`, `1,3,5`, or `2-5`. See [GUIDE.md](./GUIDE.md#fleet-
 
 | Doc | Contents |
 |---|---|
-| [GUIDE.md](./GUIDE.md) | Configuration variables, opik plugin, package mirrors, `openclaw.json.template`, `openclaw-fleet.sh` command reference, Session TUI, multi-node Ansible, Linux/macOS notes, files layout |
+| [GUIDE.md](./GUIDE.md) | Configuration variables, opik plugin, package mirrors, `openclaw.json.template`, `openclaw-fleet.sh` command reference, Session TUI, Linux/macOS notes, files layout |
 | [SECURITY.md](./SECURITY.md) | Container/image/config/infra policy matrix, known limitations |
 
 ## Benchmarks

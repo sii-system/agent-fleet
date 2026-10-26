@@ -67,13 +67,13 @@ grep -q -- '--build-arg NPM_CONFIG_REGISTRY=https://registry.npmmirror.com' "$LO
 
 # Without an endpoint there is no Opik layer, and retired switches must not
 # resurrect it or require an Opik plugin checkout.
+mv "$TMP_DIR/third_party/agent-opik-plugin" "$TMP_DIR/plugin-checkout"
 : > "$LOG"
 env -u OPIK_URL \
   PATH="$TMP_DIR/bin:$PATH" \
   LOG="$LOG" \
   TRACE_TO_OPIK=true \
   OPIK_PLUGIN=enabled \
-  TRACE_PLUGIN_SOURCE_DIR="$TMP_DIR/missing-opik-plugin" \
   "$PROJECT_DIR/scripts/build-openclaw-image.sh" >/dev/null 2>&1
 
 grep -q -- 'build --load -t openclaw:local ' "$LOG"
@@ -90,7 +90,6 @@ printf 'TRACE_TO_OPIK=true\nAPI_KEY=config-model-secret\nOPIK_API_KEY=config-opi
 env -u OPIK_URL -u TRACE_TO_OPIK -u API_KEY -u OPIK_API_KEY \
   PATH="$TMP_DIR/bin:$PATH" \
   LOG="$LOG" \
-  TRACE_PLUGIN_SOURCE_DIR="$TMP_DIR/missing-opik-plugin" \
   "$PROJECT_DIR/scripts/build-openclaw-image.sh" >/dev/null 2>&1
 
 grep -q -- 'build --load -t openclaw:local ' "$LOG"
@@ -104,6 +103,7 @@ if grep -q -- 'config-model-secret\|config-opik-secret' "$LOG"; then
 fi
 
 # An endpoint supplied for this run remains the highest-precedence layer.
+mv "$TMP_DIR/plugin-checkout" "$TMP_DIR/third_party/agent-opik-plugin"
 rm -f "$TMP_DIR/config.local.env"
 : > "$LOG"
 PATH="$TMP_DIR/bin:$PATH" \
@@ -118,7 +118,6 @@ grep -q -- 'openclaw:local-opik' "$LOG"
 warn_output="$(
   env -u OPIK_URL PATH="$TMP_DIR/bin:$PATH" LOG="$LOG" \
     TRACE_TO_OPIK=false OPIK_MODE=remote \
-    TRACE_PLUGIN_SOURCE_DIR="$TMP_DIR/missing-opik-plugin" \
     "$PROJECT_DIR/scripts/build-openclaw-image.sh" 2>&1 >/dev/null
 )"
 case "$warn_output" in
@@ -129,3 +128,34 @@ case "$warn_output" in
   *"OPIK_MODE is no longer used"*) ;;
   *) echo "missing OPIK_MODE deprecation warning" >&2; exit 1 ;;
 esac
+
+# The Opik Dockerfile copies the bundled submodule, so an alternate source
+# must neither break a complete bundle nor replace a missing one.
+plugin_test_failures=0
+: > "$LOG"
+if ! PATH="$TMP_DIR/bin:$PATH" LOG="$LOG" \
+  OPIK_URL="https://opik.example.invalid/api" \
+  TRACE_PLUGIN_SOURCE_DIR="$TMP_DIR/missing-opik-plugin" \
+  "$PROJECT_DIR/scripts/build-openclaw-image.sh" >/dev/null 2>&1; then
+  echo "alternate plugin source incorrectly overrode the bundled checkout" >&2
+  plugin_test_failures=1
+fi
+
+mv "$TMP_DIR/third_party/agent-opik-plugin" "$TMP_DIR/alternate-opik-plugin"
+: > "$LOG"
+if PATH="$TMP_DIR/bin:$PATH" LOG="$LOG" \
+  OPIK_URL="https://opik.example.invalid/api" \
+  TRACE_PLUGIN_SOURCE_DIR="$TMP_DIR/alternate-opik-plugin" \
+  "$PROJECT_DIR/scripts/build-openclaw-image.sh" >"$TMP_DIR/missing-bundle.log" 2>&1; then
+  echo "alternate plugin source incorrectly bypassed bundled checkout validation" >&2
+  plugin_test_failures=1
+fi
+if grep -q -- 'openclaw:local-opik' "$LOG"; then
+  echo "Opik image built without its bundled source" >&2
+  plugin_test_failures=1
+fi
+if ! grep -q "submodule is missing or incomplete: $TMP_DIR/third_party/agent-opik-plugin" "$TMP_DIR/missing-bundle.log"; then
+  echo "missing bundled checkout diagnostic" >&2
+  plugin_test_failures=1
+fi
+exit "$plugin_test_failures"
