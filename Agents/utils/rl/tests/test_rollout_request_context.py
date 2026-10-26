@@ -37,6 +37,28 @@ class RolloutRequestContextTest(unittest.TestCase):
     def test_http_backlog_supports_rollout_burst(self) -> None:
         self.assertGreaterEqual(MODULE.RolloutHTTPServer.request_queue_size, 300)
 
+    def test_credentials_remain_host_owned_with_retired_api_key_mode(self) -> None:
+        with mock.patch.dict(
+            os.environ,
+            {"RL_API_KEY_MODE": "per_request", "RL_API_KEY": "host-test-only"},
+        ):
+            listener = importlib.util.module_from_spec(SPEC)
+            SPEC.loader.exec_module(listener)
+        self.stack.enter_context(mock.patch(f"{__name__}.MODULE", listener))
+
+        _, _, queue_root, _ = self._enqueue_with_temp_context({})
+        payload = self._read_default_payload(queue_root)
+        self.assertEqual(payload["api_key_mode"], "static")
+        self.assertNotIn("host-test-only", json.dumps(payload))
+
+        handler = self._handler(b"")
+        handler.path = "/health"
+        handler.do_GET()
+        status, health = handler._send_json.call_args.args
+        self.assertEqual(status, MODULE.HTTPStatus.OK)
+        self.assertEqual(health["api_key_mode"], "static")
+        self.assertNotIn("host-test-only", json.dumps(health))
+
     def _enqueue_with_temp_context(
         self,
         request: dict[str, object],

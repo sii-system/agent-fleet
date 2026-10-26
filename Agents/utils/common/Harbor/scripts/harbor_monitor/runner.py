@@ -134,7 +134,6 @@ def run_loop(
     max_retries: int,
     S_default: int,
     S_min: int,
-    S_max: int,
     startup_grace: int,
     configured_timeout: int | None,
     total_override: int | None,
@@ -155,7 +154,6 @@ def run_loop(
     state = load_state(state_path)
     state.setdefault("retry_count", 0)
     state.setdefault("history", [])
-    state.setdefault("consecutive_stall", 0)
     state.setdefault("last_progress_ts", None)
     state.setdefault("run_start_ts", None)
     state.setdefault("notify_recheck_count", 0)
@@ -264,14 +262,10 @@ def run_loop(
 
         # adaptive S
         benchmark_status = output["benchmark_status"]
-        consecutive_stall = state.get("consecutive_stall", 0)
         status_reason = str(output.get("status_reason") or "")
         if benchmark_status == "running" and status_reason == "progressing":
             adaptive_S = max(S_min, int(adaptive_S * 0.9))
-        else:
-            consecutive_stall = 0
         state["adaptive_S"] = adaptive_S
-        state["consecutive_stall"] = consecutive_stall
 
         requested_action = decide_action(
             output,
