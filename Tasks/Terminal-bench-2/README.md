@@ -7,10 +7,10 @@ harbor_terminalbench21_tasks.txt
 tb_tasks.txt
 ```
 
-`harbor_terminalbench21_tasks.txt` is used by `Agents/utils/common/Harbor`.
-Use it through `Agents/utils/common/Harbor/start.sh` by setting
-`DATASET_NAME=terminalbench21` and `DATASET_PATH` in
-`Agents/utils/common/Harbor/env.sh`.
+`harbor_terminalbench21_tasks.txt` supplies task selection for local runs through
+`Agents/utils/common/Harbor`. Use `DATASET_NAME=auto DATASET_PATH=/data/terminalbench21/tasks`
+with `bash Agents/utils/common/Harbor/start.sh`.
+The `terminalbench21` alias selects the Harbor registry dataset instead.
 
 Optional online analysis:
 

@@ -100,7 +100,7 @@ benchmark with GPU tasks excluded. Its default agent is ale-command, using
 image-provided entrypoints, or an explicitly named module:Class Harbor agent.
 Other agent aliases are unsupported for this taskset; return ready=false.
 
-Harbor tasksets include seta, smith, terminalbench21, sweverify,
+Harbor tasksets include seta, smith, terminalbench21, sweverify, browsecomp, deepsearchqa,
 agent-fleet-swe-rebench-v2, registry ids, and explicit local paths. Supported
 Harbor agents are claude-code, opencode, pi, and dsh-sdk-minimal.
 If another Harbor agent, including Terminus-2, is requested, return ready=false.
@@ -112,7 +112,7 @@ explicitly requests the third-party TaskTrove dataset.
 Preserve explicit registry ids and local paths exactly.
 Copy task names exactly as written. Join multiple explicit names with commas.
 Never invent or complete a task name, and never infer a taskset from task names.
-Task selection is supported only for seta, smith, terminalbench21, sweverify,
+Task selection is supported only for seta, smith, terminalbench21, sweverify, browsecomp, deepsearchqa,
 agent-fleet-swe-rebench-v2, explicit local paths, waa, waa-v2, waa2, ale, pinchbench, and clawbio. If
 exact tasks are requested for another registry id, return ready=false.
 
@@ -151,7 +151,7 @@ read -r -d '' OUTPUT_SCHEMA <<'JSON' || true
           "schema_version": {"const": 1},
           "taskset": {"type": "string"},
           "task": {"type": "string"},
-          "agent": {"enum": ["claude-code", "opencode", "pi", "dsh-sdk-minimal", "openclaw"]},
+          "agent": {"type": "string"},
           "workers": {"type": "integer", "minimum": 1, "maximum": 4096}
         }
       }
