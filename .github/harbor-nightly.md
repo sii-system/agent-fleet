@@ -52,6 +52,15 @@ are not logged.
 A model that disappears mid-run can still fail trials. The preflight checks
 availability at startup; it does not change models or weaken the health gate.
 
+After benchmark selection, the random nightly also checks SWE Atlas Q&A's
+prescribed judge and Tau3's prescribed user/assertion models. A missing model
+stops the job before task environments start. To use a separate gateway for
+these benchmark dependencies, configure the `HARBOR_NIGHTLY_VERIFIER_BASE_URL`
+environment variable and `HARBOR_NIGHTLY_VERIFIER_API_KEY` secret together in
+`self-hosted-env`. After successful checks, the workflow exports that gateway
+through the task manifests' `OPENAI_*` inputs. Agent routing and the benchmark
+model names retain their existing settings.
+
 For fixed benchmark runs, the shared launcher passes the active model gateway
 hostname through Harbor's `--allow-agent-host`. This lets agent model requests
 reach the configured gateway when a task uses `no-network` or an allowlist that
@@ -93,6 +102,12 @@ also had three agent timeouts; removing the image incompatibility alone does
 not establish that all tasks will complete within their time budgets.
 
 ## Pinned runtime preparation
+
+Both workflows bind `HARBOR_CLAUDE_CODE_DIR` to their checked-out source. A
+service-level override must not route a new checkout through an older runtime
+copy: the October 22–25 runs used a legacy `.tar.xz` installer against a gzip
+dependency cache. Docker installations also replace unsupported existing Node
+versions from the portable cache, even when the image already supplies npm.
 
 Both workflows call `Agents/utils/common/Harbor/setup_runner_env.sh` during
 prerequisite validation and export their own runner directories under

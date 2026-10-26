@@ -420,6 +420,11 @@ class ClaudeInstallCommandTest(unittest.TestCase):
     def test_s3_node_runtime_does_not_reenter_package_manager_fallback(self) -> None:
         self._assert_isolated_node_install(corrupt_cache=False)
 
+    def test_docker_replaces_old_node_even_when_npm_is_present(self) -> None:
+        self._assert_isolated_node_install(
+            corrupt_cache=False, environment_type="docker", old_node=True
+        )
+
     def test_s3_gzip_node_runtime_installs_without_python_or_xz(self) -> None:
         self._assert_isolated_node_install(corrupt_cache=False, minimal_path=True)
 
@@ -427,7 +432,8 @@ class ClaudeInstallCommandTest(unittest.TestCase):
         self._assert_isolated_node_install(corrupt_cache=True)
 
     def _assert_isolated_node_install(
-        self, *, corrupt_cache: bool, minimal_path: bool = False
+        self, *, corrupt_cache: bool, minimal_path: bool = False,
+        environment_type: str = "opensandbox", old_node: bool = False,
     ) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -474,7 +480,7 @@ class ClaudeInstallCommandTest(unittest.TestCase):
                 node_archive.rename(dist)
                 node_archive.write_bytes(b"corrupt archive")
                 extra_env["CC_NODE_DIST_URL"] = dist.as_uri()
-            command = self._install_command(extra_env, environment_type="opensandbox")
+            command = self._install_command(extra_env, environment_type=environment_type)
 
             fake_bin = root / "fake-bin"
             fake_bin.mkdir()
@@ -484,6 +490,11 @@ class ClaudeInstallCommandTest(unittest.TestCase):
                 f"#!/bin/sh\ntouch {shlex.quote(str(apt_marker))}\nexit 97\n"
             )
             fake_apt.chmod(0o755)
+            if old_node:
+                for name in ("node", "npm"):
+                    binary = fake_bin / name
+                    binary.write_text("#!/bin/sh\nexit 96\n")
+                    binary.chmod(0o755)
             if minimal_path:
                 for name in (
                     "chmod",
@@ -629,7 +640,7 @@ class ClaudeInstallCommandTest(unittest.TestCase):
         guarded_extract = (
             'if python3 - <<\'PY\' "$node_dist_tgz" "$node_dir"'
         )
-        package_manager_fallback = "if ! command -v npm >/dev/null 2>&1; then"
+        package_manager_fallback = "if node_runtime_required; then"
         self.assertIn(guarded_extract, command)
         self.assertLess(
             command.index(guarded_extract),

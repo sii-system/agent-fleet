@@ -52,6 +52,9 @@ agent_fleet_prerequisite_init_runtime
 
 zellij_asset="$(agent_fleet_platform_asset zellij)"
 uv_asset="$(agent_fleet_platform_asset uv)"
+if [[ "$(uname -s)" == Linux ]]; then
+  [[ "$uv_asset" == uv-*-unknown-linux-musl.tar.gz ]]
+fi
 zellij_archive="$AGENT_FLEET_CACHE_DIR/downloads/zellij/$ZELLIJ_VERSION/$zellij_asset"
 uv_archive="$AGENT_FLEET_CACHE_DIR/downloads/uv/$UV_VERSION/$uv_asset"
 mkdir -p "$(dirname "$zellij_archive")" "$(dirname "$uv_archive")"

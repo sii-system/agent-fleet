@@ -3,6 +3,7 @@ import importlib.util
 import io
 import json
 import os
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -116,6 +117,90 @@ class PreflightTest(unittest.TestCase):
             self.assertEqual(preflight.main([]), 1)
             probe.assert_not_called()
             self.assertIn("::error::", output.getvalue())
+
+    def test_checks_benchmark_models_without_replacing_them_with_agent_model(self):
+        for benchmark, expected in (
+            ("scale-ai/swe-atlas-qna", "anthropic/claude-opus-4-5-20251101"),
+            ("sierra-research/tau3-bench", "gpt-5.2"),
+        ):
+            with (
+                self.subTest(benchmark=benchmark),
+                mock.patch.dict(os.environ, {
+                    "MODEL": "fake-agent-model", "API_KEY": "fake-key",
+                    "BASE_URL_RAW": "https://agent.invalid",
+                }, clear=True),
+                mock.patch.object(preflight, "probe") as probe,
+                contextlib.redirect_stdout(io.StringIO()),
+            ):
+                self.assertEqual(preflight.main(["--benchmark", benchmark]), 0)
+                self.assertEqual(probe.call_args_list, [mock.call(
+                    "https://agent.invalid/v1", expected, "fake-key", "chat/completions"
+                )])
+
+    def test_separate_gateway_is_published_only_after_successful_checks(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "github-env"
+            env = {
+                "API_KEY": "fake-agent-key", "BASE_URL_RAW": "https://agent.invalid",
+                "VERIFIER_BASE_URL_RAW": "https://judge.invalid/v1/chat/completions",
+                "VERIFIER_API_KEY": "fake-judge-key", "GITHUB_ENV": str(target),
+            }
+            with (
+                mock.patch.dict(os.environ, env, clear=True),
+                mock.patch.object(preflight, "probe", side_effect=preflight.PreflightError("HTTP 404")),
+                contextlib.redirect_stderr(io.StringIO()) as error,
+            ):
+                self.assertEqual(preflight.main(["--benchmark", "scale-ai/swe-atlas-qna"]), 1)
+                self.assertFalse(target.exists())
+                self.assertNotIn("fake-judge-key", error.getvalue())
+            with (
+                mock.patch.dict(os.environ, env, clear=True),
+                mock.patch.object(preflight, "probe") as probe,
+                contextlib.redirect_stdout(io.StringIO()) as output,
+            ):
+                self.assertEqual(preflight.main(["--benchmark", "scale-ai/swe-atlas-qna"]), 0)
+                self.assertEqual(probe.call_args.args[:3], (
+                    "https://judge.invalid/v1", "anthropic/claude-opus-4-5-20251101", "fake-judge-key"
+                ))
+                self.assertEqual(target.read_text(), (
+                    "OPENAI_BASE_URL=https://judge.invalid/v1\n"
+                    "OPENAI_API_BASE=https://judge.invalid/v1\nOPENAI_API_KEY=fake-judge-key\n"
+                ))
+                self.assertNotIn("fake-judge-key", output.getvalue())
+
+    def test_partial_gateway_configuration_fails_without_requests(self):
+        with (
+            mock.patch.dict(os.environ, {"VERIFIER_BASE_URL_RAW": "https://judge.invalid"}, clear=True),
+            mock.patch.object(preflight, "probe") as probe,
+            contextlib.redirect_stderr(io.StringIO()),
+        ):
+            self.assertEqual(preflight.main(["--benchmark", "scale-ai/swe-atlas-qna"]), 1)
+            probe.assert_not_called()
+
+    def test_unrelated_benchmarks_need_no_additional_models(self):
+        with mock.patch.dict(os.environ, {}, clear=True), mock.patch.object(preflight, "probe") as probe:
+            self.assertEqual(preflight.main(["--benchmark", "seta"]), 0)
+            probe.assert_not_called()
+
+    def test_rejects_credential_newlines_before_writing_environment(self):
+        with (
+            mock.patch.dict(os.environ, {
+                "VERIFIER_BASE_URL_RAW": "https://judge.invalid",
+                "VERIFIER_API_KEY": "fake-key\nINJECTED=value",
+            }, clear=True),
+            mock.patch.object(preflight, "probe") as probe,
+            contextlib.redirect_stderr(io.StringIO()) as output,
+        ):
+            self.assertEqual(preflight.main(["--benchmark", "scale-ai/swe-atlas-qna"]), 1)
+            probe.assert_not_called()
+            self.assertNotIn("INJECTED", output.getvalue())
+
+    def test_gpt5_dependency_uses_completion_token_budget(self):
+        with mock.patch.object(preflight, "urlopen", return_value=self.response({"choices": [{}]})) as request:
+            preflight.probe("https://judge.invalid/v1", "gpt-5.2", "fake-key", "chat/completions")
+            body = json.loads(request.call_args.args[0].data)
+            self.assertEqual(body["max_completion_tokens"], 16)
+            self.assertNotIn("max_tokens", body)
 
 
 if __name__ == "__main__":

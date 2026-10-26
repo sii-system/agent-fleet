@@ -164,7 +164,7 @@ agent_fleet_uv_pair_ok() {
 }
 
 agent_fleet_platform_asset() {
-  local tool="$1" os arch libc="gnu"
+  local tool="$1" os arch
   os="$(uname -s)"
   arch="$(uname -m)"
   case "$arch" in
@@ -175,8 +175,9 @@ agent_fleet_platform_asset() {
   case "$os:$tool" in
     Linux:zellij) printf 'zellij-%s-unknown-linux-musl.tar.gz\n' "$arch" ;;
     Linux:uv)
-      ldd --version 2>&1 | grep -qi musl && libc="musl"
-      printf 'uv-%s-unknown-linux-%s.tar.gz\n' "$arch" "$libc"
+      # These tools are also copied into task containers, including images
+      # without the host's glibc loader. Use the portable static release.
+      printf 'uv-%s-unknown-linux-musl.tar.gz\n' "$arch"
       ;;
     Darwin:*) printf '%s-%s-apple-darwin.tar.gz\n' "$tool" "$arch" ;;
     *) agent_fleet_prereq_error "unsupported $tool operating system: $os"; return 1 ;;

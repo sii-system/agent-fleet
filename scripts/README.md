@@ -103,6 +103,10 @@ dependency and is prepared separately by the runner.
   `HARBOR_RUNNER_PYTHON_VERSION`; the legacy `HARBOR_RUNNER_PYTHON` name is
   still accepted. A one-shot custom setup records the selected version in the
   host runner directory so later runs validate against the same version.
+- Managed Linux uv/uvx downloads use the static musl release because Harbor
+  also copies those binaries into verifier images that may lack the host's
+  glibc loader. Existing installations with the correct version are reused;
+  replace their binaries explicitly when migrating a glibc-based installation.
 - A mode-`0600` backup is taken before modifying `config.local.env`; its
   `*.local.env.bak.agent-fleet` name is git-ignored.
 

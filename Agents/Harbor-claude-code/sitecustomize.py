@@ -280,16 +280,10 @@ def _patch_claude_code_realtime_hooks() -> None:
                 f"[ -f {node_runtime_path} ]"
                 if opensandbox_runtime
                 else (
-                    "! command -v npm >/dev/null 2>&1 && "
-                    f"[ -f {node_runtime_path} ] && "
-                    "command -v python3 >/dev/null 2>&1"
+                    f"node_runtime_required && [ -f {node_runtime_path} ]"
                 )
             )
-            node_fallback_condition = (
-                "node_runtime_required"
-                if opensandbox_runtime
-                else "! command -v npm >/dev/null 2>&1"
-            )
+            node_fallback_condition = "node_runtime_required"
             node_runtime_error = (
                 "echo 'OpenSandbox Node runtime is missing or unusable; "
                 "check the cached archive or CC_NODE_DIST_URL. "
