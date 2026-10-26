@@ -22,7 +22,7 @@ SPEC.loader.exec_module(preflight)
 
 
 class NightlyVerifierEnvTest(unittest.TestCase):
-    def test_run_profile_reaches_native_verifier_and_simulator_manifests(self):
+    def test_run_settings_reach_native_verifier_and_simulator_manifests(self):
         for benchmark, template, expected_models in (
             ("scale-ai/swe-atlas-qna", {
                 "EVAL_API_KEY": "${OPENAI_API_KEY}",
@@ -50,9 +50,7 @@ class NightlyVerifierEnvTest(unittest.TestCase):
                     mock.patch.object(preflight, "probe"),
                     contextlib.redirect_stdout(io.StringIO()),
                 ):
-                    self.assertEqual(preflight.main([
-                        "--benchmark", benchmark, "--benchmark-model-source", "run"
-                    ]), 0)
+                    self.assertEqual(preflight.main(["--benchmark", benchmark]), 0)
                 exported = dict(line.split("=", 1) for line in target.read_text().splitlines())
                 script = """
 source "$HARBOR_TEST_ENV"

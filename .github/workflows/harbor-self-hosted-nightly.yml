@@ -178,22 +178,18 @@ jobs:
           } >> "$GITHUB_OUTPUT"
           printf 'Selected %s tasks from %s: %s\n' "$task_count" "$benchmark" "$tasks"
 
-      - name: Check benchmark model dependencies
+      - name: Configure benchmark models
         timeout-minutes: 3
         env:
-          BASE_URL_RAW: ${{ vars.LLM_REVIEW_BASE_URL }}
           BASE_URL: ${{ vars.LLM_REVIEW_BASE_URL }}
           API_KEY: ${{ secrets.LLM_REVIEW_API_KEY }}
           MODEL: ${{ vars.HARBOR_NIGHTLY_MODEL || vars.LLM_REVIEW_MODEL }}
-          BENCHMARK_MODEL_SOURCE: ${{ vars.HARBOR_NIGHTLY_BENCHMARK_MODEL_SOURCE || 'run' }}
           VERIFIER_BASE_URL_RAW: ${{ vars.HARBOR_NIGHTLY_VERIFIER_BASE_URL }}
           VERIFIER_API_KEY: ${{ secrets.HARBOR_NIGHTLY_VERIFIER_API_KEY }}
           BENCHMARK: ${{ steps.params.outputs.benchmark }}
         run: |
           set -euo pipefail
-          python3 .github/scripts/harbor_nightly_preflight.py \
-            --benchmark "$BENCHMARK" \
-            --benchmark-model-source "$BENCHMARK_MODEL_SOURCE"
+          python3 .github/scripts/harbor_nightly_preflight.py --benchmark "$BENCHMARK"
 
       - name: Run Harbor benchmark
         id: harbor

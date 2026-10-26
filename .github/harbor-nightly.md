@@ -52,24 +52,18 @@ are not logged.
 A model that disappears mid-run can still fail trials. The preflight checks
 availability at startup.
 
-After benchmark selection, the random nightly checks SWE Atlas Q&A's judge
-and Tau3's user/assertion models. By default they reuse the run's `BASE_URL`,
-`MODEL`, and `API_KEY`. After successful checks, the workflow forwards the
-gateway through `OPENAI_*` and the model through `EVAL_MODEL` (Atlas) or
-`TAU2_USER_MODEL` / `TAU2_NL_ASSERTIONS_MODEL` (Tau3). Explicit role-model
-environment settings take precedence. Tau3's LiteLLM model settings use an
-`openai/` provider prefix so custom gateway aliases work; the request sends
-the original model ID. A missing model stops the job before task environments
-start. Run mode also avoids Tau3's implicit GPT-specific reasoning parameter;
-explicit Tau3 user argument settings are preserved.
+After selection, the random nightly forwards the already-checked run's
+`BASE_URL`, `MODEL`, and `API_KEY` to Atlas's judge and Tau3's simulator/judge
+through `OPENAI_*`, `EVAL_MODEL`, and `TAU2_*` settings. This makes no additional
+model requests by default. Explicit role-model environment settings or the
+optional `HARBOR_NIGHTLY_VERIFIER_BASE_URL` / `HARBOR_NIGHTLY_VERIFIER_API_KEY`
+pair are checked only when they differ from the run configuration; identical
+overrides are checked once. Settings are published after all checks pass.
 
-Set `HARBOR_NIGHTLY_BENCHMARK_MODEL_SOURCE=benchmark` in `self-hosted-env` to
-retain the task packages' prescribed model defaults. In that mode, configure
-the `HARBOR_NIGHTLY_VERIFIER_BASE_URL` variable and
-`HARBOR_NIGHTLY_VERIFIER_API_KEY` secret together when a separate gateway is
-needed. The default `run` mode uses the run's gateway and credential. Record
-the selected judge/simulator models when comparing scores: using the run's
-model changes the evaluation configuration from the benchmark defaults.
+Tau3 uses an `openai/` SDK prefix while sending the original model ID, and
+avoids its implicit GPT-specific reasoning parameter for custom aliases.
+Explicit user arguments are preserved. Scores reflect the selected evaluation
+models, which may differ from the benchmark's prescribed defaults.
 
 For fixed benchmark runs, the shared launcher passes the active model gateway
 hostname through Harbor's `--allow-agent-host`. This lets agent model requests
