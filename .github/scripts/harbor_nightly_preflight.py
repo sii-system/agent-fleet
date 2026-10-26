@@ -95,60 +95,109 @@ def probe(root: str, model: str, key: str, route: str) -> None:
         time.sleep(2 ** attempt)
 
 
-def check_benchmark_dependencies(benchmark: str) -> None:
+def check_benchmark_dependencies(benchmark: str, model_source: str = "benchmark") -> None:
     models = BENCHMARK_MODELS.get(benchmark, ())
     if not models:
         return
-    separate_url = os.environ.get("VERIFIER_BASE_URL_RAW", "").strip()
-    separate_key = os.environ.get("VERIFIER_API_KEY", "")
-    if bool(separate_url) != bool(separate_key):
-        raise PreflightError(
-            "Set both HARBOR_NIGHTLY_VERIFIER_BASE_URL and "
-            "HARBOR_NIGHTLY_VERIFIER_API_KEY for a separate benchmark gateway"
+    run_model = ""
+    separate_url = ""
+    if model_source == "run":
+        base = os.environ.get("BASE_URL", os.environ.get("BASE_URL_RAW", ""))
+        key = os.environ.get("API_KEY", "")
+        run_model = os.environ.get("MODEL", "").strip()
+        if not run_model:
+            raise PreflightError("Run model profile requires nonempty MODEL")
+    else:
+        separate_url = os.environ.get("VERIFIER_BASE_URL_RAW", "").strip()
+        separate_key = os.environ.get("VERIFIER_API_KEY", "")
+        if bool(separate_url) != bool(separate_key):
+            raise PreflightError(
+                "Set both HARBOR_NIGHTLY_VERIFIER_BASE_URL and "
+                "HARBOR_NIGHTLY_VERIFIER_API_KEY for a separate benchmark gateway"
+            )
+        base = separate_url or os.environ.get(
+            "OPENAI_BASE_URL", os.environ.get("BASE_URL_RAW", "")
         )
-    base = separate_url or os.environ.get(
-        "OPENAI_BASE_URL", os.environ.get("BASE_URL_RAW", "")
-    )
-    key = separate_key or os.environ.get(
-        "OPENAI_API_KEY", os.environ.get("API_KEY", "")
-    )
+        key = separate_key or os.environ.get(
+            "OPENAI_API_KEY", os.environ.get("API_KEY", "")
+        )
     if not key or "\n" in key or "\r" in key:
         raise PreflightError("Benchmark model preflight requires a valid API credential")
     root = api_root(base)
-    checked = set()
+    selected = []
     for label, variable, default in models:
-        model = os.environ.get(variable, default).strip()
-        if not model:
-            raise PreflightError(f"Benchmark model preflight requires nonempty {variable}")
-        if model not in checked:
+        model = os.environ.get(variable, run_model or default).strip()
+        if not model or "\n" in model or "\r" in model:
+            raise PreflightError(f"Benchmark model preflight requires a valid {variable}")
+        # LiteLLM requires a provider for custom gateway aliases. Its
+        # OpenAI adapter strips this prefix before sending the model ID.
+        if (model_source == "run" and benchmark == "sierra-research/tau3-bench"
+                and (variable not in os.environ or not model.startswith("openai/"))):
+            model = f"openai/{model}"
+        selected.append((label, variable, model))
+    exported = {"OPENAI_BASE_URL": root, "OPENAI_API_BASE": root, "OPENAI_API_KEY": key}
+    if model_source == "run":
+        exported.update({variable: model for _label, variable, model in selected})
+        if (benchmark == "sierra-research/tau3-bench"
+                and "TAU2_USER_LLM_ARGS_JSON" not in os.environ):
+            # A nonempty JSON override avoids the task's implicit GPT-specific
+            # reasoning_effort=low, which LiteLLM rejects for custom aliases.
+            # Preserve inference parameters the caller configured explicitly.
+            user_args = {}
+            effort = os.environ.get("TAU2_USER_REASONING_EFFORT", "")
+            if effort:
+                user_args["reasoning_effort"] = effort
             try:
-                probe(root, model, key, "chat/completions")
+                temperature = os.environ.get("TAU2_USER_TEMPERATURE", "")
+                if temperature:
+                    user_args["temperature"] = float(temperature)
+                exported["TAU2_USER_LLM_ARGS_JSON"] = json.dumps(
+                    user_args, allow_nan=False, separators=(",", ":")
+                )
+            except ValueError:
+                raise PreflightError("TAU2_USER_TEMPERATURE must be a finite number") from None
+    checked = set()
+    for label, variable, model in selected:
+        request_model = (
+            model.removeprefix("openai/")
+            if benchmark == "sierra-research/tau3-bench" else model
+        )
+        if request_model not in checked:
+            try:
+                probe(root, request_model, key, "chat/completions")
             except PreflightError as exc:
+                hint = (
+                    "Check the run's BASE_URL, MODEL, and API_KEY"
+                    if model_source == "run" else
+                    "Configure HARBOR_NIGHTLY_VERIFIER_BASE_URL / "
+                    "HARBOR_NIGHTLY_VERIFIER_API_KEY with access to the benchmark model"
+                )
                 raise PreflightError(
-                    f"{label} unavailable: {exc}. Keep the benchmark model and "
-                    "configure HARBOR_NIGHTLY_VERIFIER_BASE_URL / "
-                    "HARBOR_NIGHTLY_VERIFIER_API_KEY with access to it"
+                    f"{label} unavailable: {exc}. {hint}"
                 ) from None
-            checked.add(model)
-        print(f"Benchmark model preflight {label}: passed")
-    if separate_url and os.environ.get("GITHUB_ENV"):
+            checked.add(request_model)
+        print(f"Benchmark model preflight {label}: passed (source={model_source})")
+    if (model_source == "run" or separate_url) and os.environ.get("GITHUB_ENV"):
         # Task manifests interpolate these host values for Atlas's EVAL_*
         # settings and Tau3's environment/verifier OPENAI_* settings. The
-        # agent retains BASE_URL / API_KEY and its existing selected model.
+        # agent retains its selected configuration. Run mode also supplies
+        # each role's model so task defaults cannot select unavailable models.
         with Path(os.environ["GITHUB_ENV"]).open("a", encoding="utf-8") as output:
-            output.write(
-                f"OPENAI_BASE_URL={root}\nOPENAI_API_BASE={root}\nOPENAI_API_KEY={key}\n"
-            )
+            output.write("".join(f"{variable}={value}\n" for variable, value in exported.items()))
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--agent", choices=("claude-code", "opencode"), default="claude-code")
     parser.add_argument("--benchmark", help="Check only this benchmark's judge/simulator dependencies")
+    parser.add_argument(
+        "--benchmark-model-source", choices=("run", "benchmark"), default="benchmark",
+        help="Use the run's gateway/model/credential or the benchmark's prescribed models",
+    )
     args = parser.parse_args(argv)
     try:
         if args.benchmark is not None:
-            check_benchmark_dependencies(args.benchmark)
+            check_benchmark_dependencies(args.benchmark, args.benchmark_model_source)
             return 0
         model = os.environ.get("MODEL", "").strip()
         key = os.environ.get("API_KEY", "")

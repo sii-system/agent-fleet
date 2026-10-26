@@ -50,16 +50,26 @@ route. The step has a three-minute ceiling. Response bodies and credentials
 are not logged.
 
 A model that disappears mid-run can still fail trials. The preflight checks
-availability at startup; it does not change models or weaken the health gate.
+availability at startup.
 
-After benchmark selection, the random nightly also checks SWE Atlas Q&A's
-prescribed judge and Tau3's prescribed user/assertion models. A missing model
-stops the job before task environments start. To use a separate gateway for
-these benchmark dependencies, configure the `HARBOR_NIGHTLY_VERIFIER_BASE_URL`
-environment variable and `HARBOR_NIGHTLY_VERIFIER_API_KEY` secret together in
-`self-hosted-env`. After successful checks, the workflow exports that gateway
-through the task manifests' `OPENAI_*` inputs. Agent routing and the benchmark
-model names retain their existing settings.
+After benchmark selection, the random nightly checks SWE Atlas Q&A's judge
+and Tau3's user/assertion models. By default they reuse the run's `BASE_URL`,
+`MODEL`, and `API_KEY`. After successful checks, the workflow forwards the
+gateway through `OPENAI_*` and the model through `EVAL_MODEL` (Atlas) or
+`TAU2_USER_MODEL` / `TAU2_NL_ASSERTIONS_MODEL` (Tau3). Explicit role-model
+environment settings take precedence. Tau3's LiteLLM model settings use an
+`openai/` provider prefix so custom gateway aliases work; the request sends
+the original model ID. A missing model stops the job before task environments
+start. Run mode also avoids Tau3's implicit GPT-specific reasoning parameter;
+explicit Tau3 user argument settings are preserved.
+
+Set `HARBOR_NIGHTLY_BENCHMARK_MODEL_SOURCE=benchmark` in `self-hosted-env` to
+retain the task packages' prescribed model defaults. In that mode, configure
+the `HARBOR_NIGHTLY_VERIFIER_BASE_URL` variable and
+`HARBOR_NIGHTLY_VERIFIER_API_KEY` secret together when a separate gateway is
+needed. The default `run` mode uses the run's gateway and credential. Record
+the selected judge/simulator models when comparing scores: using the run's
+model changes the evaluation configuration from the benchmark defaults.
 
 For fixed benchmark runs, the shared launcher passes the active model gateway
 hostname through Harbor's `--allow-agent-host`. This lets agent model requests
