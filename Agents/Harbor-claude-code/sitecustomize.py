@@ -54,6 +54,75 @@ _HOOK_EVENTS = [
 ]
 
 
+# Run only in the private Node extraction child, never patch task Python globally.
+_NODE_ARCHIVE_EXTRACT = """import sys, tarfile
+import os
+
+with tarfile.open(sys.argv[1]) as archive:
+    destination = os.path.realpath(sys.argv[2])
+    if not hasattr(tarfile, 'data_filter'):
+        # Pre-PEP 706 Python: validate each member immediately before extraction.
+        error = getattr(tarfile, 'FilterError', RuntimeError)
+        for member in archive:
+            target = os.path.realpath(os.path.join(destination, member.name))
+            if os.path.isabs(member.name) or os.path.commonpath([destination, target]) != destination:
+                raise error('Node member escapes extraction directory')
+            if not (member.isfile() or member.isdir() or member.issym() or member.islnk()):
+                raise error('Unsupported Node archive member')
+            if member.issym() or member.islnk():
+                parent = os.path.dirname(member.name) if member.issym() else ''
+                link = os.path.realpath(os.path.join(destination, parent, member.linkname))
+                if target == destination or os.path.isabs(member.linkname) or os.path.commonpath([destination, link]) != destination:
+                    raise error('Node link escapes extraction directory')
+                hard_target = os.path.join(destination, member.linkname)
+                if member.islnk() and (os.path.islink(hard_target) or not os.path.isfile(hard_target)):
+                    raise error('Node hard link must target an existing regular file')
+            # Do not apply archive ownership or permissions on older tarfile.
+            archive.extract(member, destination, set_attrs=False)
+            if member.isfile():
+                mode = member.mode & 0o755
+                if not mode & 0o100:
+                    mode &= ~0o111
+                os.chmod(target, mode | 0o600)
+        sys.exit(0)
+    probe = tarfile.TarInfo('__node_filter_probe__/link')
+    probe.type = tarfile.SYMTYPE
+    probe.linkname = '../target'
+    legacy_symlinks = False
+    try:
+        tarfile.data_filter(probe, destination)
+    except tarfile.LinkOutsideDestinationError:
+        legacy_symlinks = True
+
+    def node_filter(member, path):
+        if os.path.isabs(member.name):
+            raise tarfile.AbsolutePathError(member)
+        if legacy_symlinks and member.islnk():
+            # Old tarfile may emulate missing hard links without filtering again.
+            target = os.path.join(path, member.linkname)
+            if os.path.islink(target) or not os.path.isfile(target):
+                raise tarfile.FilterError('Node hard link must target an existing regular file')
+        if not legacy_symlinks or not member.issym():
+            return tarfile.data_filter(member, path)
+        # CPython gh-107845: symlinks are relative to their containing directory.
+        checked = tarfile.tar_filter(member, path)
+        if os.path.isabs(checked.linkname):
+            raise tarfile.AbsoluteLinkError(checked)
+        root = os.path.realpath(path)
+        name = checked.name.rstrip('/' + os.sep)
+        if os.path.realpath(os.path.join(root, name)) == root:
+            raise tarfile.OutsideDestinationError(checked, root)
+        linkname = os.path.normpath(checked.linkname)
+        target = os.path.realpath(os.path.join(root, os.path.dirname(name), linkname))
+        if os.path.commonpath([root, target]) != root:
+            raise tarfile.LinkOutsideDestinationError(checked, target)
+        return checked.replace(linkname=linkname, mode=None, uid=None, gid=None,
+                               uname=None, gname=None, deep=False)
+
+    archive.extractall(destination, filter=node_filter)
+"""
+
+
 def _rust_package_mirror_bootstrap(extra_env: dict[str, str] | None) -> str:
     extra_env = extra_env or {}
     rustup_update_root = extra_env.get("RUSTUP_UPDATE_ROOT", "")
@@ -332,9 +401,7 @@ def _patch_claude_code_realtime_hooks() -> None:
                 "    if python3 - <<'PY' "
                 f"{node_runtime_path}"
                 " \"$node_dir\"\n"
-                "import sys, tarfile\n"
-                "with tarfile.open(sys.argv[1]) as archive:\n"
-                "    archive.extractall(sys.argv[2], **({'filter': 'data'} if hasattr(tarfile, 'data_filter') else {}))\n"
+                f"{_NODE_ARCHIVE_EXTRACT}"
                 "PY\n"
                 "    then node_extract_ok=1; fi; "
                 "  elif command -v tar >/dev/null 2>&1 && "
@@ -374,9 +441,7 @@ def _patch_claude_code_realtime_hooks() -> None:
                 "  if [ -s \"$node_dist_tgz\" ]; then "
                 "    node_dir=\"$(mktemp -d /tmp/tb-node-XXXXXX)\"; "
                 "    if python3 - <<'PY' \"$node_dist_tgz\" \"$node_dir\"\n"
-                "import sys, tarfile\n"
-                "with tarfile.open(sys.argv[1]) as archive:\n"
-                "    archive.extractall(sys.argv[2], **({'filter': 'data'} if hasattr(tarfile, 'data_filter') else {}))\n"
+                f"{_NODE_ARCHIVE_EXTRACT}"
                 "PY\n"
                 "    then "
                 "      node_bin=\"$(find \"$node_dir\" -type f -path '*/bin/node' -print -quit 2>/dev/null)\"; "

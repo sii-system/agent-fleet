@@ -15,7 +15,6 @@ import tarfile
 import tempfile
 import types
 import unittest
-from contextlib import nullcontext
 from pathlib import Path
 from unittest import mock
 
@@ -384,6 +383,9 @@ class ClaudeInstallCommandTest(unittest.TestCase):
                 sibling.write_text("keep this executable")
                 binaries = root / "bin"
                 binaries.mkdir()
+                node = binaries / "node"
+                node.write_text("#!/bin/sh\necho v22.0.0\n")
+                node.chmod(0o755)
                 npm = binaries / "npm"
                 npm.write_text(
                     "#!/bin/bash\nset -euo pipefail\n"
@@ -550,29 +552,11 @@ class ClaudeInstallCommandTest(unittest.TestCase):
         command = self._install_command({"CC_OPIK_ENABLE_HOOK": "false"})
         snippets = re.findall(r"import sys, tarfile\n.*?(?=\nPY\n)", command, re.DOTALL)
         self.assertEqual(len(snippets), 2)
-        for filtered in (True, False):
-            for snippet in snippets:
-                with self.subTest(filtered=filtered, snippet=snippet):
-                    extracted = []
-
-                    def modern_extract(path, *, filter, records=extracted):
-                        records.append((path, filter))
-
-                    def legacy_extract(path, records=extracted):
-                        records.append((path, None))
-
-                    fake_tarfile = types.ModuleType("tarfile")
-                    if filtered:
-                        fake_tarfile.data_filter = object()
-                    archive = types.SimpleNamespace(
-                        extractall=modern_extract if filtered else legacy_extract
-                    )
-                    fake_tarfile.open = lambda path, archive=archive: nullcontext(archive)
-                    with mock.patch.dict(sys.modules, {"tarfile": fake_tarfile}), mock.patch.object(
-                        sys, "argv", ["-", "archive.tar.xz", "destination"]
-                    ):
-                        exec(snippet, {})  # noqa: S102 - execute the trusted installer heredoc
-                    self.assertEqual(extracted, [("destination", "data" if filtered else None)])
+        for snippet in snippets:
+            self.assertEqual(snippet, load_module()._NODE_ARCHIVE_EXTRACT.rstrip())
+            self.assertIn("tarfile.data_filter(member, path)", snippet)
+            self.assertIn("tarfile.tar_filter(member, path)", snippet)
+            self.assertNotIn("fully_trusted", snippet)
 
     def test_opensandbox_runtime_failures_do_not_install_system_node(self) -> None:
         for failure in ("corrupt-cache", "missing", "invalid-node", "unsafe-link", "corrupt-download"):
