@@ -104,6 +104,9 @@ class AgentFleetPiTests(unittest.TestCase):
         asyncio.run(agent.install(object()))
 
         command = str(agent.agent_commands[-1]["command"])
+        self.assertIn("/opt/agent-fleet/runtime/pi", command)
+        self.assertIn('[ "$(cat "$shared_runtime/VERSION")" = "$pi_version" ]', command)
+        self.assertIn('ln -sf "$shared_runtime/bin/pi"', command)
         self.assertIn("pi-node-runtime.tar.gz", command)
         self.assertIn('if [ -f "$node_tar" ]; then', command)
         self.assertIn('tar -xzf "$node_tar"', command)
@@ -120,6 +123,22 @@ class AgentFleetPiTests(unittest.TestCase):
         self.assertIn('mkdir -p "/logs/agent" 2>/dev/null || echo', command)
         self.assertNotIn("nvm", command)
         self.assertNotIn("@mariozechner", command)
+
+    def test_dsec_requires_shared_runtime_without_archive_fallback(self) -> None:
+        agent = self.module.AgentFleetPi(version="1.3.0")
+
+        with mock.patch.dict(
+            "os.environ", {"HARBOR_BACKEND_PREINSTALLED_AGENTS": "1"}
+        ):
+            asyncio.run(agent.install(object()))
+
+        command = str(agent.agent_commands[-1]["command"])
+        self.assertIn("shared_required=1", command)
+        self.assertIn("required shared Pi runtime is unavailable", command)
+        self.assertLess(
+            command.index("required shared Pi runtime is unavailable"),
+            command.index('elif [ -f "$node_tar" ]'),
+        )
 
     def test_run_uses_custom_provider_and_forwards_extra_environment(self) -> None:
         agent = self.module.AgentFleetPi(

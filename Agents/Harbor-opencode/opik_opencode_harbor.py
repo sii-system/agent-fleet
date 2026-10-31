@@ -33,8 +33,8 @@ REPO_ROOT = ROOT.parents[1]
 HARBOR_RUNTIME_DIR = REPO_ROOT / "Agents" / "utils" / "common" / "Harbor"
 sys.path.append(str(HARBOR_RUNTIME_DIR))
 
-from agent_output import exec_logged_agent  # noqa: E402
-from opik_trace_gate import opik_tracing_enabled  # noqa: E402
+from agent_output import exec_logged_agent
+from opik_trace_gate import opik_tracing_enabled
 
 TRACE_PLUGIN_SOURCE_DIR = Path(
     os.environ.get(
@@ -249,6 +249,42 @@ class OpikOpenCodeHarbor(OpenCode):
         super().__init__(*args, extra_env=merged_extra_env, **kwargs)
 
     async def install(self, environment: BaseEnvironment) -> None:
+        shared_runtime_activated = False
+        if os.environ.get("HARBOR_BACKEND_PREINSTALLED_AGENTS") == "1":
+            raw_version = getattr(self, "version", None)
+            if callable(raw_version):
+                raw_version = raw_version()
+            version = str(raw_version or os.environ.get("OPENCODE_VERSION", ""))
+            if not version or version == "latest":
+                raise RuntimeError(
+                    "DSec Agent Toolkit requires an exact OpenCode version"
+                )
+            await self.exec_as_agent(
+                environment,
+                command=(
+                    "set -euo pipefail; "
+                    "runtime=/opt/agent-fleet/runtime/opencode; "
+                    f"expected={shlex.quote(version)}; "
+                    "[ -f \"$runtime/VERSION\" ] "
+                    "&& [ \"$(cat \"$runtime/VERSION\")\" = \"$expected\" ] "
+                    "&& [ -x \"$runtime/bin/node\" ] "
+                    "&& [ -x \"$runtime/bin/opencode\" ] "
+                    "|| { echo \"required shared OpenCode runtime is unavailable or has the wrong version: $expected\" >&2; exit 1; }; "
+                    "mkdir -p \"$HOME/.local/bin\"; "
+                    "ln -sf \"$runtime/bin/node\" \"$HOME/.local/bin/node\"; "
+                    "ln -sf \"$runtime/bin/opencode\" \"$HOME/.local/bin/opencode\"; "
+                    "export PATH=\"$HOME/.local/bin:$runtime/bin:$PATH\"; "
+                    "opencode --version"
+                ),
+            )
+            shared_runtime_activated = True
+            if not opik_tracing_enabled(getattr(self, "_extra_env", None)):
+                print(
+                    "[opik-cold] Opik tracing disabled: use shared OpenCode runtime",
+                    flush=True,
+                )
+                return
+
         async def _prepare_python_runtime() -> None:
             # Do not run apt unless Python is actually missing. Several Seta
             # images intentionally contain broken dpkg state; a no-op apt
@@ -487,13 +523,14 @@ class OpikOpenCodeHarbor(OpenCode):
                 ),
             )
 
-        await _retry_async(
-            "local opencode install",
-            _run_local_opencode_install,
-            attempts=2,
-            backoff_base_s=10.0,
-            sanity_check=_opencode_present,
-        )
+        if not shared_runtime_activated:
+            await _retry_async(
+                "local opencode install",
+                _run_local_opencode_install,
+                attempts=2,
+                backoff_base_s=10.0,
+                sanity_check=_opencode_present,
+            )
 
         if not opik_tracing_enabled(getattr(self, "_extra_env", None)):
             print(

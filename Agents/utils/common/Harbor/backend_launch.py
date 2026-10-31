@@ -54,6 +54,14 @@ def main() -> int:
         caps = launch_capabilities(plan)
         if args.command == "validate":
             messages = validate_backend(plan, config, ready=args.ready)
+            if args.ready and caps.preinstalled_agents:
+                from harbor_environment_adapters.providers.dsec_controller.runtime_preflight import (
+                    validate_dsec_agent_runtime,
+                )
+
+                runtime_message = validate_dsec_agent_runtime(config)
+                if runtime_message:
+                    messages.append(runtime_message)
             if caps.task_images:
                 from task_image_manager.launch import (
                     configured_images,

@@ -441,6 +441,17 @@ harbor_prepare_agent_runtime() {
     return 1
   fi
 
+  if [[ "$HARBOR_BACKEND_PREINSTALLED_AGENTS" == "1" ]]; then
+    mkdir -p "$RUNTIME_DIR"
+    rm -f "$WORKERS_FAILED_FILE" "$HARBOR_RUNNER_PREPARE_STATUS_FILE"
+    if harbor_prepare_verifier_runtime_bundle && harbor_validate_runner_cli; then
+      touch "$WORKERS_READY_FILE"
+      return 0
+    fi
+    touch "$WORKERS_FAILED_FILE"
+    return 1
+  fi
+
   if [[ "$HARBOR_BACKEND_VERIFIER_UPLOAD" == "1" ]]; then
     mkdir -p "$RUNTIME_DIR"
     rm -f "$WORKERS_FAILED_FILE" "$HARBOR_RUNNER_PREPARE_STATUS_FILE"

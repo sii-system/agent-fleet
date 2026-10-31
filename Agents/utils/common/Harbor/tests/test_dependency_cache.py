@@ -163,6 +163,22 @@ harbor_mark_workers_ready() { touch "$WORKERS_READY_FILE"; }
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.strip(), f"http://127.0.0.1:{self.server.server_port}")
 
+    def test_preinstalled_agent_skips_local_dependency_cache(self) -> None:
+        result = self._run_shell(
+            """
+HARBOR_BACKEND_PREINSTALLED_AGENTS=1
+ROLLOUT=0
+harbor_agent_is_oracle() { return 1; }
+harbor_prepare_verifier_runtime_bundle() { return 0; }
+harbor_validate_runner_cli() { return 0; }
+harbor_prepare_agent_runtime
+"""
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue((self.runtime / "ready").is_file())
+        self.assertFalse((self.runtime / "local-deps-prepare.status").exists())
+        self.assertFalse((self.runtime / "local-wheel-http.pid").exists())
+
 
 if __name__ == "__main__":
     unittest.main()

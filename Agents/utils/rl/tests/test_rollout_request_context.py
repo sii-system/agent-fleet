@@ -222,6 +222,14 @@ class RolloutRequestContextTest(unittest.TestCase):
         payload = self._read_default_payload(job_queue_root)
         self.assertEqual(payload["environment_type"], "opensandbox")
 
+    def test_dsec_environment_is_preserved_for_upstream_backend(self) -> None:
+        _, _, job_queue_root, _ = self._enqueue_with_temp_context(
+            {"environment_type": "DSEC"}
+        )
+
+        payload = self._read_default_payload(job_queue_root)
+        self.assertEqual(payload["environment_type"], "dsec")
+
     def test_enqueue_accepts_space_in_task_path_but_not_shell_chars_in_command_args(self) -> None:
         request_id, result_path, job_queue_root, ensure_zellij = self._enqueue_with_temp_context(
             {

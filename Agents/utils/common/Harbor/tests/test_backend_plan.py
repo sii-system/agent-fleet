@@ -171,6 +171,19 @@ printf "%s\\n%s\\n" "$HARBOR_ENVIRONMENT_TYPE" "$HARBOR_ENVIRONMENT_SPEC"
             "docker",
         )
 
+    def test_dsec_uses_the_controller_adapter_for_fixed_and_rollout_runs(self):
+        expected = "dsec_sandbox:DsecSandboxEnvironment"
+        self.assertEqual(
+            resolve_backend_plan({"HARBOR_ENVIRONMENT_TYPE": "dsec"}).environment_spec,
+            expected,
+        )
+        self.assertEqual(
+            rollout_backend_plan(
+                {"RL_ENVIRONMENT_TYPE": "docker"}, "dsec"
+            ).environment_spec,
+            expected,
+        )
+
     def run_shell(self, script, **overrides):
         with tempfile.TemporaryDirectory() as tmp:
             return subprocess.run(

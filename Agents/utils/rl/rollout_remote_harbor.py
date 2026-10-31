@@ -84,9 +84,9 @@ def _environment_type(request: dict[str, Any]) -> str:
         DEFAULT_ENVIRONMENT_TYPE,
         "docker",
     ).lower()
-    if value not in {"docker", "e2b", "opensandbox", "qz"}:
+    if value not in {"docker", "dsec", "e2b", "opensandbox", "qz"}:
         raise ValueError(
-            "environment_type must be docker, e2b, opensandbox, or qz, "
+            "environment_type must be docker, dsec, e2b, opensandbox, or qz, "
             f"got: {value}"
         )
     return value

@@ -299,6 +299,33 @@ def _patch_claude_code_realtime_hooks() -> None:
 
     async def patched_install(self, environment):  # type: ignore[no-untyped-def]
         extra_env = getattr(self, "_extra_env", None)
+        shared_runtime_activated = False
+        if os.environ.get("HARBOR_BACKEND_PREINSTALLED_AGENTS") == "1":
+            raw_version = getattr(self, "version", None)
+            if callable(raw_version):
+                raw_version = raw_version()
+            version = str(raw_version or os.environ.get("CLAUDE_CODE_VERSION", ""))
+            if not version:
+                raise RuntimeError("Claude Code runtime version is not configured")
+            await self.exec_as_agent(
+                environment,
+                command=(
+                    "set -euo pipefail; "
+                    "runtime=/opt/agent-fleet/runtime/claude-code; "
+                    f"expected={shlex.quote(version)}; "
+                    "[ -f \"$runtime/VERSION\" ] "
+                    "&& [ \"$(cat \"$runtime/VERSION\")\" = \"$expected\" ] "
+                    "&& [ -x \"$runtime/bin/node\" ] "
+                    "&& [ -x \"$runtime/bin/claude\" ] "
+                    "|| { echo \"required shared Claude Code runtime is unavailable or has the wrong version: $expected\" >&2; exit 1; }; "
+                    "mkdir -p \"$HOME/.local/bin\"; "
+                    "ln -sf \"$runtime/bin/node\" \"$HOME/.local/bin/node\"; "
+                    "ln -sf \"$runtime/bin/claude\" \"$HOME/.local/bin/claude\"; "
+                    "export PATH=\"$HOME/.local/bin:$runtime/bin:$PATH\"; "
+                    "claude --version"
+                ),
+            )
+            shared_runtime_activated = True
         npm_registry = (extra_env or {}).get("NPM_CONFIG_REGISTRY", "")
         opensandbox_runtime = (
             os.environ.get("HARBOR_ENVIRONMENT_TYPE", "").strip().lower()
@@ -555,13 +582,14 @@ def _patch_claude_code_realtime_hooks() -> None:
                 environment, command=command, env=env, cwd=cwd, timeout_sec=timeout_sec,
             )
 
-        self.exec_as_root = MethodType(_exec_as_root_install_fix, self)
-        self.exec_as_agent = MethodType(_exec_as_agent_install_fix, self)
-        try:
-            await original_install(self, environment)
-        finally:
-            self.exec_as_root = original_exec_as_root
-            self.exec_as_agent = original_exec_as_agent
+        if not shared_runtime_activated:
+            self.exec_as_root = MethodType(_exec_as_root_install_fix, self)
+            self.exec_as_agent = MethodType(_exec_as_agent_install_fix, self)
+            try:
+                await original_install(self, environment)
+            finally:
+                self.exec_as_root = original_exec_as_root
+                self.exec_as_agent = original_exec_as_agent
 
         extra_env = getattr(self, "_extra_env", None)
         rust_mirror_bootstrap = _rust_package_mirror_bootstrap(extra_env)

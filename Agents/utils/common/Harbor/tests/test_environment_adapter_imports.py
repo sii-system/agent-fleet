@@ -31,14 +31,19 @@ import inspect
 from harbor.environments.base import BaseEnvironment
 from harbor.environments.e2b import E2BEnvironment
 from harbor_environment_adapters.providers.opensandbox_yicloud.adapter import YiCloudOpenSandboxEnvironment
+from harbor_environment_adapters.providers.dsec_controller.adapter import DsecSandboxEnvironment
 from harbor_environment_adapters.providers.e2b_series.qz_legacy.adapter import QzSandboxEnvironment
+from dsec_sandbox import DsecSandboxEnvironment as LegacyDsec
 from yicloud_opensandbox import YiCloudOpenSandboxEnvironment as LegacyYiCloud
 from qz_e2b_sandbox import QzSandboxEnvironment as LegacyQz
 assert LegacyYiCloud is YiCloudOpenSandboxEnvironment
+assert LegacyDsec is DsecSandboxEnvironment
 assert LegacyQz is QzSandboxEnvironment
 assert issubclass(LegacyYiCloud, BaseEnvironment)
+assert issubclass(LegacyDsec, BaseEnvironment)
 assert issubclass(LegacyQz, E2BEnvironment)
 assert not inspect.isabstract(LegacyYiCloud)
+assert not inspect.isabstract(LegacyDsec)
 assert not inspect.isabstract(LegacyQz)
 assert "yicloud" not in sys.modules
 """)
