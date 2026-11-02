@@ -107,14 +107,22 @@ not establish that all tasks will complete within their time budgets.
 
 ## Pinned runtime preparation
 
-Nightly host setup, image preparation, and verifiers use one Python package
-index through `PIP_INDEX_URL`, `UV_INDEX_URL`, and `UV_DEFAULT_INDEX`. The default
-is public PyPI; `HARBOR_NIGHTLY_PYPI_INDEX_URL` in `self-hosted-env` selects an
-alternative. Setting all three prevents an inherited uv mirror from silently
-overriding pip's index. The retired Tsinghua route returned HTTP 403 and
-download timeouts in the October 24–November 2 runs.
-`UV_HTTP_TIMEOUT=180` sets a three-minute HTTP read timeout for host setup,
-agents, and verifiers, instead of uv's [30-second default](https://docs.astral.sh/uv/reference/environment/#uv_http_timeout).
+Package sources and timeouts belong to each runner's local environment. Set
+`PIP_INDEX_URL`, `UV_INDEX_URL`, `UV_DEFAULT_INDEX`, and
+`HARBOR_TASK_IMAGE_PIP_INDEX_URL` there, keeping them aligned when host setup,
+image preparation, and task environments should use the same index. An inherited
+uv index takes precedence over pip's index; the retired Tsinghua route returned
+HTTP 403 and download timeouts in the October 24–November 2 runs.
+
+On the managed nightly hosts, these settings live in
+`/etc/agent-fleet/nightly-downloads.env` and the runner's `.env`; the job hook
+publishes effective values through `GITHUB_ENV`. Configure `UV_HTTP_TIMEOUT`
+there too: the current hosts use 180 seconds rather than uv's
+[30-second default](https://docs.astral.sh/uv/reference/environment/#uv_http_timeout).
+The workflows inherit these settings without specifying package endpoints or
+timeouts. Update the job hook or restart the runner when idle to activate
+local environment changes; editing a service environment file alone does not
+update an already-running listener.
 
 Claude setup skips package installation when curl, Bash, ps, and pgrep already
 exist. When packages are required, it applies explicit `HARBOR_APT_*_MIRROR`
