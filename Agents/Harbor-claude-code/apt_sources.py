@@ -51,7 +51,7 @@ def rewrite_content(text, mirrors, *, deb822):
     return "".join(lines)
 
 
-def configure_sources(root, mirrors):
+def validate_mirrors(mirrors):
     for name, value in mirrors.items():
         if name not in MIRROR_NAMES or not value:
             continue
@@ -60,6 +60,10 @@ def configure_sources(root, mirrors):
                 or parsed.username or parsed.password or parsed.query or parsed.fragment
                 or any(character.isspace() for character in value)):
             raise ValueError(f"{name} must be a credential-free HTTP(S) repository URL")
+
+
+def configure_sources(root, mirrors):
+    validate_mirrors(mirrors)
     # APT auth files can bind credentials to the original repository host/path.
     auth_files = [root / "auth.conf", *(root / "auth.conf.d").glob("*")]
     if any(p.is_file() and re.search(r"^\s*[^#\s]", p.read_text(), re.MULTILINE) for p in auth_files):

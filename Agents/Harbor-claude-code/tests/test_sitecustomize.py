@@ -714,6 +714,14 @@ class ClaudeInstallCommandTest(unittest.TestCase):
         self.assertTrue(commands[0].endswith(" update"))
         self.assertIn("Acquire::Retries=3", commands[0])
 
+    def test_credentialed_mirror_is_rejected_before_rendering_a_logged_command(self):
+        module = load_module()
+        with self.assertRaises(ValueError) as error:
+            module._apt_mirror_bootstrap({
+                "HARBOR_APT_DEBIAN_MIRROR": "https://user:fake-password@apt.invalid/debian",
+            })
+        self.assertNotIn("fake-password", str(error.exception))
+
 
 class QzInstructionHookGateTest(unittest.TestCase):
     def run_hook(self, environment_type: str) -> mock.Mock:
