@@ -67,6 +67,7 @@ class HarborPackageEnvironmentTest(unittest.TestCase):
             "PIP_TRUSTED_HOST": "pip.example",
             "UV_INDEX_URL": "https://uv.example/simple",
             "UV_DEFAULT_INDEX": "https://uv-default.example/simple",
+            "UV_HTTP_TIMEOUT": "180",
             "NPM_CONFIG_REGISTRY": "https://npm.example",
             "HARBOR_APT_UBUNTU_MIRROR": "http://apt.example/ubuntu/",
             "HARBOR_APT_DEBIAN_MIRROR": "http://apt.example/debian/",

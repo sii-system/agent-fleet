@@ -36,6 +36,12 @@ jobs:
     runs-on: [self-hosted, Linux, X64, bare-metal]
     environment: self-hosted-env
     timeout-minutes: 480
+    env:
+      PIP_INDEX_URL: ${{ vars.HARBOR_NIGHTLY_PYPI_INDEX_URL || 'https://pypi.org/simple' }}
+      UV_INDEX_URL: ${{ vars.HARBOR_NIGHTLY_PYPI_INDEX_URL || 'https://pypi.org/simple' }}
+      UV_DEFAULT_INDEX: ${{ vars.HARBOR_NIGHTLY_PYPI_INDEX_URL || 'https://pypi.org/simple' }}
+      HARBOR_TASK_IMAGE_PIP_INDEX_URL: ${{ vars.HARBOR_NIGHTLY_PYPI_INDEX_URL || 'https://pypi.org/simple' }}
+      UV_HTTP_TIMEOUT: "180"
 
     steps:
       - name: Repair stale Harbor artifact permissions

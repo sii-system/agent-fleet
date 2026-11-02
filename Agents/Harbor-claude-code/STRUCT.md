@@ -3,11 +3,14 @@
 ```text
 Agents/Harbor-claude-code/
 ├── sitecustomize.py
+├── apt_sources.py
 ├── README.md
 └── STRUCT.md
 ```
 
 `sitecustomize.py` contains Claude Code specific runtime hooks used by the Harbor runner.
+`apt_sources.py` applies explicitly configured public APT mirrors during
+runtime package setup; it also runs on task images with older Python versions.
 
 The realtime Opik hook is loaded from the `third_party/agent-opik-plugin`
 submodule:

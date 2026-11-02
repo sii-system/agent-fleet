@@ -678,11 +678,41 @@ class ClaudeInstallCommandTest(unittest.TestCase):
         )
         self.assertEqual(bash_check.returncode, 0, bash_check.stderr)
 
-    def test_non_opensandbox_preserves_original_apt_bootstrap(self) -> None:
+    def test_docker_skips_package_manager_when_system_tools_are_present(self) -> None:
         self._install_command({"CC_OPIK_ENABLE_HOOK": "false"})
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for name in ("curl", "bash", "ps", "pgrep"):
+                tool = root / name
+                tool.write_text("#!/bin/sh\nexit 0\n")
+                tool.chmod(0o755)
+            apt = root / "apt-get"
+            apt.write_text("#!/bin/sh\nexit 99\n")
+            apt.chmod(0o755)
+            result = subprocess.run(
+                [shutil.which("bash"), "-c", self.last_root_command],
+                env={"PATH": tmp}, text=True, capture_output=True, check=False,
+            )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("skip package bootstrap", result.stderr)
 
-        self.assertNotIn("skip APT bootstrap", self.last_root_command)
-        self.assertIn("apt-get update", self.last_root_command)
+    def test_missing_system_tools_propagate_apt_update_failure(self) -> None:
+        self._install_command({"CC_OPIK_ENABLE_HOOK": "false"})
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            apt = root / "apt-get"
+            apt.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$APT_LOG"\nexit 100\n')
+            apt.chmod(0o755)
+            log = root / "apt.log"
+            result = subprocess.run(
+                [shutil.which("bash"), "-c", self.last_root_command],
+                env={"PATH": tmp, "APT_LOG": str(log)}, text=True, capture_output=True, check=False,
+            )
+            commands = log.read_text().splitlines()
+        self.assertEqual(result.returncode, 100, result.stderr)
+        self.assertEqual(len(commands), 1)
+        self.assertTrue(commands[0].endswith(" update"))
+        self.assertIn("Acquire::Retries=3", commands[0])
 
 
 class QzInstructionHookGateTest(unittest.TestCase):

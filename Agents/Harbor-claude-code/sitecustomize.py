@@ -42,6 +42,25 @@ sys.path.append(str(HARBOR_RUNTIME_DIR))
 from agent_output import exec_logged_agent
 from opik_trace_gate import _is_true, opik_tracing_enabled
 
+_APT_MIRROR_NAMES = (
+    "HARBOR_APT_UBUNTU_MIRROR", "HARBOR_APT_DEBIAN_MIRROR",
+    "HARBOR_APT_DEBIAN_SECURITY_MIRROR",
+)
+
+
+def _apt_mirror_bootstrap(extra_env: dict[str, str] | None) -> str:
+    mirrors = {name: (extra_env or {}).get(name, "") for name in _APT_MIRROR_NAMES}
+    if not any(mirrors.values()):
+        return ""
+    script = Path(__file__).with_name("apt_sources.py").read_text()
+    return (
+        "if command -v apt-get >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then "
+        f"python3 - {shlex.quote(json.dumps(mirrors))} <<'APT_SOURCES_PY'\n"
+        f"{script}\nAPT_SOURCES_PY\n"
+        "fi; "
+    )
+
+
 _HOOK_EVENTS = [
     "UserPromptSubmit",
     "PostToolUse",
@@ -315,9 +334,8 @@ def _patch_claude_code_realtime_hooks() -> None:
         )
 
         # Intercept both exec_as_root and exec_as_agent during install so that:
-        #   exec_as_root: keep the task image's apt sources intact and only
-        #                 force IPv4. Rewriting http apt mirrors to https breaks
-        #                 some task containers that do not have trusted CA roots.
+        #   exec_as_root: reuse installed system tools and apply only explicitly
+        #                 configured APT mirrors when packages are needed.
         #   exec_as_agent: replace the bootstrap script with the configured npm
         #                  registry path. This works with mounted caches and
         #                  managed Sandboxes without requiring one particular
@@ -541,7 +559,25 @@ def _patch_claude_code_realtime_hooks() -> None:
                         "fi"
                     )
                 else:
-                    command = original_command
+                    if "apt-get install -y curl procps" in command:
+                        command = (
+                            "set -euo pipefail; "
+                            "if command -v curl >/dev/null 2>&1 && "
+                            "command -v bash >/dev/null 2>&1 && "
+                            "command -v ps >/dev/null 2>&1 && "
+                            "command -v pgrep >/dev/null 2>&1; then "
+                            "echo 'Claude system prerequisites ready; skip package bootstrap' >&2; "
+                            "else "
+                            f"{_apt_mirror_bootstrap(extra_env)}"
+                            "apt-get() { command apt-get "
+                            "-o Acquire::Retries=3 -o Acquire::http::Timeout=20 "
+                            "-o Acquire::https::Timeout=20 "
+                            "-o APT::Update::Error-Mode=any \"$@\"; }; "
+                            f"{original_command}; "
+                            "fi"
+                        )
+                    else:
+                        command = original_command
             return await original_exec_as_root(
                 environment, command=command, env=env, cwd=cwd, timeout_sec=timeout_sec,
             )

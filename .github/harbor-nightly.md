@@ -107,6 +107,22 @@ not establish that all tasks will complete within their time budgets.
 
 ## Pinned runtime preparation
 
+Nightly host setup, image preparation, and verifiers use one Python package
+index through `PIP_INDEX_URL`, `UV_INDEX_URL`, and `UV_DEFAULT_INDEX`. The default
+is public PyPI; `HARBOR_NIGHTLY_PYPI_INDEX_URL` in `self-hosted-env` selects an
+alternative. Setting all three prevents an inherited uv mirror from silently
+overriding pip's index. The retired Tsinghua route returned HTTP 403 and
+download timeouts in the October 24–November 2 runs.
+`UV_HTTP_TIMEOUT=180` sets a three-minute HTTP read timeout for host setup,
+agents, and verifiers, instead of uv's [30-second default](https://docs.astral.sh/uv/reference/environment/#uv_http_timeout).
+
+Claude setup skips package installation when curl, Bash, ps, and pgrep already
+exist. When packages are required, it applies explicit `HARBOR_APT_*_MIRROR`
+settings through the task's Python, then uses bounded APT retries/timeouts.
+Public Ubuntu/Debian source entries are eligible; other repositories, source
+options/signatures, and credential-bound sources are preserved. These runtime
+settings are separate from the build-only dependency gateway routing.
+
 Both workflows bind `HARBOR_CLAUDE_CODE_DIR` to their checked-out source. A
 service-level override must not route a new checkout through an older runtime
 copy: the October 22–25 runs used a legacy `.tar.xz` installer against a gzip
