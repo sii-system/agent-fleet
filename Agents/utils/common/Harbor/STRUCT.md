@@ -43,6 +43,7 @@ Agents/utils/common/Harbor/
 ├── backend_plan.py             # Shared backend selection and launch capability projection
 ├── backend_launch.py           # SDK-free validation, image selection, and environment args
 ├── docker_runtime.py           # Docker verifier PATH and SWE Atlas keepalive compatibility
+├── apt_sources.py              # Runtime APT mirror bootstrap and source-file updates
 ├── harbor_shell_utils.py       # Event, JSON, URL, and mount helpers
 ├── qz_repository_environment_plan.py # Repository/revision final-image plan producer
 ├── qz_task_instruction.py      # Exact QZ setup-prefix handoff before agent run

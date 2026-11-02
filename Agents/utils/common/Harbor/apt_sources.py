@@ -3,6 +3,7 @@
 import json
 import os
 import re
+import shlex
 import sys
 import tempfile
 from pathlib import Path
@@ -13,6 +14,21 @@ MIRROR_NAMES = (
     "HARBOR_APT_DEBIAN_MIRROR",
     "HARBOR_APT_DEBIAN_SECURITY_MIRROR",
 )
+
+
+def bootstrap_command(extra_env):
+    values = extra_env or {}
+    mirrors = {name: values[name] for name in MIRROR_NAMES if values.get(name)}
+    if not mirrors:
+        return ""
+    validate_mirrors(mirrors)
+    script = Path(__file__).read_text()
+    return (
+        "if command -v apt-get >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then "
+        f"python3 - {shlex.quote(json.dumps(mirrors))} <<'APT_SOURCES_PY'\n"
+        f"{script}\nAPT_SOURCES_PY\n"
+        "fi; "
+    )
 
 
 def rewrite_uri(uri, mirrors):
@@ -79,23 +95,13 @@ def configure_sources(root, mirrors):
         if rewritten == original:
             continue
         info = source.stat()
-        with tempfile.NamedTemporaryFile(mode="w", dir=source.parent, delete=False) as output:
-            temporary = Path(output.name)
-            try:
-                output.write(rewritten)
-                os.fchmod(output.fileno(), info.st_mode & 0o777)
-                if os.geteuid() == 0:
-                    os.fchown(output.fileno(), info.st_uid, info.st_gid)
-            except BaseException:
-                temporary.unlink()
-                raise
-        try:
+        with tempfile.TemporaryDirectory(dir=source.parent) as tmp:
+            temporary = Path(tmp) / source.name
+            temporary.write_text(rewritten)
+            temporary.chmod(info.st_mode & 0o777)
+            if os.geteuid() == 0:
+                os.chown(temporary, info.st_uid, info.st_gid)
             os.replace(temporary, source)
-        finally:
-            try:
-                temporary.unlink()
-            except FileNotFoundError:
-                pass
         changed += 1
     return changed
 

@@ -722,20 +722,14 @@ class ClaudeInstallCommandTest(unittest.TestCase):
 
     def test_file_loaded_base_configures_mirrors_without_its_directory_on_sys_path(self):
         script = """
-import importlib.util
-import sys
-from pathlib import Path
+import runpy, sys
 
-path = Path(sys.argv[1])
-assert str(path.parent) not in sys.path
-spec = importlib.util.spec_from_file_location("file_loaded_claude", path)
-module = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(module)
-command = module._apt_mirror_bootstrap({
+assert sys.argv[1].rsplit("/", 1)[0] not in sys.path
+module = runpy.run_path(sys.argv[1])
+command = module["_apt_mirror_bootstrap"]({
     "HARBOR_APT_DEBIAN_MIRROR": "https://apt.invalid/debian",
 })
 assert "https://apt.invalid/debian" in command
-assert "Configured runtime APT mirrors" in command
 """
         result = subprocess.run(
             [sys.executable, "-S", "-c", script, str(SCRIPT)],

@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 
 SPEC = importlib.util.spec_from_file_location(
-    "claude_apt_sources", Path(__file__).parents[1] / "apt_sources.py"
+    "runtime_apt_sources", Path(__file__).parents[1] / "apt_sources.py"
 )
 apt_sources = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(apt_sources)

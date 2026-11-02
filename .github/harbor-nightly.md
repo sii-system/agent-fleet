@@ -107,29 +107,18 @@ not establish that all tasks will complete within their time budgets.
 
 ## Pinned runtime preparation
 
-Package sources and timeouts belong to each runner's local environment. Set
+Configure package sources and `UV_HTTP_TIMEOUT` on each runner. Keep
 `PIP_INDEX_URL`, `UV_INDEX_URL`, `UV_DEFAULT_INDEX`, and
-`HARBOR_TASK_IMAGE_PIP_INDEX_URL` there, keeping them aligned when host setup,
-image preparation, and task environments should use the same index. An inherited
-uv index takes precedence over pip's index; the retired Tsinghua route returned
-HTTP 403 and download timeouts in the October 24–November 2 runs.
+`HARBOR_TASK_IMAGE_PIP_INDEX_URL` aligned when they should use the same index.
+Managed hosts store these in `/etc/agent-fleet/nightly-downloads.env` and the
+runner's `.env`; their job hook exports values through `GITHUB_ENV`.
+Workflows inherit them. Update the hook or restart the runner when idle to
+activate changes; editing a service environment file does not update a listener.
 
-On the managed nightly hosts, these settings live in
-`/etc/agent-fleet/nightly-downloads.env` and the runner's `.env`; the job hook
-publishes effective values through `GITHUB_ENV`. Configure `UV_HTTP_TIMEOUT`
-there too: the current hosts use 180 seconds rather than uv's
-[30-second default](https://docs.astral.sh/uv/reference/environment/#uv_http_timeout).
-The workflows inherit these settings without specifying package endpoints or
-timeouts. Update the job hook or restart the runner when idle to activate
-local environment changes; editing a service environment file alone does not
-update an already-running listener.
-
-Claude setup skips package installation when curl, Bash, ps, and pgrep already
-exist. When packages are required, it applies explicit `HARBOR_APT_*_MIRROR`
-settings through the task's Python, then uses bounded APT retries/timeouts.
-Public Ubuntu/Debian source entries are eligible; other repositories, source
-options/signatures, and credential-bound sources are preserved. These runtime
-settings are separate from the build-only dependency gateway routing.
+Claude setup reuses installed curl, Bash, ps, and pgrep. If packages are needed,
+it applies explicit `HARBOR_APT_*_MIRROR` settings through the task's Python and
+bounds APT retries/timeouts. Other repositories, source options/signatures, and
+credential-bound sources are preserved. Build-only gateway routing is separate.
 
 Both workflows bind `HARBOR_CLAUDE_CODE_DIR` to their checked-out source. A
 service-level override must not route a new checkout through an older runtime
