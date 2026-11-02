@@ -27,6 +27,7 @@
 # Both patches guard against double-application and gracefully no-op when the
 # Harbor agent module cannot be imported (e.g. wrong package version).
 
+import importlib.util
 import json
 import os
 import shlex
@@ -40,7 +41,6 @@ HARBOR_RUNTIME_DIR = (
 sys.path.append(str(HARBOR_RUNTIME_DIR))
 
 from agent_output import exec_logged_agent
-from apt_sources import validate_mirrors
 from opik_trace_gate import _is_true, opik_tracing_enabled
 
 _APT_MIRROR_NAMES = (
@@ -53,8 +53,16 @@ def _apt_mirror_bootstrap(extra_env: dict[str, str] | None) -> str:
     mirrors = {name: (extra_env or {}).get(name, "") for name in _APT_MIRROR_NAMES}
     if not any(mirrors.values()):
         return ""
-    validate_mirrors(mirrors)
-    script = Path(__file__).with_name("apt_sources.py").read_text()
+    # Fusion/router overlays load this file by path without adding its directory
+    # to sys.path. Resolve the private helper relative to this base module too.
+    path = Path(__file__).with_name("apt_sources.py")
+    spec = importlib.util.spec_from_file_location("_claude_apt_sources", path)
+    if spec is None or spec.loader is None:
+        raise ImportError("Unable to load Claude APT source helper")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    module.validate_mirrors(mirrors)
+    script = path.read_text()
     return (
         "if command -v apt-get >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then "
         f"python3 - {shlex.quote(json.dumps(mirrors))} <<'APT_SOURCES_PY'\n"

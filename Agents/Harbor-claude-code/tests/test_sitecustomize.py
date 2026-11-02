@@ -704,15 +704,45 @@ class ClaudeInstallCommandTest(unittest.TestCase):
             apt.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$APT_LOG"\nexit 100\n')
             apt.chmod(0o755)
             log = root / "apt.log"
+            config = root / "99force-ipv4"
+            command = self.last_root_command.replace(
+                "/etc/apt/apt.conf.d/99force-ipv4", shlex.quote(str(config))
+            )
+            self.assertNotIn("/etc/apt/", command)
             result = subprocess.run(
-                [shutil.which("bash"), "-c", self.last_root_command],
+                [shutil.which("bash"), "-c", command],
                 env={"PATH": tmp, "APT_LOG": str(log)}, text=True, capture_output=True, check=False,
             )
             commands = log.read_text().splitlines()
+            self.assertEqual(config.read_text(), 'Acquire::ForceIPv4 "true";\n')
         self.assertEqual(result.returncode, 100, result.stderr)
         self.assertEqual(len(commands), 1)
         self.assertTrue(commands[0].endswith(" update"))
         self.assertIn("Acquire::Retries=3", commands[0])
+
+    def test_file_loaded_base_configures_mirrors_without_its_directory_on_sys_path(self):
+        script = """
+import importlib.util
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+assert str(path.parent) not in sys.path
+spec = importlib.util.spec_from_file_location("file_loaded_claude", path)
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+command = module._apt_mirror_bootstrap({
+    "HARBOR_APT_DEBIAN_MIRROR": "https://apt.invalid/debian",
+})
+assert "https://apt.invalid/debian" in command
+assert "Configured runtime APT mirrors" in command
+"""
+        result = subprocess.run(
+            [sys.executable, "-S", "-c", script, str(SCRIPT)],
+            cwd=HARBOR_RUNTIME_DIR, text=True, capture_output=True, check=False,
+            env={"PATH": os.environ["PATH"]},
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_credentialed_mirror_is_rejected_before_rendering_a_logged_command(self):
         module = load_module()
