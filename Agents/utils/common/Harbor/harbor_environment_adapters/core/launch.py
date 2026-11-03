@@ -21,16 +21,18 @@ class LaunchCapabilities:
     verifier_upload: bool = False
     task_images: bool = False
     remote_runtime: bool = False
+    preinstalled_agents: bool = False
 
 
 def launch_capabilities(plan: BackendPlan) -> LaunchCapabilities:
     backend = plan.environment_type
     return LaunchCapabilities(
         host_docker=backend == "docker",
-        readonly_mounts=backend in {"docker", "opensandbox"},
-        verifier_upload=backend in {"e2b", "qz"},
-        task_images=backend == "opensandbox",
-        remote_runtime=backend in {"e2b", "qz", "opensandbox"},
+        readonly_mounts=backend in {"docker", "opensandbox", "dsec"},
+        verifier_upload=backend in {"e2b", "qz", "dsec"},
+        task_images=backend in {"opensandbox", "dsec"},
+        remote_runtime=backend in {"e2b", "qz", "opensandbox", "dsec"},
+        preinstalled_agents=backend == "dsec",
     )
 
 
@@ -59,6 +61,7 @@ def launch_settings(plan: BackendPlan, config: Mapping[str, str]) -> dict[str, s
         "HARBOR_BACKEND_VERIFIER_UPLOAD": str(int(caps.verifier_upload)),
         "HARBOR_BACKEND_TASK_IMAGES": str(int(caps.task_images)),
         "HARBOR_BACKEND_REMOTE_RUNTIME": str(int(caps.remote_runtime)),
+        "HARBOR_BACKEND_PREINSTALLED_AGENTS": str(int(caps.preinstalled_agents)),
         "NPM_CONFIG_REGISTRY": npm,
         "HARBOR_CC_NODE_DIST_URL": node,
     }
@@ -71,9 +74,9 @@ def validate_backend(
     backend = plan.environment_type
     agent = config.get("AGENT", "")
     messages = []
-    if backend not in {"docker", "e2b", "opensandbox", "qz"}:
+    if backend not in {"docker", "e2b", "opensandbox", "qz", "dsec"}:
         raise LaunchError(
-            "HARBOR_ENVIRONMENT_TYPE must be docker, e2b, opensandbox, or qz, "
+            "HARBOR_ENVIRONMENT_TYPE must be docker, e2b, opensandbox, qz, or dsec, "
             f"got: {backend}"
         )
     if backend in {"e2b", "qz"} and agent in {"pi", "dsh-sdk-minimal"}:
@@ -104,6 +107,21 @@ def validate_backend(
             f"id={config.get('YICLOUD_SANDBOX_ENVIRONMENT_ID') or '<resolved-by-name>'} "
             f"name={config.get('YICLOUD_SANDBOX_ENVIRONMENT_NAME') or '<lookup-by-id>'}"
         )
+    if backend == "dsec":
+        endpoint = config.get("DSEC_SANDBOX_CONTROLLER_ENDPOINT", "").strip()
+        if not endpoint:
+            raise LaunchError(
+                "required environment variable is unset: "
+                "DSEC_SANDBOX_CONTROLLER_ENDPOINT"
+            )
+        if endpoint.startswith("http://") and config.get(
+            "DSEC_SANDBOX_ALLOW_INSECURE_HTTP", "0"
+        ).strip().lower() not in {"1", "true", "yes"}:
+            raise LaunchError(
+                "plain HTTP DSec Controller requires "
+                "DSEC_SANDBOX_ALLOW_INSECURE_HTTP=1"
+            )
+        messages.append(f"DSec Sandbox Controller: {endpoint}")
     if backend == "qz":
         if not (config.get("SBX_API_KEY") or config.get("QZ_SANDBOX_API_KEY")
                 or config.get("E2B_API_KEY", "").startswith("sbx_")):
@@ -155,7 +173,14 @@ def environment_args(plan: BackendPlan, config: Mapping[str, str], harbor_dir: P
         for key, name in (
             ("image_ref", "HARBOR_OPENSANDBOX_IMAGE_REF"),
             ("bundle_manifest_path", "HARBOR_OPENSANDBOX_BUNDLE_MANIFEST"),
-            ("lifecycle_minutes", "YICLOUD_SANDBOX_LIFECYCLE_MINUTES"),
+            (
+                "ttl_seconds"
+                if plan.environment_type == "dsec"
+                else "lifecycle_minutes",
+                "DSEC_SANDBOX_TTL_SECONDS"
+                if plan.environment_type == "dsec"
+                else "YICLOUD_SANDBOX_LIFECYCLE_MINUTES",
+            ),
         ):
             args += ["--ek", f"{key}={config.get(name, '')}"]
     elif caps.host_docker:
@@ -165,7 +190,7 @@ def environment_args(plan: BackendPlan, config: Mapping[str, str], harbor_dir: P
 
 def validate_verifier_transport(plan: BackendPlan, config: Mapping[str, str]) -> None:
     bundle = config.get("VERIFIER_RUNTIME_BUNDLE_ID", "none")
-    if (bundle != "none" and launch_capabilities(plan).task_images
+    if (bundle != "none" and plan.environment_type == "opensandbox"
             and config.get("YICLOUD_SANDBOX_UPLOAD_BACKEND") not in {"s3", "auto"}):
         raise LaunchError(
             f"verifier runtime bundle {bundle} requires YICLOUD_SANDBOX_UPLOAD_BACKEND=s3 or auto"

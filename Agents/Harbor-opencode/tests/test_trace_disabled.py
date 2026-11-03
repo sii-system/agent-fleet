@@ -153,6 +153,24 @@ class OpenCodeTraceDisabledTests(unittest.TestCase):
             fake_opencode_present=opencode_present,
         )
 
+    def test_dsec_activates_shared_runtime_without_cache_install(self):
+        agent = self.make_agent("false", opencode_present=False)
+        with mock.patch.dict(
+            os.environ,
+            {
+                "HARBOR_BACKEND_PREINSTALLED_AGENTS": "1",
+                "OPENCODE_VERSION": "1.19.5",
+            },
+        ):
+            asyncio.run(agent.install(FakeEnvironment()))
+
+        self.assertEqual(len(agent.agent_commands), 1)
+        command = str(agent.agent_commands[0]["command"])
+        self.assertIn("/opt/agent-fleet/runtime/opencode", command)
+        self.assertIn("expected=1.19.5", command)
+        self.assertNotIn("npm install", command)
+        self.assertEqual(agent.root_commands, [])
+
     def test_web_mcp_uses_task_instruction_and_preserves_user_config(self):
         agent = self.make_agent("false")
         agent._extra_env["CC_WEB_MCP_PATH"] = "/opt/exa.pyz"

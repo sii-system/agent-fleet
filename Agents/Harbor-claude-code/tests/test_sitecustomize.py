@@ -229,6 +229,50 @@ class ClaudeCommandPatchTest(unittest.TestCase):
 
 
 class ClaudeInstallCommandTest(unittest.TestCase):
+    def test_dsec_activates_shared_runtime_without_original_install(self) -> None:
+        module = load_module()
+        captured: list[str] = []
+
+        class FakeClaudeCode:
+            def version(self):
+                return "2.1.90"
+
+            async def install(self, environment):
+                raise AssertionError("original install must not run for DSec")
+
+            async def run(self, instruction, environment, context):
+                return None
+
+            async def exec_as_root(self, environment, **kwargs):
+                raise AssertionError("root setup must not run for DSec")
+
+            async def exec_as_agent(
+                self, environment, command=None, env=None, cwd=None, timeout_sec=None
+            ):
+                captured.append(command)
+                return command
+
+        claude_code = types.ModuleType("harbor.agents.installed.claude_code")
+        claude_code.ClaudeCode = FakeClaudeCode
+        fake_modules = {
+            name: types.ModuleType(name)
+            for name in ("harbor", "harbor.agents", "harbor.agents.installed")
+        }
+        fake_modules["harbor.agents.installed.claude_code"] = claude_code
+
+        with mock.patch.dict(
+            os.environ, {"HARBOR_BACKEND_PREINSTALLED_AGENTS": "1"}
+        ), mock.patch.dict(sys.modules, fake_modules):
+            module._patch_claude_code_realtime_hooks()
+            agent = FakeClaudeCode()
+            agent._extra_env = {"CC_OPIK_ENABLE_HOOK": "false"}
+            asyncio.run(agent.install(object()))
+
+        self.assertEqual(len(captured), 1)
+        self.assertIn("/opt/agent-fleet/runtime/claude-code", captured[0])
+        self.assertIn("expected=2.1.90", captured[0])
+        self.assertNotIn("npm install", captured[0])
+
     def _install_command(
         self,
         extra_env: dict[str, str],

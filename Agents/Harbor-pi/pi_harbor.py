@@ -15,7 +15,7 @@ from harbor.models.agent.context import AgentContext
 HARBOR_RUNTIME_DIR = Path(__file__).resolve().parents[1] / "utils" / "common" / "Harbor"
 sys.path.append(str(HARBOR_RUNTIME_DIR))
 
-from agent_output import exec_logged_agent  # noqa: E402
+from agent_output import exec_logged_agent
 
 
 class AgentFleetPi(Pi):
@@ -24,7 +24,9 @@ class AgentFleetPi(Pi):
     Harbor's built-in Pi integration installs the upstream package through nvm
     for every fresh task image. Agent Fleet instead prepares a pinned,
     fully-installed Pi runtime and a portable Node runtime once on the runner.
-    Task setup only extracts those immutable archives and never resolves npm
+    Task setup first consumes the shared runtime contract at
+    ``/opt/agent-fleet/runtime/pi`` when the environment provides it. Other
+    environments retain the immutable archive fallback and never resolve npm
     dependencies inside the benchmark container.
     """
 
@@ -45,18 +47,33 @@ class AgentFleetPi(Pi):
     async def install(self, environment: BaseEnvironment) -> None:
         version = str(self.version() or os.environ.get("PI_VERSION", "0.81.1"))
         version_q = shlex.quote(version)
+        shared_required = (
+            "1"
+            if os.environ.get("HARBOR_BACKEND_PREINSTALLED_AGENTS") == "1"
+            else "0"
+        )
         await self.exec_as_agent(
             environment,
             command=(
                 "set -euo pipefail; "
                 'export PATH="$HOME/.local/bin:$PATH"; '
                 f"pi_version={version_q}; "
+                f"shared_required={shared_required}; "
+                'shared_runtime="${PI_SHARED_RUNTIME_DIR:-/opt/agent-fleet/runtime/pi}"; '
                 'cache_dir="${PI_CACHE_DIR:-/opt/tb-opik/python-wheels}"; '
                 'pi_runtime_tar="${PI_RUNTIME_TAR_PATH:-$cache_dir/pi-runtime-${pi_version}.tar.gz}"; '
                 'node_tar="${PI_NODE_RUNTIME_PATH:-$cache_dir/pi-node-runtime.tar.gz}"; '
                 'mkdir -p "$HOME/.local/bin" "$HOME/.pi/agent"; '
                 'mkdir -p "/logs/agent" 2>/dev/null || echo "cannot create /logs/agent; pi log capture disabled" >&2; '
-                'if [ -f "$node_tar" ]; then '
+                'if [ -x "$shared_runtime/bin/node" ] && [ -x "$shared_runtime/bin/pi" ] && '
+                '   [ -f "$shared_runtime/VERSION" ] && [ "$(cat "$shared_runtime/VERSION")" = "$pi_version" ]; then '
+                '  ln -sf "$shared_runtime/bin/node" "$HOME/.local/bin/node"; '
+                '  ln -sf "$shared_runtime/bin/pi" "$HOME/.local/bin/pi"; '
+                '  export PATH="$HOME/.local/bin:$shared_runtime/bin:$PATH"; '
+                'elif [ "$shared_required" = 1 ]; then '
+                '  echo "required shared Pi runtime is unavailable or has the wrong version: $pi_version" >&2; '
+                '  exit 1; '
+                'elif [ -f "$node_tar" ]; then '
                 '  node_dir="$(mktemp -d /tmp/tb-pi-node-XXXXXX)"; '
                 '  tar -xzf "$node_tar" -C "$node_dir"; '
                 '  node_bin="$(find "$node_dir" -path "*/bin/node" -print -quit 2>/dev/null)"; '
@@ -77,11 +94,13 @@ class AgentFleetPi(Pi):
                 '  echo "Pi setup requires Node 20 or newer (found $(node --version 2>/dev/null || echo unknown))" >&2; '
                 "  exit 1; "
                 "fi; "
-                'if [ ! -f "$pi_runtime_tar" ]; then '
-                "  echo \"cached Pi runtime is unavailable: $pi_runtime_tar\" >&2; "
-                "  exit 1; "
+                'if [ ! -x "$HOME/.local/bin/pi" ]; then '
+                '  if [ ! -f "$pi_runtime_tar" ]; then '
+                "    echo \"cached Pi runtime is unavailable: $pi_runtime_tar\" >&2; "
+                "    exit 1; "
+                "  fi; "
+                '  tar -xzf "$pi_runtime_tar" -C "$HOME/.local"; '
                 "fi; "
-                'tar -xzf "$pi_runtime_tar" -C "$HOME/.local"; '
                 'printf "%s\\n" "$PI_MODELS_CONFIG" > "$HOME/.pi/agent/models.json"; '
                 'printf "%s\\n" "$PI_SETTINGS_CONFIG" > "$HOME/.pi/agent/settings.json"; '
                 "pi --version"

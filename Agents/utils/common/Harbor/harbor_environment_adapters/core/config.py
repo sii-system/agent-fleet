@@ -56,6 +56,8 @@ def resolve_backend_plan(config: Mapping[str, str]) -> BackendPlan:
     if not spec:
         if backend == "opensandbox":
             spec = "yicloud_opensandbox:YiCloudOpenSandboxEnvironment"
+        elif backend == "dsec":
+            spec = "dsec_sandbox:DsecSandboxEnvironment"
         elif backend == "qz":
             spec = "qz_e2b_sandbox:QzSandboxEnvironment"
         elif backend == "e2b" and config.get("HARBOR_E2B_PREBUILT_TEMPLATE"):
@@ -102,7 +104,7 @@ def rollout_backend_plan(
     request_config = dict(config)
     request_config["HARBOR_ENVIRONMENT_TYPE"] = environment_type
     if (
-        environment_type in {"opensandbox", "qz"}
+        environment_type in {"opensandbox", "qz", "dsec"}
         or (environment_type == "e2b" and config.get("HARBOR_E2B_PREBUILT_TEMPLATE"))
         or environment_type != (config.get("RL_ENVIRONMENT_TYPE") or "docker")
     ):

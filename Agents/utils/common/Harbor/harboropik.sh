@@ -1110,7 +1110,8 @@ run_harbor() {
   fi
 
   local mounts_json="[]" agent_package_source="$HARBOR_CC_CLAUDE_TGZ_SOURCE"
-  if harbor_agent_is_pi || harbor_agent_is_dsh; then
+  if harbor_agent_is_pi || harbor_agent_is_dsh \
+    || [[ "$HARBOR_BACKEND_PREINSTALLED_AGENTS" == "1" ]]; then
     agent_package_source=""
   fi
   if [[ "$HARBOR_BACKEND_READONLY_MOUNTS" == "1" ]]; then
@@ -1136,7 +1137,8 @@ run_harbor() {
         "$DSH_RUNTIME_MOUNT_PATH/$DSH_SDK_MINIMAL_CLI_RUNTIME_BASENAME"
         exists
       )
-    elif [[ -n "$HARBOR_CC_PY_WHEEL_DIR_SOURCE" ]]; then
+    elif [[ "$HARBOR_BACKEND_PREINSTALLED_AGENTS" != "1" \
+      && -n "$HARBOR_CC_PY_WHEEL_DIR_SOURCE" ]]; then
       mount_args+=( --mount "$HARBOR_CC_PY_WHEEL_DIR_SOURCE" "$HARBOR_CC_PY_WHEEL_DIR_MOUNT_PATH" exists )
     fi
     if verifier_runtime_bundle_required; then
@@ -1439,7 +1441,8 @@ run_opencode_task() {
     if [[ "$HARBOR_BACKEND_READONLY_MOUNTS" == "1" ]]; then
       local -a mount_args=()
       append_web_mcp_args || return 1
-      if [[ -n "$HARBOR_CC_PY_WHEEL_DIR_SOURCE" ]]; then
+      if [[ "$HARBOR_BACKEND_PREINSTALLED_AGENTS" != "1" \
+        && -n "$HARBOR_CC_PY_WHEEL_DIR_SOURCE" ]]; then
         mount_args+=( --mount "$HARBOR_CC_PY_WHEEL_DIR_SOURCE" "$HARBOR_CC_PY_WHEEL_DIR_MOUNT_PATH" exists )
       fi
       if verifier_runtime_bundle_required; then

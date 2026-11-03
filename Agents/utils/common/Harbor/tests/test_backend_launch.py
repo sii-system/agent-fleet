@@ -60,6 +60,30 @@ class BackendLaunchTests(unittest.TestCase):
         self.assertEqual(restored["HARBOR_BACKEND_READONLY_MOUNTS"], "1")
         self.assertEqual(restored["HARBOR_BACKEND_VERIFIER_UPLOAD"], "0")
 
+    def test_dsec_uses_task_images_and_requires_explicit_insecure_http(self):
+        settings = launch_settings(BackendPlan("dsec", "dsec_sandbox:Env"), {})
+        self.assertEqual(settings["HARBOR_BACKEND_TASK_IMAGES"], "1")
+        self.assertEqual(settings["HARBOR_BACKEND_VERIFIER_UPLOAD"], "1")
+        self.assertEqual(settings["HARBOR_BACKEND_PREINSTALLED_AGENTS"], "1")
+        docker = launch_settings(BackendPlan("docker", "docker"), {})
+        self.assertEqual(docker["HARBOR_BACKEND_PREINSTALLED_AGENTS"], "0")
+        image = "registry.example/tasks/sample@sha256:" + "a" * 64
+        rejected = self.run_helper(
+            "validate",
+            HARBOR_ENVIRONMENT_TYPE="dsec",
+            DSEC_SANDBOX_CONTROLLER_ENDPOINT="http://controller.invalid/",
+            HARBOR_OPENSANDBOX_IMAGE_REF=image,
+        )
+        self.assertEqual(rejected.returncode, 1)
+        accepted = self.run_helper(
+            "validate",
+            HARBOR_ENVIRONMENT_TYPE="dsec",
+            DSEC_SANDBOX_CONTROLLER_ENDPOINT="http://controller.invalid/",
+            DSEC_SANDBOX_ALLOW_INSECURE_HTTP="1",
+            HARBOR_OPENSANDBOX_IMAGE_REF=image,
+        )
+        self.assertEqual(accepted.returncode, 0, accepted.stderr)
+
     def test_custom_spec_roundtrips_as_one_argument_without_executing_shell(self):
         spec = "custom:Env'$(touch injected)`touch injected`\nsecond-line"
         result = self.run_helper("args", HARBOR_ENVIRONMENT_TYPE="docker",
