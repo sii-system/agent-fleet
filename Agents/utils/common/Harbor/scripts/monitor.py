@@ -36,7 +36,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--interval", type=int, default=30)
     parser.add_argument("--stall-seconds", type=int, default=1800)
     parser.add_argument("--stall-min", type=int, default=900)
-    parser.add_argument("--stall-max", type=int, default=3600)
+    parser.add_argument(
+        "--stall-max", type=int, help="Deprecated compatibility option; has no effect."
+    )
     parser.add_argument("--startup-grace", type=int, default=30)
     parser.add_argument("--configured-timeout", type=int, default=None)
     parser.add_argument("--max-retries", type=int, default=3)
@@ -73,7 +75,6 @@ def main() -> int:
         max_retries=args.max_retries,
         S_default=args.stall_seconds,
         S_min=args.stall_min,
-        S_max=args.stall_max,
         startup_grace=args.startup_grace,
         configured_timeout=args.configured_timeout,
         total_override=args.total,
