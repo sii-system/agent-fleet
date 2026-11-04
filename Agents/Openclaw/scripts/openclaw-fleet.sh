@@ -34,7 +34,9 @@ DOCKER="docker"
 if [ "$(uname)" = "Linux" ] && ! docker info &>/dev/null; then
   DOCKER="sudo docker"
 fi
-COMPOSE="$DOCKER compose"
+docker_compose() {
+  $DOCKER compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" "$@"
+}
 
 # ── Discover instance count from .env ──
 instance_count() {
@@ -171,7 +173,7 @@ cmd_logs() {
     local svc
     svc=$(svc_name "$i")
     echo "── ${svc} ──"
-    $COMPOSE logs "$svc" "$@" 2>/dev/null || $DOCKER logs "$svc" "$@" 2>/dev/null || echo "  (not found)"
+    docker_compose logs "$svc" "$@" 2>/dev/null || $DOCKER logs "$svc" "$@" 2>/dev/null || echo "  (not found)"
     echo
   done
 }
@@ -179,21 +181,21 @@ cmd_logs() {
 cmd_start() {
   local sel="${1:-all}"
   for i in $(parse_selector "$sel"); do
-    $COMPOSE start "$(svc_name "$i")" 2>/dev/null || true
+    docker_compose start "$(svc_name "$i")"
   done
 }
 
 cmd_stop() {
   local sel="${1:-all}"
   for i in $(parse_selector "$sel"); do
-    $COMPOSE stop "$(svc_name "$i")" 2>/dev/null || true
+    docker_compose stop "$(svc_name "$i")"
   done
 }
 
 cmd_restart() {
   local sel="${1:-all}"
   for i in $(parse_selector "$sel"); do
-    $COMPOSE restart "$(svc_name "$i")" 2>/dev/null || true
+    docker_compose restart "$(svc_name "$i")"
   done
 }
 
@@ -284,9 +286,9 @@ cmd_clean_workspace() {
 cmd_scale() {
   local n="${1:?Usage: openclaw-fleet.sh scale <N>}"
   echo "Scaling to $n instances..."
-  $COMPOSE down 2>/dev/null || true
+  docker_compose down 2>/dev/null || true
   "$SCRIPT_DIR/setup.sh" "$n"
-  $COMPOSE up -d
+  docker_compose up -d
 }
 
 cmd_df() {
