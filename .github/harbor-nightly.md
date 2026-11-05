@@ -107,6 +107,19 @@ not establish that all tasks will complete within their time budgets.
 
 ## Pinned runtime preparation
 
+Configure package sources and `UV_HTTP_TIMEOUT` on each runner. Keep
+`PIP_INDEX_URL`, `UV_INDEX_URL`, `UV_DEFAULT_INDEX`, and
+`HARBOR_TASK_IMAGE_PIP_INDEX_URL` aligned when they should use the same index.
+Managed hosts store these in `/etc/agent-fleet/nightly-downloads.env` and the
+runner's `.env`; their job hook exports values through `GITHUB_ENV`.
+Workflows inherit them. Update the hook or restart the runner when idle to
+activate changes; editing a service environment file does not update a listener.
+
+Claude setup reuses installed curl, Bash, ps, and pgrep. If packages are needed,
+it applies explicit `HARBOR_APT_*_MIRROR` settings through the task's Python and
+bounds APT retries/timeouts. Other repositories, source options/signatures, and
+credential-bound sources are preserved. Build-only gateway routing is separate.
+
 Both workflows bind `HARBOR_CLAUDE_CODE_DIR` to their checked-out source. A
 service-level override must not route a new checkout through an older runtime
 copy: the October 22–25 runs used a legacy `.tar.xz` installer against a gzip

@@ -40,6 +40,7 @@ HARBOR_RUNTIME_DIR = (
 sys.path.append(str(HARBOR_RUNTIME_DIR))
 
 from agent_output import exec_logged_agent
+from apt_sources import bootstrap_command as _apt_mirror_bootstrap
 from opik_trace_gate import _is_true, opik_tracing_enabled
 
 _HOOK_EVENTS = [
@@ -342,9 +343,8 @@ def _patch_claude_code_realtime_hooks() -> None:
         )
 
         # Intercept both exec_as_root and exec_as_agent during install so that:
-        #   exec_as_root: keep the task image's apt sources intact and only
-        #                 force IPv4. Rewriting http apt mirrors to https breaks
-        #                 some task containers that do not have trusted CA roots.
+        #   exec_as_root: reuse installed system tools and apply only explicitly
+        #                 configured APT mirrors when packages are needed.
         #   exec_as_agent: replace the bootstrap script with the configured npm
         #                  registry path. This works with mounted caches and
         #                  managed Sandboxes without requiring one particular
@@ -565,6 +565,23 @@ def _patch_claude_code_realtime_hooks() -> None:
                         "else "
                         "echo 'OpenSandbox requires bash, ps, and pgrep' >&2; "
                         "exit 1; "
+                        "fi"
+                    )
+                elif "apt-get install -y curl procps" in command:
+                    command = (
+                        "set -euo pipefail; "
+                        "if command -v curl >/dev/null 2>&1 && "
+                        "command -v bash >/dev/null 2>&1 && "
+                        "command -v ps >/dev/null 2>&1 && "
+                        "command -v pgrep >/dev/null 2>&1; then "
+                        "echo 'Claude system prerequisites ready; skip package bootstrap' >&2; "
+                        "else "
+                        f"{_apt_mirror_bootstrap(extra_env)}"
+                        "apt-get() { command apt-get "
+                        "-o Acquire::Retries=3 -o Acquire::http::Timeout=20 "
+                        "-o Acquire::https::Timeout=20 "
+                        "-o APT::Update::Error-Mode=any \"$@\"; }; "
+                        f"{original_command}; "
                         "fi"
                     )
                 else:

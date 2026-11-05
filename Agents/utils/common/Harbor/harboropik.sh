@@ -252,6 +252,7 @@ append_package_environment_args() {
     PIP_TRUSTED_HOST \
     UV_INDEX_URL \
     UV_DEFAULT_INDEX \
+    UV_HTTP_TIMEOUT \
     NPM_CONFIG_REGISTRY \
     HARBOR_APT_UBUNTU_MIRROR \
     HARBOR_APT_DEBIAN_MIRROR \
@@ -800,6 +801,9 @@ run_oracle_task() {
   fi
   if [[ -n "${UV_DEFAULT_INDEX:-}" ]]; then
     cmd+=( --ve "UV_DEFAULT_INDEX=$UV_DEFAULT_INDEX" )
+  fi
+  if [[ -n "${UV_HTTP_TIMEOUT:-}" ]]; then
+    cmd+=( --ve "UV_HTTP_TIMEOUT=$UV_HTTP_TIMEOUT" )
   fi
   if [[ -n "${UV_PYTHON_DOWNLOADS:-}" ]]; then
     cmd+=( --ve "UV_PYTHON_DOWNLOADS=$UV_PYTHON_DOWNLOADS" )

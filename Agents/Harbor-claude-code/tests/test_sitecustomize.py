@@ -722,11 +722,73 @@ class ClaudeInstallCommandTest(unittest.TestCase):
         )
         self.assertEqual(bash_check.returncode, 0, bash_check.stderr)
 
-    def test_non_opensandbox_preserves_original_apt_bootstrap(self) -> None:
+    def test_docker_skips_package_manager_when_system_tools_are_present(self) -> None:
         self._install_command({"CC_OPIK_ENABLE_HOOK": "false"})
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for name in ("curl", "bash", "ps", "pgrep"):
+                tool = root / name
+                tool.write_text("#!/bin/sh\nexit 0\n")
+                tool.chmod(0o755)
+            apt = root / "apt-get"
+            apt.write_text("#!/bin/sh\nexit 99\n")
+            apt.chmod(0o755)
+            result = subprocess.run(
+                [shutil.which("bash"), "-c", self.last_root_command],
+                env={"PATH": tmp}, text=True, capture_output=True, check=False,
+            )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("skip package bootstrap", result.stderr)
 
-        self.assertNotIn("skip APT bootstrap", self.last_root_command)
-        self.assertIn("apt-get update", self.last_root_command)
+    def test_missing_system_tools_propagate_apt_update_failure(self) -> None:
+        self._install_command({"CC_OPIK_ENABLE_HOOK": "false"})
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            apt = root / "apt-get"
+            apt.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$APT_LOG"\nexit 100\n')
+            apt.chmod(0o755)
+            log = root / "apt.log"
+            config = root / "99force-ipv4"
+            command = self.last_root_command.replace(
+                "/etc/apt/apt.conf.d/99force-ipv4", shlex.quote(str(config))
+            )
+            self.assertNotIn("/etc/apt/", command)
+            result = subprocess.run(
+                [shutil.which("bash"), "-c", command],
+                env={"PATH": tmp, "APT_LOG": str(log)}, text=True, capture_output=True, check=False,
+            )
+            commands = log.read_text().splitlines()
+            self.assertEqual(config.read_text(), 'Acquire::ForceIPv4 "true";\n')
+        self.assertEqual(result.returncode, 100, result.stderr)
+        self.assertEqual(len(commands), 1)
+        self.assertTrue(commands[0].endswith(" update"))
+        self.assertIn("Acquire::Retries=3", commands[0])
+
+    def test_file_loaded_base_configures_mirrors_without_its_directory_on_sys_path(self):
+        script = """
+import runpy, sys
+
+assert sys.argv[1].rsplit("/", 1)[0] not in sys.path
+module = runpy.run_path(sys.argv[1])
+command = module["_apt_mirror_bootstrap"]({
+    "HARBOR_APT_DEBIAN_MIRROR": "https://apt.invalid/debian",
+})
+assert "https://apt.invalid/debian" in command
+"""
+        result = subprocess.run(
+            [sys.executable, "-S", "-c", script, str(SCRIPT)],
+            cwd=HARBOR_RUNTIME_DIR, text=True, capture_output=True, check=False,
+            env={"PATH": os.environ["PATH"]},
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_credentialed_mirror_is_rejected_before_rendering_a_logged_command(self):
+        module = load_module()
+        with self.assertRaises(ValueError) as error:
+            module._apt_mirror_bootstrap({
+                "HARBOR_APT_DEBIAN_MIRROR": "https://user:fake-password@apt.invalid/debian",
+            })
+        self.assertNotIn("fake-password", str(error.exception))
 
 
 class QzInstructionHookGateTest(unittest.TestCase):
