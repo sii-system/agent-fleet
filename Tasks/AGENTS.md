@@ -154,9 +154,10 @@ The unified launcher leaves the benchmark fleet running with its run-specific
 execution profile; stop or regenerate it before using OpenClaw for another
 purpose.
 
-Outputs: `Tasks/clawBio/results/latest/` →
+Unified launcher outputs: `Tasks/clawBio/runs/latest/` →
 `iterations-summary.{json,md}`, `iteration-NNN/results.{json,md}`, and
 per-task logs/artifacts under `instances/<N>/<task-id>/`.
+Direct `run-benchmark.py` invocations default to `Tasks/clawBio/results/latest/`.
 
 Sandbox errors ("path escapes sandbox"): rerun `setup.sh` with
 `WORKSPACE_ONLY=false`.
