@@ -37,8 +37,6 @@ def validate_dsec_agent_runtime(
     """Require every schedulable DSec Node to expose one exact runtime."""
 
     required = required_agent_runtime(config)
-    if required is None:
-        return None
     endpoint = config.get("DSEC_SANDBOX_CONTROLLER_ENDPOINT", "").rstrip("/")
     request = Request(endpoint + "/v1alpha1/status", method="GET")
     transport = opener or build_opener(ProxyHandler({}))
@@ -63,6 +61,17 @@ def validate_dsec_agent_runtime(
     ]
     if not ready_nodes:
         raise ValueError("DSec Controller has no schedulable ready Nodes")
+    missing_archive = [
+        str(node.get("node_id") or "<unknown>") for node in ready_nodes
+        if (node["status"].get("capabilities") or {}).get("archive_transfer") is not True
+    ]
+    if missing_archive:
+        raise ValueError(
+            "DSec native archive transfer is unavailable on ready Nodes: "
+            + ", ".join(missing_archive)
+        )
+    if required is None:
+        return f"DSec native archive transfer on {len(ready_nodes)} ready Nodes"
     agent, version = required
     missing = [
         str(node.get("node_id") or "<unknown>")

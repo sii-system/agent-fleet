@@ -350,15 +350,16 @@ configuration to `OPIK_URL`. An empty `OPIK_URL` still disables tracing.
 | `YICLOUD_SANDBOX_STATUS_LOG_INTERVAL_SEC` | Interval for Pending/state progress diagnostics, default `30` |
 | `YICLOUD_SANDBOX_RETAIN_ON_START_FAILURE` | Debug-only switch that skips automatic deletion after environment start failure, default `0` |
 | `YICLOUD_SANDBOX_RETAIN_AFTER_TRIAL` | Debug-only switch that retains a completed trial Sandbox until platform expiry, default `0` |
-| `YICLOUD_SANDBOX_UPLOAD_BACKEND` | OpenSandbox Agent/task input transport: `http`, strict object-store `s3`, or S3-preferred `auto` with the existing HTTP fallback; default `http`, while selecting an S3 profile implies `auto` unless explicitly set to strict `s3`. In `auto`, users without write credentials can reuse anonymously readable objects and fall back to HTTP when an object is absent; every fallback emits a warning naming the attempted backend, fallback backend, artifact kind, phase, and target. A selected verifier runtime bundle requires `s3` or `auto` |
+| `YICLOUD_SANDBOX_UPLOAD_BACKEND` | OpenSandbox Agent/task input transport: `http`, strict object-store staging `s3`, or S3-preferred staging `auto` with native HTTP fallback before delivery; default `http`, while selecting an S3 profile implies `auto` unless explicitly set to strict `s3`. In `auto`, users without write credentials can reuse anonymously readable objects and fall back to HTTP when an object is absent; every fallback emits a warning naming the attempted backend, fallback backend, artifact kind, phase, and target. A selected verifier runtime bundle requires `s3` or `auto` |
 | `YICLOUD_SANDBOX_S3_PROFILE` | Project-local provider profile under `.s3-profiles/<name>`; selecting one implies the `auto` backend by default and atomically resolves the bucket, anonymous read origin, prefix, and optional sibling write config |
 | `YICLOUD_SANDBOX_S3_CONFIG` | Optional s3cmd write configuration path available only to the Harbor runner; it is consulted when an immutable object is absent, never sent to a Sandbox, and may be omitted by read-only users |
 | `YICLOUD_SANDBOX_S3_BUCKET` | Bucket for immutable Agent and task input objects |
-| `YICLOUD_SANDBOX_S3_READ_ORIGIN` | Credential-free internal HTTP(S) URL that addresses the bucket; Sandbox object URLs append the immutable object key |
+| `YICLOUD_SANDBOX_S3_READ_ORIGIN` | Credential-free HTTP(S) bucket origin used for host-side anonymous object verification |
 | `YICLOUD_SANDBOX_S3_PREFIX` | Versioned content-addressed object prefix, default `agent-fleet-upload/v1` |
 | `YICLOUD_SANDBOX_S3_CACHE_ROOT` | H-local persistent cache for deterministic file and directory payloads |
 | `YICLOUD_SANDBOX_S3_LOCK_ROOT` | H-local lock and publication index directory; never store it in S3 |
-| `YICLOUD_SANDBOX_S3_DOWNLOAD_TIMEOUT_SEC` | Sandbox download and verification timeout, default `1800` |
+| `YICLOUD_SANDBOX_FAST_UPLOAD_ORIGIN` | Native upload origin authenticated by Sandbox token; empty uses the gateway-signed execd endpoint |
+| `YICLOUD_SANDBOX_UPLOAD_TIMEOUT_SEC` | Native upload socket read timeout, default `1800`; the former S3 download timeout setting is unused |
 | `YICLOUD_SANDBOX_S3_DIRECTORY_COMPRESSION` | Deterministic directory snapshot mode: `auto`, `none`, or `gzip`; default `auto` |
 | `YICLOUD_SANDBOX_S3CMD` | s3cmd executable used by the Harbor runner; defaults to the pinned runner environment |
 | `HARBOR_ONLINE_ANALYSIS` | Enables console-only online analysis, default `0` |

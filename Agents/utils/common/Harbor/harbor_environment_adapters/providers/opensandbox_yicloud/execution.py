@@ -53,7 +53,6 @@ ORACLE_REMOTE_START_MARKER = "__HARBOR_YICLOUD_ORACLE_REMOTE_START__="
 ORACLE_REMOTE_TIMING_MARKER = "__HARBOR_YICLOUD_ORACLE_REMOTE_TIMING__="
 
 
-ORACLE_PAYLOAD_TIMING_MARKER = "__HARBOR_YICLOUD_ORACLE_PAYLOAD_TIMING__="
 
 
 VERIFIER_PATH_PREPEND_ENV = "HARBOR_VERIFIER_PATH_PREPEND"
@@ -86,15 +85,6 @@ def _is_oracle_solution_command(command: str) -> bool:
         and "/logs/agent/oracle.txt" in command
         and bool(
             re.search(r"/solution/[^\s'\";|&]*solve\.(?:sh|bat)\b", command)
-        )
-    )
-
-
-def _is_oracle_solution_chmod(command: str) -> bool:
-    return bool(
-        re.fullmatch(
-            r"\s*chmod\s+\+x\s+['\"]?/solution/[^\s'\"]*solve\.sh['\"]?\s*",
-            command,
         )
     )
 
@@ -420,14 +410,8 @@ class YiCloudExecutionMixin:
         pid_path = f"{prefix}.pid"
         started_path = f"{prefix}.started"
         finished_path = f"{prefix}.finished"
-        payload_timing_path = f"{prefix}.payload-timing"
         launch_dir = f"{prefix}.launch"
         measure_oracle_start = _is_oracle_solution_command(command)
-        inline_payload = (
-            getattr(self, "_oracle_inline_solution_payload", None)
-            if measure_oracle_start
-            else None
-        )
         cleanup_paths = (
             script_path,
             stdout_path,
@@ -440,8 +424,6 @@ class YiCloudExecutionMixin:
             f"{started_path}.tmp",
             finished_path,
             f"{finished_path}.tmp",
-            payload_timing_path,
-            f"{payload_timing_path}.tmp",
             launch_dir,
         )
         started_marker = ""
@@ -489,25 +471,6 @@ class YiCloudExecutionMixin:
             'exit "$harbor_rc"\n'
         )
         encoded_script = base64.b64encode(script.encode()).decode()
-        payload_prelude = ""
-        if inline_payload:
-            deferred_chmod = getattr(
-                self,
-                "_oracle_inline_chmod_command",
-                "",
-            )
-            payload_prelude = (
-                "  read harbor_payload_started_uptime _ < /proc/uptime\n"
-                "  rm -rf /solution\n"
-                "  mkdir -p /solution || exit 76\n"
-                f"  printf %s {shlex.quote(inline_payload)} | base64 -d | "
-                "tar xzf - -C /solution || exit 76\n"
-                + (f"  {deferred_chmod} || exit 76\n" if deferred_chmod else "")
-                + "  read harbor_payload_finished_uptime _ < /proc/uptime\n"
-                + "  printf '%s %s\\n' \"$harbor_payload_started_uptime\" "
-                + f"\"$harbor_payload_finished_uptime\" > {shlex.quote(payload_timing_path)}.tmp\n"
-                + f"  mv -f {shlex.quote(payload_timing_path)}.tmp {shlex.quote(payload_timing_path)}\n"
-            )
         launch_command = (
             f"harbor_pid_path={shlex.quote(pid_path)}\n"
             f"harbor_started_path={shlex.quote(started_path)}\n"
@@ -526,7 +489,6 @@ class YiCloudExecutionMixin:
             "if ! harbor_detached_started; then\n"
             '  rm -rf "$harbor_launch_dir"\n'
             '  mkdir "$harbor_launch_dir" || exit 75\n'
-            f"{payload_prelude}"
             f"  printf %s {shlex.quote(encoded_script)} | base64 -d > "
             f"{shlex.quote(script_path)} && chmod 700 {shlex.quote(script_path)} "
             '|| { rm -rf "$harbor_launch_dir"; exit 75; }\n'
@@ -551,10 +513,7 @@ class YiCloudExecutionMixin:
             "fi\n"
             f"printf '%s' {shlex.quote(ORACLE_REMOTE_START_MARKER)}\n"
             f"cat {shlex.quote(started_path)} 2>/dev/null\n"
-            f"if [ -f {shlex.quote(payload_timing_path)} ]; then\n"
-            f"  printf '%s' {shlex.quote(ORACLE_PAYLOAD_TIMING_MARKER)}\n"
-            f"  cat {shlex.quote(payload_timing_path)}\n"
-            "fi\n"
+            "true\n"  # Non-Oracle commands have no optional timing marker.
         )
         launch_request_started_at = (
             time.monotonic() if measure_oracle_start else None
@@ -582,28 +541,6 @@ class YiCloudExecutionMixin:
                 rf"{re.escape(ORACLE_REMOTE_START_MARKER)}([0-9]+(?:\.[0-9]+)?)",
                 launched.stdout,
             )
-            payload_timing_match = re.search(
-                rf"{re.escape(ORACLE_PAYLOAD_TIMING_MARKER)}"
-                r"([0-9]+(?:\.[0-9]+)?) ([0-9]+(?:\.[0-9]+)?)",
-                launched.stdout,
-            )
-            if payload_timing_match:
-                payload_elapsed_ms = max(
-                    float(payload_timing_match.group(2))
-                    - float(payload_timing_match.group(1)),
-                    0.0,
-                ) * 1000
-                self.logger.info(
-                    "YiCloud Oracle payload materialized sandbox_id=%s "
-                    "backend=inline remote_elapsed_ms=%.3f "
-                    "archive_bytes=%s logical_bytes=%s file_count=%s",
-                    self._sandbox_id,
-                    payload_elapsed_ms,
-                    getattr(self, "_oracle_inline_solution_archive_bytes", 0),
-                    getattr(self, "_oracle_inline_solution_logical_bytes", 0),
-                    getattr(self, "_oracle_inline_solution_file_count", 0),
-                )
-            self._oracle_inline_solution_payload = None
             create_started_at = getattr(self, "_create_request_started_at", None)
             if create_started_at is None:
                 self.logger.warning(
@@ -791,17 +728,6 @@ class YiCloudExecutionMixin:
         timeout_sec: int | None,
         uid: int | None = None,
     ) -> ExecResult:
-        if (
-            getattr(self, "_oracle_inline_solution_payload", None)
-            and _is_oracle_solution_chmod(command)
-        ):
-            self._oracle_inline_chmod_command = command
-            self.logger.info(
-                "YiCloud exec skipped purpose=oracle-inline-deferred-chmod "
-                "sandbox_id=%s",
-                self._sandbox_id,
-            )
-            return ExecResult(stdout="", stderr="", return_code=0)
         if _is_oracle_solution_command(command):
             return self._run_command_detached_sync(
                 command,

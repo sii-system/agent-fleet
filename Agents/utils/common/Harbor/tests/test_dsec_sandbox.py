@@ -13,7 +13,7 @@ import types
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 HARBOR_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(HARBOR_DIR))
@@ -69,6 +69,19 @@ transfer = importlib.import_module(
 
 
 class DsecLifecycleTests(unittest.IsolatedAsyncioTestCase):
+    def test_adapter_passes_transfer_timeout_to_archive_client(self):
+        with patch.object(adapter.BaseEnvironment, "__init__", lambda self, **kwargs:
+                          setattr(self, "_network_is_public", False)), patch.dict(os.environ, {
+            "DSEC_SANDBOX_CONTROLLER_ENDPOINT": "https://controller.example",
+            "DSEC_SANDBOX_TRANSFER_TIMEOUT_SEC": "37",
+        }):
+            environment = adapter.DsecSandboxEnvironment()
+            try:
+                self.assertEqual(environment._client.transfer_timeout_sec, 37)
+                self.assertEqual(environment._client.request_timeout_sec, 15)
+            finally:
+                environment._client.session.close()
+
     def environment(self):
         instance = object.__new__(adapter.DsecSandboxEnvironment)
         instance._client = SimpleNamespace(
@@ -111,6 +124,7 @@ class DsecLifecycleTests(unittest.IsolatedAsyncioTestCase):
             "pids_limit": 0,
         }
         instance._validate_definition = lambda: None
+        instance._prepare_harbor_directories = AsyncMock()
         instance._upload_environment_dir_after_start = AsyncMock()
         instance._materialize_read_only_mounts = AsyncMock()
         return instance
@@ -244,7 +258,6 @@ class DsecLifecycleTests(unittest.IsolatedAsyncioTestCase):
             uploaded = Path(source).read_bytes()
 
         environment.upload_file = AsyncMock(side_effect=capture_upload)
-        environment._cleanup_remote_file = AsyncMock()
         environment._execute_argv = AsyncMock(
             return_value=(
                 {
@@ -266,7 +279,7 @@ class DsecLifecycleTests(unittest.IsolatedAsyncioTestCase):
         argv = environment._execute_argv.await_args.args[0]
         self.assertEqual(argv[0], "/bin/bash")
         self.assertLessEqual(max(len(item.encode()) for item in argv), 4096)
-        environment._cleanup_remote_file.assert_awaited_once_with(argv[1])
+        self.assertEqual(len(environment._execute_argv.await_args_list), 1)
 
     async def test_start_failure_shields_close(self):
         environment = self.environment()
@@ -367,138 +380,116 @@ class DsecLifecycleTests(unittest.IsolatedAsyncioTestCase):
 
 
 class DsecTransferTests(unittest.IsolatedAsyncioTestCase):
-    def environment(self):
+    def environment(self, root):
+        """Exercise real host tar operations with no executable guest runtime."""
         instance = object.__new__(adapter.DsecSandboxEnvironment)
         instance._transfer_max_bytes = 8 << 20
         instance._transfer_timeout_sec = 30
+        instance._sandbox_id = "sandbox-one"
         instance.logger = logging.getLogger("test-dsec-transfer")
-        instance.executed_argv = []
+        instance.exec = AsyncMock(side_effect=AssertionError("guest shell forbidden"))
+        instance._execute_argv = AsyncMock(side_effect=AssertionError("guest exec forbidden"))
 
-        async def execute_argv(argv, **_kwargs):
-            instance.executed_argv.append(argv)
-            process = await asyncio.create_subprocess_exec(
-                *argv,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=5)
-            state = "succeeded" if process.returncode == 0 else "failed"
-            return (
-                {"state": state, "exit_code": process.returncode},
-                stdout,
-                stderr,
-            )
+        async def upload(_sid, destination, archive_path):
+            destination = "/workspace" if destination == "." else destination
+            target = root / destination.lstrip("/")
+            target.mkdir(parents=True, exist_ok=True)
+            with tarfile.open(archive_path, "r:") as archive:
+                archive.extractall(target, filter="fully_trusted")
 
-        async def execute_shell(command, cwd=None, **_kwargs):
-            process = await asyncio.create_subprocess_exec(
-                "/bin/sh",
-                "-lc",
-                command,
-                cwd=cwd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=5)
-            return SimpleNamespace(
-                return_code=process.returncode,
-                stdout=stdout.decode(),
-                stderr=stderr.decode(),
-            )
+        async def download(_sid, source, archive_path, maximum_bytes):
+            path = root / source.lstrip("/")
+            with tarfile.open(archive_path, "w") as archive:
+                archive.add(path, arcname=path.name)
+            if archive_path.stat().st_size > maximum_bytes:
+                raise ValueError("DSec archive download exceeds configured limit")
 
-        instance._execute_argv = execute_argv
-        instance.exec = execute_shell
+        instance._client = SimpleNamespace(upload_archive=upload, download_archive=download)
         return instance
 
-    async def test_file_roundtrip_is_chunked_checked_and_atomic(self):
-        environment = self.environment()
+    async def test_file_roundtrip_preserves_binary_and_mode_without_exec(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            source = root / "source.bin"
-            remote = root / "remote" / "payload.bin"
-            downloaded = root / "downloaded.bin"
-            payload = os.urandom(transfer.UPLOAD_CHUNK_BYTES + 137)
+            environment = self.environment(root / "guest")
+            source, downloaded = root / "source.bin", root / "downloaded.bin"
+            payload = os.urandom((192 << 10) + 137)
             source.write_bytes(payload)
-            source.chmod(0o640)
-
-            await environment.upload_file(source, str(remote))
-            await environment.download_file(str(remote), downloaded)
-
-            self.assertEqual(remote.read_bytes(), payload)
+            source.chmod(0o4640)
+            await environment.upload_file(source, "/remote/nested/payload.bin")
+            await environment.download_file("/remote/nested/payload.bin", downloaded)
             self.assertEqual(downloaded.read_bytes(), payload)
             self.assertEqual(downloaded.stat().st_mode & 0o777, 0o640)
-            self.assertTrue(
-                all(
-                    len(argument.encode()) <= 4096
-                    for argv in environment.executed_argv
-                    for argument in argv
-                )
-            )
 
-    async def test_directory_roundtrip_preserves_safe_symlinks(self):
-        environment = self.environment()
+    async def test_directory_roundtrip_preserves_safe_symlinks_without_exec(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
+            environment = self.environment(root / "guest")
             source = root / "source"
-            source.mkdir()
-            (source / "nested").mkdir()
-            (source / "nested" / "data.txt").write_text("payload")
+            (source / "nested").mkdir(parents=True)
+            (source / "nested/data.txt").write_text("payload")
+            (source / "nested/data.txt").chmod(0o444)
             (source / "link.txt").symlink_to("nested/data.txt")
-            remote = root / "remote"
-            downloaded = root / "downloaded"
+            await environment.upload_dir(source, "/remote")
+            await environment.download_dir("/remote", root / "downloaded")
+            self.assertEqual((root / "downloaded/nested/data.txt").read_text(), "payload")
+            self.assertEqual((root / "downloaded/nested/data.txt").stat().st_mode & 0o777, 0o444)
+            self.assertEqual(os.readlink(root / "downloaded/link.txt"), "nested/data.txt")
 
-            await environment.upload_dir(source, str(remote))
-            await environment.download_dir(str(remote), downloaded)
-
-            self.assertEqual((downloaded / "nested" / "data.txt").read_text(), "payload")
-            self.assertEqual(os.readlink(downloaded / "link.txt"), "nested/data.txt")
-
-    async def test_materialization_skips_harbor_writable_outputs(self):
-        environment = self.environment()
-        environment.upload_dir = AsyncMock()
-        environment.upload_file = AsyncMock()
-        environment.exec = AsyncMock(
-            return_value=SimpleNamespace(return_code=0, stdout="", stderr="")
-        )
-        environment._mounts = [
-            {
-                "type": "bind",
-                "source": "/host/agent",
-                "target": "/logs/agent",
-            },
-            {
-                "type": "bind",
-                "source": "/host/runtime.tar.gz",
-                "target": "/opt/runtime.tar.gz",
-                "read_only": True,
-            },
-        ]
-
+    async def test_directory_preparation_and_readonly_inputs_need_no_guest_tools(self):
         with tempfile.TemporaryDirectory() as temporary:
-            source = Path(temporary) / "runtime.tar.gz"
-            source.write_bytes(b"runtime")
-            environment._mounts[1]["source"] = str(source)
+            root = Path(temporary)
+            guest = root / "guest"
+            environment = self.environment(guest)
+            await environment._prepare_harbor_directories()
+            self.assertEqual((guest / "logs/agent").stat().st_mode & 0o777, 0o777)
+            source = root / "input.txt"
+            source.write_text("readonly")
+            environment._mounts = [
+                {"source": str(source), "target": "/input.txt", "read_only": True},
+                {"source": "/irrelevant-host-log", "target": "/logs/agent"},
+            ]
             await environment._materialize_read_only_mounts()
+            self.assertEqual((guest / "input.txt").read_text(), "readonly")
+            self.assertEqual((guest / "input.txt").stat().st_mode & 0o222, 0)
+            environment.exec.assert_not_awaited()
+            environment._execute_argv.assert_not_awaited()
 
-        environment.upload_file.assert_awaited_once()
-        environment.upload_dir.assert_not_awaited()
-        environment.exec.assert_awaited_once()
+    async def test_relative_workdir_is_resolved_outside_guest(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            environment = self.environment(root / "guest")
+            source = root / "environment"
+            source.mkdir()
+            (source / "input.txt").write_text("workdir input")
+            await environment.upload_dir(source, ".")
+            self.assertEqual((root / "guest/workspace/input.txt").read_text(), "workdir input")
+
+    async def test_failed_download_preserves_existing_local_target(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            environment = self.environment(root / "guest")
+            target = root / "target.bin"
+            target.write_bytes(b"keep")
+            async def corrupt(_sid, _source, archive_path, _maximum):
+                archive_path.write_bytes(b"not a tar archive")
+            environment._client.download_archive = corrupt
+            with self.assertRaises(tarfile.ReadError):
+                await environment.download_file("/source.bin", target)
+            self.assertEqual(target.read_bytes(), b"keep")
 
     def test_archive_path_escape_and_external_symlink_are_rejected(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            archive = root / "bad.tar.gz"
-            with tarfile.open(archive, "w:gz") as output:
-                member = tarfile.TarInfo("../escape")
-                member.size = 0
-                output.addfile(member)
+            archive = root / "bad.tar"
+            with tarfile.open(archive, "w") as output:
+                output.addfile(tarfile.TarInfo("../escape"))
             with self.assertRaisesRegex(ValueError, "unsafe member"):
                 transfer._extract_directory(archive, root / "target")
-
             source = root / "source"
             source.mkdir()
             (source / "external").symlink_to("/etc/passwd")
-            with self.assertRaisesRegex(ValueError, "absolute link"):
-                transfer._pack_directory(source, root / "packed.tar.gz", 1 << 20)
+            with self.assertRaisesRegex(ValueError, "escapes its root"):
+                transfer._pack_directory(source, root / "packed.tar", 1 << 20)
 
 
 if __name__ == "__main__":

@@ -149,6 +149,7 @@ class DsecSandboxEnvironment(
             controller_endpoint,
             allow_insecure_http=allow_insecure,
             request_timeout_sec=request_timeout,
+            transfer_timeout_sec=self._transfer_timeout_sec,
         )
         self._sandbox_id = ""
         self._execution_sequence = 0

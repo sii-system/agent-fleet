@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import os
 from typing import Any
 
@@ -122,17 +121,6 @@ class YiCloudOpenSandboxEnvironment(
                 "YICLOUD_SANDBOX_ORACLE_SOLUTION_UPLOAD_BACKEND must be "
                 "inherit, execd, or inline"
             )
-        self._oracle_inline_max_bytes = _positive_int(
-            os.environ.get(
-                "YICLOUD_SANDBOX_ORACLE_INLINE_MAX_BYTES",
-                str(256 * 1024),
-            ),
-            "YICLOUD_SANDBOX_ORACLE_INLINE_MAX_BYTES",
-        )
-        self._oracle_inline_solution_payload: str | None = None
-        self._oracle_inline_solution_archive_bytes = 0
-        self._oracle_inline_solution_logical_bytes = 0
-        self._oracle_inline_solution_file_count = 0
         self._oracle_skip_agent_log_reupload = _bool_setting(
             os.environ.get(
                 "YICLOUD_SANDBOX_ORACLE_SKIP_AGENT_LOG_REUPLOAD",
@@ -147,10 +135,6 @@ class YiCloudOpenSandboxEnvironment(
             ),
             "YICLOUD_SANDBOX_ORACLE_SKIP_AGENT_LOG_TRANSFER",
         )
-        self._s3_download_timeout_sec = _positive_int(
-            os.environ.get("YICLOUD_SANDBOX_S3_DOWNLOAD_TIMEOUT_SEC", "1800"),
-            "YICLOUD_SANDBOX_S3_DOWNLOAD_TIMEOUT_SEC",
-        )
         self._s3_upload_store: S3UploadStore | None = None
         self._s3_upload_setup_error: Exception | None = None
         if self._upload_backend in {"s3", "auto"}:
@@ -163,8 +147,6 @@ class YiCloudOpenSandboxEnvironment(
                 # cannot be initialized. The first actual upload logs the
                 # same structured fallback warning as runtime S3 failures.
                 self._s3_upload_setup_error = exc
-        self._s3_downloader_ready = False
-        self._s3_downloader_lock: asyncio.Lock | None = None
         self._base_client: Any | None = None
         self._sandbox_service: Any | None = None
         self._sandbox_id = ""

@@ -172,8 +172,10 @@ Switch providers only by changing
 traversal, symlinked profile files, unknown or duplicate metadata keys, and
 standalone S3 values that conflict with the selected profile. Selecting a
 profile defaults `YICLOUD_SANDBOX_UPLOAD_BACKEND` to `auto`: S3 is preferred,
-while an S3 staging or Sandbox materialization failure falls back to the
-existing authenticated HTTP upload path. Set the value explicitly to `s3`
+while an S3 staging failure falls back to the authenticated native HTTP upload
+path before Sandbox mutation begins. Delivery or extraction failures are not
+automatically replayed. S3 staging retains a local snapshot; Sandbox delivery
+uploads that snapshot through the file API, without a guest downloader. Set the value explicitly to `s3`
 when failure must be strict. Without a profile, the bucket and read origin may
 be configured directly; `YICLOUD_SANDBOX_S3_CONFIG` remains an optional legacy
 write configuration.
@@ -305,21 +307,32 @@ See [image preparation](task_image_manager/README.md) for image naming,
 caching, and registry publication. See [Harbor benchmark framework structure](STRUCT.md) for the full
 configuration reference.
 
-## Bounded artifact downloads
+## Native file transfer and bounded artifact downloads
 
-File downloads read 512 KiB chunks through the existing exec transport, write
-straight to a temporary host file, and check the source size and SHA-256 before
-replacing the target. Failed, corrupt or cancelled transfers preserve an
-existing target and remove the partial file. This requires the image's existing
-GNU-style `stat`, `sha256sum`, `dd` and `base64` utilities; no S3 write credentials
-or new provider API is required.
+Uploads send one raw binary multipart body through the Sandbox service file
+API, using metadata to set mode and create the target's parents. The host
+supports both the explicit token-authenticated upload origin and the signed
+execd proxy; binary HMAC avoids the pinned SDK's UTF-8 body restriction. No
+Base64 chunks are decoded or assembled in the task container. Connection
+establishment failures retry at most twice before request submission. HTTP
+errors and failures after submission are not replayed and may leave partial
+remote files.
 
-Directory downloads create one temporary sandbox tar archive, use the same
-bounded transfer, extract with Python's `data` safety filter, and remove the
-remote archive in `finally`. Excluded-directory downloads use this path too.
-Transport retries keep the existing idempotent exec behavior. A failed chunk
-aborts the download after those retries; a later download starts again, rather
-than claiming resumability across calls.
+Downloads use `/files/info` and bounded 512 KiB `/files/download` ranges. Exact
+ranges, byte counts and before/after metadata are checked before replacing a
+host target. Failed transfers remove owned partial files and preserve existing
+output. No guest `stat`, `sha256sum`, `dd`, Base64 or Python is used. The file API
+provides no source checksum, so metadata comparison is weaker than a SHA-256
+check against concurrent same-size writes that preserve metadata.
+
+Directory transfers still pack/extract with container `tar` and clean up their
+owned temporary archives. Archive bytes themselves use the same native file
+channel. Download extraction keeps Python's host-side `data` safety filter.
+
+File workers own their temporary data until they finish, including on caller
+cancellation. `TMPDIR` should point at a data disk with space for complete
+upload snapshots and directory archives. Per-socket request timeouts do not
+constitute a total wall-clock transfer deadline.
 
 `HARBOR_ARTIFACT_DOWNLOAD_CONCURRENCY` defaults to `4`. Independent worker
 processes running as the same host user share advisory-lock slots under
@@ -337,8 +350,8 @@ Separate hosts/users or isolated temporary directories have separate limits.
 Do not unlink slot files while workers are running.
 
 The limit covers OpenSandbox download and extraction operations, not agent
-execution or trajectory conversion. Encoded responses and decoded buffers are
-bounded by chunk size. Archive metadata and trajectory conversion can still
+execution or trajectory conversion. HTTP payload buffers are bounded by chunk size. Archive metadata and trajectory conversion can still
 consume memory proportional to entry/event counts; filesystem writes can still
-occupy reclaimable page cache. Chunking adds requests and SHA-256 adds a remote
-read pass, so measure collection throughput on the target provider.
+occupy reclaimable page cache. Range reads add requests; measure collection throughput on the target provider.
+For exact transport, S3 migration and legacy-setting behavior, see the
+[provider contract](harbor_environment_adapters/providers/opensandbox_yicloud/README.md#native-file-transport).

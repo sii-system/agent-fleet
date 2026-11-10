@@ -1,7 +1,7 @@
 """Content-addressed S3 staging for YiCloud OpenSandbox artifacts.
 
-Sandboxes receive only anonymous object URLs plus the expected size and
-SHA-256 digest. Development hosts may optionally provide S3 write credentials;
+Hosts retain deterministic local payloads and anonymous-read object URLs.
+Development hosts may optionally provide S3 write credentials;
 read-only users can reuse objects that have already been published.
 """
 
@@ -35,8 +35,8 @@ ANONYMOUS_PROBE_TIMEOUT_SEC = 15
 
 
 def _direct_urlopen(request: Request, timeout: int):
-    # The read origin is an internal S3 endpoint. Match the Sandbox downloader's
-    # --noproxy behavior so an ambient development-host proxy cannot turn a
+    # The read origin is an internal S3 endpoint. Bypass ambient development-host
+    # proxies so they cannot turn a
     # valid object response into a gateway error.
     return build_opener(ProxyHandler({})).open(request, timeout=timeout)
 

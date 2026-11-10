@@ -1,8 +1,9 @@
 """Access the DSec Sandbox Controller only through its public v1alpha1 API.
 
 Infrastructure implementation details remain behind the Controller. The caller
-supplies stable request IDs for every mutating request; transport failure does
-not authorize a retry under a new resource identity.
+supplies stable request IDs for lifecycle and execution mutations. Archive
+uploads are single-attempt copy operations; transport failure never authorizes
+replaying a partially applied archive.
 """
 
 from __future__ import annotations
@@ -13,6 +14,8 @@ from typing import Any
 from urllib.parse import urlencode, urlsplit
 
 import requests
+
+from .archive_client import DsecArchiveClientMixin
 
 API_VERSION = "sandbox-lifecycle/v1alpha1"
 MAX_JSON_RESPONSE_BYTES = 16 << 20
@@ -28,7 +31,7 @@ class DsecControllerError(RuntimeError):
         self.retryable = retryable
 
 
-class DsecControllerClient:
+class DsecControllerClient(DsecArchiveClientMixin):
     """Own the Controller origin, bounded HTTP deadlines, and response limits."""
 
     def __init__(
@@ -37,6 +40,7 @@ class DsecControllerClient:
         *,
         allow_insecure_http: bool = False,
         request_timeout_sec: int = 15,
+        transfer_timeout_sec: int = 1800,
         session: requests.Session | None = None,
     ) -> None:
         parsed = urlsplit(endpoint)
@@ -58,8 +62,11 @@ class DsecControllerClient:
             )
         if not 1 <= request_timeout_sec <= 60:
             raise ValueError("request_timeout_sec must be between 1 and 60")
+        if transfer_timeout_sec <= 0:
+            raise ValueError("transfer_timeout_sec must be positive")
         self.endpoint = f"{parsed.scheme}://{parsed.netloc}"
         self.request_timeout_sec = request_timeout_sec
+        self.transfer_timeout_sec = transfer_timeout_sec
         self.session = session or requests.Session()
         self.session.trust_env = False
 
@@ -79,6 +86,13 @@ class DsecControllerClient:
             allow_redirects=False,
             stream=True,
         )
+        try:
+            return self._parse_response(response, raw=raw)
+        finally:
+            response.close()
+
+    def _parse_response(self, response: Any, *, raw: bool = False) -> Any:
+        """Decode bounded control responses shared by JSON and archive requests."""
         limit = (
             MAX_OUTPUT_READ_BYTES if raw and response.ok else MAX_JSON_RESPONSE_BYTES
         )
