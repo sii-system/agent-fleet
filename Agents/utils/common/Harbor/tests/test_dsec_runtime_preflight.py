@@ -51,7 +51,7 @@ def _status(*runtimes):
                     "reachable": True,
                     "status": {
                         "ready": True,
-                        "capabilities": {"agent_runtimes": list(runtimes)},
+                        "capabilities": {"archive_transfer": True, "agent_runtimes": list(runtimes)},
                     },
                 },
                 {
@@ -65,6 +65,15 @@ def _status(*runtimes):
 
 
 class DsecRuntimePreflightTests(unittest.TestCase):
+    def test_native_archive_support_is_required_without_guest_fallback(self):
+        payload = _status({"agent": "pi", "version": "1.3.0"})
+        payload["result"]["nodes"][0]["status"]["capabilities"].pop("archive_transfer")
+        with self.assertRaisesRegex(ValueError, "native archive transfer.*node-a"):
+            validate_dsec_agent_runtime(
+                {"AGENT": "pi", "PI_VERSION": "1.3.0", "DSEC_SANDBOX_CONTROLLER_ENDPOINT": "http://controller"},
+                opener=_Opener(payload),
+            )
+
     def test_requires_runtime_on_every_schedulable_node(self):
         config = {
             "AGENT": "opencode",

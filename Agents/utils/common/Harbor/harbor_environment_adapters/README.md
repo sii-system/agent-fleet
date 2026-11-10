@@ -53,6 +53,11 @@ remain compatible. Image formats, hash rules, and build/publication are unchange
 
 ## Runtime implementations
 
+`providers/dsec_controller/` implements the public DSec Controller backend,
+including lifecycle, command execution, Toolkit preflight and native archive
+transfer. Its [backend contract](providers/dsec_controller/README.md) describes
+configuration, deployment prerequisites and current resource/network limits.
+
 `providers/opensandbox_yicloud/adapter.py` composes the extracted internal method
 groups into the concrete Harbor `BaseEnvironment`. All method groups share that
 one adapter instance and its existing state; they are not pluggable providers or

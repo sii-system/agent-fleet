@@ -196,7 +196,6 @@ class YiCloudLifecycleMixin:
         self._sandbox_id = ""
         self._command_url = ""
         self._access_token = ""
-        self._s3_downloader_ready = False
 
     async def _handle_start_failure(self) -> None:
         await self._close_async_commands()

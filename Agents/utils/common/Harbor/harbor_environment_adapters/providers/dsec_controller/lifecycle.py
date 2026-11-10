@@ -114,15 +114,7 @@ class DsecLifecycleMixin:
                 raise RuntimeError(
                     "DSec Sandbox is ready but owning Node is unreachable"
                 )
-            setup = await self.exec(
-                "mkdir -p /logs/agent /logs/verifier /logs/artifacts /artifacts "
-                "&& chmod 777 /logs/agent /logs/verifier /logs/artifacts /artifacts",
-                cwd="/",
-                timeout_sec=60,
-                user="root",
-            )
-            if setup.return_code != 0:
-                raise RuntimeError("failed to initialize Harbor directories")
+            await self._prepare_harbor_directories()
             await self._upload_environment_dir_after_start()
             await self._materialize_read_only_mounts()
         except BaseException:

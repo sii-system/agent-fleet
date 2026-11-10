@@ -181,13 +181,11 @@ class DsecExecutionMixin:
             local_path.write_bytes(command)
             local_path.chmod(0o600)
             await self.upload_file(local_path, remote_path)
-        try:
-            return await self._execute_argv(
-                ["/bin/bash", remote_path],
-                cwd=cwd,
-                env=env,
-                timeout_sec=timeout_sec,
-            )
-        finally:
-            if self._sandbox_id:
-                await asyncio.shield(self._cleanup_remote_file(remote_path))
+        # The script is owned by this Sandbox and reclaimed on close. Removing it
+        # must not introduce a guest Python/shell dependency for host-side cleanup.
+        return await self._execute_argv(
+            ["/bin/bash", remote_path],
+            cwd=cwd,
+            env=env,
+            timeout_sec=timeout_sec,
+        )

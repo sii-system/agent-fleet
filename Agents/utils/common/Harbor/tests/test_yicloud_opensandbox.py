@@ -1589,49 +1589,6 @@ class YiCloudOpenSandboxTest(unittest.TestCase):
             result = yicloud_client._host_routable_proxy_url(proxy_url)
         self.assertEqual(result, proxy_url)
 
-    def test_s3_download_url_is_passed_as_environment_not_command_text(self) -> None:
-        instance = object.__new__(
-            yicloud_opensandbox.YiCloudOpenSandboxEnvironment
-        )
-        instance._s3_download_timeout_sec = 1800
-        instance._s3_downloader_ready = True
-        instance.exec = AsyncMock(
-            return_value=SimpleNamespace(return_code=0, stdout="", stderr="")
-        )
-        artifact = yicloud_transfer.S3UploadArtifact(
-            kind="file",
-            logical_digest="a" * 64,
-            payload_digest="b" * 64,
-            payload_size=12,
-            compression="none",
-            local_payload_path="/cache/payload",
-            object_key="objects/payload",
-            object_uri="s3://cache/objects/payload",
-            download_url="http://ceph.example/cache/object",
-        )
-
-        asyncio.run(
-            instance._materialize_s3_file(
-                artifact,
-                "/opt/agent/agent.tgz",
-                "755",
-            )
-        )
-
-        call = instance.exec.await_args
-        self.assertNotIn("http://ceph.example", call.args[0])
-        self.assertIn("/tmp/harbor-s3-file-", call.args[0])
-        self.assertNotIn("/opt/agent/agent.tgz.harbor-upload-", call.args[0])
-        self.assertIn("for harbor_attempt in 1 2 3", call.args[0])
-        self.assertIn("chmod 755", call.args[0])
-        self.assertLess(
-            call.args[0].index("actual_digest="),
-            call.args[0].index("mkdir -p /opt/agent"),
-        )
-        self.assertEqual(
-            call.kwargs["env"]["HARBOR_S3_URL"],
-            artifact.download_url,
-        )
 
     def test_auto_file_upload_falls_back_to_existing_http_transport(self) -> None:
         instance = object.__new__(
@@ -1720,11 +1677,11 @@ class YiCloudOpenSandboxTest(unittest.TestCase):
 
         instance._upload_file_http.assert_not_awaited()
 
-    def test_auto_file_upload_falls_back_when_sandbox_cannot_read_s3(self) -> None:
+    def test_auto_does_not_replay_native_delivery_failure(self) -> None:
         instance = object.__new__(
             yicloud_opensandbox.YiCloudOpenSandboxEnvironment
         )
-        artifact = yicloud_transfer.S3UploadArtifact(
+        artifact = SimpleNamespace(
             kind="file",
             logical_digest="a" * 64,
             payload_digest="b" * 64,
@@ -1749,22 +1706,11 @@ class YiCloudOpenSandboxTest(unittest.TestCase):
             source = Path(tmp) / "agent.tgz"
             source.write_bytes(b"agent")
             source.chmod(0o644)
-            asyncio.run(instance.upload_file(source, "/opt/agent.tgz"))
+            with self.assertRaisesRegex(RuntimeError, "anonymous read unavailable"):
+                asyncio.run(instance.upload_file(source, "/opt/agent.tgz"))
 
-        instance._materialize_s3_file.assert_awaited_once_with(
-            artifact, "/opt/agent.tgz", "644"
-        )
-        instance._upload_file_http.assert_awaited_once_with(
-            source, "/opt/agent.tgz", "644"
-        )
-        instance.logger.warning.assert_called_once_with(
-            "YiCloud upload fallback backend=auto "
-            "attempted_backend=s3 fallback_backend=http kind=file "
-            "phase=%s target=%s error=%s",
-            "materialize",
-            "/opt/agent.tgz",
-            instance._materialize_s3_file.side_effect,
-        )
+        instance._materialize_s3_file.assert_awaited_once_with(artifact, "/opt/agent.tgz", "644")
+        instance._upload_file_http.assert_not_awaited()
 
     def test_auto_directory_upload_falls_back_to_existing_http_transport(self) -> None:
         instance = object.__new__(
@@ -1826,13 +1772,12 @@ class YiCloudOpenSandboxTest(unittest.TestCase):
         )
         self.assertGreaterEqual(log_call.args[2], 0.001)
 
-    def test_oracle_solution_can_be_staged_for_inline_launch(self) -> None:
+    def test_legacy_inline_solution_uses_native_directory_delivery(self) -> None:
         instance = object.__new__(
             yicloud_opensandbox.YiCloudOpenSandboxEnvironment
         )
         instance._upload_backend = "s3"
         instance._oracle_solution_upload_backend = "inline"
-        instance._oracle_inline_max_bytes = 256 * 1024
         instance._s3_upload_store = SimpleNamespace(
             stage_directory=Mock(side_effect=AssertionError("S3 must not be used"))
         )
@@ -1847,15 +1792,9 @@ class YiCloudOpenSandboxTest(unittest.TestCase):
             solve.chmod(0o755)
             asyncio.run(instance.upload_dir(source, "/solution"))
 
-        payload = base64.b64decode(instance._oracle_inline_solution_payload)
-        with tarfile.open(fileobj=io.BytesIO(payload), mode="r:gz") as archive:
-            member = archive.extractfile("./solve.sh")
-            self.assertIsNotNone(member)
-            self.assertEqual(member.read(), b"#!/bin/sh\necho ok\n")
         instance._s3_upload_store.stage_directory.assert_not_called()
-        instance._upload_dir_http.assert_not_awaited()
-        self.assertEqual(instance._oracle_inline_solution_file_count, 1)
-        self.assertEqual(instance._oracle_inline_solution_logical_bytes, 18)
+        instance._upload_dir_http.assert_awaited_once_with(source, "/solution")
+        self.assertFalse(getattr(instance, "_oracle_inline_solution_payload", None))
 
     def test_oracle_agent_log_reupload_can_be_skipped_explicitly(self) -> None:
         instance = object.__new__(
@@ -1905,72 +1844,6 @@ class YiCloudOpenSandboxTest(unittest.TestCase):
         instance._download_dir_archive.assert_not_awaited()
         self.assertEqual(instance.logger.info.call_count, 2)
 
-    def test_s3_bootstrap_is_uploaded_once_only_when_native_tools_are_missing(
-        self,
-    ) -> None:
-        instance = object.__new__(
-            yicloud_opensandbox.YiCloudOpenSandboxEnvironment
-        )
-        instance._s3_download_timeout_sec = 1800
-        instance._s3_downloader_ready = False
-        instance._s3_downloader_lock = None
-        instance._sandbox_id = "sbx-test"
-        instance._command_url = (
-            "https://gate.example/sandbox-connect/v1/sandboxes/sbx-test/"
-            "proxy/44772/command"
-        )
-        instance._access_token = "sandbox-token"
-        instance.logger = Mock()
-        instance.exec = AsyncMock(
-            side_effect=[
-                SimpleNamespace(
-                    return_code=0, stdout="bootstrap", stderr=""
-                ),
-                SimpleNamespace(return_code=0, stdout="", stderr=""),
-            ]
-        )
-        uploaded = {}
-
-        async def capture_upload(source, target_path, upload_url, mode):
-            uploaded["count"] = uploaded.get("count", 0) + 1
-            uploaded["payload"] = source.read_bytes()
-            uploaded["target_path"] = target_path
-            uploaded["upload_url"] = upload_url
-            uploaded["mode"] = mode
-
-        instance._upload_file_fast = AsyncMock(side_effect=capture_upload)
-
-        async def ensure_twice() -> None:
-            download_url = "http://ceph.example/cache/object"
-            await instance._ensure_s3_downloader(download_url)
-            await instance._ensure_s3_downloader(download_url)
-
-        with patch.dict(
-            yicloud_adapter.os.environ,
-            {"YICLOUD_SANDBOX_FAST_UPLOAD_ORIGIN": ""},
-        ):
-            asyncio.run(ensure_twice())
-
-        self.assertEqual(uploaded["count"], 1)
-        self.assertEqual(
-            uploaded["target_path"],
-            yicloud_transfer.S3_HTTP_BOOTSTRAP_PATH,
-        )
-        self.assertEqual(
-            uploaded["upload_url"],
-            "https://gate.example/sandbox-connect/v1/sandboxes/sbx-test/"
-            "proxy/44772/files/upload",
-        )
-        self.assertEqual(uploaded["mode"], "700")
-        self.assertIn(b"/dev/tcp/", uploaded["payload"])
-        self.assertLess(len(uploaded["payload"]), 2048)
-        self.assertIn(
-            yicloud_transfer.S3_HTTP_BOOTSTRAP_PATH,
-            instance._s3_download_command(
-                SimpleNamespace(payload_size=12, payload_digest="b" * 64),
-                "/tmp/payload",
-            ),
-        )
 
     def test_environment_and_image_bindings_are_enforced(self) -> None:
         sandbox = FakeSandbox(
@@ -2442,91 +2315,6 @@ class YiCloudOpenSandboxTest(unittest.TestCase):
         self.assertIs(result, expected)
         instance._run_command_detached_sync.assert_not_called()
 
-    def test_oracle_inline_chmod_is_deferred_into_launch_request(self) -> None:
-        instance = object.__new__(
-            yicloud_opensandbox.YiCloudOpenSandboxEnvironment
-        )
-        instance._oracle_inline_solution_payload = "payload"
-        instance._sandbox_id = "sbx-test"
-        instance.logger = Mock()
-        instance._run_command_direct_sync = Mock()
-
-        result = instance._run_command_sync(
-            "chmod +x /solution/solve.sh",
-            "/app",
-            {},
-            None,
-            0,
-        )
-
-        self.assertEqual(result.return_code, 0)
-        self.assertEqual(
-            instance._oracle_inline_chmod_command,
-            "chmod +x /solution/solve.sh",
-        )
-        instance._run_command_direct_sync.assert_not_called()
-
-    def test_oracle_inline_launch_reports_remote_payload_and_solve_timing(self) -> None:
-        instance = object.__new__(
-            yicloud_opensandbox.YiCloudOpenSandboxEnvironment
-        )
-        instance._oracle_inline_solution_payload = "cGF5bG9hZA=="
-        instance._oracle_inline_solution_archive_bytes = 7
-        instance._oracle_inline_solution_logical_bytes = 7
-        instance._oracle_inline_solution_file_count = 1
-        instance._oracle_inline_chmod_command = "chmod +x /solution/solve.sh"
-        instance._create_request_started_at = 10.0
-        instance._ready_observed_at = 10.2
-        instance._initialized_at = 10.3
-        instance._last_execd_response_received_at = 10.6
-        instance._sandbox_id = "sbx-test"
-        instance.logger = Mock()
-        instance._cleanup_remote_exec_paths_sync = Mock()
-        instance._run_command_direct_sync = Mock(
-            side_effect=[
-                SimpleNamespace(
-                    return_code=0,
-                    stdout=(
-                        f"{yicloud_execution.ORACLE_REMOTE_START_MARKER}123.00\n"
-                        f"{yicloud_execution.ORACLE_PAYLOAD_TIMING_MARKER}"
-                        "122.98 123.00\n"
-                    ),
-                    stderr="",
-                ),
-                SimpleNamespace(
-                    return_code=0,
-                    stdout=(
-                        f"{yicloud_execution.ORACLE_REMOTE_TIMING_MARKER}"
-                        "123.00 123.05 \ndone"
-                    ),
-                    stderr="",
-                ),
-            ]
-        )
-
-        with (
-            patch.dict(os.environ, YICLOUD_SANDBOX_ORACLE_TIMING="1"),
-            patch.object(
-                yicloud_execution.time,
-                "monotonic",
-                side_effect=[10.5, 20.0, 19.0],
-            ),
-        ):
-            result = instance._run_command_sync(
-                "(/solution/solve.sh) > /logs/agent/oracle.txt 2>&1",
-                "/app",
-                {},
-                60,
-                0,
-            )
-
-        launch_command = instance._run_command_direct_sync.call_args_list[0].args[0]
-        self.assertIn("tar xzf - -C /solution", launch_command)
-        self.assertIn("chmod +x /solution/solve.sh", launch_command)
-        self.assertEqual(result.stdout, "done")
-        messages = [call.args[0] for call in instance.logger.info.call_args_list]
-        self.assertTrue(any("payload materialized" in message for message in messages))
-        self.assertTrue(any("process finished" in message for message in messages))
 
     def test_detached_timeout_kills_process_tree_without_setsid(self) -> None:
         instance = object.__new__(
@@ -2842,58 +2630,6 @@ class YiCloudOpenSandboxTest(unittest.TestCase):
         self.assertNotIn("cwd", captured["payload"])
         self.assertEqual(result.return_code, 1)
 
-    def test_fast_upload_keeps_access_token_out_of_argv(self) -> None:
-        instance = object.__new__(
-            yicloud_opensandbox.YiCloudOpenSandboxEnvironment
-        )
-        instance._sandbox_id = "sbx-test"
-        instance._command_url = (
-            "https://gate.example/sandbox-connect/v1/sandboxes/sbx-test/"
-            "proxy/44772/command"
-        )
-        instance._access_token = "secret-sandbox-token"
-        instance.logger = Mock()
-        captured = {}
-
-        def fake_run(command, **_kwargs):
-            captured["command"] = command
-            header_path = Path(command[command.index("--header") + 1][1:])
-            captured["headers"] = header_path.read_text(encoding="utf-8")
-            metadata_form = next(
-                value
-                for value in command
-                if value.startswith("metadata=@")
-            )
-            metadata_path = Path(
-                metadata_form.removeprefix("metadata=@").split(";", 1)[0]
-            )
-            captured["metadata"] = json.loads(metadata_path.read_text())
-            return SimpleNamespace(returncode=0, stdout="200", stderr="")
-
-        with tempfile.TemporaryDirectory() as tmp:
-            source = Path(tmp) / "agent.tgz"
-            source.write_bytes(b"agent-package")
-            source.chmod(0o755)
-            with patch.object(
-                yicloud_transfer.subprocess,
-                "run",
-                side_effect=fake_run,
-            ):
-                instance._upload_file_fast_sync(
-                    source,
-                    "/opt/tb-opik/agent.tgz",
-                    instance._fast_upload_url(),
-                )
-
-        self.assertNotIn(
-            "secret-sandbox-token",
-            " ".join(captured["command"]),
-        )
-        self.assertIn(
-            "X-Sandbox-Access-Token: secret-sandbox-token",
-            captured["headers"],
-        )
-        self.assertEqual(captured["metadata"]["mode"], 755)
 
     def test_fast_upload_reuses_host_routable_execd_endpoint(self) -> None:
         instance = object.__new__(
@@ -2917,105 +2653,8 @@ class YiCloudOpenSandboxTest(unittest.TestCase):
             "proxy/44772/files/upload",
         )
 
-    def test_fast_upload_failure_without_body_reports_curl_error(self) -> None:
-        instance = object.__new__(
-            yicloud_opensandbox.YiCloudOpenSandboxEnvironment
-        )
-        instance._sandbox_id = "sbx-test"
-        instance._access_token = "secret-sandbox-token"
-        instance.logger = Mock()
 
-        with tempfile.TemporaryDirectory() as tmp:
-            source = Path(tmp) / "agent.tgz"
-            source.write_bytes(b"agent-package")
-            with (
-                patch.object(
-                    yicloud_transfer.subprocess,
-                    "run",
-                    return_value=SimpleNamespace(
-                        returncode=28,
-                        stdout="000",
-                        stderr="connection timed out",
-                    ),
-                ),
-                self.assertRaisesRegex(RuntimeError, "connection timed out"),
-            ):
-                instance._upload_file_fast_sync(
-                    source,
-                    "/opt/tb-opik/agent.tgz",
-                    "https://gate.example/files/upload",
-                )
 
-    def test_large_fast_upload_is_chunked_and_reassembled(self) -> None:
-        instance = object.__new__(
-            yicloud_opensandbox.YiCloudOpenSandboxEnvironment
-        )
-        instance._uses_s3_upload = Mock(return_value=False)
-        instance._fast_upload_url = Mock(
-            return_value="https://gate.example/files/upload"
-        )
-        uploaded = []
-
-        def capture_upload(content, target_path, _filename):
-            uploaded.append((content, target_path))
-
-        instance._upload_chunk_sync = capture_upload
-        instance.exec = AsyncMock(
-            return_value=SimpleNamespace(return_code=0, stdout="", stderr="")
-        )
-
-        with tempfile.TemporaryDirectory() as tmp:
-            source = Path(tmp) / "runtime.tgz"
-            source.write_bytes(b"abcdefghi")
-            source.chmod(0o755)
-            with (
-                patch.object(
-                    yicloud_transfer, "FAST_UPLOAD_CHUNK_BYTES", 4
-                ),
-                patch.dict(
-                    yicloud_adapter.os.environ,
-                    {"YICLOUD_SANDBOX_FAST_UPLOAD_ORIGIN": ""},
-                ),
-            ):
-                asyncio.run(
-                    instance.upload_file(source, "/opt/tools/runtime.tgz")
-                )
-
-        self.assertEqual(
-            [part[0] for part in uploaded], [b"abcd", b"efgh", b"i"]
-        )
-        self.assertEqual(len({part[1] for part in uploaded}), 3)
-        commands = [call.args[0] for call in instance.exec.await_args_list]
-        self.assertTrue(any("base64 -d" in command for command in commands))
-        self.assertTrue(any("chmod 755" in command for command in commands))
-
-    def test_chunked_upload_restores_source_mode(self) -> None:
-        instance = object.__new__(
-            yicloud_opensandbox.YiCloudOpenSandboxEnvironment
-        )
-        instance._uses_s3_upload = Mock(return_value=False)
-        instance._fast_upload_url = Mock(return_value="")
-        instance._upload_chunk_sync = Mock()
-        instance.exec = AsyncMock(
-            return_value=SimpleNamespace(return_code=0, stdout="", stderr="")
-        )
-
-        async def run_inline(function, *args):
-            return function(*args)
-
-        with tempfile.TemporaryDirectory() as tmp:
-            source = Path(tmp) / "tool"
-            source.write_bytes(b"#!/bin/sh\n")
-            source.chmod(0o755)
-            with patch.object(
-                yicloud_execution.asyncio,
-                "to_thread",
-                side_effect=run_inline,
-            ):
-                asyncio.run(instance.upload_file(source, "/opt/tools/tool"))
-
-        commands = [call.args[0] for call in instance.exec.await_args_list]
-        self.assertIn("chmod 755 /opt/tools/tool", commands)
 
     def test_delete_disconnect_does_not_replace_completed_trial(self) -> None:
         instance = object.__new__(
@@ -3074,118 +2713,7 @@ class YiCloudOpenSandboxTest(unittest.TestCase):
         sandbox.list_sandboxes.assert_called_once()
         instance.logger.warning.assert_called_once()
 
-    def test_execd_upload_uses_binary_multipart_metadata(self) -> None:
-        instance = object.__new__(
-            yicloud_opensandbox.YiCloudOpenSandboxEnvironment
-        )
-        instance._command_url = (
-            "https://gate.example/sandbox-connect/v1/sandboxes/sbx-test/"
-            "proxy/44772/command"
-        )
-        instance._request_timeout_sec = 180
-        instance._signed_headers = Mock(
-            return_value={
-                "X-OGW-SIGN": "signed",
-                "X-Sandbox-Access-Token": "token",
-            }
-        )
-        sent = {}
 
-        class FakeResponse:
-            ok = True
-            status_code = 200
-            text = ""
-
-        class FakeSession:
-            trust_env = True
-
-            def prepare_request(self, request):
-                return (
-                    yicloud_execution.requests.sessions.Session()
-                    .prepare_request(request)
-                )
-
-            def send(self, prepared, timeout):
-                sent["prepared"] = prepared
-                sent["timeout"] = timeout
-                return FakeResponse()
-
-        with patch.object(
-            yicloud_execution.requests,
-            "Session",
-            FakeSession,
-        ):
-            instance._upload_chunk_sync(
-                b"\x00\xffagent-package",
-                "/tmp/harbor-upload.chunk",
-                "agent.tgz",
-            )
-
-        prepared = sent["prepared"]
-        self.assertTrue(prepared.url.endswith("/files/upload"))
-        self.assertIn(
-            base64.b64encode(b"\x00\xffagent-package"),
-            prepared.body,
-        )
-        self.assertIn(
-            b'name="metadata"; filename="metadata.json"',
-            prepared.body,
-        )
-        self.assertIn(b'"mode":600', prepared.body)
-        self.assertEqual(prepared.headers["X-OGW-SIGN"], "signed")
-
-    def test_execd_upload_retries_transient_disconnect(self) -> None:
-        instance = object.__new__(
-            yicloud_opensandbox.YiCloudOpenSandboxEnvironment
-        )
-        instance._command_url = (
-            "https://gate.example/sandbox-connect/v1/sandboxes/sbx-test/"
-            "proxy/44772/command"
-        )
-        instance._request_timeout_sec = 180
-        instance._signed_headers = Mock(return_value={})
-        instance.logger = Mock()
-        sends = []
-
-        class FakeResponse:
-            ok = True
-            status_code = 200
-            text = ""
-
-        class FakeSession:
-            trust_env = True
-
-            def prepare_request(self, request):
-                return (
-                    yicloud_execution.requests.sessions.Session()
-                    .prepare_request(request)
-                )
-
-            def send(self, prepared, timeout):
-                sends.append((prepared, timeout))
-                if len(sends) == 1:
-                    raise yicloud_execution.requests.ConnectionError(
-                        "response disconnected"
-                    )
-                return FakeResponse()
-
-        with (
-            patch.object(
-                yicloud_execution.requests,
-                "Session",
-                FakeSession,
-            ),
-            patch.object(yicloud_execution.time, "sleep") as sleep,
-        ):
-            instance._upload_chunk_sync(
-                b"agent-package",
-                "/tmp/harbor-upload.chunk",
-                "agent.tgz",
-            )
-
-        self.assertEqual(len(sends), 2)
-        sleep.assert_called_once_with(1)
-        instance.logger.warning.assert_called_once()
 
 
 class BoundedDownloadTests(unittest.IsolatedAsyncioTestCase):
@@ -3202,10 +2730,25 @@ class BoundedDownloadTests(unittest.IsolatedAsyncioTestCase):
         self.commands = []
         self.response_sizes = []
         self.instance.exec = self.local_exec
+        self.instance._request_timeout_sec = 1
+        self.instance._file_info = self.file_info
+        self.instance._file_get = self.file_get
 
     async def asyncTearDown(self):
         self.settings.stop()
         self.temporary.cleanup()
+
+    def file_info(self, session, path):
+        info = Path(path).stat()
+        return {"size": info.st_size, "modified_ns": info.st_mtime_ns}
+
+    def file_get(self, session, suffix, path, *, maximum, extra_headers=None):
+        offset, end = map(int, extra_headers["Range"].removeprefix("bytes=").split("-"))
+        with Path(path).open("rb") as handle:
+            handle.seek(offset)
+            data = handle.read(end - offset + 1)
+        self.response_sizes.append(len(data))
+        return 206, {"Content-Range": f"bytes {offset}-{end}/{Path(path).stat().st_size}"}, data
 
     async def local_exec(self, command, **kwargs):
         self.commands.append(command)
@@ -3225,7 +2768,7 @@ class BoundedDownloadTests(unittest.IsolatedAsyncioTestCase):
         source = self.root / "source ' with spaces"
         target = self.root / "target"
         # Incompressible data spanning multiple transfer requests.
-        source.write_bytes(os.urandom(3 * yicloud_transfer.DOWNLOAD_CHUNK_BYTES + 37))
+        source.write_bytes(os.urandom(3 * 512 * 1024 + 37))
         target.write_bytes(b"old")
         target.chmod(0o640)
         await self.instance.download_file(str(source), target)
@@ -3234,7 +2777,7 @@ class BoundedDownloadTests(unittest.IsolatedAsyncioTestCase):
                              hashlib.file_digest(right, "sha256").digest())
         self.assertEqual(target.stat().st_mode & 0o777, 0o640)
         self.assertLessEqual(max(self.response_sizes),
-                             4 * ((yicloud_transfer.DOWNLOAD_CHUNK_BYTES + 2) // 3))
+                             4 * ((512 * 1024 + 2) // 3))
         self.assertFalse(list(self.root.glob("*.part")))
 
     async def test_file_symlink_uses_referent_size(self):
@@ -3245,7 +2788,7 @@ class BoundedDownloadTests(unittest.IsolatedAsyncioTestCase):
         await self.instance.download_file(str(link), self.root / "out")
         self.assertEqual((self.root / "out").read_bytes(), source.read_bytes())
 
-    async def test_download_metadata_survives_execd_line_separator_loss(self):
+    async def test_download_metadata_does_not_use_execd_stdout(self):
         source = self.root / "source"
         source.write_bytes(b"content")
 
@@ -3265,23 +2808,22 @@ class BoundedDownloadTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((self.root / "out").read_bytes(), b"")
         self.assertFalse(any("dd if=" in command for command in self.commands))
 
-    async def test_corrupt_short_and_changed_content_do_not_replace_target(self):
+    async def test_short_and_changed_metadata_do_not_replace_target(self):
         source = self.root / "source"
         source.write_bytes(b"original")
         target = self.root / "target"
-        for payload, expected in (("not-base64!", ValueError),
-                                  (base64.b64encode(b"short").decode(), RuntimeError),
-                                  (base64.b64encode(b"modified").decode(), RuntimeError)):
-            with self.subTest(payload=payload):
-                target.write_bytes(b"previous valid target")
-
-                async def corrupt(command, payload=payload, **kwargs):
-                    if "dd if=" in command:
-                        return SimpleNamespace(return_code=0, stdout=payload, stderr="")
-                    return await self.local_exec(command, **kwargs)
-
-                self.instance.exec = corrupt
-                with self.assertRaises(expected):
+        target.write_bytes(b"previous valid target")
+        for wrong_range in (True, False):
+            with self.subTest(wrong_range=wrong_range):
+                original_get = self.file_get
+                def corrupt(*args, original_get=original_get, wrong_range=wrong_range, **kwargs):
+                    status, headers, data = original_get(*args, **kwargs)
+                    return status, headers, data[:-1] if wrong_range else data
+                self.instance._file_get = corrupt
+                self.instance._file_info = Mock(side_effect=[
+                    {"size": 8, "modified_ns": 1}, {"size": 8, "modified_ns": 2},
+                ])
+                with self.assertRaises(RuntimeError):
                     await self.instance.download_file(str(source), target)
                 self.assertEqual(target.read_bytes(), b"previous valid target")
                 self.assertFalse(list(self.root.glob("*.part")))
@@ -3312,7 +2854,7 @@ class BoundedDownloadTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual((target / "keep").read_text(), "keep")
         self.assertFalse((target / "omit").exists())
-        self.assertTrue(any("dd if=" in command for command in self.commands))
+        self.assertFalse(any("dd if=" in command for command in self.commands))
         self.assertTrue(self.commands[-1].startswith("rm -f -- /tmp/harbor-download-"))
 
     async def test_tar_failure_is_reported_and_remote_archive_cleaned(self):
@@ -3346,19 +2888,16 @@ class BoundedDownloadTests(unittest.IsolatedAsyncioTestCase):
         source.mkdir()
         (source / "file").write_text("some data")
 
-        async def cancel_read(command, **kwargs):
-            if "dd if=" in command:
-                raise asyncio.CancelledError
-            return await self.local_exec(command, **kwargs)
+        async def cancel_read(*args):
+            raise asyncio.CancelledError
 
-        self.instance.exec = cancel_read
+        self.instance._download_file_chunks = cancel_read
         with self.assertRaises(asyncio.CancelledError):
             await self.instance.download_dir(str(source), self.root / "out")
         self.assertTrue(self.commands[-1].startswith("rm -f -- /tmp/harbor-download-"))
         self.assertFalse(Path(shlex.split(self.commands[-1])[-1]).exists())
 
     async def test_unsafe_archive_rejected(self):
-        import io
         archive = self.root / "unsafe.tar.gz"
         with tarfile.open(archive, "w:gz") as tar:
             member = tarfile.TarInfo("../escaped")
