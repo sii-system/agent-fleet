@@ -15,11 +15,14 @@ Runs externally supplied Windows Harbor tasks on isolated WAA or ALE KubeVirt VM
 Example: run_kubevirt_windows.sh --path /data/windows-tasks --n-concurrent 1
          run_kubevirt_windows.sh --path /data/windows-tasks --agent oracle
 
-Required: HARBOR_KUBEVIRT_IMAGE (golden PVC name in the trial namespace), CDI
-          with clone-capable storage, and a kubeconfig containing mTLS credentials
+Required: HARBOR_KUBEVIRT_IMAGE (golden PVC name in the trial namespace)
+          and a kubeconfig containing mTLS credentials
           at HARBOR_KUBEVIRT_KUBECONFIG (default ~/.kube/config).
           HARBOR_KUBEVIRT_API_SERVER optionally overrides the kubeconfig URL.
-          Each VM owns a separate disk clone; host file paths are rejected.
+          Clone mode (default) requires CDI with clone-capable storage and gives
+          each VM a separate disk clone. HARBOR_KUBEVIRT_DISK_MODE=overlay uses
+          a fresh ephemeral writable layer over the golden PVC without CDI.
+          Host file paths are rejected.
           The control plane talks to the KubeVirt apiserver directly (no kubectl).
 Select HARBOR_KUBEVIRT_GUEST_PROTOCOL=waa (default) or ale for ALE Windows tasks.
 The Windows image must run the matching guest HTTP API (default port 5000).

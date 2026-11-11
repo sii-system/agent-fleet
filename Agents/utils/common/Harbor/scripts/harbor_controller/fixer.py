@@ -687,7 +687,6 @@ def _execution_counts(result: dict[str, Any]) -> dict[str, int]:
 def _finish_execution(
     run_dir: Path,
     state: dict[str, Any],
-    fix_plan: dict[str, Any],
     result: dict[str, Any],
 ) -> dict[str, Any]:
     output_dir = _fixer_dir(run_dir)
@@ -885,7 +884,7 @@ def approve_fixer(run_dir: Path, approval_request_id: str) -> dict[str, Any]:
             error={"stage": "executing", "message": str(exc)},
         )
         raise ValueError(f"Fixer execution failed: {exc}") from exc
-    return _finish_execution(run_dir, state, fix_plan, result)
+    return _finish_execution(run_dir, state, result)
 
 
 def cancel_fixer(run_dir: Path, workflow_id: str) -> dict[str, Any]:

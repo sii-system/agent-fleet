@@ -377,7 +377,6 @@ def _run_streaming_process(
     environment: dict[str, str],
     events_path: Path,
     stderr_path: Path,
-    prompt: str | None,
     timeout_seconds: int,
     process_record_path: Path | None,
 ) -> tuple[int, bool, _StreamingEventState]:
@@ -392,7 +391,6 @@ def _run_streaming_process(
             cwd=cwd,
             env=environment,
             shell=False,
-            stdin=subprocess.PIPE if prompt is not None else None,
             stdout=subprocess.PIPE,
             stderr=stderr_file,
             start_new_session=True,
@@ -405,10 +403,6 @@ def _run_streaming_process(
             args=(process.stdout, events_file, state),
         )
         reader.start()
-        if prompt is not None:
-            assert process.stdin is not None
-            process.stdin.write(prompt.encode())
-            process.stdin.close()
         try:
             return_code = process.wait(timeout=timeout_seconds)
         except subprocess.TimeoutExpired:
@@ -577,7 +571,6 @@ def run_pi_json_process(
                 environment=environment,
                 events_path=events_path,
                 stderr_path=stderr_path,
-                prompt=prompt if prompt_in_stdin else None,
                 timeout_seconds=timeout_seconds,
                 process_record_path=process_record_path,
             )
