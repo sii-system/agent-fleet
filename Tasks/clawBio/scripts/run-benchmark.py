@@ -34,9 +34,6 @@ OPENCLAW_DIR = REPO_ROOT / "Agents" / "Openclaw"
 RESULTS_DIR = BENCH_DIR / "results"
 CONFIG_DIR = BENCH_DIR / "config"
 
-TOKEN_RE = re.compile(r"^TOKEN_(\d+)=(.+)$")
-
-
 # ── Instance discovery ──
 
 
@@ -59,12 +56,11 @@ class Instance:
     """Represents a single OpenClaw instance."""
 
     index: int
-    token: str
     container_name: str
     workspace_dir: Path
 
 
-def discover_instances(max_instances: int | None = None) -> list[Instance]:
+def discover_instances() -> list[Instance]:
     """Discover instances from Agents/Openclaw/.env and docker inspect."""
     env_file = OPENCLAW_DIR / ".env"
     if not env_file.exists():
@@ -76,30 +72,26 @@ def discover_instances(max_instances: int | None = None) -> list[Instance]:
     env = load_env_file(env_file)
     prefix = env.get("CONTAINER_NAME_PREFIX", "openclaw")
 
-    tokens: dict[int, str] = {}
-    for key, value in env.items():
+    indices: set[int] = set()
+    for key in env:
         m = re.match(r"^TOKEN_(\d+)$", key)
         if m:
-            tokens[int(m.group(1))] = value
+            indices.add(int(m.group(1)))
 
-    if not tokens:
+    if not indices:
         raise SystemExit(f"Error: No TOKEN_N entries found in {env_file}.")
 
     instances: list[Instance] = []
-    for index, token in sorted(tokens.items()):
+    for index in sorted(indices):
         # Discover workspace dir from docker inspect (mount analysis)
         workspace_dir = _discover_workspace_dir(f"{prefix}-{index}")
         instances.append(
             Instance(
                 index=index,
-                token=token,
                 container_name=f"{prefix}-{index}",
                 workspace_dir=workspace_dir,
             )
         )
-
-    if max_instances is not None:
-        instances = instances[:max_instances]
 
     return instances
 
@@ -630,9 +622,6 @@ def _copy_session_jsonl(
             run_logger.log(f"Warning: could not copy session JSONL from {container}: {proc.stderr.strip()}")
         return None
     return dest / jsonl_name
-
-
-_TOOLCALL_TYPES = {"toolcall", "tool_call", "toolCall", "tooluse", "tool_use"}
 
 
 def _extract_exec_from_jsonl(jsonl_path: Path) -> list[str]:
