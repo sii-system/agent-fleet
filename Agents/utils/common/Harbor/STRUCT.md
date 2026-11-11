@@ -45,6 +45,8 @@ Agents/utils/common/Harbor/
 ├── docker_runtime.py           # Docker verifier PATH and SWE Atlas keepalive compatibility
 ├── apt_sources.py              # Runtime APT mirror bootstrap and source-file updates
 ├── harbor_shell_utils.py       # Event, JSON, URL, and mount helpers
+├── run_e2b_smoke.sh            # Native E2B oracle canary for cloud/self-hosted SDK endpoints
+├── e2b_smoke.py                # Canary result, artifact, and sandbox-cleanup checks
 ├── qz_repository_environment_plan.py # Repository/revision final-image plan producer
 ├── qz_task_instruction.py      # Exact QZ setup-prefix handoff before agent run
 ├── run_kubevirt_windows.sh     # Windows-only Harbor launcher; skips Linux installers
