@@ -133,7 +133,10 @@ class DsecExecutionMixin:
         effective_env = self._merge_env(env)
         command_bytes = command.encode("utf-8")
         if len(command_bytes) <= _MAX_DIRECT_COMMAND_BYTES:
-            argv = ["/bin/bash", "-lc", command]
+            # Harbor supplies the execution environment explicitly. A login
+            # shell would source task-image profiles that are outside this
+            # contract and can alter or even break otherwise valid commands.
+            argv = ["/bin/bash", "-c", command]
             record, stdout, stderr = await self._execute_argv(
                 argv,
                 cwd=effective_cwd,
