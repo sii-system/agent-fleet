@@ -243,7 +243,7 @@ class DsecLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.stdout, "ok")
         self.assertEqual(
             environment._client.create_execution.await_args.args[1]["argv"],
-            ["/bin/bash", "-lc", "exit 7"],
+            ["/bin/bash", "-c", "exit 7"],
         )
         with self.assertRaisesRegex(ValueError, "root execution identity"):
             await environment.exec("true", user="1000")
