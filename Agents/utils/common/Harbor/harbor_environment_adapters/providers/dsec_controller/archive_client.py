@@ -22,6 +22,37 @@ class DsecArchiveClientMixin:
             + urlencode({"path": path})
         )
 
+    def _archive_stat_url(self, sandbox_id: str, path: str) -> str:
+        return (
+            self.endpoint + f"/v1alpha1/sandboxes/{sandbox_id}/archive/stat?"
+            + urlencode({"path": path})
+        )
+
+    def _stat_path_sync(self, sandbox_id: str, path: str) -> dict[str, Any]:
+        """Probe container path metadata outside guest execution via Controller stat."""
+        response = self.session.request(
+            "GET",
+            self._archive_stat_url(sandbox_id, path),
+            headers={"Accept": "application/json"},
+            timeout=self.request_timeout_sec,
+            allow_redirects=False,
+            stream=True,
+        )
+        try:
+            result = self._parse_response(response)
+        finally:
+            response.close()
+        stat = result.get("stat")
+        if not isinstance(stat, dict) or not isinstance(stat.get("exists"), bool):
+            raise TypeError("DSec Controller response is missing stat metadata")
+        return stat
+
+    async def stat_path(self, sandbox_id: str, path: str) -> dict[str, Any]:
+        """Return container-external path metadata without starting an execution."""
+        return await await_owned(
+            asyncio.to_thread(self._stat_path_sync, sandbox_id, path)
+        )
+
     def _check_archive_response(self, response: Any) -> None:
         if response.status_code != 200:
             self._parse_response(response)

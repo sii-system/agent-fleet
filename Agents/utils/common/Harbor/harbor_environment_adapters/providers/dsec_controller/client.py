@@ -25,10 +25,18 @@ MAX_OUTPUT_READ_BYTES = 1 << 20
 class DsecControllerError(RuntimeError):
     """Stable Controller protocol error without request bodies or execution output."""
 
-    def __init__(self, code: str, message: str, *, retryable: bool = False) -> None:
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        *,
+        retryable: bool = False,
+        status_code: int | None = None,
+    ) -> None:
         super().__init__(f"DSec Controller request failed: {code}: {message}")
         self.code = code
         self.retryable = retryable
+        self.status_code = status_code
 
 
 class DsecControllerClient(DsecArchiveClientMixin):
@@ -123,6 +131,7 @@ class DsecControllerClient(DsecArchiveClientMixin):
                 str(detail.get("code") or response.status_code),
                 str(detail.get("message") or "request rejected"),
                 retryable=detail.get("retryable") is True,
+                status_code=response.status_code,
             )
         result = envelope.get("result")
         if not isinstance(result, dict):
@@ -159,6 +168,17 @@ class DsecControllerClient(DsecArchiveClientMixin):
         return (
             await self.request(
                 "POST", f"/v1alpha1/sandboxes/{sandbox_id}/executions", spec
+            )
+        )["execution"]
+
+    async def cancel_execution(
+        self, sandbox_id: str, execution_id: str
+    ) -> dict[str, Any]:
+        """Cancel a queued or running (aether/v1) execution."""
+        return (
+            await self.request(
+                "POST",
+                f"/v1alpha1/sandboxes/{sandbox_id}/executions/{execution_id}/cancel",
             )
         )["execution"]
 
