@@ -14,6 +14,7 @@ from harbor.environments.base import ExecResult
 
 from .client import MAX_OUTPUT_READ_BYTES
 
+
 _EXECUTION_TERMINAL_STATES = {
     "succeeded",
     "failed",
@@ -22,12 +23,27 @@ _EXECUTION_TERMINAL_STATES = {
 }
 _MAX_DIRECT_COMMAND_BYTES = 4096
 
+# TODO(dsec-exec-cancel): DSec executions have no cancel API today. The adapter
+# therefore closes the whole Sandbox when a critical execution times out, which
+# is the safe fallback for agent/verifier commands. Best-effort artifact probes
+# must not take that lifecycle ownership; see the is_dir/is_file overrides and
+# the close_on_timeout contract below. Replace this fallback with a first-class
+# execution-cancel operation (or a non-exec metadata probe) when available.
+
 
 class DsecExecutionMixin:
     """Execute commands while preserving streams, truncation, and identity semantics."""
 
     async def _close_after_execution_abort(self, reason: str) -> None:
-        """Close the Sandbox on timeout or cancellation because exec has no cancel API."""
+        """Close the Sandbox only when the caller owns the execution lifecycle.
+
+        This is the last-resort fallback for critical agent/verifier commands,
+        because DSec executions cannot be cancelled safely today. It must not be
+        used by best-effort probes: closing the Sandbox destroys the shared
+        verifier environment and makes later archive uploads target a missing
+        Sandbox. TODO(dsec-exec-cancel): cancel the execution instead of closing
+        the Sandbox once the protocol exposes cancellation.
+        """
         try:
             await asyncio.shield(self.stop(delete=True))
         except Exception:
@@ -41,6 +57,39 @@ class DsecExecutionMixin:
             f"{self._sandbox_id}\0{self._execution_sequence}\0{command}".encode()
         ).hexdigest()
         return f"harbor-exec-{digest[:40]}"
+
+    async def is_dir(self, path: str, user: str | int | None = None) -> bool:
+        """Probe an artifact path without taking Sandbox lifecycle ownership.
+
+        Harbor's base implementation uses a 10-second exec timeout. Under DSec
+        execution-queue pressure that timeout is expected, and closing the
+        Sandbox here would clear ``_sandbox_id`` before the shared verifier runs.
+        The 300-second bound is a temporary probe budget; a timeout remains a
+        local best-effort failure and must not tear down the environment.
+        TODO(dsec-artifact-probe): use Controller archive/mount metadata or a
+        first-class non-exec probe instead of a container exec.
+        """
+        result = await self.exec(
+            self._path_kind_check_command(path, require_dir=True),
+            timeout_sec=300,
+            user=user,
+            close_on_timeout=False,
+        )
+        return result.return_code == 0
+
+    async def is_file(self, path: str, user: str | int | None = None) -> bool:
+        """Probe an artifact path without taking Sandbox lifecycle ownership.
+
+        See ``is_dir``: this is a best-effort artifact probe, not a lifecycle
+        operation. A timeout must leave the shared verifier Sandbox alive.
+        """
+        result = await self.exec(
+            self._path_kind_check_command(path, require_dir=False),
+            timeout_sec=300,
+            user=user,
+            close_on_timeout=False,
+        )
+        return result.return_code == 0
 
     async def _read_execution_stream(
         self, record: dict[str, Any], stream: str
@@ -76,7 +125,15 @@ class DsecExecutionMixin:
         env: dict[str, str] | None = None,
         timeout_sec: int | None = None,
         output_limit_bytes: int | None = None,
+        close_on_timeout: bool = True,
     ) -> tuple[dict[str, Any], bytes, bytes]:
+        """Execute one argv and preserve the caller's timeout ownership.
+
+        ``close_on_timeout`` controls whether exceeding the wait deadline (or
+        cancellation of the wait) closes the Sandbox. Keep it True only for
+        critical agent/verifier commands that cannot leave an orphan execution.
+        Best-effort callers pass False and handle the TimeoutError locally.
+        """
         if not self._sandbox_id:
             raise RuntimeError("DSec Sandbox is not running")
         request = {
@@ -98,7 +155,8 @@ class DsecExecutionMixin:
             )
             while record.get("state") not in _EXECUTION_TERMINAL_STATES:
                 if time.monotonic() >= deadline:
-                    await self._close_after_execution_abort("timeout")
+                    if close_on_timeout:
+                        await self._close_after_execution_abort("timeout")
                     raise TimeoutError(
                         f"DSec execution wait deadline exceeded: {execution_id}"
                     )
@@ -112,7 +170,8 @@ class DsecExecutionMixin:
             )
             return record, stdout, stderr
         except asyncio.CancelledError:
-            await self._close_after_execution_abort("cancellation")
+            if close_on_timeout:
+                await self._close_after_execution_abort("cancellation")
             raise
 
     async def exec(
@@ -122,8 +181,14 @@ class DsecExecutionMixin:
         env: dict[str, str] | None = None,
         timeout_sec: int | None = None,
         user: str | int | None = None,
+        close_on_timeout: bool = True,
     ) -> ExecResult:
-        """Run a Harbor shell command under the root-only DSec backend."""
+        """Run a Harbor shell command under the root-only DSec backend.
+
+        ``close_on_timeout`` is forwarded to ``_execute_argv``. Only critical
+        lifecycle callers should use the default True; best-effort probes pass
+        False so a timeout does not destroy the shared Sandbox.
+        """
         effective_user = self._resolve_user(user)
         if effective_user not in {None, "root", "0", 0}:
             raise ValueError(
@@ -139,6 +204,7 @@ class DsecExecutionMixin:
                 cwd=effective_cwd,
                 env=effective_env,
                 timeout_sec=timeout_sec,
+                close_on_timeout=close_on_timeout,
             )
         else:
             record, stdout, stderr = await self._execute_materialized_command(
@@ -146,6 +212,7 @@ class DsecExecutionMixin:
                 cwd=effective_cwd,
                 env=effective_env,
                 timeout_sec=timeout_sec,
+                close_on_timeout=close_on_timeout,
             )
         state = record.get("state")
         if state == "recovery_required":
@@ -173,6 +240,7 @@ class DsecExecutionMixin:
         cwd: str,
         env: dict[str, str] | None,
         timeout_sec: int | None,
+        close_on_timeout: bool = True,
     ) -> tuple[dict[str, Any], bytes, bytes]:
         """Upload an oversized Bash program and execute it with bounded argv."""
         remote_path = f"/tmp/.harbor-command-{uuid.uuid4().hex}.sh"
@@ -188,4 +256,5 @@ class DsecExecutionMixin:
             cwd=cwd,
             env=env,
             timeout_sec=timeout_sec,
+            close_on_timeout=close_on_timeout,
         )
