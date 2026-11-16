@@ -230,8 +230,8 @@ zellij grid with a fleet monitor pane plus per-instance session panes
 (`gen_session_zellij_layout.sh`, `monitor_openclaw_sessions.sh`, and
 `stream_openclaw_session.sh` are its layout/monitor/stream helpers).
 
-Multi-node deployment (Ansible), the full variable reference, and
-`openclaw.json.template`: [Openclaw/GUIDE.md](Openclaw/GUIDE.md).
+Full variable reference and `openclaw.json.template`:
+[Openclaw/GUIDE.md](Openclaw/GUIDE.md).
 Security policy: [Openclaw/SECURITY.md](Openclaw/SECURITY.md).
 
 ## Development

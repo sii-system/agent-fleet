@@ -167,7 +167,7 @@ def validate_required(cfg: dict[str, Any]) -> None:
         msg = (
             "Error: model provider is not configured.\n\n"
             "Set both BASE_URL and API_KEY before running setup.sh.\n\n"
-            f"Option 1: set BASE_URL, API_KEY, MODEL in {PROJECT_DIR.parent.parent}/config.env "
+            f"Option 1: set BASE_URL, API_KEY, MODEL in {PROJECT_DIR.parent.parent}/config.local.env "
             f"(COUNT in {PROJECT_DIR}/config/fleet.env)\n"
             f'Option 2: BASE_URL="https://api.example.com" API_KEY="sk-xxx" '
             f'MODEL="{cfg["MODEL"]}" {SCRIPT_DIR}/setup.sh {cfg["COUNT"]}'
