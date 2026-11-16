@@ -1,4 +1,4 @@
-"""Exercise legacy Harbor import paths with the installed Harbor/E2B APIs."""
+"""Validate adapter import paths against installed Harbor and E2B APIs."""
 
 import os
 import subprocess
@@ -31,19 +31,19 @@ import inspect
 from harbor.environments.base import BaseEnvironment
 from harbor.environments.e2b import E2BEnvironment
 from harbor_environment_adapters.providers.opensandbox_yicloud.adapter import YiCloudOpenSandboxEnvironment
-from harbor_environment_adapters.providers.dsec_controller.adapter import DsecSandboxEnvironment
+from harbor_environment_adapters.providers.runfield_controller.adapter import RunfieldSandboxEnvironment
 from harbor_environment_adapters.providers.e2b_series.qz_legacy.adapter import QzSandboxEnvironment
-from dsec_sandbox import DsecSandboxEnvironment as LegacyDsec
+from runfield_sandbox import RunfieldSandboxEnvironment as RunfieldEntrypoint
 from yicloud_opensandbox import YiCloudOpenSandboxEnvironment as LegacyYiCloud
 from qz_e2b_sandbox import QzSandboxEnvironment as LegacyQz
 assert LegacyYiCloud is YiCloudOpenSandboxEnvironment
-assert LegacyDsec is DsecSandboxEnvironment
+assert RunfieldEntrypoint is RunfieldSandboxEnvironment
 assert LegacyQz is QzSandboxEnvironment
 assert issubclass(LegacyYiCloud, BaseEnvironment)
-assert issubclass(LegacyDsec, BaseEnvironment)
+assert issubclass(RunfieldEntrypoint, BaseEnvironment)
 assert issubclass(LegacyQz, E2BEnvironment)
 assert not inspect.isabstract(LegacyYiCloud)
-assert not inspect.isabstract(LegacyDsec)
+assert not inspect.isabstract(RunfieldEntrypoint)
 assert not inspect.isabstract(LegacyQz)
 assert "yicloud" not in sys.modules
 """)

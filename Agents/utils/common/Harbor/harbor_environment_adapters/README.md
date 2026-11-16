@@ -35,7 +35,10 @@ or other runtime configuration, import SDKs, or create remote resources.
    its existing Claude Code/OpenSandbox restriction.
 
 `HARBOR_BACKEND_PLAN` is an internal process handoff, not a new configuration
-input users need to set. Old variables and `module:Class` specs remain supported.
+input users need to set. Existing variables and `module:Class` specs for the
+other backends remain supported. The Runfield rename intentionally replaces the
+retired selector, module, class, and environment-variable names instead of
+keeping a second branded alias.
 qz authentication, host patches, templates, verifier injection, and runtime
 delivery retain their contracts. `backend_launch.py` delegates preflight checks
 and environment CLI arguments to `core/launch.py`; SDK imports and remote
@@ -53,9 +56,9 @@ remain compatible. Image formats, hash rules, and build/publication are unchange
 
 ## Runtime implementations
 
-`providers/dsec_controller/` implements the public DSec Controller backend,
+`providers/runfield_controller/` implements the public Runfield Controller backend,
 including lifecycle, command execution, Toolkit preflight and native archive
-transfer. Its [backend contract](providers/dsec_controller/README.md) describes
+transfer. Its [backend contract](providers/runfield_controller/README.md) describes
 configuration, deployment prerequisites and current resource/network limits.
 
 `providers/opensandbox_yicloud/adapter.py` composes the extracted internal method

@@ -1,4 +1,4 @@
-"""Validate the DSec Agent Toolkit capability before a Harbor batch starts."""
+"""Validate Runfield Agent Toolkit capabilities before Harbor batch startup."""
 
 from __future__ import annotations
 
@@ -26,31 +26,31 @@ def required_agent_runtime(config: Mapping[str, str]) -> tuple[str, str] | None:
     version = config.get(version_env, "").strip()
     if not version or version == "latest":
         raise ValueError(
-            f"DSec Agent Toolkit requires an exact {version_env} version"
+            f"Runfield Agent Toolkit requires an exact {version_env} version"
         )
     return agent, version
 
 
-def validate_dsec_agent_runtime(
+def validate_runfield_agent_runtime(
     config: Mapping[str, str], *, opener: Any | None = None
 ) -> str | None:
-    """Require every schedulable DSec Node to expose one exact runtime."""
+    """Require every schedulable Runfield Node to expose one exact runtime."""
 
     required = required_agent_runtime(config)
-    endpoint = config.get("DSEC_SANDBOX_CONTROLLER_ENDPOINT", "").rstrip("/")
+    endpoint = config.get("RUNFIELD_CONTROLLER_ENDPOINT", "").rstrip("/")
     request = Request(endpoint + "/v1alpha1/status", method="GET")
     transport = opener or build_opener(ProxyHandler({}))
     try:
         with transport.open(request, timeout=15) as response:
             payload = response.read(_MAX_STATUS_BYTES + 1)
     except OSError as error:
-        raise ValueError("DSec Controller status preflight failed") from error
+        raise ValueError("Runfield Controller status preflight failed") from error
     if len(payload) > _MAX_STATUS_BYTES:
-        raise ValueError("DSec Controller status response exceeds protocol limit")
+        raise ValueError("Runfield Controller status response exceeds protocol limit")
     try:
         envelope = json.loads(payload)
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
-        raise ValueError("DSec Controller status response is invalid JSON") from error
+        raise ValueError("Runfield Controller status response is invalid JSON") from error
     result = _validated_status_result(envelope)
     ready_nodes = [
         node
@@ -60,18 +60,18 @@ def validate_dsec_agent_runtime(
         and node["status"].get("ready") is True
     ]
     if not ready_nodes:
-        raise ValueError("DSec Controller has no schedulable ready Nodes")
+        raise ValueError("Runfield Controller has no schedulable ready Nodes")
     missing_archive = [
         str(node.get("node_id") or "<unknown>") for node in ready_nodes
         if (node["status"].get("capabilities") or {}).get("archive_transfer") is not True
     ]
     if missing_archive:
         raise ValueError(
-            "DSec native archive transfer is unavailable on ready Nodes: "
+            "Runfield native archive transfer is unavailable on ready Nodes: "
             + ", ".join(missing_archive)
         )
     if required is None:
-        return f"DSec native archive transfer on {len(ready_nodes)} ready Nodes"
+        return f"Runfield native archive transfer on {len(ready_nodes)} ready Nodes"
     agent, version = required
     missing = [
         str(node.get("node_id") or "<unknown>")
@@ -80,22 +80,22 @@ def validate_dsec_agent_runtime(
     ]
     if missing:
         raise ValueError(
-            f"DSec Agent Toolkit is missing {agent}@{version} on ready Nodes: "
+            f"Runfield Agent Toolkit is missing {agent}@{version} on ready Nodes: "
             + ", ".join(missing)
         )
-    return f"DSec Agent Toolkit: {agent}@{version} on {len(ready_nodes)} ready Nodes"
+    return f"Runfield Agent Toolkit: {agent}@{version} on {len(ready_nodes)} ready Nodes"
 
 
 def _validated_status_result(envelope: Any) -> dict[str, Any]:
     if not isinstance(envelope, dict) or envelope.get("api_version") != _API_VERSION:
-        raise ValueError("DSec Controller returned an unsupported API version")
+        raise ValueError("Runfield Controller returned an unsupported API version")
     result = envelope.get("result")
     if not isinstance(result, dict) or not isinstance(result.get("nodes"), list):
         raise ValueError(  # noqa: TRY004 - protocol rejection is a launch error
-            "DSec Controller status response is missing Nodes"
+            "Runfield Controller status response is missing Nodes"
         )
     if not all(isinstance(node, dict) for node in result["nodes"]):
-        raise ValueError("DSec Controller status response contains an invalid Node")
+        raise ValueError("Runfield Controller status response contains an invalid Node")
     return result
 
 

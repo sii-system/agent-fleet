@@ -1,4 +1,4 @@
-"""Harbor-side OpenCode agent wrapper for realtime Opik tracing.
+"""OpenCode agent wrapper for Harbor with real-time Opik tracing.
 
 `OpikOpenCodeHarbor` subclasses `harbor.agents.installed.opencode.OpenCode`.
 It wraps install with retry handling, installs the realtime plugin files, and
@@ -257,7 +257,7 @@ class OpikOpenCodeHarbor(OpenCode):
             version = str(raw_version or os.environ.get("OPENCODE_VERSION", ""))
             if not version or version == "latest":
                 raise RuntimeError(
-                    "DSec Agent Toolkit requires an exact OpenCode version"
+                    "Runfield Agent Toolkit requires an exact OpenCode version"
                 )
             await self.exec_as_agent(
                 environment,

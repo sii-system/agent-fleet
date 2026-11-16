@@ -1,4 +1,4 @@
-"""Resolve backend selection without importing SDKs or modifying the environment.
+"""Resolve backend selection without importing SDKs or mutating the environment.
 
 Callers pass their already merged configuration (local files and caller
 overrides). Empty values preserve the legacy shell's `:-` fallback semantics.
@@ -56,8 +56,8 @@ def resolve_backend_plan(config: Mapping[str, str]) -> BackendPlan:
     if not spec:
         if backend == "opensandbox":
             spec = "yicloud_opensandbox:YiCloudOpenSandboxEnvironment"
-        elif backend == "dsec":
-            spec = "dsec_sandbox:DsecSandboxEnvironment"
+        elif backend == "runfield":
+            spec = "runfield_sandbox:RunfieldSandboxEnvironment"
         elif backend == "qz":
             spec = "qz_e2b_sandbox:QzSandboxEnvironment"
         elif backend == "e2b" and config.get("HARBOR_E2B_PREBUILT_TEMPLATE"):
@@ -104,7 +104,7 @@ def rollout_backend_plan(
     request_config = dict(config)
     request_config["HARBOR_ENVIRONMENT_TYPE"] = environment_type
     if (
-        environment_type in {"opensandbox", "qz", "dsec"}
+        environment_type in {"opensandbox", "qz", "runfield"}
         or (environment_type == "e2b" and config.get("HARBOR_E2B_PREBUILT_TEMPLATE"))
         or environment_type != (config.get("RL_ENVIRONMENT_TYPE") or "docker")
     ):

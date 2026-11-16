@@ -1,4 +1,4 @@
-"""Stream bounded archives through Controller; never execute guest transfer tools."""
+"""Transfer bounded archives through Controller without guest-side tools."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ MAX_ARCHIVE_BYTES = 512 << 20
 ARCHIVE_MEDIA_TYPE = "application/x-tar"
 
 
-class DsecArchiveClientMixin:
+class RunfieldArchiveClientMixin:
     """Own binary HTTP transport; failed uploads may have partial side effects."""
 
     def _archive_url(self, sandbox_id: str, path: str) -> str:
@@ -44,7 +44,7 @@ class DsecArchiveClientMixin:
             response.close()
         stat = result.get("stat")
         if not isinstance(stat, dict) or not isinstance(stat.get("exists"), bool):
-            raise TypeError("DSec Controller response is missing stat metadata")
+            raise TypeError("Runfield Controller response is missing stat metadata")
         return stat
 
     async def stat_path(self, sandbox_id: str, path: str) -> dict[str, Any]:
@@ -56,12 +56,12 @@ class DsecArchiveClientMixin:
     def _check_archive_response(self, response: Any) -> None:
         if response.status_code != 200:
             self._parse_response(response)
-            raise RuntimeError("DSec Controller returned an unexpected archive status")
+            raise RuntimeError("Runfield Controller returned an unexpected archive status")
 
     def _upload_archive_sync(self, sandbox_id: str, path: str, archive: Path) -> None:
         size = archive.stat().st_size
         if not 0 < size <= MAX_ARCHIVE_BYTES:
-            raise ValueError("DSec archive upload exceeds protocol limit")
+            raise ValueError("Runfield archive upload exceeds protocol limit")
         with archive.open("rb") as source, self.session.request(
             "PUT", self._archive_url(sandbox_id, path), data=source,
             headers={"Content-Type": ARCHIVE_MEDIA_TYPE, "Content-Length": str(size)},
@@ -87,7 +87,7 @@ class DsecArchiveClientMixin:
                 response.headers.get("Content-Type") != ARCHIVE_MEDIA_TYPE
                 or response.headers.get("Content-Encoding")
             ):
-                raise RuntimeError("DSec archive response has an invalid media type")
+                raise RuntimeError("Runfield archive response has an invalid media type")
             total = 0
             owned = False
             try:
@@ -96,7 +96,7 @@ class DsecArchiveClientMixin:
                     for chunk in response.iter_content(64 << 10):
                         total += len(chunk)
                         if total > min(maximum_bytes, MAX_ARCHIVE_BYTES):
-                            raise ValueError("DSec archive download exceeds configured limit")
+                            raise ValueError("Runfield archive download exceeds configured limit")
                         output.write(chunk)
             except BaseException:
                 if owned:

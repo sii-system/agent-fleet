@@ -1,4 +1,4 @@
-"""DSec Harbor BaseEnvironment implementation.
+"""Runfield implementation of Harbor's BaseEnvironment.
 
 The adapter consumes only the public Controller API. It supports Linux, one
 container, root identity, and immutable OCI digests without exposing Compose,
@@ -19,10 +19,10 @@ from harbor.environments.capabilities import (
     EnvironmentResourceCapabilities,
 )
 
-from .client import DsecControllerClient
-from .execution import DsecExecutionMixin
-from .lifecycle import DsecLifecycleMixin
-from .transfer import DsecTransferMixin
+from .client import RunfieldControllerClient
+from .execution import RunfieldExecutionMixin
+from .lifecycle import RunfieldLifecycleMixin
+from .transfer import RunfieldTransferMixin
 
 _DIGEST_REFERENCE = re.compile(
     r"^[^/@\s]+(?:/[^/@\s]+)+@sha256:[0-9a-f]{64}$"
@@ -56,13 +56,13 @@ def _bool_setting(value: str | bool, name: str) -> bool:
     raise ValueError(f"{name} must be a boolean")
 
 
-class DsecSandboxEnvironment(
-    DsecLifecycleMixin,
-    DsecTransferMixin,
-    DsecExecutionMixin,
+class RunfieldSandboxEnvironment(
+    RunfieldLifecycleMixin,
+    RunfieldTransferMixin,
+    RunfieldExecutionMixin,
     BaseEnvironment,
 ):
-    """Map one Harbor trial to one DSec Sandbox."""
+    """Map one Harbor trial to one Runfield Sandbox."""
 
     def __init__(
         self,
@@ -88,55 +88,55 @@ class DsecSandboxEnvironment(
             or os.environ.get("HARBOR_OPENSANDBOX_BUNDLE_MANIFEST", "")
         ).strip()
         controller_endpoint = (
-            endpoint or os.environ.get("DSEC_SANDBOX_CONTROLLER_ENDPOINT", "")
+            endpoint or os.environ.get("RUNFIELD_CONTROLLER_ENDPOINT", "")
         ).strip()
         if not controller_endpoint:
-            raise ValueError("DSEC_SANDBOX_CONTROLLER_ENDPOINT is required")
+            raise ValueError("RUNFIELD_CONTROLLER_ENDPOINT is required")
         allow_insecure = _bool_setting(
-            os.environ.get("DSEC_SANDBOX_ALLOW_INSECURE_HTTP", "0"),
-            "DSEC_SANDBOX_ALLOW_INSECURE_HTTP",
+            os.environ.get("RUNFIELD_CONTROLLER_ALLOW_INSECURE_HTTP", "0"),
+            "RUNFIELD_CONTROLLER_ALLOW_INSECURE_HTTP",
         )
         self._ttl_seconds = _positive_int(
             ttl_seconds
-            or os.environ.get("DSEC_SANDBOX_TTL_SECONDS", "7200"),
+            or os.environ.get("RUNFIELD_SANDBOX_TTL_SECONDS", "7200"),
             "ttl_seconds",
         )
         self._ready_timeout_sec = _positive_int(
             ready_timeout_sec
-            or os.environ.get("DSEC_SANDBOX_READY_TIMEOUT_SEC", "300"),
+            or os.environ.get("RUNFIELD_SANDBOX_READY_TIMEOUT_SEC", "300"),
             "ready_timeout_sec",
         )
         self._close_timeout_sec = _positive_int(
             close_timeout_sec
-            or os.environ.get("DSEC_SANDBOX_CLOSE_TIMEOUT_SEC", "120"),
+            or os.environ.get("RUNFIELD_SANDBOX_CLOSE_TIMEOUT_SEC", "120"),
             "close_timeout_sec",
         )
         request_timeout = _positive_int(
             request_timeout_sec
-            or os.environ.get("DSEC_SANDBOX_REQUEST_TIMEOUT_SEC", "15"),
+            or os.environ.get("RUNFIELD_SANDBOX_REQUEST_TIMEOUT_SEC", "15"),
             "request_timeout_sec",
             maximum=60,
         )
         self._exec_output_limit_bytes = _positive_int(
             exec_output_limit_bytes
-            or os.environ.get("DSEC_SANDBOX_EXEC_OUTPUT_LIMIT_BYTES", str(16 << 20)),
+            or os.environ.get("RUNFIELD_SANDBOX_EXEC_OUTPUT_LIMIT_BYTES", str(16 << 20)),
             "exec_output_limit_bytes",
         )
         self._default_exec_timeout_sec = _positive_int(
             default_exec_timeout_sec
-            or os.environ.get("DSEC_SANDBOX_EXEC_TIMEOUT_SEC", "3600"),
+            or os.environ.get("RUNFIELD_SANDBOX_EXEC_TIMEOUT_SEC", "3600"),
             "default_exec_timeout_sec",
         )
         self._transfer_max_bytes = _positive_int(
             transfer_max_bytes
             or os.environ.get(
-                "DSEC_SANDBOX_TRANSFER_MAX_BYTES", str(512 << 20)
+                "RUNFIELD_SANDBOX_TRANSFER_MAX_BYTES", str(512 << 20)
             ),
             "transfer_max_bytes",
         )
         self._transfer_timeout_sec = _positive_int(
             transfer_timeout_sec
-            or os.environ.get("DSEC_SANDBOX_TRANSFER_TIMEOUT_SEC", "1800"),
+            or os.environ.get("RUNFIELD_SANDBOX_TRANSFER_TIMEOUT_SEC", "1800"),
             "transfer_timeout_sec",
         )
         self._request_attempts = _positive_int(
@@ -145,7 +145,7 @@ class DsecSandboxEnvironment(
         if not 0.05 <= poll_interval_sec <= 10:
             raise ValueError("poll_interval_sec must be between 0.05 and 10")
         self._poll_interval_sec = poll_interval_sec
-        self._client = DsecControllerClient(
+        self._client = RunfieldControllerClient(
             controller_endpoint,
             allow_insecure_http=allow_insecure,
             request_timeout_sec=request_timeout,
@@ -159,7 +159,7 @@ class DsecSandboxEnvironment(
 
     @staticmethod
     def type() -> str:
-        return "dsec"
+        return "runfield"
 
     @property
     def capabilities(self) -> EnvironmentCapabilities:
@@ -189,7 +189,7 @@ class DsecSandboxEnvironment(
     @classmethod
     def resource_capabilities(cls) -> EnvironmentResourceCapabilities:
         # Harbor must accept ordinary task definitions during initial integration,
-        # even though DSec intentionally ignores their per-Sandbox quotas.
+        # even though Runfield intentionally ignores their per-Sandbox quotas.
         return EnvironmentResourceCapabilities(
             cpu_limit=True,
             memory_limit=True,
@@ -198,14 +198,14 @@ class DsecSandboxEnvironment(
 
     @classmethod
     def preflight(cls) -> None:
-        endpoint = os.environ.get("DSEC_SANDBOX_CONTROLLER_ENDPOINT", "").strip()
+        endpoint = os.environ.get("RUNFIELD_CONTROLLER_ENDPOINT", "").strip()
         if not endpoint:
-            raise RuntimeError("DSEC_SANDBOX_CONTROLLER_ENDPOINT is required")
-        DsecControllerClient(
+            raise RuntimeError("RUNFIELD_CONTROLLER_ENDPOINT is required")
+        RunfieldControllerClient(
             endpoint,
             allow_insecure_http=_bool_setting(
-                os.environ.get("DSEC_SANDBOX_ALLOW_INSECURE_HTTP", "0"),
-                "DSEC_SANDBOX_ALLOW_INSECURE_HTTP",
+                os.environ.get("RUNFIELD_CONTROLLER_ALLOW_INSECURE_HTTP", "0"),
+                "RUNFIELD_CONTROLLER_ALLOW_INSECURE_HTTP",
             ),
         )
 
@@ -222,7 +222,7 @@ class DsecSandboxEnvironment(
                 image["sandbox_ref"] if version == 1 else image["digest_ref"]
             ).strip()
         except (OSError, KeyError, TypeError, ValueError) as error:
-            raise ValueError("invalid DSec Bundle Manifest") from error
+            raise ValueError("invalid Runfield Bundle Manifest") from error
 
     @property
     def _image_ref(self) -> str:
@@ -238,9 +238,9 @@ class DsecSandboxEnvironment(
             self.environment_dir / "docker-compose.yml",
         )
         if any(path.exists() for path in compose_paths):
-            raise ValueError("DSec backend does not support Docker Compose")
+            raise ValueError("Runfield backend does not support Docker Compose")
         if not _DIGEST_REFERENCE.fullmatch(self._image_ref):
-            raise ValueError("DSec requires a canonical OCI manifest digest reference")
+            raise ValueError("Runfield requires a canonical OCI manifest digest reference")
         if any(
             value is not None
             for value in (
@@ -250,19 +250,19 @@ class DsecSandboxEnvironment(
             )
         ):
             self.logger.warning(
-                "DSec does not enforce per-Sandbox resource limits yet; "
+                "Runfield does not enforce per-Sandbox resource limits yet; "
                 "continuing with shared host scheduling"
             )
-        # TODO: advertise and enforce task quotas only after DSec provides
+        # TODO: advertise and enforce task quotas only after Runfield provides
         # per-Sandbox CPU, memory, PID, and storage accounting.
         for mount in getattr(self, "_mounts", []):
             if mount.get("type") != "bind":
-                raise ValueError("DSec only accepts bind inputs")
+                raise ValueError("Runfield only accepts bind inputs")
             if mount.get("read_only"):
                 continue
             if str(mount.get("target") or "") not in _HARBOR_MANAGED_WRITABLE_TARGETS:
                 raise ValueError(
-                    "DSec only accepts Harbor-managed writable output mounts"
+                    "Runfield only accepts Harbor-managed writable output mounts"
                 )
 
     def _resource_request(self) -> dict[str, int | str]:
@@ -275,12 +275,12 @@ class DsecSandboxEnvironment(
         }
 
     async def _apply_network_policy(self, network_policy: Any) -> None:
-        """Warn when Harbor requests an allowlist that DSec cannot enforce."""
+        """Warn when Harbor requests an allowlist that Runfield cannot enforce."""
 
         mode = getattr(network_policy.network_mode, "value", network_policy.network_mode)
         if mode == "allowlist":
             self.logger.warning(
-                "DSec does not enforce Harbor network allowlists yet; "
+                "Runfield does not enforce Harbor network allowlists yet; "
                 "continuing with the Sandbox public bridge. Enforcement is "
                 "deferred to a dedicated follow-up PR"
             )

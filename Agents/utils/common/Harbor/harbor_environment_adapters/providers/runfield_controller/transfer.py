@@ -1,4 +1,4 @@
-"""Transfer files through native Controller archives using only host-side tools.
+"""Transfer files through Controller-native archives using host-side tools only.
 
 Moby owns filesystem access and extraction. Uploads follow Docker archive copy
 semantics: a failed upload may have partial side effects and is never retried.
@@ -25,10 +25,10 @@ from .archive_client import MAX_ARCHIVE_BYTES
 def _remote_path(value: str) -> str:
     """Accept normalized absolute container paths, never host paths or traversal."""
     if not value or "\0" in value or not value.startswith("/"):
-        raise ValueError("DSec transfer target must be an absolute POSIX path")
+        raise ValueError("Runfield transfer target must be an absolute POSIX path")
     normalized = posixpath.normpath(value)
     if normalized != value.rstrip("/") and value != "/":
-        raise ValueError("DSec transfer path must be normalized")
+        raise ValueError("Runfield transfer path must be normalized")
     return normalized
 
 
@@ -65,7 +65,7 @@ def _archive_filter(read_only: bool):
 
 def _check_archive_size(archive: Path, maximum_bytes: int) -> None:
     if archive.stat().st_size > min(maximum_bytes, MAX_ARCHIVE_BYTES):
-        raise ValueError("DSec archive transfer exceeds configured limit")
+        raise ValueError("Runfield archive transfer exceeds configured limit")
 
 
 def _extract_filter(member: tarfile.TarInfo, destination: str) -> tarfile.TarInfo:
@@ -87,12 +87,12 @@ def _pack_directory(
         if stat.S_ISREG(info.st_mode):
             logical_bytes += info.st_size
             if logical_bytes > maximum_bytes:
-                raise ValueError("DSec directory transfer exceeds configured limit")
+                raise ValueError("Runfield directory transfer exceeds configured limit")
         elif stat.S_ISLNK(info.st_mode):
             if not path.resolve().is_relative_to(source.resolve()):
                 raise ValueError("transfer archive link escapes its root")
         elif not stat.S_ISDIR(info.st_mode):
-            raise ValueError("DSec directory transfer contains a special file")
+            raise ValueError("Runfield directory transfer contains a special file")
     with tarfile.open(archive_path, "w") as archive:
         archive.add(source, arcname=arcname, filter=_archive_filter(read_only))
     _check_archive_size(archive_path, maximum_bytes)
@@ -104,7 +104,7 @@ def _extract_directory(
 ) -> None:
     """Validate into host staging before merging a Docker directory archive."""
     target.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix=".harbor-dsec-extract-", dir=target.parent) as temporary:
+    with tempfile.TemporaryDirectory(prefix=".harbor-runfield-extract-", dir=target.parent) as temporary:
         staging = Path(temporary)
         with tarfile.open(archive_path, "r:*") as archive:
             members = []
@@ -120,16 +120,16 @@ def _extract_directory(
                 if (member := _validated_tar_member(item)) is not None:
                     members.append(member)
             if sum(member.size for member in members) > maximum_bytes:
-                raise ValueError("DSec directory download exceeds configured limit")
+                raise ValueError("Runfield directory download exceeds configured limit")
             if source_name != "." and any(
                 not PurePosixPath(member.name).is_relative_to(source_name)
                 for member in members
             ):
-                raise ValueError("DSec directory archive has an unexpected root")
+                raise ValueError("Runfield directory archive has an unexpected root")
             archive.extractall(staging, members=members, filter=_extract_filter)
         source = staging / source_name
         if not source.is_dir() or source.is_symlink():
-            raise ValueError("DSec directory download is not a directory")
+            raise ValueError("Runfield directory download is not a directory")
         # The exported subtree loses its staging prefix when copied. A link
         # contained in staging may therefore point outside the final output.
         # Resolve after all entries exist so link chains are checked as well.
@@ -140,19 +140,19 @@ def _extract_directory(
             # download; those must not redirect this merge into host siblings.
             destination = target / (staging / member.name).relative_to(source)
             if not destination.resolve().is_relative_to(output_root):
-                raise ValueError("DSec directory output link escapes its collection directory")
+                raise ValueError("Runfield directory output link escapes its collection directory")
             if member.issym():
                 try:
                     resolved = (staging / member.name).resolve()
                     exported_link = (destination.parent / os.readlink(staging / member.name)).resolve()
                 except (OSError, RuntimeError) as error:
-                    raise ValueError("DSec directory archive contains an invalid link") from error
+                    raise ValueError("Runfield directory archive contains an invalid link") from error
                 if not resolved.is_relative_to(export_root) or not exported_link.is_relative_to(output_root):
-                    raise ValueError("DSec directory archive link escapes its exported subtree")
+                    raise ValueError("Runfield directory archive link escapes its exported subtree")
         shutil.copytree(source, target, dirs_exist_ok=True, symlinks=True)
 
 
-class DsecTransferMixin:
+class RunfieldTransferMixin:
     """Prepare archives on the host and delegate filesystem access to Moby."""
 
     async def upload_file(
@@ -160,13 +160,13 @@ class DsecTransferMixin:
     ) -> None:
         source = Path(source_path)
         if not source.is_file() or source.is_symlink():
-            raise ValueError(f"DSec upload source is not a regular file: {source}")
+            raise ValueError(f"Runfield upload source is not a regular file: {source}")
         if source.stat().st_size > self._transfer_max_bytes:
-            raise ValueError("DSec file upload exceeds configured limit")
+            raise ValueError("Runfield file upload exceeds configured limit")
         target = _remote_path(target_path)
         if target == "/":
-            raise ValueError("DSec file upload requires a file target")
-        with tempfile.TemporaryDirectory(prefix="harbor-dsec-upload-") as temporary:
+            raise ValueError("Runfield file upload requires a file target")
+        with tempfile.TemporaryDirectory(prefix="harbor-runfield-upload-") as temporary:
             archive_path = Path(temporary) / "file.tar"
             with tarfile.open(archive_path, "w") as archive:
                 archive.add(source, arcname=target.lstrip("/"), filter=_archive_filter(read_only))
@@ -178,10 +178,10 @@ class DsecTransferMixin:
     ) -> None:
         source = Path(source_dir)
         if not source.is_dir() or source.is_symlink():
-            raise ValueError(f"DSec upload source is not a directory: {source}")
+            raise ValueError(f"Runfield upload source is not a directory: {source}")
         # A single dot means the immutable OCI working directory, resolved by Node.
         target = "." if target_dir == "." else _remote_path(target_dir)
-        with tempfile.TemporaryDirectory(prefix="harbor-dsec-upload-") as temporary:
+        with tempfile.TemporaryDirectory(prefix="harbor-runfield-upload-") as temporary:
             archive_path = Path(temporary) / "directory.tar"
             await await_owned(asyncio.to_thread(
                 _pack_directory, source, archive_path, self._transfer_max_bytes,
@@ -195,7 +195,7 @@ class DsecTransferMixin:
         source = _remote_path(source_path)
         target = Path(target_path)
         target.parent.mkdir(parents=True, exist_ok=True)
-        with tempfile.TemporaryDirectory(prefix=".harbor-dsec-download-", dir=target.parent) as temporary:
+        with tempfile.TemporaryDirectory(prefix=".harbor-runfield-download-", dir=target.parent) as temporary:
             archive_path = Path(temporary) / "file.tar"
             await self._client.download_archive(
                 self._sandbox_id, source, archive_path, self._transfer_max_bytes
@@ -207,7 +207,7 @@ class DsecTransferMixin:
                     or members[0].name != PurePosixPath(source).name
                     or members[0].size > self._transfer_max_bytes
                 ):
-                    raise ValueError("DSec file archive is not one bounded regular file")
+                    raise ValueError("Runfield file archive is not one bounded regular file")
                 member = members[0]
                 staged = Path(temporary) / "payload"
                 with archive.extractfile(member) as content, staged.open("xb") as output:
@@ -221,7 +221,7 @@ class DsecTransferMixin:
 
     async def download_dir(self, source_dir: str, target_dir: Path | str) -> None:
         source = _remote_path(source_dir)
-        with tempfile.TemporaryDirectory(prefix="harbor-dsec-download-") as temporary:
+        with tempfile.TemporaryDirectory(prefix="harbor-runfield-download-") as temporary:
             archive_path = Path(temporary) / "directory.tar"
             await self._client.download_archive(
                 self._sandbox_id, source, archive_path, self._transfer_max_bytes
@@ -234,7 +234,7 @@ class DsecTransferMixin:
 
     async def _prepare_harbor_directories(self) -> None:
         """Create log/output directories with archive metadata, without guest mkdir."""
-        with tempfile.TemporaryDirectory(prefix="harbor-dsec-directories-") as temporary:
+        with tempfile.TemporaryDirectory(prefix="harbor-runfield-directories-") as temporary:
             archive_path = Path(temporary) / "directories.tar"
             with tarfile.open(archive_path, "w") as archive:
                 for name in ("logs/agent", "logs/verifier", "logs/artifacts", "artifacts"):
@@ -266,4 +266,4 @@ class DsecTransferMixin:
             elif source.is_file():
                 await self.upload_file(source, target, read_only=True)
             else:
-                raise ValueError(f"DSec mount source does not exist: {source}")
+                raise ValueError(f"Runfield mount source does not exist: {source}")

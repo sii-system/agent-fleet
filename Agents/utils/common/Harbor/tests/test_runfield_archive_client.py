@@ -1,4 +1,4 @@
-"""Exercise native archive HTTP streaming, bounds, and host file ownership."""
+"""Validate Runfield archive HTTP streams, bounds, and host file ownership."""
 
 from __future__ import annotations
 
@@ -14,12 +14,12 @@ from pathlib import Path
 import requests
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from harbor_environment_adapters.providers.dsec_controller.client import (
-    DsecControllerClient,
+from harbor_environment_adapters.providers.runfield_controller.client import (
+    RunfieldControllerClient,
 )
 
 
-class DsecArchiveClientTests(unittest.TestCase):
+class RunfieldArchiveClientTests(unittest.TestCase):
     def setUp(self):
         self.payload = b"\0\xffarchive bytes" * 10000
         self.received = b""
@@ -60,7 +60,7 @@ class DsecArchiveClientTests(unittest.TestCase):
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
-        self.client = DsecControllerClient(
+        self.client = RunfieldControllerClient(
             f"http://127.0.0.1:{self.server.server_port}", allow_insecure_http=True
         )
 

@@ -229,7 +229,7 @@ class ClaudeCommandPatchTest(unittest.TestCase):
 
 
 class ClaudeInstallCommandTest(unittest.TestCase):
-    def test_dsec_activates_shared_runtime_without_original_install(self) -> None:
+    def test_runfield_activates_shared_runtime_without_original_install(self) -> None:
         module = load_module()
         captured: list[str] = []
 
@@ -238,13 +238,13 @@ class ClaudeInstallCommandTest(unittest.TestCase):
                 return "2.1.90"
 
             async def install(self, environment):
-                raise AssertionError("original install must not run for DSec")
+                raise AssertionError("original install must not run for Runfield")
 
             async def run(self, instruction, environment, context):
                 return None
 
             async def exec_as_root(self, environment, **kwargs):
-                raise AssertionError("root setup must not run for DSec")
+                raise AssertionError("root setup must not run for Runfield")
 
             async def exec_as_agent(
                 self, environment, command=None, env=None, cwd=None, timeout_sec=None

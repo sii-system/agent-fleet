@@ -1,3 +1,5 @@
+"""Tests for Pi Harbor integration and the shared Runfield runtime."""
+
 from __future__ import annotations
 
 import asyncio
@@ -124,7 +126,7 @@ class AgentFleetPiTests(unittest.TestCase):
         self.assertNotIn("nvm", command)
         self.assertNotIn("@mariozechner", command)
 
-    def test_dsec_requires_shared_runtime_without_archive_fallback(self) -> None:
+    def test_runfield_requires_shared_runtime_without_archive_fallback(self) -> None:
         agent = self.module.AgentFleetPi(version="1.3.0")
 
         with mock.patch.dict(

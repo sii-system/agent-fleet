@@ -1,20 +1,20 @@
-# DSec Controller backend
+# Runfield Controller backend
 
-This package implements Harbor's `BaseEnvironment` for DSec. One Harbor trial
+This package implements Harbor's `BaseEnvironment` for Runfield. One Harbor trial
 owns one Sandbox, accessed exclusively through the public Controller
 `sandbox-lifecycle/v1alpha1` API. Agent Fleet prepares immutable task images;
 Controller selects and persists the owning Node; Node owns container lifecycle,
 image leases and native filesystem operations. The adapter never accesses Node
 hosts, Docker sockets, 3FS, EROFS mounts, or lower directories directly.
 
-The compatibility entrypoint is `dsec_sandbox:DsecSandboxEnvironment`.
-The shared backend selector resolves it when `HARBOR_ENVIRONMENT_TYPE=dsec`.
+The stable entrypoint is `runfield_sandbox:RunfieldSandboxEnvironment`.
+The shared backend selector resolves it when `HARBOR_ENVIRONMENT_TYPE=runfield`.
 For launcher behavior, see [environment adapters](../../README.md).
 
 ## Prerequisites and configuration
 
 The Controller must be reachable from the host runner. Task images must already
-be published and resolvable by the DSec deployment as canonical OCI manifest
+be published and resolvable by the Runfield deployment as canonical OCI manifest
 digest references, such as
 `registry.example/tasks/example@sha256:<64-hex-digest>`; mutable tags and local
 Docker builds are rejected. Image precedence is the `image_ref` environment
@@ -31,8 +31,8 @@ runtime caches. Preflight failure stops launch, without a guest-exec fallback.
 Configure the shared launcher, for example:
 
 ```bash
-HARBOR_ENVIRONMENT_TYPE=dsec \
-DSEC_SANDBOX_CONTROLLER_ENDPOINT=https://controller.example \
+HARBOR_ENVIRONMENT_TYPE=runfield \
+RUNFIELD_CONTROLLER_ENDPOINT=https://controller.example \
 AGENT=pi PI_VERSION=1.3.0 \
 DATASET_NAME=auto DATASET_PATH=/absolute/path/to/tasks \
 TOTAL_WORKERS=1 HARBOR_N_CONCURRENT=1 \
@@ -40,23 +40,23 @@ TOTAL_WORKERS=1 HARBOR_N_CONCURRENT=1 \
 ```
 
 The endpoint must be an HTTP(S) origin without credentials, path, query or
-fragment. Plain HTTP requires explicit `DSEC_SANDBOX_ALLOW_INSECURE_HTTP=1`.
+fragment. Plain HTTP requires explicit `RUNFIELD_CONTROLLER_ALLOW_INSECURE_HTTP=1`.
 HTTP clients do not inherit ambient proxy settings or follow redirects.
 This client has no credential/header injection setting; configure the service
 boundary accordingly before exposing it to untrusted networks.
 
 | Environment variable | Default | Meaning |
 | --- | --- | --- |
-| `DSEC_SANDBOX_CONTROLLER_ENDPOINT` | required | Public Controller origin |
-| `DSEC_SANDBOX_ALLOW_INSECURE_HTTP` | `0` | Explicitly allow plaintext HTTP |
-| `DSEC_SANDBOX_TTL_SECONDS` | `7200` | Sandbox lease lifetime |
-| `DSEC_SANDBOX_READY_TIMEOUT_SEC` | `300` | Wait for Sandbox readiness |
-| `DSEC_SANDBOX_CLOSE_TIMEOUT_SEC` | `120` | Wait for terminal close |
-| `DSEC_SANDBOX_REQUEST_TIMEOUT_SEC` | `15` | Control HTTP timeout, at most 60 seconds |
-| `DSEC_SANDBOX_EXEC_TIMEOUT_SEC` | `3600` | Default command wait timeout |
-| `DSEC_SANDBOX_EXEC_OUTPUT_LIMIT_BYTES` | `16777216` | Requested execution output bound |
-| `DSEC_SANDBOX_TRANSFER_MAX_BYTES` | `536870912` | Adapter transfer bound |
-| `DSEC_SANDBOX_TRANSFER_TIMEOUT_SEC` | `1800` | Archive HTTP timeout; service deadlines also apply |
+| `RUNFIELD_CONTROLLER_ENDPOINT` | required | Public Controller origin |
+| `RUNFIELD_CONTROLLER_ALLOW_INSECURE_HTTP` | `0` | Explicitly allow plaintext HTTP |
+| `RUNFIELD_SANDBOX_TTL_SECONDS` | `7200` | Sandbox lease lifetime |
+| `RUNFIELD_SANDBOX_READY_TIMEOUT_SEC` | `300` | Wait for Sandbox readiness |
+| `RUNFIELD_SANDBOX_CLOSE_TIMEOUT_SEC` | `120` | Wait for terminal close |
+| `RUNFIELD_SANDBOX_REQUEST_TIMEOUT_SEC` | `15` | Control HTTP timeout, at most 60 seconds |
+| `RUNFIELD_SANDBOX_EXEC_TIMEOUT_SEC` | `3600` | Default command wait timeout |
+| `RUNFIELD_SANDBOX_EXEC_OUTPUT_LIMIT_BYTES` | `16777216` | Requested execution output bound |
+| `RUNFIELD_SANDBOX_TRANSFER_MAX_BYTES` | `536870912` | Adapter transfer bound |
+| `RUNFIELD_SANDBOX_TRANSFER_TIMEOUT_SEC` | `1800` | Archive HTTP timeout; service deadlines also apply |
 
 Constructor kwargs can override these numeric defaults. Services retain their
 own protocol, output, capacity and deadline limits; increasing a client setting
@@ -137,7 +137,7 @@ Unsafe archive paths, escaping links and special files are rejected. Input
 read-only modes and log-directory permissions are written into tar headers on
 the host. Host staging uses `TMPDIR`; allow enough space for uncompressed trees.
 
-Archive requests use `DSEC_SANDBOX_TRANSFER_TIMEOUT_SEC`, independently of the
+Archive requests use `RUNFIELD_SANDBOX_TRANSFER_TIMEOUT_SEC`, independently of the
 control request timeout; service deadlines still apply. Cancellation waits for
 owned HTTP, packing and extraction workers before releasing temporary paths or
 returning to the caller. It does not interrupt synchronous filesystem work or
@@ -167,10 +167,10 @@ Harbor runner and pinned Ruff version:
 
 ```bash
 PYTHONPATH=. python -m unittest discover \
-  -s Agents/utils/common/Harbor/tests -p 'test_dsec*.py' -v
+  -s Agents/utils/common/Harbor/tests -p 'test_runfield*.py' -v
 ruff check --config .github/ruff.toml \
-  Agents/utils/common/Harbor/harbor_environment_adapters/providers/dsec_controller \
-  Agents/utils/common/Harbor/tests/test_dsec*.py
+  Agents/utils/common/Harbor/harbor_environment_adapters/providers/runfield_controller \
+  Agents/utils/common/Harbor/tests/test_runfield*.py
 ```
 
 Unit tests cover lifecycle, execution, host file semantics, transport failures

@@ -1,4 +1,4 @@
-"""BackendPlan compatibility, process handoff, and request isolation."""
+"""Tests for BackendPlan compatibility, process handoff, and isolation."""
 
 import dataclasses
 import itertools
@@ -171,15 +171,15 @@ printf "%s\\n%s\\n" "$HARBOR_ENVIRONMENT_TYPE" "$HARBOR_ENVIRONMENT_SPEC"
             "docker",
         )
 
-    def test_dsec_uses_the_controller_adapter_for_fixed_and_rollout_runs(self):
-        expected = "dsec_sandbox:DsecSandboxEnvironment"
+    def test_runfield_uses_the_controller_adapter_for_fixed_and_rollout_runs(self):
+        expected = "runfield_sandbox:RunfieldSandboxEnvironment"
         self.assertEqual(
-            resolve_backend_plan({"HARBOR_ENVIRONMENT_TYPE": "dsec"}).environment_spec,
+            resolve_backend_plan({"HARBOR_ENVIRONMENT_TYPE": "runfield"}).environment_spec,
             expected,
         )
         self.assertEqual(
             rollout_backend_plan(
-                {"RL_ENVIRONMENT_TYPE": "docker"}, "dsec"
+                {"RL_ENVIRONMENT_TYPE": "docker"}, "runfield"
             ).environment_spec,
             expected,
         )
