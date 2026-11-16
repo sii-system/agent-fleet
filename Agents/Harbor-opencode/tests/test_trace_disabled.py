@@ -1,3 +1,5 @@
+"""Tests for OpenCode behavior when tracing is disabled."""
+
 from __future__ import annotations
 
 import asyncio
@@ -153,7 +155,7 @@ class OpenCodeTraceDisabledTests(unittest.TestCase):
             fake_opencode_present=opencode_present,
         )
 
-    def test_dsec_activates_shared_runtime_without_cache_install(self):
+    def test_runfield_activates_shared_runtime_without_cache_install(self):
         agent = self.make_agent("false", opencode_present=False)
         with mock.patch.dict(
             os.environ,

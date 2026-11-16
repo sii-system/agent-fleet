@@ -1,4 +1,4 @@
-"""Map Harbor commands to asynchronous, non-TTY DSec execution resources."""
+"""Map Harbor commands to Runfield asynchronous non-TTY executions."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from typing import Any
 
 from harbor.environments.base import ExecResult
 
-from .client import MAX_OUTPUT_READ_BYTES, DsecControllerError
+from .client import MAX_OUTPUT_READ_BYTES, RunfieldControllerError
 
 _EXECUTION_TERMINAL_STATES = {
     "succeeded",
@@ -25,7 +25,7 @@ _MAX_DIRECT_COMMAND_BYTES = 4096
 _BACKGROUND_ABORT_TASKS: set[asyncio.Task[None]] = set()
 
 
-class DsecExecutionMixin:
+class RunfieldExecutionMixin:
     """Execute commands while preserving streams, truncation, and identity semantics."""
 
     async def _close_after_execution_abort(self, reason: str) -> None:
@@ -41,7 +41,7 @@ class DsecExecutionMixin:
             await asyncio.shield(self.stop(delete=True))
         except Exception:
             self.logger.exception(
-                "failed to close DSec Sandbox after execution %s", reason
+                "failed to close Runfield Sandbox after execution %s", reason
             )
 
     async def _run_execution_abort_sequence(
@@ -77,7 +77,7 @@ class DsecExecutionMixin:
                 )
                 if isinstance(canceled, dict) and canceled.get("state") == "canceled":
                     return
-            except DsecControllerError as exc:
+            except RunfieldControllerError as exc:
                 if exc.code == "state_conflict" and close_on_timeout:
                     try:
                         latest = await self._client.execution_status(
@@ -114,7 +114,7 @@ class DsecExecutionMixin:
             except Exception:
                 if close_on_timeout:
                     self.logger.exception(
-                        "unexpected error cancelling DSec execution %s/%s",
+                        "unexpected error cancelling Runfield execution %s/%s",
                         self._sandbox_id,
                         execution_id,
                     )
@@ -196,18 +196,18 @@ class DsecExecutionMixin:
         ``/archive/stat`` fall back to ``exec(..., close_on_timeout=False)``.
         """
         if not self._sandbox_id:
-            raise RuntimeError("DSec Sandbox is not running")
+            raise RuntimeError("Runfield Sandbox is not running")
         effective_user = self._resolve_user(user)
         if effective_user not in {None, "root", "0", 0}:
             raise ValueError(
-                "DSec backend only supports the root execution identity"
+                "Runfield backend only supports the root execution identity"
             )
         if (
             not isinstance(path, str)
             or not path
             or any(ch in path for ch in ("\x00", "\r", "\n"))
         ):
-            raise ValueError("DSec probe path must be a non-empty valid path")
+            raise ValueError("Runfield probe path must be a non-empty valid path")
         if not require_dir and (
             path in {".", "/"} or path.endswith(("/", "/."))
         ):
@@ -223,7 +223,7 @@ class DsecExecutionMixin:
             )
         try:
             stat = await self._client.stat_path(self._sandbox_id, target)
-        except DsecControllerError as exc:
+        except RunfieldControllerError as exc:
             if (
                 exc.code == "unsupported_capability"
                 or exc.status_code in {404, 405, 501}
@@ -278,12 +278,12 @@ class DsecExecutionMixin:
     ) -> bytes:
         metadata = record.get(stream)
         if not isinstance(metadata, dict):
-            raise TypeError(f"DSec execution is missing {stream} metadata")
+            raise TypeError(f"Runfield execution is missing {stream} metadata")
         if metadata.get("truncated") is True:
-            raise RuntimeError(f"DSec execution {stream} was truncated")
+            raise RuntimeError(f"Runfield execution {stream} was truncated")
         committed = metadata.get("committed_bytes")
         if not isinstance(committed, int) or committed < 0:
-            raise RuntimeError(f"DSec execution returned invalid {stream} length")
+            raise RuntimeError(f"Runfield execution returned invalid {stream} length")
         chunks: list[bytes] = []
         for offset in range(0, committed, MAX_OUTPUT_READ_BYTES):
             length = min(MAX_OUTPUT_READ_BYTES, committed - offset)
@@ -295,7 +295,7 @@ class DsecExecutionMixin:
                 length,
             )
             if len(chunk) != length:
-                raise RuntimeError("DSec execution output range is incomplete")
+                raise RuntimeError("Runfield execution output range is incomplete")
             chunks.append(chunk)
         return b"".join(chunks)
 
@@ -319,7 +319,7 @@ class DsecExecutionMixin:
         attempt best-effort queued cancellation and handle TimeoutError locally.
         """
         if not self._sandbox_id:
-            raise RuntimeError("DSec Sandbox is not running")
+            raise RuntimeError("Runfield Sandbox is not running")
         request: dict[str, Any] = {
             "request_id": self._execution_request_id("\0".join(argv)),
             "argv": argv,
@@ -337,7 +337,7 @@ class DsecExecutionMixin:
             record = await self._client.create_execution(self._sandbox_id, request)
             raw_execution_id = record.get("execution_id")
             if not isinstance(raw_execution_id, str) or not raw_execution_id:
-                raise RuntimeError("DSec Controller returned no execution identity")
+                raise RuntimeError("Runfield Controller returned no execution identity")
             execution_id = raw_execution_id
             deadline = time.monotonic() + (
                 timeout_sec or self._default_exec_timeout_sec
@@ -351,7 +351,7 @@ class DsecExecutionMixin:
                         reason="timeout",
                     )
                     raise TimeoutError(
-                        f"DSec execution wait deadline exceeded: {execution_id}"
+                        f"Runfield execution wait deadline exceeded: {execution_id}"
                     )
                 await asyncio.sleep(self._poll_interval_sec)
                 record = await self._client.execution_status(
@@ -381,7 +381,7 @@ class DsecExecutionMixin:
         close_on_timeout: bool = True,
         priority: str | None = None,
     ) -> ExecResult:
-        """Run a Harbor shell command under the root-only DSec backend.
+        """Run a Harbor shell command under the root-only Runfield backend.
 
         ``close_on_timeout`` is forwarded to ``_execute_argv``. Only critical
         lifecycle callers should use the default True; best-effort probes pass
@@ -390,7 +390,7 @@ class DsecExecutionMixin:
         effective_user = self._resolve_user(user)
         if effective_user not in {None, "root", "0", 0}:
             raise ValueError(
-                "DSec backend only supports the root execution identity"
+                "Runfield backend only supports the root execution identity"
             )
         effective_cwd = cwd or self.task_env_config.workdir or "/"
         effective_env = self._merge_env(env)
@@ -419,7 +419,7 @@ class DsecExecutionMixin:
             )
         state = record.get("state")
         if state == "recovery_required":
-            raise RuntimeError("DSec execution requires recovery")
+            raise RuntimeError("Runfield execution requires recovery")
         code = record.get("exit_code")
         if not isinstance(code, int):
             code = 1
@@ -448,7 +448,7 @@ class DsecExecutionMixin:
     ) -> tuple[dict[str, Any], bytes, bytes]:
         """Upload an oversized Bash program and execute it with bounded argv."""
         remote_path = f"/tmp/.harbor-command-{uuid.uuid4().hex}.sh"
-        with tempfile.TemporaryDirectory(prefix="harbor-dsec-command-") as temporary:
+        with tempfile.TemporaryDirectory(prefix="harbor-runfield-command-") as temporary:
             local_path = Path(temporary) / "command.sh"
             local_path.write_bytes(command)
             local_path.chmod(0o600)

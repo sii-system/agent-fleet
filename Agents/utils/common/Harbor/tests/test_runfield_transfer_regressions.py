@@ -1,4 +1,4 @@
-"""Regressions for exported links and ownership of cancelled archive workers."""
+"""Regression tests for export links and canceled archive worker ownership."""
 
 import asyncio
 import io
@@ -12,10 +12,10 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from harbor_environment_adapters.providers.dsec_controller import transfer
+from harbor_environment_adapters.providers.runfield_controller import transfer
 
 
-class DsecExportLinkTests(unittest.TestCase):
+class RunfieldExportLinkTests(unittest.TestCase):
     def test_links_escaping_exported_subtree_are_rejected_before_merge(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -80,7 +80,7 @@ class DsecExportLinkTests(unittest.TestCase):
             self.assertEqual((root / "runner-secret").read_bytes(), b"host-only")
 
 
-class DsecWorkerOwnershipTests(unittest.IsolatedAsyncioTestCase):
+class RunfieldWorkerOwnershipTests(unittest.IsolatedAsyncioTestCase):
     async def test_cancelled_extraction_finishes_before_returning(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -105,7 +105,7 @@ class DsecWorkerOwnershipTests(unittest.IsolatedAsyncioTestCase):
             environment = SimpleNamespace(_client=SimpleNamespace(download_archive=download),
                                           _sandbox_id="test", _transfer_max_bytes=1024)
             with patch.object(transfer.shutil, "copytree", blocked_copy):
-                operation = asyncio.create_task(transfer.DsecTransferMixin.download_dir(
+                operation = asyncio.create_task(transfer.RunfieldTransferMixin.download_dir(
                     environment, "/logs/agent", root / "output"))
                 try:
                     self.assertTrue(await asyncio.to_thread(entered.wait, 3))
@@ -143,7 +143,7 @@ class DsecWorkerOwnershipTests(unittest.IsolatedAsyncioTestCase):
             environment = SimpleNamespace(_client=SimpleNamespace(upload_archive=AsyncMock()),
                                           _sandbox_id="test", _transfer_max_bytes=1 << 20)
             with patch.object(transfer, "_pack_directory", blocked_pack):
-                operation = asyncio.create_task(transfer.DsecTransferMixin.upload_dir(
+                operation = asyncio.create_task(transfer.RunfieldTransferMixin.upload_dir(
                     environment, source, "/input"))
                 try:
                     self.assertTrue(await asyncio.to_thread(entered.wait, 3))

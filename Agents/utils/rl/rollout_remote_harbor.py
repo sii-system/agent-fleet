@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Miles/Polar-compatible HTTP front door for Harbor rollout mode.
+"""Miles/Polar-compatible HTTP entry point for Harbor rollout mode.
 
 The HTTP server only accepts RL requests, writes them to a local queue, and
 waits for zellij workers to produce results.  Workers run the existing
@@ -84,9 +84,9 @@ def _environment_type(request: dict[str, Any]) -> str:
         DEFAULT_ENVIRONMENT_TYPE,
         "docker",
     ).lower()
-    if value not in {"docker", "dsec", "e2b", "opensandbox", "qz"}:
+    if value not in {"docker", "runfield", "e2b", "opensandbox", "qz"}:
         raise ValueError(
-            "environment_type must be docker, dsec, e2b, opensandbox, or qz, "
+            "environment_type must be docker, runfield, e2b, opensandbox, or qz, "
             f"got: {value}"
         )
     return value

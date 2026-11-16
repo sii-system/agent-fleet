@@ -1,4 +1,4 @@
-"""Host launch policy for the selected BackendPlan; no SDK or remote calls."""
+"""Host launch policy for a BackendPlan, without SDK imports or remote calls."""
 
 from __future__ import annotations
 
@@ -28,11 +28,11 @@ def launch_capabilities(plan: BackendPlan) -> LaunchCapabilities:
     backend = plan.environment_type
     return LaunchCapabilities(
         host_docker=backend == "docker",
-        readonly_mounts=backend in {"docker", "opensandbox", "dsec"},
-        verifier_upload=backend in {"e2b", "qz", "dsec"},
-        task_images=backend in {"opensandbox", "dsec"},
-        remote_runtime=backend in {"e2b", "qz", "opensandbox", "dsec"},
-        preinstalled_agents=backend == "dsec",
+        readonly_mounts=backend in {"docker", "opensandbox", "runfield"},
+        verifier_upload=backend in {"e2b", "qz", "runfield"},
+        task_images=backend in {"opensandbox", "runfield"},
+        remote_runtime=backend in {"e2b", "qz", "opensandbox", "runfield"},
+        preinstalled_agents=backend == "runfield",
     )
 
 
@@ -74,9 +74,9 @@ def validate_backend(
     backend = plan.environment_type
     agent = config.get("AGENT", "")
     messages = []
-    if backend not in {"docker", "e2b", "opensandbox", "qz", "dsec"}:
+    if backend not in {"docker", "e2b", "opensandbox", "qz", "runfield"}:
         raise LaunchError(
-            "HARBOR_ENVIRONMENT_TYPE must be docker, e2b, opensandbox, qz, or dsec, "
+            "HARBOR_ENVIRONMENT_TYPE must be docker, e2b, opensandbox, qz, or runfield, "
             f"got: {backend}"
         )
     if backend in {"e2b", "qz"} and agent in {"pi", "dsh-sdk-minimal"}:
@@ -107,21 +107,21 @@ def validate_backend(
             f"id={config.get('YICLOUD_SANDBOX_ENVIRONMENT_ID') or '<resolved-by-name>'} "
             f"name={config.get('YICLOUD_SANDBOX_ENVIRONMENT_NAME') or '<lookup-by-id>'}"
         )
-    if backend == "dsec":
-        endpoint = config.get("DSEC_SANDBOX_CONTROLLER_ENDPOINT", "").strip()
+    if backend == "runfield":
+        endpoint = config.get("RUNFIELD_CONTROLLER_ENDPOINT", "").strip()
         if not endpoint:
             raise LaunchError(
                 "required environment variable is unset: "
-                "DSEC_SANDBOX_CONTROLLER_ENDPOINT"
+                "RUNFIELD_CONTROLLER_ENDPOINT"
             )
         if endpoint.startswith("http://") and config.get(
-            "DSEC_SANDBOX_ALLOW_INSECURE_HTTP", "0"
+            "RUNFIELD_CONTROLLER_ALLOW_INSECURE_HTTP", "0"
         ).strip().lower() not in {"1", "true", "yes"}:
             raise LaunchError(
-                "plain HTTP DSec Controller requires "
-                "DSEC_SANDBOX_ALLOW_INSECURE_HTTP=1"
+                "plain HTTP Runfield Controller requires "
+                "RUNFIELD_CONTROLLER_ALLOW_INSECURE_HTTP=1"
             )
-        messages.append(f"DSec Sandbox Controller: {endpoint}")
+        messages.append(f"Runfield Sandbox Controller: {endpoint}")
     if backend == "qz":
         if not (config.get("SBX_API_KEY") or config.get("QZ_SANDBOX_API_KEY")
                 or config.get("E2B_API_KEY", "").startswith("sbx_")):
@@ -175,10 +175,10 @@ def environment_args(plan: BackendPlan, config: Mapping[str, str], harbor_dir: P
             ("bundle_manifest_path", "HARBOR_OPENSANDBOX_BUNDLE_MANIFEST"),
             (
                 "ttl_seconds"
-                if plan.environment_type == "dsec"
+                if plan.environment_type == "runfield"
                 else "lifecycle_minutes",
-                "DSEC_SANDBOX_TTL_SECONDS"
-                if plan.environment_type == "dsec"
+                "RUNFIELD_SANDBOX_TTL_SECONDS"
+                if plan.environment_type == "runfield"
                 else "YICLOUD_SANDBOX_LIFECYCLE_MINUTES",
             ),
         ):

@@ -1,4 +1,4 @@
-"""Internal, SDK-free handoff between Harbor Shell and backend launch policy.
+"""SDK-independent handoff between Harbor shell and backend launch policy.
 
 Run with python3 -S to avoid activating runtime hooks during preflight. Stdout
 contains fixed Shell assignments/array appends with shlex-quoted values only;
@@ -55,11 +55,11 @@ def main() -> int:
         if args.command == "validate":
             messages = validate_backend(plan, config, ready=args.ready)
             if args.ready and caps.preinstalled_agents:
-                from harbor_environment_adapters.providers.dsec_controller.runtime_preflight import (
-                    validate_dsec_agent_runtime,
+                from harbor_environment_adapters.providers.runfield_controller.runtime_preflight import (
+                    validate_runfield_agent_runtime,
                 )
 
-                runtime_message = validate_dsec_agent_runtime(config)
+                runtime_message = validate_runfield_agent_runtime(config)
                 if runtime_message:
                     messages.append(runtime_message)
             if caps.task_images:

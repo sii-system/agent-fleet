@@ -1,4 +1,4 @@
-"""Validate Moby root-export names without weakening ordinary archive checks."""
+"""Validate Moby root-export names without weakening archive validation."""
 
 import io
 import sys
@@ -9,7 +9,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from harbor_environment_adapters.providers.dsec_controller import transfer
+from harbor_environment_adapters.providers.runfield_controller import transfer
 
 
 def write_root_archive(path):
@@ -30,7 +30,7 @@ def write_root_archive(path):
         archive.addfile(member)
 
 
-class DsecRootDownloadTests(unittest.IsolatedAsyncioTestCase):
+class RunfieldRootDownloadTests(unittest.IsolatedAsyncioTestCase):
     async def test_download_root_rebases_native_names_and_hardlinks(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -42,7 +42,7 @@ class DsecRootDownloadTests(unittest.IsolatedAsyncioTestCase):
             environment = SimpleNamespace(_client=SimpleNamespace(download_archive=download),
                                           _sandbox_id="test", _transfer_max_bytes=1 << 20)
             target = root / "output"
-            await transfer.DsecTransferMixin.download_dir(environment, "/", target)
+            await transfer.RunfieldTransferMixin.download_dir(environment, "/", target)
             self.assertEqual((target / "etc/input").read_bytes(), b"payload")
             self.assertEqual((target / "etc/input-copy").read_bytes(), b"payload")
             self.assertEqual((target / "etc/input").stat().st_mode & 0o777, 0o444)

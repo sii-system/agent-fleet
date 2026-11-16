@@ -67,8 +67,8 @@ local data; `TASK_SOURCE_FILE=<path>` overrides the local task list under
 
 ### Sandbox Backends
 
-`RL_ENVIRONMENT_TYPE` selects `docker` (default), `e2b`, `qz`, or
-`opensandbox`; fixed runs derive `HARBOR_ENVIRONMENT_TYPE` from it unless
+`RL_ENVIRONMENT_TYPE` selects `docker` (default), `e2b`, `qz`, `opensandbox`,
+or `runfield`; fixed runs derive `HARBOR_ENVIRONMENT_TYPE` from it unless
 explicitly overridden. Read the relevant backend contract before changing
 image preparation, runtime delivery, or provider configuration:
 
@@ -77,6 +77,7 @@ image preparation, runtime delivery, or provider configuration:
   [template management](utils/common/Harbor/QZ_TEMPLATE_MANAGER.md)
 - [OpenSandbox](utils/common/Harbor/OPENSANDBOX_README.md) and
   [image preparation](utils/common/Harbor/task_image_manager/README.md)
+- [Runfield](utils/common/Harbor/harbor_environment_adapters/providers/runfield_controller/README.md)
 
 Reusable Python runtime construction belongs in `python_runtime.py`;
 dataset-specific verifier composition belongs in `verifier_runtime/`.

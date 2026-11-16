@@ -1,4 +1,4 @@
-"""Map Harbor start/stop to the durable DSec create/status/close state machine."""
+"""Map Harbor lifecycle calls to Runfield create/status/close states."""
 
 from __future__ import annotations
 
@@ -9,13 +9,13 @@ from typing import Any
 
 import requests
 
-from .client import DsecControllerError
+from .client import RunfieldControllerError
 
 _CREATE_FAILURE_STATES = {"create_failed", "recovery_required", "closed", "exited"}
 _CLOSE_TERMINAL_STATES = {"closed", "create_failed"}
 
 
-class DsecLifecycleMixin:
+class RunfieldLifecycleMixin:
     """Manage one Sandbox per trial through the public lifecycle state machine."""
 
     def _sandbox_request_id(self) -> str:
@@ -56,7 +56,7 @@ class DsecLifecycleMixin:
         for attempt in range(self._request_attempts):
             try:
                 return await self._client.create_sandbox(spec)
-            except DsecControllerError as error:
+            except RunfieldControllerError as error:
                 last_error = error
                 if not error.retryable or attempt + 1 == self._request_attempts:
                     raise
@@ -65,7 +65,7 @@ class DsecLifecycleMixin:
                 if attempt + 1 == self._request_attempts:
                     raise
             await asyncio.sleep(min(2**attempt, 5))
-        raise RuntimeError("DSec create retry loop exhausted") from last_error
+        raise RuntimeError("Runfield create retry loop exhausted") from last_error
 
     async def _wait_sandbox_state(
         self,
@@ -80,17 +80,17 @@ class DsecLifecycleMixin:
             if state in wanted:
                 return record
             if state in _CREATE_FAILURE_STATES:
-                raise RuntimeError(f"DSec Sandbox entered terminal state {state}")
+                raise RuntimeError(f"Runfield Sandbox entered terminal state {state}")
             if time.monotonic() >= deadline:
                 raise TimeoutError(
-                    f"DSec Sandbox wait deadline exceeded: {self._sandbox_id}"
+                    f"Runfield Sandbox wait deadline exceeded: {self._sandbox_id}"
                 )
             await asyncio.sleep(self._poll_interval_sec)
 
     async def start(self, force_build: bool) -> None:
         if force_build:
             self.logger.warning(
-                "DSec uses the immutable image prepared by Agent Fleet; "
+                "Runfield uses the immutable image prepared by Agent Fleet; "
                 "Harbor force_build is not forwarded to Controller"
             )
         self._validate_definition()
@@ -98,11 +98,11 @@ class DsecLifecycleMixin:
             record = await self._create_with_stable_identity()
             sandbox_id = record.get("sandbox_id")
             if not isinstance(sandbox_id, str) or not sandbox_id:
-                raise RuntimeError("DSec Controller returned no sandbox identity")
+                raise RuntimeError("Runfield Controller returned no sandbox identity")
             self._sandbox_id = sandbox_id
             if record.get("state") in _CREATE_FAILURE_STATES:
                 raise RuntimeError(
-                    "DSec Sandbox entered terminal state "
+                    "Runfield Sandbox entered terminal state "
                     f"{record.get('state')}"
                 )
             if record.get("state") != "ready":
@@ -112,7 +112,7 @@ class DsecLifecycleMixin:
             observation = record.get("observation") or {}
             if observation.get("reachable") is not True:
                 raise RuntimeError(
-                    "DSec Sandbox is ready but owning Node is unreachable"
+                    "Runfield Sandbox is ready but owning Node is unreachable"
                 )
             await self._prepare_harbor_directories()
             await self._upload_environment_dir_after_start()
@@ -128,7 +128,7 @@ class DsecLifecycleMixin:
             return
         if not delete:
             self.logger.warning(
-                "DSec backend does not retain stopped Sandboxes; closing %s",
+                "Runfield backend does not retain stopped Sandboxes; closing %s",
                 sandbox_id,
             )
         record = await self._client.close_sandbox(sandbox_id)

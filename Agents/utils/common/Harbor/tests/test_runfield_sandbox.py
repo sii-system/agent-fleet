@@ -1,4 +1,4 @@
-"""Test DSec adapter lifecycle, idempotent identity, and protocol boundaries."""
+"""Test Runfield lifecycle, idempotent identity, and protocol boundaries."""
 
 from __future__ import annotations
 
@@ -61,21 +61,21 @@ def install_harbor_stubs() -> None:
 
 install_harbor_stubs()
 adapter = importlib.import_module(
-    "harbor_environment_adapters.providers.dsec_controller.adapter"
+    "harbor_environment_adapters.providers.runfield_controller.adapter"
 )
 transfer = importlib.import_module(
-    "harbor_environment_adapters.providers.dsec_controller.transfer"
+    "harbor_environment_adapters.providers.runfield_controller.transfer"
 )
 
 
-class DsecLifecycleTests(unittest.IsolatedAsyncioTestCase):
+class RunfieldLifecycleTests(unittest.IsolatedAsyncioTestCase):
     def test_adapter_passes_transfer_timeout_to_archive_client(self):
         with patch.object(adapter.BaseEnvironment, "__init__", lambda self, **kwargs:
                           setattr(self, "_network_is_public", False)), patch.dict(os.environ, {
-            "DSEC_SANDBOX_CONTROLLER_ENDPOINT": "https://controller.example",
-            "DSEC_SANDBOX_TRANSFER_TIMEOUT_SEC": "37",
+            "RUNFIELD_CONTROLLER_ENDPOINT": "https://controller.example",
+            "RUNFIELD_SANDBOX_TRANSFER_TIMEOUT_SEC": "37",
         }):
-            environment = adapter.DsecSandboxEnvironment()
+            environment = adapter.RunfieldSandboxEnvironment()
             try:
                 self.assertEqual(environment._client.transfer_timeout_sec, 37)
                 self.assertEqual(environment._client.request_timeout_sec, 15)
@@ -83,7 +83,7 @@ class DsecLifecycleTests(unittest.IsolatedAsyncioTestCase):
                 environment._client.session.close()
 
     def environment(self):
-        instance = object.__new__(adapter.DsecSandboxEnvironment)
+        instance = object.__new__(adapter.RunfieldSandboxEnvironment)
         instance._client = SimpleNamespace(
             create_sandbox=AsyncMock(),
             sandbox_status=AsyncMock(),
@@ -113,7 +113,7 @@ class DsecLifecycleTests(unittest.IsolatedAsyncioTestCase):
         instance.task_env_config = SimpleNamespace(
             docker_image=None, workdir="/workspace"
         )
-        instance.logger = logging.getLogger("test-dsec")
+        instance.logger = logging.getLogger("test-runfield")
         instance._persistent_env = {"A": "1"}
         instance._effective_cpus = None
         instance._effective_memory_mb = None
@@ -182,7 +182,7 @@ class DsecLifecycleTests(unittest.IsolatedAsyncioTestCase):
             allowed_hosts=["model.example"],
         )
 
-        with self.assertLogs("test-dsec", level="WARNING") as captured:
+        with self.assertLogs("test-runfield", level="WARNING") as captured:
             await environment._apply_network_policy(policy)
 
         self.assertIn("does not enforce Harbor network allowlists", captured.output[0])
@@ -345,7 +345,7 @@ class DsecLifecycleTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_exec_forwards_priority_and_cancels_queued_orphan_on_non_closing_timeout(self):
         client_mod = importlib.import_module(
-            "harbor_environment_adapters.providers.dsec_controller.client"
+            "harbor_environment_adapters.providers.runfield_controller.client"
         )
         environment = self.environment()
         environment._sandbox_id = "sbx-one"
@@ -371,7 +371,7 @@ class DsecLifecycleTests(unittest.IsolatedAsyncioTestCase):
             "execution_id": "exec-queued-timeout",
             "state": "queued",
         }
-        environment._client.cancel_execution.side_effect = client_mod.DsecControllerError(
+        environment._client.cancel_execution.side_effect = client_mod.RunfieldControllerError(
             "state_conflict", "already running", retryable=False
         )
         with self.assertRaisesRegex(TimeoutError, "exec-queued-timeout"):
@@ -434,7 +434,7 @@ class DsecLifecycleTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_execution_timeout_falls_back_to_close_sandbox_when_cancel_conflicts(self):
         client_mod = importlib.import_module(
-            "harbor_environment_adapters.providers.dsec_controller.client"
+            "harbor_environment_adapters.providers.runfield_controller.client"
         )
         environment = self.environment()
         environment._sandbox_id = "sbx-one"
@@ -446,7 +446,7 @@ class DsecLifecycleTests(unittest.IsolatedAsyncioTestCase):
             "execution_id": "exec-conflict",
             "state": "running",
         }
-        environment._client.cancel_execution.side_effect = client_mod.DsecControllerError(
+        environment._client.cancel_execution.side_effect = client_mod.RunfieldControllerError(
             "state_conflict", "backend does not support runtime cancel", retryable=False
         )
         environment._client.close_sandbox.return_value = {
@@ -490,7 +490,7 @@ class DsecLifecycleTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_execution_timeout_skips_close_when_conflict_shows_natural_terminal(self):
         client_mod = importlib.import_module(
-            "harbor_environment_adapters.providers.dsec_controller.client"
+            "harbor_environment_adapters.providers.runfield_controller.client"
         )
         environment = self.environment()
         environment._sandbox_id = "sbx-one"
@@ -503,7 +503,7 @@ class DsecLifecycleTests(unittest.IsolatedAsyncioTestCase):
             {"execution_id": "exec-finished-race", "state": "running"},
             {"execution_id": "exec-finished-race", "state": "succeeded", "exit_code": 0},
         ]
-        environment._client.cancel_execution.side_effect = client_mod.DsecControllerError(
+        environment._client.cancel_execution.side_effect = client_mod.RunfieldControllerError(
             "state_conflict", "already succeeded", retryable=False
         )
 
@@ -519,10 +519,10 @@ class DsecLifecycleTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_double_cancellation_during_abort_still_completes_status_and_close_fallback(self):
         client_mod = importlib.import_module(
-            "harbor_environment_adapters.providers.dsec_controller.client"
+            "harbor_environment_adapters.providers.runfield_controller.client"
         )
         exec_mod = importlib.import_module(
-            "harbor_environment_adapters.providers.dsec_controller.execution"
+            "harbor_environment_adapters.providers.runfield_controller.execution"
         )
         environment = self.environment()
         environment._sandbox_id = "sbx-one"
@@ -538,7 +538,7 @@ class DsecLifecycleTests(unittest.IsolatedAsyncioTestCase):
         async def blocking_cancel(_sid, _eid):
             cancel_started.set()
             await cancel_release.wait()
-            raise client_mod.DsecControllerError(
+            raise client_mod.RunfieldControllerError(
                 "state_conflict", "runtime cancel unavailable", retryable=False
             )
 
@@ -594,12 +594,12 @@ class DsecLifecycleTests(unittest.IsolatedAsyncioTestCase):
             },
         ]
 
-        with self.assertLogs("test-dsec", level="WARNING") as captured:
-            adapter.DsecSandboxEnvironment._validate_definition(environment)
+        with self.assertLogs("test-runfield", level="WARNING") as captured:
+            adapter.RunfieldSandboxEnvironment._validate_definition(environment)
 
         self.assertIn("does not enforce per-Sandbox resource limits", captured.output[0])
         self.assertEqual(
-            adapter.DsecSandboxEnvironment._resource_request(environment),
+            adapter.RunfieldSandboxEnvironment._resource_request(environment),
             {
                 "policy": "shared/v1",
                 "cpu_millicores": 0,
@@ -610,17 +610,17 @@ class DsecLifecycleTests(unittest.IsolatedAsyncioTestCase):
 
         environment._mounts[0]["target"] = "/workspace"
         with self.assertRaisesRegex(ValueError, "Harbor-managed writable"):
-            adapter.DsecSandboxEnvironment._validate_definition(environment)
+            adapter.RunfieldSandboxEnvironment._validate_definition(environment)
 
 
-class DsecTransferTests(unittest.IsolatedAsyncioTestCase):
+class RunfieldTransferTests(unittest.IsolatedAsyncioTestCase):
     def environment(self, root):
         """Exercise real host tar operations with no executable guest runtime."""
-        instance = object.__new__(adapter.DsecSandboxEnvironment)
+        instance = object.__new__(adapter.RunfieldSandboxEnvironment)
         instance._transfer_max_bytes = 8 << 20
         instance._transfer_timeout_sec = 30
         instance._sandbox_id = "sandbox-one"
-        instance.logger = logging.getLogger("test-dsec-transfer")
+        instance.logger = logging.getLogger("test-runfield-transfer")
         instance.exec = AsyncMock(side_effect=AssertionError("guest shell forbidden"))
         instance._execute_argv = AsyncMock(side_effect=AssertionError("guest exec forbidden"))
 
@@ -636,7 +636,7 @@ class DsecTransferTests(unittest.IsolatedAsyncioTestCase):
             with tarfile.open(archive_path, "w") as archive:
                 archive.add(path, arcname=path.name)
             if archive_path.stat().st_size > maximum_bytes:
-                raise ValueError("DSec archive download exceeds configured limit")
+                raise ValueError("Runfield archive download exceeds configured limit")
 
         instance._client = SimpleNamespace(upload_archive=upload, download_archive=download)
         return instance
@@ -779,7 +779,7 @@ class DsecTransferTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_stat_path_propagates_lifecycle_errors_and_parses_http_response(self):
         client_mod = importlib.import_module(
-            "harbor_environment_adapters.providers.dsec_controller.client"
+            "harbor_environment_adapters.providers.runfield_controller.client"
         )
         captured: dict[str, object] = {}
 
@@ -808,7 +808,7 @@ class DsecTransferTests(unittest.IsolatedAsyncioTestCase):
                     b'{"api_version":"sandbox-lifecycle/v1alpha1","status":"ok","result":{"stat":{"path":"/missing","exists":false}}}',
                 )
 
-        client = client_mod.DsecControllerClient(
+        client = client_mod.RunfieldControllerClient(
             "https://controller.example", session=FakeSession()
         )
         stat = await client.stat_path("sbx-1", "/missing")
@@ -821,14 +821,14 @@ class DsecTransferTests(unittest.IsolatedAsyncioTestCase):
 
         environment = self.environment(Path("/unused-guest"))
         environment._client.stat_path = AsyncMock(
-            side_effect=client_mod.DsecControllerError("state_conflict", "closing", retryable=False)
+            side_effect=client_mod.RunfieldControllerError("state_conflict", "closing", retryable=False)
         )
-        with self.assertRaises(client_mod.DsecControllerError):
+        with self.assertRaises(client_mod.RunfieldControllerError):
             await environment.is_dir("/logs")
 
     async def test_probe_falls_back_to_exec_for_legacy_controller_and_preserves_real_missing_sandbox(self):
         client_mod = importlib.import_module(
-            "harbor_environment_adapters.providers.dsec_controller.client"
+            "harbor_environment_adapters.providers.runfield_controller.client"
         )
 
         class FakeResponse:
@@ -852,10 +852,10 @@ class DsecTransferTests(unittest.IsolatedAsyncioTestCase):
                     b'{"api_version":"sandbox-lifecycle/v1alpha1","status":"error","error":{"code":"not_found","message":"unknown subresource","retryable":false}}',
                 )
 
-        client = client_mod.DsecControllerClient(
+        client = client_mod.RunfieldControllerClient(
             "https://controller.example", session=FakeSession()
         )
-        with self.assertRaises(client_mod.DsecControllerError) as captured_exc:
+        with self.assertRaises(client_mod.RunfieldControllerError) as captured_exc:
             await client.stat_path("sbx-1", "/workspace/a.txt")
         self.assertEqual(captured_exc.exception.code, "not_found")
         self.assertEqual(captured_exc.exception.status_code, 404)
@@ -863,7 +863,7 @@ class DsecTransferTests(unittest.IsolatedAsyncioTestCase):
         environment = self.environment(Path("/unused-guest"))
         environment.task_env_config = SimpleNamespace(workdir="/workspace")
         environment._client.stat_path = AsyncMock(
-            side_effect=client_mod.DsecControllerError(
+            side_effect=client_mod.RunfieldControllerError(
                 "not_found", "unknown subresource", retryable=False, status_code=404
             )
         )
@@ -896,7 +896,7 @@ class DsecTransferTests(unittest.IsolatedAsyncioTestCase):
         unsupported_env = self.environment(Path("/unused-guest"))
         unsupported_env.task_env_config = SimpleNamespace(workdir="/workspace")
         unsupported_env._client.stat_path = AsyncMock(
-            side_effect=client_mod.DsecControllerError(
+            side_effect=client_mod.RunfieldControllerError(
                 "unsupported_capability", "archive stat disabled", status_code=501
             )
         )
@@ -908,16 +908,16 @@ class DsecTransferTests(unittest.IsolatedAsyncioTestCase):
         missing_sandbox_env = self.environment(Path("/unused-guest"))
         missing_sandbox_env.task_env_config = SimpleNamespace(workdir="/workspace")
         missing_sandbox_env._client.stat_path = AsyncMock(
-            side_effect=client_mod.DsecControllerError(
+            side_effect=client_mod.RunfieldControllerError(
                 "not_found", "sandbox not found", status_code=404
             )
         )
         missing_sandbox_env.exec = AsyncMock(
-            side_effect=client_mod.DsecControllerError(
+            side_effect=client_mod.RunfieldControllerError(
                 "not_found", "sandbox not found", status_code=404
             )
         )
-        with self.assertRaises(client_mod.DsecControllerError) as missing_exc:
+        with self.assertRaises(client_mod.RunfieldControllerError) as missing_exc:
             await missing_sandbox_env.is_file("/workspace/a.txt")
         self.assertEqual(missing_exc.exception.code, "not_found")
         self.assertTrue(getattr(missing_sandbox_env, "_archive_stat_supported", True))
@@ -926,11 +926,11 @@ class DsecTransferTests(unittest.IsolatedAsyncioTestCase):
         conflict_env = self.environment(Path("/unused-guest"))
         conflict_env.task_env_config = SimpleNamespace(workdir="/workspace")
         conflict_env._client.stat_path = AsyncMock(
-            side_effect=client_mod.DsecControllerError(
+            side_effect=client_mod.RunfieldControllerError(
                 "recovery_required", "node down", status_code=409
             )
         )
-        with self.assertRaises(client_mod.DsecControllerError):
+        with self.assertRaises(client_mod.RunfieldControllerError):
             await conflict_env.is_file("/workspace/a.txt")
         conflict_env.exec.assert_not_awaited()
 
@@ -1008,7 +1008,7 @@ class DsecTransferTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_client_cancel_execution_calls_expected_route(self):
         client_mod = importlib.import_module(
-            "harbor_environment_adapters.providers.dsec_controller.client"
+            "harbor_environment_adapters.providers.runfield_controller.client"
         )
         captured = {}
 
@@ -1043,7 +1043,7 @@ class DsecTransferTests(unittest.IsolatedAsyncioTestCase):
                     b'{"api_version":"sandbox-lifecycle/v1alpha1","status":"ok","result":{"execution":{"execution_id":"exec-1","state":"canceled"}}}',
                 )
 
-        client = client_mod.DsecControllerClient(
+        client = client_mod.RunfieldControllerClient(
             "https://controller.example", session=FakeSession()
         )
         res = await client.cancel_execution("sbx-1", "exec-1")

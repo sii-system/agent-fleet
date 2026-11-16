@@ -1,4 +1,4 @@
-"""Access the DSec Sandbox Controller only through its public v1alpha1 API.
+"""Access Runfield Controller only through its public v1alpha1 API.
 
 Infrastructure implementation details remain behind the Controller. The caller
 supplies stable request IDs for lifecycle and execution mutations. Archive
@@ -15,14 +15,14 @@ from urllib.parse import urlencode, urlsplit
 
 import requests
 
-from .archive_client import DsecArchiveClientMixin
+from .archive_client import RunfieldArchiveClientMixin
 
 API_VERSION = "sandbox-lifecycle/v1alpha1"
 MAX_JSON_RESPONSE_BYTES = 16 << 20
 MAX_OUTPUT_READ_BYTES = 1 << 20
 
 
-class DsecControllerError(RuntimeError):
+class RunfieldControllerError(RuntimeError):
     """Stable Controller protocol error without request bodies or execution output."""
 
     def __init__(
@@ -33,13 +33,13 @@ class DsecControllerError(RuntimeError):
         retryable: bool = False,
         status_code: int | None = None,
     ) -> None:
-        super().__init__(f"DSec Controller request failed: {code}: {message}")
+        super().__init__(f"Runfield Controller request failed: {code}: {message}")
         self.code = code
         self.retryable = retryable
         self.status_code = status_code
 
 
-class DsecControllerClient(DsecArchiveClientMixin):
+class RunfieldControllerClient(RunfieldArchiveClientMixin):
     """Own the Controller origin, bounded HTTP deadlines, and response limits."""
 
     def __init__(
@@ -62,11 +62,11 @@ class DsecControllerClient(DsecArchiveClientMixin):
             or parsed.path not in {"", "/"}
         ):
             raise ValueError(
-                "DSEC_SANDBOX_CONTROLLER_ENDPOINT must be an HTTP(S) origin"
+                "RUNFIELD_CONTROLLER_ENDPOINT must be an HTTP(S) origin"
             )
         if parsed.scheme == "http" and not allow_insecure_http:
             raise ValueError(
-                "plain HTTP requires DSEC_SANDBOX_ALLOW_INSECURE_HTTP=1"
+                "plain HTTP requires RUNFIELD_CONTROLLER_ALLOW_INSECURE_HTTP=1"
             )
         if not 1 <= request_timeout_sec <= 60:
             raise ValueError("request_timeout_sec must be between 1 and 60")
@@ -110,7 +110,7 @@ class DsecControllerClient(DsecArchiveClientMixin):
             size += len(chunk)
             if size > limit:
                 response.close()
-                raise RuntimeError("DSec Controller response exceeds protocol limit")
+                raise RuntimeError("Runfield Controller response exceeds protocol limit")
             chunks.append(chunk)
         payload = b"".join(chunks)
         if raw and response.ok:
@@ -118,16 +118,16 @@ class DsecControllerClient(DsecArchiveClientMixin):
         try:
             envelope = json.loads(payload)
         except (UnicodeDecodeError, json.JSONDecodeError) as error:
-            raise RuntimeError("DSec Controller returned invalid JSON") from error
+            raise RuntimeError("Runfield Controller returned invalid JSON") from error
         if not isinstance(envelope, dict) or envelope.get("api_version") != API_VERSION:
-            raise RuntimeError("DSec Controller returned an unsupported API version")
+            raise RuntimeError("Runfield Controller returned an unsupported API version")
         detail = envelope.get("error")
         if not response.ok or detail is not None:
             if not isinstance(detail, dict):
                 raise RuntimeError(
-                    f"DSec Controller HTTP request failed: {response.status_code}"
+                    f"Runfield Controller HTTP request failed: {response.status_code}"
                 )
-            raise DsecControllerError(
+            raise RunfieldControllerError(
                 str(detail.get("code") or response.status_code),
                 str(detail.get("message") or "request rejected"),
                 retryable=detail.get("retryable") is True,
@@ -135,7 +135,7 @@ class DsecControllerClient(DsecArchiveClientMixin):
             )
         result = envelope.get("result")
         if not isinstance(result, dict):
-            raise TypeError("DSec Controller response is missing result")
+            raise TypeError("Runfield Controller response is missing result")
         return result
 
     async def request(

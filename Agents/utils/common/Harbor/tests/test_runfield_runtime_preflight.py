@@ -1,4 +1,4 @@
-"""DSec Agent Toolkit startup preflight tests."""
+"""Tests for Runfield Agent Toolkit startup preflight."""
 
 from __future__ import annotations
 
@@ -10,8 +10,8 @@ from pathlib import Path
 HARBOR_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(HARBOR_DIR))
 
-from harbor_environment_adapters.providers.dsec_controller.runtime_preflight import (
-    validate_dsec_agent_runtime,
+from harbor_environment_adapters.providers.runfield_controller.runtime_preflight import (
+    validate_runfield_agent_runtime,
 )
 
 
@@ -64,13 +64,13 @@ def _status(*runtimes):
     }
 
 
-class DsecRuntimePreflightTests(unittest.TestCase):
+class RunfieldRuntimePreflightTests(unittest.TestCase):
     def test_native_archive_support_is_required_without_guest_fallback(self):
         payload = _status({"agent": "pi", "version": "1.3.0"})
         payload["result"]["nodes"][0]["status"]["capabilities"].pop("archive_transfer")
         with self.assertRaisesRegex(ValueError, "native archive transfer.*node-a"):
-            validate_dsec_agent_runtime(
-                {"AGENT": "pi", "PI_VERSION": "1.3.0", "DSEC_SANDBOX_CONTROLLER_ENDPOINT": "http://controller"},
+            validate_runfield_agent_runtime(
+                {"AGENT": "pi", "PI_VERSION": "1.3.0", "RUNFIELD_CONTROLLER_ENDPOINT": "http://controller"},
                 opener=_Opener(payload),
             )
 
@@ -78,25 +78,25 @@ class DsecRuntimePreflightTests(unittest.TestCase):
         config = {
             "AGENT": "opencode",
             "OPENCODE_VERSION": "1.19.5",
-            "DSEC_SANDBOX_CONTROLLER_ENDPOINT": "http://controller",
+            "RUNFIELD_CONTROLLER_ENDPOINT": "http://controller",
         }
-        message = validate_dsec_agent_runtime(
+        message = validate_runfield_agent_runtime(
             config,
             opener=_Opener(_status({"agent": "opencode", "version": "1.19.5"})),
         )
         self.assertIn("opencode@1.19.5", message)
 
         with self.assertRaisesRegex(ValueError, "node-a"):
-            validate_dsec_agent_runtime(config, opener=_Opener(_status()))
+            validate_runfield_agent_runtime(config, opener=_Opener(_status()))
 
     def test_rejects_mutable_versions_before_network_access(self):
         config = {
             "AGENT": "opencode",
             "OPENCODE_VERSION": "latest",
-            "DSEC_SANDBOX_CONTROLLER_ENDPOINT": "http://controller",
+            "RUNFIELD_CONTROLLER_ENDPOINT": "http://controller",
         }
         with self.assertRaisesRegex(ValueError, "exact OPENCODE_VERSION"):
-            validate_dsec_agent_runtime(config, opener=object())
+            validate_runfield_agent_runtime(config, opener=object())
 
 
 if __name__ == "__main__":

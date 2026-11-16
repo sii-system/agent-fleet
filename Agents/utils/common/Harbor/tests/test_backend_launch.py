@@ -1,4 +1,4 @@
-"""Behavior at the SDK-free Python/Shell backend launch boundary."""
+"""Tests for the SDK-independent Python/Shell backend launch boundary."""
 
 from __future__ import annotations
 
@@ -60,8 +60,8 @@ class BackendLaunchTests(unittest.TestCase):
         self.assertEqual(restored["HARBOR_BACKEND_READONLY_MOUNTS"], "1")
         self.assertEqual(restored["HARBOR_BACKEND_VERIFIER_UPLOAD"], "0")
 
-    def test_dsec_uses_task_images_and_requires_explicit_insecure_http(self):
-        settings = launch_settings(BackendPlan("dsec", "dsec_sandbox:Env"), {})
+    def test_runfield_uses_task_images_and_requires_explicit_insecure_http(self):
+        settings = launch_settings(BackendPlan("runfield", "runfield_sandbox:Env"), {})
         self.assertEqual(settings["HARBOR_BACKEND_TASK_IMAGES"], "1")
         self.assertEqual(settings["HARBOR_BACKEND_VERIFIER_UPLOAD"], "1")
         self.assertEqual(settings["HARBOR_BACKEND_PREINSTALLED_AGENTS"], "1")
@@ -70,16 +70,16 @@ class BackendLaunchTests(unittest.TestCase):
         image = "registry.example/tasks/sample@sha256:" + "a" * 64
         rejected = self.run_helper(
             "validate",
-            HARBOR_ENVIRONMENT_TYPE="dsec",
-            DSEC_SANDBOX_CONTROLLER_ENDPOINT="http://controller.invalid/",
+            HARBOR_ENVIRONMENT_TYPE="runfield",
+            RUNFIELD_CONTROLLER_ENDPOINT="http://controller.invalid/",
             HARBOR_OPENSANDBOX_IMAGE_REF=image,
         )
         self.assertEqual(rejected.returncode, 1)
         accepted = self.run_helper(
             "validate",
-            HARBOR_ENVIRONMENT_TYPE="dsec",
-            DSEC_SANDBOX_CONTROLLER_ENDPOINT="http://controller.invalid/",
-            DSEC_SANDBOX_ALLOW_INSECURE_HTTP="1",
+            HARBOR_ENVIRONMENT_TYPE="runfield",
+            RUNFIELD_CONTROLLER_ENDPOINT="http://controller.invalid/",
+            RUNFIELD_CONTROLLER_ALLOW_INSECURE_HTTP="1",
             HARBOR_OPENSANDBOX_IMAGE_REF=image,
         )
         self.assertEqual(accepted.returncode, 0, accepted.stderr)
