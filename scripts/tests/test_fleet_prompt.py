@@ -228,6 +228,23 @@ exit "${STUB_EXIT:-0}"
                 self.assertIn("--benchmark " + ("waa" if taskset == "waa" else "waa-v2"), result.stdout)
                 self.assertIn("--workers 2", result.stdout)
 
+    def test_translator_schema_allows_supported_windows_and_custom_agents(self):
+        result = self.run_goal(
+            "--prompt", "Run WAA with custom.agent:build", "--dry-run",
+            response=self.response(spec={
+                "schema_version": 1, "taskset": "waa", "agent": "custom.agent:build",
+            }),
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        captured = self.pi_capture.read_text(encoding="utf-8")
+        schema_text = captured.split("other surrounding text:\n", 1)[1]
+        schema, _ = json.JSONDecoder().raw_decode(schema_text.lstrip())
+        agent_schema = schema["properties"]["specs"]["items"]["properties"]["agent"]
+        for agent in ("pcagent", "ale-command", "custom.agent:build"):
+            with self.subTest(agent=agent):
+                self.assertIn(agent, agent_schema.get("enum", (agent,)))
+                self.assertEqual(agent_schema.get("type", "string"), "string")
+
     def test_prompt_rejects_waa_with_linux_agent(self):
         result = self.run_goal("--prompt", "Run WAA with pi", "--dry-run",
             response=self.response(spec={"schema_version": 1, "taskset": "waa", "agent": "pi"}))

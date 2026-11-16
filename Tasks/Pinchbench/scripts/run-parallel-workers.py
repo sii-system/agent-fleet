@@ -145,15 +145,9 @@ def load_runner_config() -> dict[str, str]:
                 return source[key]
         return default
 
-    def shared_model(default: str = "") -> str:
-        for source in (fleet_env, config_local_env, config_env):
-            if "MODEL" in source:
-                return source["MODEL"]
-        return default
-
     config = {
         "COUNT": fleet_env.get("COUNT", "4"),
-        "MODEL": shared_model(),
+        "MODEL": shared("MODEL"),
         "BASE_URL": shared("BASE_URL"),
         "API_KEY": shared("API_KEY"),
         "OPIK_URL": shared("OPIK_URL"),
