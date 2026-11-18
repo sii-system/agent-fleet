@@ -14,6 +14,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from harbor_environment_adapters.providers.runfield_controller import (
     client as client_mod,
 )
+from harbor_environment_adapters.providers.runfield_controller.archive_client import (
+    MAX_ARCHIVE_BYTES,
+)
 from harbor_environment_adapters.providers.runfield_controller.client import (
     RunfieldControllerClient,
     RunfieldControllerError,
@@ -45,7 +48,7 @@ class RunfieldArchiveClientTests(unittest.TestCase):
         self.payload = b"\0\xffarchive bytes" * 10000
         self.received = b""
         self.upload_calls: list[tuple[str, Path, float]] = []
-        self.download_calls: list[tuple[str, Path, float]] = []
+        self.download_calls: list[tuple[str, Path, float, int | None]] = []
         self.stat_calls: list[tuple[str, float]] = []
         self.fail_upload: Exception | None = None
         self.fail_download_before_open: Exception | None = None
@@ -96,17 +99,34 @@ class RunfieldArchiveClientTests(unittest.TestCase):
                 path: str,
                 dest: Path | None = None,
                 *,
+                max_bytes: int | None = None,
                 timeout_seconds: float = 300,
             ) -> int:
                 assert dest is not None
                 dest_path = Path(dest)
-                owner.download_calls.append((path, dest_path, timeout_seconds))
+                owner.download_calls.append(
+                    (path, dest_path, timeout_seconds, max_bytes)
+                )
                 if owner.fail_download_before_open is not None:
                     raise owner.fail_download_before_open
-                dest_path.write_bytes(owner.payload[:32])
+                first_chunk = owner.payload[:32]
+                if max_bytes is not None and len(first_chunk) > max_bytes:
+                    raise _StubSandboxError(
+                        "resource_limit_exceeded",
+                        http_status=422,
+                        retryable=False,
+                    )
+                dest_path.write_bytes(first_chunk)
                 await self._maybe_block()
                 if owner.fail_download_after_partial is not None:
                     raise owner.fail_download_after_partial
+                if max_bytes is not None and len(owner.payload) > max_bytes:
+                    dest_path.write_bytes(owner.payload[:max_bytes])
+                    raise _StubSandboxError(
+                        "resource_limit_exceeded",
+                        http_status=422,
+                        retryable=False,
+                    )
                 dest_path.write_bytes(owner.payload)
                 return len(owner.payload)
 
@@ -229,6 +249,57 @@ class RunfieldArchiveClientTests(unittest.TestCase):
                 )
             self.assertEqual(ctx.exception.code, "invalid_response")
             self.assertFalse(target.exists())
+
+    def test_in_stream_max_bytes_is_forwarded_and_aborts_mid_stream_cleanly(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            target = root / "midstream.tar"
+            with self.assertRaisesRegex(ValueError, "exceeds configured limit") as ctx:
+                asyncio.run(
+                    self.client.download_archive("sandbox-one", "/tests", target, 64)
+                )
+            self.assertIsInstance(ctx.exception.__cause__, _StubSandboxError)
+            self.assertEqual(ctx.exception.__cause__.code, "resource_limit_exceeded")
+            self.assertEqual(self.download_calls[-1][3], 64)
+            self.assertFalse(target.exists())
+
+            capped = root / "protocol-capped.tar"
+            asyncio.run(
+                self.client.download_archive(
+                    "sandbox-one", "/tests", capped, MAX_ARCHIVE_BYTES + 4096
+                )
+            )
+            self.assertEqual(self.download_calls[-1][3], MAX_ARCHIVE_BYTES)
+            self.assertEqual(capped.read_bytes(), self.payload)
+
+            # Simple mocks without max_bytes in signature remain supported and
+            # still enforce the post-download size guard with owned-file cleanup.
+            legacy_calls: list[tuple[str, Path, float]] = []
+
+            async def legacy_download(
+                path: str, dest: Path | None = None, *, timeout_seconds: float = 300
+            ) -> int:
+                assert dest is not None
+                dest_path = Path(dest)
+                legacy_calls.append((path, dest_path, timeout_seconds))
+                dest_path.write_bytes(self.payload)
+                return len(self.payload)
+
+            async def exercise_legacy() -> None:
+                await self.client.stat_path("sandbox-legacy", "/tests")
+                sbx = self.client._sandboxes["sandbox-legacy"]
+                sbx.download_archive = legacy_download
+                legacy_target = root / "legacy-oversized.tar"
+                with self.assertRaisesRegex(ValueError, "exceeds configured limit"):
+                    await self.client.download_archive(
+                        "sandbox-legacy", "/tests", legacy_target, 16
+                    )
+                self.assertFalse(legacy_target.exists())
+
+            asyncio.run(exercise_legacy())
+            self.assertEqual(len(legacy_calls), 1)
 
     def test_archive_timeout_is_independent_from_control_timeout(self) -> None:
         self.client.request_timeout_sec = 7

@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import posixpath
 import shlex
 import tempfile
 import uuid
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -23,12 +25,15 @@ _EXECUTION_TERMINAL_STATES = {
 _MAX_DIRECT_COMMAND_BYTES = 4096
 _MAX_INLINE_CHUNKED_COMMAND_BYTES = 98304
 _MAX_EXECUTION_ARGV_ITEMS = 256
-_CHUNKED_BASH_BOOTSTRAP = (
-    's=""; for p in "$@"; do s+="$p"; done; exec /bin/bash -c "$s"'
-)
 _HARBOR_DIRS_BOOTSTRAP = (
     "command -p mkdir -p -m 0777 "
     "/logs/agent /logs/verifier /logs/artifacts /artifacts || exit $?; "
+)
+_DIRECT_HARBOR_DIRS_BOOTSTRAP = (
+    f'{_HARBOR_DIRS_BOOTSTRAP}exec /bin/bash -c "$1"'
+)
+_MATERIALIZED_HARBOR_DIRS_BOOTSTRAP = (
+    f'{_HARBOR_DIRS_BOOTSTRAP}exec /bin/bash "$1"'
 )
 _DEFERRED_HARBOR_DIRS = frozenset(
     {
@@ -40,6 +45,54 @@ _DEFERRED_HARBOR_DIRS = frozenset(
     }
 )
 _BACKGROUND_ABORT_TASKS: set[asyncio.Task[None]] = set()
+
+
+def _pick_scratch_shell_var(*envs: Mapping[str, str] | None) -> str:
+    """Return an unexported scratch Bash identifier absent from caller environments."""
+    blocked: set[str] = set()
+    for env in envs:
+        if env:
+            blocked.update(env.keys())
+    while True:
+        candidate = f"__rf_cmd_{uuid.uuid4().hex[:16]}"
+        if candidate not in blocked:
+            return candidate
+
+
+def _build_chunked_bash_bootstrap(
+    scratch_var: str, *, include_dir_bootstrap: bool = False
+) -> str:
+    """Build an environment-preserving positional-chunk Bash bootstrap."""
+    prefix = _HARBOR_DIRS_BOOTSTRAP if include_dir_bootstrap else ""
+    return (
+        f'{prefix}{scratch_var}=""; '
+        f'while [ "$#" -gt 0 ]; do {scratch_var}+="$1"; shift; done; '
+        f'export -n {scratch_var}; exec /bin/bash -c "${scratch_var}"'
+    )
+
+
+def _is_deferred_harbor_tree(path: str) -> bool:
+    """Return True when an absolute POSIX path enters /logs or /artifacts."""
+    trimmed = "/" + path.lstrip("/")
+    if trimmed in {"/logs", "/artifacts"} or trimmed.startswith(
+        ("/logs/", "/artifacts/")
+    ):
+        return True
+    norm = posixpath.normpath(trimmed)
+    return norm in {"/logs", "/artifacts"} or norm.startswith(
+        ("/logs/", "/artifacts/")
+    )
+
+
+def _cwd_targets_deferred_harbor_dir(cwd: str, workdir: str | None) -> bool:
+    """Return True when exec cwd resolves within deferred /logs or /artifacts."""
+    if cwd.startswith("/"):
+        return _is_deferred_harbor_tree(cwd)
+    base = workdir or "/"
+    base_abs = base if base.startswith("/") else f"/{base}"
+    if _is_deferred_harbor_tree(base_abs):
+        return True
+    return _is_deferred_harbor_tree(posixpath.join(base_abs, cwd))
 
 
 def _split_utf8_chunks(
@@ -421,21 +474,37 @@ class RunfieldExecutionMixin:
             raise ValueError(
                 "Runfield backend only supports the root execution identity"
             )
-        effective_cwd = cwd or self.task_env_config.workdir or "/"
+        workdir = getattr(getattr(self, "task_env_config", None), "workdir", None)
+        effective_cwd = cwd or workdir or "/"
         effective_env = self._merge_env(env)
-        needs_harbor_dirs = getattr(self, "_harbor_dirs_prepared", True) is False
-        effective_command = (
-            f"{_HARBOR_DIRS_BOOTSTRAP}{command}" if needs_harbor_dirs else command
+        needs_dir_bootstrap = (
+            getattr(self, "_harbor_dirs_prepared", True) is False
         )
-        command_bytes = effective_command.encode("utf-8")
+        if needs_dir_bootstrap and _cwd_targets_deferred_harbor_dir(
+            effective_cwd, workdir
+        ):
+            await self._prepare_harbor_directories()
+            self._harbor_dirs_prepared = True
+            needs_dir_bootstrap = False
+        command_bytes = command.encode("utf-8")
         if (
             len(command_bytes) <= _MAX_DIRECT_COMMAND_BYTES
-            and "\x00" not in effective_command
+            and "\x00" not in command
         ):
             # Harbor supplies the execution environment explicitly. A login
             # shell would source task-image profiles that are outside this
             # contract and can alter or even break otherwise valid commands.
-            argv = ["/bin/bash", "-c", effective_command]
+            argv = (
+                [
+                    "/bin/bash",
+                    "-c",
+                    _DIRECT_HARBOR_DIRS_BOOTSTRAP,
+                    "bash",
+                    command,
+                ]
+                if needs_dir_bootstrap
+                else ["/bin/bash", "-c", command]
+            )
             record, stdout, stderr = await self._execute_argv(
                 argv,
                 cwd=effective_cwd,
@@ -446,11 +515,17 @@ class RunfieldExecutionMixin:
             )
         elif (
             len(command_bytes) <= _MAX_INLINE_CHUNKED_COMMAND_BYTES
-            and "\x00" not in effective_command
+            and "\x00" not in command
             and len(chunks := _split_utf8_chunks(command_bytes)) + 4
             <= _MAX_EXECUTION_ARGV_ITEMS
         ):
-            argv = ["/bin/bash", "-c", _CHUNKED_BASH_BOOTSTRAP, "bash", *chunks]
+            scratch_var = _pick_scratch_shell_var(
+                effective_env, getattr(self, "_persistent_env", None)
+            )
+            bootstrap = _build_chunked_bash_bootstrap(
+                scratch_var, include_dir_bootstrap=needs_dir_bootstrap
+            )
+            argv = ["/bin/bash", "-c", bootstrap, "bash", *chunks]
             record, stdout, stderr = await self._execute_argv(
                 argv,
                 cwd=effective_cwd,
@@ -467,26 +542,30 @@ class RunfieldExecutionMixin:
                 timeout_sec=timeout_sec,
                 close_on_timeout=close_on_timeout,
                 priority=priority,
+                include_dir_bootstrap=needs_dir_bootstrap,
             )
         state = record.get("state")
         if state == "recovery_required":
             raise RuntimeError("Runfield execution requires recovery")
         raw_code = record.get("exit_code")
-        if needs_harbor_dirs and (
-            state == "succeeded"
-            or (
-                state == "failed"
-                and isinstance(raw_code, int)
-                and raw_code not in {126, 127}
-            )
-        ):
-            self._harbor_dirs_prepared = True
-        code = raw_code if isinstance(raw_code, int) else 1
+        code = (
+            raw_code
+            if isinstance(raw_code, int)
+            and not isinstance(raw_code, bool)
+            and state != "canceled"
+            else 1
+        )
         result = ExecResult(
             stdout=stdout.decode("utf-8", errors="replace"),
             stderr=stderr.decode("utf-8", errors="replace"),
             return_code=code,
         )
+        if (
+            needs_dir_bootstrap
+            and state == "succeeded"
+            and result.return_code == 0
+        ):
+            self._harbor_dirs_prepared = True
         callback = self._output_callback()
         if callback is not None:
             if result.stdout:
@@ -504,6 +583,7 @@ class RunfieldExecutionMixin:
         timeout_sec: float | None,
         close_on_timeout: bool = True,
         priority: str | None = None,
+        include_dir_bootstrap: bool = False,
     ) -> tuple[dict[str, Any], bytes, bytes]:
         """Upload an oversized Bash program and execute it with bounded argv."""
         remote_path = f"/tmp/.harbor-command-{uuid.uuid4().hex}.sh"
@@ -514,8 +594,19 @@ class RunfieldExecutionMixin:
             await self.upload_file(local_path, remote_path)
         # The script is owned by this Sandbox and reclaimed on close. Removing it
         # must not introduce a guest Python/shell dependency for host-side cleanup.
+        argv = (
+            [
+                "/bin/bash",
+                "-c",
+                _MATERIALIZED_HARBOR_DIRS_BOOTSTRAP,
+                "bash",
+                remote_path,
+            ]
+            if include_dir_bootstrap
+            else ["/bin/bash", remote_path]
+        )
         return await self._execute_argv(
-            ["/bin/bash", remote_path],
+            argv,
             cwd=cwd,
             env=effective_env if (effective_env := env) is not None else None,
             timeout_sec=timeout_sec,

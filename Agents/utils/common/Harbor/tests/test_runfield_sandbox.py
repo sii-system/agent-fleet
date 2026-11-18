@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import functools
 import hashlib
 import importlib
 import importlib.util
+import inspect
 import io
 import json
 import logging
@@ -590,7 +592,9 @@ class RunfieldLifecycleTests(unittest.IsolatedAsyncioTestCase):
             [
                 "/bin/bash",
                 "-c",
-                "command -p mkdir -p -m 0777 /logs/agent /logs/verifier /logs/artifacts /artifacts || exit $?; echo first",
+                'command -p mkdir -p -m 0777 /logs/agent /logs/verifier /logs/artifacts /artifacts || exit $?; exec /bin/bash -c "$1"',
+                "bash",
+                "echo first",
             ],
         )
         self.assertTrue(environment._harbor_dirs_prepared)
@@ -661,6 +665,240 @@ class RunfieldLifecycleTests(unittest.IsolatedAsyncioTestCase):
             zero_exec_env._client.upload_archive.assert_awaited_once()
             await zero_exec_env.download_dir("/logs/agent", Path(tmp) / "out2")
             zero_exec_env._client.upload_archive.assert_awaited_once()
+
+    async def test_first_exec_with_deferred_harbor_cwd_materializes_directories_before_exec(
+        self,
+    ):
+        for cwd_arg, workdir_cfg, expected_cwd in (
+            ("/logs/agent", "/workspace", "/logs/agent"),
+            ("/artifacts", "/workspace", "/artifacts"),
+            ("/workspace/../logs/verifier", "/workspace", "/workspace/../logs/verifier"),
+            ("sub", "/logs/agent", "sub"),
+            (None, "/artifacts", "/artifacts"),
+        ):
+            with self.subTest(cwd=cwd_arg, workdir=workdir_cfg):
+                environment = self.environment()
+                environment.task_env_config = SimpleNamespace(
+                    docker_image=None, workdir=workdir_cfg
+                )
+                environment._client.create_sandbox.return_value = {
+                    "sandbox_id": "sbx-cwd",
+                    "state": "ready",
+                    "observation": {"reachable": True},
+                }
+                events: list[str] = []
+
+                async def record_upload(
+                    _sid, dest, archive_path, *, events_log=events
+                ):
+                    self.assertEqual(dest, "/")
+                    self.assertTrue(Path(archive_path).is_file())
+                    events_log.append("upload_archive")
+
+                async def record_exec(
+                    _sid,
+                    _request,
+                    *,
+                    events_log=events,
+                    env_obj=environment,
+                ):
+                    events_log.append("create_execution")
+                    self.assertTrue(env_obj._harbor_dirs_prepared)
+                    return {
+                        "execution_id": "exec-cwd",
+                        "state": "succeeded",
+                        "exit_code": 0,
+                        "stdout": {"committed_bytes": 0, "truncated": False},
+                        "stderr": {"committed_bytes": 0, "truncated": False},
+                    }
+
+                environment._client.upload_archive.side_effect = record_upload
+                environment._client.create_execution.side_effect = record_exec
+
+                await environment.start(force_build=False)
+                self.assertFalse(environment._harbor_dirs_prepared)
+
+                await environment.exec("pwd", cwd=cwd_arg)
+
+                self.assertEqual(events, ["upload_archive", "create_execution"])
+                self.assertTrue(environment._harbor_dirs_prepared)
+                req = environment._client.create_execution.await_args.args[1]
+                self.assertEqual(req["argv"], ["/bin/bash", "-c", "pwd"])
+                self.assertEqual(req["working_directory"], expected_cwd)
+
+        # Ordinary working directories retain the 0-RPC inline directory bootstrap.
+        for normal_cwd in ("/testbed", "/", "/workspace", "/logs2"):
+            with self.subTest(normal_cwd=normal_cwd):
+                environment = self.environment()
+                environment._client.create_sandbox.return_value = {
+                    "sandbox_id": "sbx-normal",
+                    "state": "ready",
+                    "observation": {"reachable": True},
+                }
+                environment._client.create_execution.return_value = {
+                    "execution_id": "exec-normal",
+                    "state": "succeeded",
+                    "exit_code": 0,
+                    "stdout": {"committed_bytes": 0, "truncated": False},
+                    "stderr": {"committed_bytes": 0, "truncated": False},
+                }
+                await environment.start(force_build=False)
+                await environment.exec("pwd", cwd=normal_cwd)
+                environment._client.upload_archive.assert_not_awaited()
+                req = environment._client.create_execution.await_args.args[1]
+                self.assertEqual(
+                    req["argv"],
+                    [
+                        "/bin/bash",
+                        "-c",
+                        exec_mod._DIRECT_HARBOR_DIRS_BOOTSTRAP,
+                        "bash",
+                        "pwd",
+                    ],
+                )
+
+    async def test_unconfirmed_exec_failures_isolate_mkdir_and_keep_harbor_dirs_pending(
+        self,
+    ):
+        async def run_rebased_bash(sandbox_root: Path, argv: list[str]):
+            rebased = list(argv)
+            rebased[2] = (
+                rebased[2]
+                .replace(" /logs/", f" {sandbox_root}/logs/")
+                .replace(" /artifacts", f" {sandbox_root}/artifacts")
+            )
+            proc = await asyncio.create_subprocess_exec(
+                "/bin/bash",
+                "-c",
+                'umask 0077; exec "$@"',
+                "bash",
+                *rebased,
+                env={"PATH": "/nonexistent-bin"},
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            out_b, err_b = await proc.communicate()
+            rc = proc.returncode if proc.returncode is not None else 1
+            return (
+                {
+                    "execution_id": "exec-real-bash",
+                    "state": "succeeded" if rc == 0 else "failed",
+                    "exit_code": rc,
+                    "stdout": {"committed_bytes": len(out_b), "truncated": False},
+                    "stderr": {"committed_bytes": len(err_b), "truncated": False},
+                },
+                out_b,
+                err_b,
+            )
+
+        # Case 1: exec("(") (both direct <=4096B and chunked >4096B) creates all 4
+        # directories cleanly before inner /bin/bash fails with syntax error 2, AND
+        # keeps _harbor_dirs_prepared == False so download_dir still ensures dirs.
+        for bad_cmd in ("(", "(" + " " * 5000):
+            with self.subTest(bad_cmd_len=len(bad_cmd)), tempfile.TemporaryDirectory() as tmp:
+                sandbox_root = Path(tmp) / "guest"
+                sandbox_root.mkdir()
+                environment = self.environment()
+                environment._client.create_sandbox.return_value = {
+                    "sandbox_id": "sbx-syntax",
+                    "state": "ready",
+                    "observation": {"reachable": True},
+                }
+
+                async def execute_against_host_bash(
+                    argv, root=sandbox_root, **_kwargs
+                ):
+                    return await run_rebased_bash(root, argv)
+
+                environment._execute_argv = AsyncMock(
+                    side_effect=execute_against_host_bash
+                )
+                await environment.start(force_build=False)
+                self.assertFalse(environment._harbor_dirs_prepared)
+
+                bad_res = await environment.exec(bad_cmd)
+                self.assertEqual(bad_res.return_code, 2)
+                self.assertIn("syntax error", bad_res.stderr)
+                for rel in (
+                    "logs/agent",
+                    "logs/verifier",
+                    "logs/artifacts",
+                    "artifacts",
+                ):
+                    created_dir = sandbox_root / rel
+                    self.assertTrue(created_dir.is_dir())
+                    self.assertEqual(created_dir.stat().st_mode & 0o777, 0o777)
+                self.assertFalse(environment._harbor_dirs_prepared)
+
+                async def fake_download(_sid, _source, archive_path, _max_bytes):
+                    with tarfile.open(archive_path, "w") as tar:
+                        member = tarfile.TarInfo("agent")
+                        member.type, member.mode = tarfile.DIRTYPE, 0o777
+                        tar.addfile(member)
+
+                environment._client.download_archive.side_effect = fake_download
+                await environment.download_dir("/logs/agent", Path(tmp) / "out")
+                environment._client.upload_archive.assert_awaited_once()
+                self.assertTrue(environment._harbor_dirs_prepared)
+
+        # Case 2: failing mkdir (exit 1) aborts before user command, keeps
+        # _harbor_dirs_prepared == False, and retries bootstrap on second exec("true").
+        with tempfile.TemporaryDirectory() as tmp:
+            sandbox_root = Path(tmp) / "guest-fail-mkdir"
+            sandbox_root.mkdir()
+            blocker = sandbox_root / "logs"
+            blocker.write_text("file-blocking-mkdir", encoding="utf-8")
+
+            environment = self.environment()
+            environment._client.create_sandbox.return_value = {
+                "sandbox_id": "sbx-mkdir-fail",
+                "state": "ready",
+                "observation": {"reachable": True},
+            }
+
+            async def execute_mkdir_case(argv, **_kwargs):
+                return await run_rebased_bash(sandbox_root, argv)
+
+            environment._execute_argv = AsyncMock(side_effect=execute_mkdir_case)
+            await environment.start(force_build=False)
+            self.assertFalse(environment._harbor_dirs_prepared)
+
+            first = await environment.exec("printf 'MUST_NOT_RUN'")
+            self.assertNotEqual(first.return_code, 0)
+            self.assertEqual(first.stdout, "")
+            self.assertFalse(environment._harbor_dirs_prepared)
+
+            blocker.unlink()
+            second = await environment.exec("true")
+            self.assertEqual(second.return_code, 0)
+            self.assertTrue(environment._harbor_dirs_prepared)
+            second_argv = environment._execute_argv.await_args.args[0]
+            self.assertEqual(
+                second_argv,
+                [
+                    "/bin/bash",
+                    "-c",
+                    exec_mod._DIRECT_HARBOR_DIRS_BOOTSTRAP,
+                    "bash",
+                    "true",
+                ],
+            )
+            for rel in (
+                "logs/agent",
+                "logs/verifier",
+                "logs/artifacts",
+                "artifacts",
+            ):
+                self.assertEqual(
+                    (sandbox_root / rel).stat().st_mode & 0o777, 0o777
+                )
+
+            third = await environment.exec("true")
+            self.assertEqual(third.return_code, 0)
+            self.assertEqual(
+                environment._execute_argv.await_args.args[0],
+                ["/bin/bash", "-c", "true"],
+            )
 
     def test_public_network_maps_only_to_explicit_bridge(self):
         environment = self.environment()
@@ -784,9 +1022,13 @@ class RunfieldLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.stdout, "chunked-ok")
         environment.upload_file.assert_not_awaited()
         argv = environment._execute_argv.await_args.args[0]
-        self.assertEqual(
-            argv[:4],
-            ["/bin/bash", "-c", exec_mod._CHUNKED_BASH_BOOTSTRAP, "bash"],
+        self.assertEqual(argv[:2], ["/bin/bash", "-c"])
+        self.assertEqual(argv[3], "bash")
+        self.assertRegex(
+            argv[2],
+            r'^__rf_cmd_[0-9a-f]{16}=""; '
+            r'while \[ "\$#" -gt 0 \]; do __rf_cmd_[0-9a-f]{16}\+="\$1"; shift; done; '
+            r'export -n __rf_cmd_[0-9a-f]{16}; exec /bin/bash -c "\$__rf_cmd_[0-9a-f]{16}"$',
         )
         self.assertLessEqual(len(argv), 256)
         for item in argv:
@@ -802,6 +1044,102 @@ class RunfieldLifecycleTests(unittest.IsolatedAsyncioTestCase):
         stdout_raw, stderr_raw = await proc.communicate()
         self.assertEqual(proc.returncode, 0, stderr_raw.decode(errors="replace"))
         self.assertEqual(stdout_raw.decode(), payload_text)
+
+    async def test_chunked_command_preserves_caller_s_and_p_env_trailing_newlines_and_exit_code(
+        self,
+    ):
+        probe_body = (
+            'printf "s=%s(%s)|p=%s(%s)|rf=%s|leaked=%s|argc=%s\\n" '
+            '"${s-UNSET}" "${s+SET}" "${p-UNSET}" "${p+SET}" '
+            '"${__rf_cmd-UNSET}" "$(compgen -v __rf_cmd_ | tr \'\\n\' \',\')" "$#"\n'
+            "cat <<'__HARBOR_EOF__'\n"
+            "line-with-trailing-newlines\n"
+            "\n"
+            "__HARBOR_EOF__\n"
+            "exit 23\n\n\n"
+        )
+        direct_cmd = probe_body
+        chunked_cmd = ("# " + ("x" * 5200) + "\n") + probe_body
+        self.assertLessEqual(len(direct_cmd.encode("utf-8")), 4096)
+        self.assertGreater(len(chunked_cmd.encode("utf-8")), 5000)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            allexport_env_file = Path(tmp) / "bash_env_allexport.sh"
+            allexport_env_file.write_text("set -a\n", encoding="utf-8")
+
+            for env_case in (
+                {
+                    "PATH": os.defpath,
+                    "s": "caller-s",
+                    "p": "caller-p",
+                    "__rf_cmd": "caller-rf",
+                },
+                {
+                    "PATH": os.defpath,
+                    "s": "allexport-s",
+                    "p": "allexport-p",
+                    "BASH_ENV": str(allexport_env_file),
+                },
+                {"PATH": os.defpath},
+            ):
+                with self.subTest(env_keys=sorted(env_case.keys())):
+                    outputs: list[tuple[int, bytes, bytes]] = []
+                    for cmd in (direct_cmd, chunked_cmd):
+                        environment = self.environment()
+                        environment._sandbox_id = "sbx-env-parity"
+                        environment._persistent_env = dict(env_case)
+
+                        async def run_real_bash(argv, *, env=None, **_kwargs):
+                            proc = await asyncio.create_subprocess_exec(
+                                *argv,
+                                env=env,
+                                stdout=asyncio.subprocess.PIPE,
+                                stderr=asyncio.subprocess.PIPE,
+                            )
+                            out_b, err_b = await proc.communicate()
+                            rc = proc.returncode if proc.returncode is not None else 1
+                            return (
+                                {
+                                    "execution_id": "exec-bash",
+                                    "state": "succeeded" if rc == 0 else "failed",
+                                    "exit_code": rc,
+                                    "stdout": {
+                                        "committed_bytes": len(out_b),
+                                        "truncated": False,
+                                    },
+                                    "stderr": {
+                                        "committed_bytes": len(err_b),
+                                        "truncated": False,
+                                    },
+                                },
+                                out_b,
+                                err_b,
+                            )
+
+                        environment._execute_argv = AsyncMock(
+                            side_effect=run_real_bash
+                        )
+                        res = await environment.exec(cmd, env=dict(env_case))
+                        outputs.append(
+                            (
+                                res.return_code,
+                                res.stdout.encode("utf-8"),
+                                res.stderr.encode("utf-8"),
+                            )
+                        )
+
+                    self.assertEqual(outputs[0][0], 23)
+                    self.assertEqual(outputs[0], outputs[1])
+                    if "s" in env_case:
+                        expected_prefix = (
+                            f"s={env_case['s']}(SET)|p={env_case['p']}(SET)|"
+                        ).encode()
+                        self.assertTrue(outputs[1][1].startswith(expected_prefix))
+                    else:
+                        self.assertTrue(
+                            outputs[1][1].startswith(b"s=UNSET()|p=UNSET()|")
+                        )
+                    self.assertIn(b"|leaked=|argc=0\n", outputs[1][1])
 
     async def test_oversized_or_nul_command_falls_back_to_materialized_upload(self):
         environment = self.environment()
@@ -839,6 +1177,160 @@ class RunfieldLifecycleTests(unittest.IsolatedAsyncioTestCase):
         await environment.exec("printf 'a\x00b'")
         self.assertEqual(len(uploaded), 2)
         self.assertEqual(uploaded[1], b"printf 'a\x00b'")
+
+    async def test_materialized_first_exec_isolates_harbor_dir_bootstrap_and_tracks_completion(
+        self,
+    ):
+        with tempfile.TemporaryDirectory() as tmp:
+            sandbox_root = Path(tmp) / "guest"
+            (sandbox_root / "tmp").mkdir(parents=True)
+            environment = self.environment()
+            environment._client.create_sandbox.return_value = {
+                "sandbox_id": "sbx-mat-first",
+                "state": "ready",
+                "observation": {"reachable": True},
+            }
+            uploaded_scripts: list[tuple[str, bytes]] = []
+
+            async def stage_script(source, target):
+                payload = Path(source).read_bytes()
+                uploaded_scripts.append((target, payload))
+                host_script = sandbox_root / target.lstrip("/")
+                host_script.parent.mkdir(parents=True, exist_ok=True)
+                host_script.write_bytes(payload)
+                host_script.chmod(0o600)
+
+            async def run_materialized_on_host_bash(argv, **_kwargs):
+                rebased = list(argv)
+                if len(rebased) == 5:
+                    rebased[2] = (
+                        rebased[2]
+                        .replace(" /logs/", f" {sandbox_root}/logs/")
+                        .replace(" /artifacts", f" {sandbox_root}/artifacts")
+                    )
+                    rebased[4] = str(sandbox_root / rebased[4].lstrip("/"))
+                else:
+                    rebased[1] = str(sandbox_root / rebased[1].lstrip("/"))
+                proc = await asyncio.create_subprocess_exec(
+                    "/bin/bash",
+                    "-c",
+                    'umask 0077; exec "$@"',
+                    "bash",
+                    *rebased,
+                    env={"PATH": os.defpath},
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                out_b, err_b = await proc.communicate()
+                rc = proc.returncode if proc.returncode is not None else 1
+                return (
+                    {
+                        "execution_id": "exec-mat",
+                        "state": "succeeded" if rc == 0 else "failed",
+                        "exit_code": rc,
+                        "stdout": {
+                            "committed_bytes": len(out_b),
+                            "truncated": False,
+                        },
+                        "stderr": {
+                            "committed_bytes": len(err_b),
+                            "truncated": False,
+                        },
+                    },
+                    out_b,
+                    err_b,
+                )
+
+            environment.upload_file = AsyncMock(side_effect=stage_script)
+            environment._execute_argv = AsyncMock(
+                side_effect=run_materialized_on_host_bash
+            )
+            await environment.start(force_build=False)
+            self.assertFalse(environment._harbor_dirs_prepared)
+
+            bad_huge = "(" + " " * 98304
+            bad_res = await environment.exec(bad_huge)
+            self.assertEqual(bad_res.return_code, 2)
+            self.assertIn("syntax error", bad_res.stderr)
+            self.assertEqual(uploaded_scripts[0][1], bad_huge.encode())
+            first_argv = environment._execute_argv.await_args.args[0]
+            self.assertEqual(len(first_argv), 5)
+            self.assertEqual(
+                first_argv[:4],
+                [
+                    "/bin/bash",
+                    "-c",
+                    exec_mod._MATERIALIZED_HARBOR_DIRS_BOOTSTRAP,
+                    "bash",
+                ],
+            )
+            self.assertTrue(first_argv[4].startswith("/tmp/.harbor-command-"))
+            for rel in (
+                "logs/agent",
+                "logs/verifier",
+                "logs/artifacts",
+                "artifacts",
+            ):
+                self.assertEqual(
+                    (sandbox_root / rel).stat().st_mode & 0o777, 0o777
+                )
+            self.assertFalse(environment._harbor_dirs_prepared)
+
+            good_huge = "printf materialized-ok # " + "x" * 98304
+            good_res = await environment.exec(good_huge)
+            self.assertEqual(good_res.return_code, 0)
+            self.assertEqual(good_res.stdout, "materialized-ok")
+            self.assertEqual(uploaded_scripts[1][1], good_huge.encode())
+            second_argv = environment._execute_argv.await_args.args[0]
+            self.assertEqual(
+                second_argv[:4],
+                [
+                    "/bin/bash",
+                    "-c",
+                    exec_mod._MATERIALIZED_HARBOR_DIRS_BOOTSTRAP,
+                    "bash",
+                ],
+            )
+            self.assertTrue(environment._harbor_dirs_prepared)
+
+            after_res = await environment.exec("printf after-ok # " + "z" * 98304)
+            self.assertEqual(after_res.return_code, 0)
+            self.assertEqual(after_res.stdout, "after-ok")
+            third_argv = environment._execute_argv.await_args.args[0]
+            self.assertEqual(len(third_argv), 2)
+            self.assertEqual(third_argv[0], "/bin/bash")
+            self.assertTrue(third_argv[1].startswith("/tmp/.harbor-command-"))
+
+            # Also verify NUL-containing first exec uses 5-arg bootstrap, creates
+            # Harbor dirs cleanly even when /bin/bash rejects binary script (126),
+            # and keeps _harbor_dirs_prepared == False.
+            nul_root = Path(tmp) / "guest-nul"
+            (nul_root / "tmp").mkdir(parents=True)
+            sandbox_root = nul_root
+            environment._harbor_dirs_prepared = False
+            nul_res = await environment.exec("printf 'done\x00ok'")
+            self.assertEqual(nul_res.return_code, 126)
+            nul_argv = environment._execute_argv.await_args.args[0]
+            self.assertEqual(len(nul_argv), 5)
+            self.assertEqual(
+                nul_argv[:4],
+                [
+                    "/bin/bash",
+                    "-c",
+                    exec_mod._MATERIALIZED_HARBOR_DIRS_BOOTSTRAP,
+                    "bash",
+                ],
+            )
+            for rel in (
+                "logs/agent",
+                "logs/verifier",
+                "logs/artifacts",
+                "artifacts",
+            ):
+                self.assertEqual(
+                    (nul_root / rel).stat().st_mode & 0o777, 0o777
+                )
+            self.assertFalse(environment._harbor_dirs_prepared)
 
     async def test_start_failure_shields_close(self):
         environment = self.environment()
@@ -1623,6 +2115,13 @@ class RunfieldRealSdkIntegrationTests(unittest.IsolatedAsyncioTestCase):
         sandboxes: dict[str, dict] = {}
         executions: dict[str, dict] = {}
         uploaded_archives: list[bytes] = []
+        release_oversized_tail = threading.Event()
+        oversized_tail_reached = False
+        runfield_mod = importlib.import_module("runfield")
+        sdk_supports_max_bytes = (
+            "max_bytes"
+            in inspect.signature(runfield_mod.Sandbox.download_archive).parameters
+        )
         spec_digest = "sha256:" + "1" * 64
 
         class V1Alpha1Handler(BaseHTTPRequestHandler):
@@ -1741,6 +2240,21 @@ class RunfieldRealSdkIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     self._json_reply(200, {"stat": stat_payload})
                     return
                 if len(parts) == 4 and parts[3] == "archive":
+                    query = parse_qs(parsed.query)
+                    req_path = (query.get("path") or [""])[0]
+                    if req_path == "/workspace/oversized.bin":
+                        nonlocal oversized_tail_reached
+                        self.send_response(200)
+                        self.send_header("Content-Type", "application/x-tar")
+                        self.end_headers()
+                        self.wfile.write(b"x" * 4096)
+                        self.wfile.flush()
+                        if sdk_supports_max_bytes:
+                            release_oversized_tail.wait(timeout=5.0)
+                        else:
+                            oversized_tail_reached = True
+                        self.close_connection = True
+                        return
                     buf = io.BytesIO()
                     with tarfile.open(fileobj=buf, mode="w") as tar:
                         info = tarfile.TarInfo("out.txt")
@@ -1838,6 +2352,40 @@ class RunfieldRealSdkIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     dst_file = Path(tmpdir) / "out.txt"
                     await env.download_file("/workspace/out.txt", dst_file)
                     self.assertEqual(dst_file.read_bytes(), b"downloaded-content")
+
+                    live_sbx = env._client._sandboxes["sbx-live-001"]
+                    orig_download = live_sbx.download_archive
+                    recorded_download_kwargs: list[dict[str, object]] = []
+
+                    @functools.wraps(orig_download)
+                    async def spy_download(path: str, *args: object, **kwargs: object):
+                        recorded_download_kwargs.append(dict(kwargs))
+                        return await orig_download(path, *args, **kwargs)
+
+                    live_sbx.download_archive = spy_download
+                    oversized_dst = Path(tmpdir) / "oversized.tar"
+                    try:
+                        with self.assertRaisesRegex(
+                            ValueError, "exceeds configured limit"
+                        ):
+                            await asyncio.wait_for(
+                                env._client.download_archive(
+                                    "sbx-live-001",
+                                    "/workspace/oversized.bin",
+                                    oversized_dst,
+                                    1024,
+                                ),
+                                timeout=2.0,
+                            )
+                        self.assertFalse(oversized_dst.exists())
+                        if sdk_supports_max_bytes:
+                            self.assertEqual(
+                                recorded_download_kwargs[-1].get("max_bytes"), 1024
+                            )
+                            self.assertFalse(oversized_tail_reached)
+                            self.assertFalse(release_oversized_tail.is_set())
+                    finally:
+                        release_oversized_tail.set()
 
                     with self.assertRaises(TimeoutError):
                         await env.exec("sleep 30", timeout_sec=0.35)

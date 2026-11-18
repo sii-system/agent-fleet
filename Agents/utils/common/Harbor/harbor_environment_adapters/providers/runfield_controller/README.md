@@ -103,9 +103,12 @@ state polling and retryable backoff are owned by `sandbox-client-proxy` and
 `sii-runfield` rather than adapter-private semaphores or loops. Harbor output
 directory creation (`/logs/agent`, `/logs/verifier`, `/logs/artifacts`,
 `/artifacts`) is deferred out of `start()` so high-concurrency startup bursts
-issue zero empty-directory `PUT /archive` RPCs: the first `exec()` creates those
-directories inline, while zero-exec trials lazily materialize them via
-`_prepare_harbor_directories()` before `download_file()` or `download_dir()`.
+issue zero empty-directory `PUT /archive` RPCs: the first `exec()` under an
+ordinary working directory creates those directories in an isolated outer shell
+step (marking them prepared once an execution exits `0`), while a first `exec()`
+whose working directory targets `/logs` or `/artifacts` — as well as zero-exec
+trials or post-failure downloads — lazily materializes them via
+`_prepare_harbor_directories()` before use.
 Image delivery is `lazy-required` with `fallback: none`; `force_build` is not
 forwarded. A failed startup with a known Sandbox ID attempts a shielded close
 before propagating the error.
@@ -124,9 +127,10 @@ Harbor commands run under root without a login shell:
   `["/bin/bash", "-c", command]`.
 - Commands in `4097..98304` UTF-8 bytes (`4 KiB..96 KiB`, safely below Linux
   `MAX_ARG_STRLEN`) without NUL bytes split on valid UTF-8 codepoint boundaries
-  into `<= 4096`-byte positional chunks and run inline via
-  `["/bin/bash", "-c", 's=""; for p in "$@"; do s+="$p"; done; exec /bin/bash -c "$s"', "bash", *chunks]`
-  with zero host temporary files and zero `PUT /archive` RPCs.
+  into `<= 4096`-byte positional chunks and run inline via an unexported random
+  `__rf_cmd_<hex>` positional-shift bootstrap (`while [ "$#" -gt 0 ]; do ...; shift; done; export -n ...; exec /bin/bash -c "$..."`)
+  with zero host temporary files, zero caller environment mutation and zero
+  `PUT /archive` RPCs.
 - Commands exceeding `98304` UTF-8 bytes (or containing NUL bytes) fall back to
   uploading a private script under `/tmp` via `upload_file` and executing
   `["/bin/bash", remote_path]`.

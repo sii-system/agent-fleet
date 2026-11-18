@@ -3,12 +3,25 @@
 from __future__ import annotations
 
 import errno
+import inspect
 import os
 from pathlib import Path
 from typing import Any
 
 MAX_ARCHIVE_BYTES = 512 << 20
 ARCHIVE_MEDIA_TYPE = "application/x-tar"
+
+
+def _download_accepts_max_bytes(download_fn: Any) -> bool:
+    """Return True when download_archive accepts an in-stream max_bytes bound."""
+    try:
+        params = inspect.signature(download_fn).parameters
+    except (TypeError, ValueError):
+        return False
+    return "max_bytes" in params or any(
+        param.kind == inspect.Parameter.VAR_KEYWORD
+        for param in params.values()
+    )
 
 
 class RunfieldArchiveClientMixin:
@@ -61,10 +74,14 @@ class RunfieldArchiveClientMixin:
         _, sbx, _ = await self._resolve_sandbox(
             sandbox_id, timeout_sec=self.request_timeout_sec
         )
+        download_kwargs: dict[str, Any] = {
+            "dest": archive_path,
+            "timeout_seconds": self.transfer_timeout_sec,
+        }
+        if _download_accepts_max_bytes(sbx.download_archive):
+            download_kwargs["max_bytes"] = limit
         try:
-            size = await sbx.download_archive(
-                path, dest=archive_path, timeout_seconds=self.transfer_timeout_sec
-            )
+            size = await sbx.download_archive(path, **download_kwargs)
             if not isinstance(size, int) or isinstance(size, bool):
                 size = archive_path.stat().st_size if archive_path.exists() else 0
             if size > limit:
