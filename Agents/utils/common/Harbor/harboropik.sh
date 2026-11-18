@@ -829,6 +829,9 @@ run_oracle_task() {
   if [[ "$HARBOR_DEBUG" == "1" ]]; then
     cmd+=( --debug )
   fi
+  if [[ "${HARBOR_QUIET:-0}" == "1" ]]; then
+    cmd+=( --quiet )
+  fi
   if [[ "$HARBOR_FORCE_BUILD" == "1" || "$HARBOR_FORCE_BUILD" == "true" ]]; then
     cmd+=( --force-build )
   fi
@@ -1189,6 +1192,10 @@ run_harbor() {
     cmd+=( --debug )
   fi
 
+  if [[ "${HARBOR_QUIET:-0}" == "1" ]]; then
+    cmd+=( --quiet )
+  fi
+
   if [[ -n "$AGENT" ]] && ! harbor_agent_is_pi && ! harbor_agent_is_dsh; then
     cmd+=( -a "$AGENT" )
   fi
@@ -1499,6 +1506,9 @@ run_opencode_task() {
 
     if [[ "$HARBOR_DEBUG" == "1" ]]; then
       cmd+=( --debug )
+    fi
+    if [[ "${HARBOR_QUIET:-0}" == "1" ]]; then
+      cmd+=( --quiet )
     fi
   }
 

@@ -6,14 +6,13 @@ import asyncio
 import hashlib
 import shlex
 import tempfile
-import time
 import uuid
 from pathlib import Path
 from typing import Any
 
 from harbor.environments.base import ExecResult
 
-from .client import MAX_OUTPUT_READ_BYTES, RunfieldControllerError
+from .client import RunfieldControllerError
 
 _EXECUTION_TERMINAL_STATES = {
     "succeeded",
@@ -22,7 +21,59 @@ _EXECUTION_TERMINAL_STATES = {
     "recovery_required",
 }
 _MAX_DIRECT_COMMAND_BYTES = 4096
+_MAX_INLINE_CHUNKED_COMMAND_BYTES = 98304
+_MAX_EXECUTION_ARGV_ITEMS = 256
+_CHUNKED_BASH_BOOTSTRAP = (
+    's=""; for p in "$@"; do s+="$p"; done; exec /bin/bash -c "$s"'
+)
+_HARBOR_DIRS_BOOTSTRAP = (
+    "command -p mkdir -p -m 0777 "
+    "/logs/agent /logs/verifier /logs/artifacts /artifacts || exit $?; "
+)
+_DEFERRED_HARBOR_DIRS = frozenset(
+    {
+        "/logs",
+        "/logs/agent",
+        "/logs/verifier",
+        "/logs/artifacts",
+        "/artifacts",
+    }
+)
 _BACKGROUND_ABORT_TASKS: set[asyncio.Task[None]] = set()
+
+
+def _split_utf8_chunks(
+    command_bytes: bytes, max_chunk_bytes: int = _MAX_DIRECT_COMMAND_BYTES
+) -> list[str]:
+    """Split UTF-8 bytes on valid codepoint boundaries within max_chunk_bytes."""
+    chunks: list[str] = []
+    offset = 0
+    total = len(command_bytes)
+    while offset < total:
+        end = min(offset + max_chunk_bytes, total)
+        if end < total:
+            while end > offset and (command_bytes[end] & 0xC0) == 0x80:
+                end -= 1
+            if end == offset:
+                raise ValueError("UTF-8 sequence exceeds chunk byte limit")
+        chunks.append(command_bytes[offset:end].decode("utf-8"))
+        offset = end
+    return chunks
+
+
+def _can_skip_execution_wait(record: dict[str, Any]) -> bool:
+    """Return True when an accepted record is already terminal with empty streams."""
+    if record.get("state") not in _EXECUTION_TERMINAL_STATES:
+        return False
+    for stream in ("stdout", "stderr"):
+        metadata = record.get(stream)
+        if not isinstance(metadata, dict):
+            return False
+        if metadata.get("truncated") is not False:
+            return False
+        if metadata.get("committed_bytes") != 0:
+            return False
+    return True
 
 
 class RunfieldExecutionMixin:
@@ -236,6 +287,11 @@ class RunfieldExecutionMixin:
                 return result
             raise
         if not stat.get("exists"):
+            if (
+                getattr(self, "_harbor_dirs_prepared", True) is False
+                and target in _DEFERRED_HARBOR_DIRS
+            ):
+                return require_dir
             return False
         expected = "directory" if require_dir else "file"
         entry_type = stat.get("type")
@@ -273,57 +329,32 @@ class RunfieldExecutionMixin:
         """
         return await self._probe_path_kind(path, require_dir=False, user=user)
 
-    async def _read_execution_stream(
-        self, record: dict[str, Any], stream: str
-    ) -> bytes:
-        metadata = record.get(stream)
-        if not isinstance(metadata, dict):
-            raise TypeError(f"Runfield execution is missing {stream} metadata")
-        if metadata.get("truncated") is True:
-            raise RuntimeError(f"Runfield execution {stream} was truncated")
-        committed = metadata.get("committed_bytes")
-        if not isinstance(committed, int) or committed < 0:
-            raise RuntimeError(f"Runfield execution returned invalid {stream} length")
-        chunks: list[bytes] = []
-        for offset in range(0, committed, MAX_OUTPUT_READ_BYTES):
-            length = min(MAX_OUTPUT_READ_BYTES, committed - offset)
-            chunk = await self._client.execution_output(
-                self._sandbox_id,
-                record["execution_id"],
-                stream,
-                offset,
-                length,
-            )
-            if len(chunk) != length:
-                raise RuntimeError("Runfield execution output range is incomplete")
-            chunks.append(chunk)
-        return b"".join(chunks)
-
     async def _execute_argv(
         self,
         argv: list[str],
         *,
         cwd: str | None = None,
         env: dict[str, str] | None = None,
-        timeout_sec: int | None = None,
+        timeout_sec: float | None = None,
         output_limit_bytes: int | None = None,
         close_on_timeout: bool = True,
         priority: str | None = None,
     ) -> tuple[dict[str, Any], bytes, bytes]:
-        """Execute one argv and preserve the caller's timeout ownership.
+        """Execute one argv via two-phase submit + wait while preserving timeout ownership.
 
         ``close_on_timeout`` controls whether exceeding the wait deadline (or
-        cancellation of the wait) closes the Sandbox. Keep it True only for
-        critical agent/verifier commands that cannot leave an orphan execution.
-        Best-effort callers pass False; when ``execution_id`` is known they
-        attempt best-effort queued cancellation and handle TimeoutError locally.
+        cancellation of the wait) closes the Sandbox as fallback when
+        single-command cancellation cannot guarantee cleanup. Best-effort
+        callers pass False so a timeout never destroys the shared Sandbox.
         """
         if not self._sandbox_id:
             raise RuntimeError("Runfield Sandbox is not running")
+        effective_limit = output_limit_bytes or self._exec_output_limit_bytes
+        effective_timeout = timeout_sec or self._default_exec_timeout_sec
         request: dict[str, Any] = {
             "request_id": self._execution_request_id("\0".join(argv)),
             "argv": argv,
-            "output_limit_bytes": output_limit_bytes or self._exec_output_limit_bytes,
+            "output_limit_bytes": effective_limit,
         }
         if cwd:
             request["working_directory"] = cwd
@@ -339,29 +370,26 @@ class RunfieldExecutionMixin:
             if not isinstance(raw_execution_id, str) or not raw_execution_id:
                 raise RuntimeError("Runfield Controller returned no execution identity")
             execution_id = raw_execution_id
-            deadline = time.monotonic() + (
-                timeout_sec or self._default_exec_timeout_sec
+            if _can_skip_execution_wait(record):
+                return record, b"", b""
+            record, stdout, stderr = await self._client.wait_execution(
+                self._sandbox_id,
+                execution_id,
+                timeout_sec=effective_timeout,
+                output_limit_bytes=effective_limit,
             )
-            while record.get("state") not in _EXECUTION_TERMINAL_STATES:
-                if time.monotonic() >= deadline:
-                    await self._abort_execution_on_wait_exit(
-                        execution_id,
-                        record,
-                        close_on_timeout=close_on_timeout,
-                        reason="timeout",
-                    )
-                    raise TimeoutError(
-                        f"Runfield execution wait deadline exceeded: {execution_id}"
-                    )
-                await asyncio.sleep(self._poll_interval_sec)
-                record = await self._client.execution_status(
-                    self._sandbox_id, execution_id
-                )
-            stdout, stderr = await asyncio.gather(
-                self._read_execution_stream(record, "stdout"),
-                self._read_execution_stream(record, "stderr"),
-            )
+            for stream in ("stdout", "stderr"):
+                if (record.get(stream) or {}).get("truncated") is True:
+                    raise RuntimeError(f"Runfield execution {stream} was truncated")
             return record, stdout, stderr
+        except TimeoutError:
+            await self._abort_execution_on_wait_exit(
+                execution_id,
+                record,
+                close_on_timeout=close_on_timeout,
+                reason="timeout",
+            )
+            raise
         except asyncio.CancelledError:
             await self._abort_execution_on_wait_exit(
                 execution_id,
@@ -376,16 +404,17 @@ class RunfieldExecutionMixin:
         command: str,
         cwd: str | None = None,
         env: dict[str, str] | None = None,
-        timeout_sec: int | None = None,
+        timeout_sec: float | None = None,
         user: str | int | None = None,
         close_on_timeout: bool = True,
         priority: str | None = None,
     ) -> ExecResult:
         """Run a Harbor shell command under the root-only Runfield backend.
 
-        ``close_on_timeout`` is forwarded to ``_execute_argv``. Only critical
-        lifecycle callers should use the default True; best-effort probes pass
-        False so a timeout does not destroy the shared Sandbox.
+        Commands up to 4 KiB run directly via ``/bin/bash -c``; commands in
+        ``(4 KiB, 96 KiB]`` without NUL bytes split across UTF-8 codepoint-safe
+        ``<= 4 KiB`` positional arguments (0 archive RPCs); larger commands or
+        scripts containing NUL fall back to ``_execute_materialized_command``.
         """
         effective_user = self._resolve_user(user)
         if effective_user not in {None, "root", "0", 0}:
@@ -394,12 +423,34 @@ class RunfieldExecutionMixin:
             )
         effective_cwd = cwd or self.task_env_config.workdir or "/"
         effective_env = self._merge_env(env)
-        command_bytes = command.encode("utf-8")
-        if len(command_bytes) <= _MAX_DIRECT_COMMAND_BYTES:
+        needs_harbor_dirs = getattr(self, "_harbor_dirs_prepared", True) is False
+        effective_command = (
+            f"{_HARBOR_DIRS_BOOTSTRAP}{command}" if needs_harbor_dirs else command
+        )
+        command_bytes = effective_command.encode("utf-8")
+        if (
+            len(command_bytes) <= _MAX_DIRECT_COMMAND_BYTES
+            and "\x00" not in effective_command
+        ):
             # Harbor supplies the execution environment explicitly. A login
             # shell would source task-image profiles that are outside this
             # contract and can alter or even break otherwise valid commands.
-            argv = ["/bin/bash", "-c", command]
+            argv = ["/bin/bash", "-c", effective_command]
+            record, stdout, stderr = await self._execute_argv(
+                argv,
+                cwd=effective_cwd,
+                env=effective_env,
+                timeout_sec=timeout_sec,
+                close_on_timeout=close_on_timeout,
+                priority=priority,
+            )
+        elif (
+            len(command_bytes) <= _MAX_INLINE_CHUNKED_COMMAND_BYTES
+            and "\x00" not in effective_command
+            and len(chunks := _split_utf8_chunks(command_bytes)) + 4
+            <= _MAX_EXECUTION_ARGV_ITEMS
+        ):
+            argv = ["/bin/bash", "-c", _CHUNKED_BASH_BOOTSTRAP, "bash", *chunks]
             record, stdout, stderr = await self._execute_argv(
                 argv,
                 cwd=effective_cwd,
@@ -420,9 +471,17 @@ class RunfieldExecutionMixin:
         state = record.get("state")
         if state == "recovery_required":
             raise RuntimeError("Runfield execution requires recovery")
-        code = record.get("exit_code")
-        if not isinstance(code, int):
-            code = 1
+        raw_code = record.get("exit_code")
+        if needs_harbor_dirs and (
+            state == "succeeded"
+            or (
+                state == "failed"
+                and isinstance(raw_code, int)
+                and raw_code not in {126, 127}
+            )
+        ):
+            self._harbor_dirs_prepared = True
+        code = raw_code if isinstance(raw_code, int) else 1
         result = ExecResult(
             stdout=stdout.decode("utf-8", errors="replace"),
             stderr=stderr.decode("utf-8", errors="replace"),
@@ -442,7 +501,7 @@ class RunfieldExecutionMixin:
         *,
         cwd: str,
         env: dict[str, str] | None,
-        timeout_sec: int | None,
+        timeout_sec: float | None,
         close_on_timeout: bool = True,
         priority: str | None = None,
     ) -> tuple[dict[str, Any], bytes, bytes]:
@@ -458,7 +517,7 @@ class RunfieldExecutionMixin:
         return await self._execute_argv(
             ["/bin/bash", remote_path],
             cwd=cwd,
-            env=env,
+            env=effective_env if (effective_env := env) is not None else None,
             timeout_sec=timeout_sec,
             close_on_timeout=close_on_timeout,
             priority=priority,

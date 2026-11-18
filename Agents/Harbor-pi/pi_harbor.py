@@ -24,10 +24,12 @@ class AgentFleetPi(Pi):
     Harbor's built-in Pi integration installs the upstream package through nvm
     for every fresh task image. Agent Fleet instead prepares a pinned,
     fully-installed Pi runtime and a portable Node runtime once on the runner.
-    Task setup first consumes the shared runtime contract at
-    ``/opt/agent-fleet/runtime/pi`` when the environment provides it. Other
-    environments retain the immutable archive fallback and never resolve npm
-    dependencies inside the benchmark container.
+    When ``HARBOR_BACKEND_PREINSTALLED_AGENTS=1`` (Runfield's deployment-owned
+    Toolkit EROFS layer, already verified across all ready Nodes before batch
+    launch), ``setup()`` defers container setup to an inline shell bootstrap
+    inside ``run()``, eliminating per-trial setup RPCs and redundant Node V8
+    cold starts. Other environments retain the immutable archive fallback and
+    never resolve npm dependencies inside the benchmark container.
     """
 
     def get_version_command(self) -> str | None:
@@ -43,6 +45,41 @@ class AgentFleetPi(Pi):
         # point does not exist on the host (see run()). Keep this empty so the
         # -e flags are only ever built where the files actually exist.
         return ""
+
+    async def setup(self, environment: BaseEnvironment) -> None:
+        if os.environ.get("HARBOR_BACKEND_PREINSTALLED_AGENTS") == "1":
+            resolved_version = str(
+                self.version() or os.environ.get("PI_VERSION", "0.81.1")
+            )
+            self._version = resolved_version
+            logs_dir = getattr(self, "logs_dir", None)
+            if logs_dir is not None:
+                (logs_dir / "setup").mkdir(parents=True, exist_ok=True)
+            self._deferred_shared_setup = True
+            return
+        self._deferred_shared_setup = False
+        await super().setup(environment)
+
+    def _shared_runtime_bootstrap_command(self) -> str:
+        version = str(self.version() or os.environ.get("PI_VERSION", "0.81.1"))
+        version_q = shlex.quote(version)
+        return (
+            f"pi_version={version_q}; "
+            'shared_runtime="${PI_SHARED_RUNTIME_DIR:-/opt/agent-fleet/runtime/pi}"; '
+            'mkdir -p /installed-agent "$HOME/.local/bin" "$HOME/.pi/agent" || exit $?; '
+            'mkdir -p "/logs/agent" 2>/dev/null || echo "cannot create /logs/agent; pi log capture disabled" >&2; '
+            'if [ -x "$shared_runtime/bin/node" ] && [ -x "$shared_runtime/bin/pi" ] && '
+            '   [ -f "$shared_runtime/VERSION" ] && [ "$(cat "$shared_runtime/VERSION")" = "$pi_version" ]; then '
+            '  ln -sf "$shared_runtime/bin/node" "$HOME/.local/bin/node" && '
+            '  ln -sf "$shared_runtime/bin/pi" "$HOME/.local/bin/pi" || exit $?; '
+            '  export PATH="$HOME/.local/bin:$shared_runtime/bin:$PATH"; '
+            "else "
+            '  echo "required shared Pi runtime is unavailable or has the wrong version: $pi_version" >&2; '
+            "  exit 1; "
+            "fi; "
+            'printf "%s\\n" "$PI_MODELS_CONFIG" > "$HOME/.pi/agent/models.json" || exit $?; '
+            'printf "%s\\n" "$PI_SETTINGS_CONFIG" > "$HOME/.pi/agent/settings.json" || exit $?; '
+        )
 
     async def install(self, environment: BaseEnvironment) -> None:
         version = str(self.version() or os.environ.get("PI_VERSION", "0.81.1"))
@@ -106,6 +143,7 @@ class AgentFleetPi(Pi):
                 "pi --version"
             ),
         )
+        self._deferred_shared_setup = False
 
     @with_prompt_template
     async def run(
@@ -128,19 +166,26 @@ class AgentFleetPi(Pi):
         if skills_command:
             await self.exec_as_agent(environment, command=skills_command, env=env)
 
+        deferred_bootstrap = (
+            self._shared_runtime_bootstrap_command()
+            if getattr(self, "_deferred_shared_setup", False)
+            else ""
+        )
+
         await exec_logged_agent(
             self,
             environment,
             command=(
                 'set -o pipefail; export PATH="$HOME/.local/bin:$PATH"; '
-                'ext_args=(); '
+                f"{deferred_bootstrap}"
+                "ext_args=(); "
                 # Collect any bind-mounted Pi extensions inside the container:
                 # the mount point ($PI_EXTENSION_DIR) exists only here, so the
                 # -e flags cannot be built on the host.
                 "if [[ -n \"${PI_EXTENSION_DIR:-}\" && -d \"$PI_EXTENSION_DIR\" ]]; then "
                 '  for ext in "$PI_EXTENSION_DIR"/*.ts; do '
                 '    [[ -f "$ext" ]] && ext_args+=( -e "$ext" ); '
-                '  done; '
+                "  done; "
                 "fi; "
                 f"printf '%s' {shlex.quote(instruction)} | "
                 "pi --print --mode json --no-session "
@@ -155,3 +200,5 @@ class AgentFleetPi(Pi):
             ),
             env=env,
         )
+        if deferred_bootstrap:
+            self._deferred_shared_setup = False

@@ -80,6 +80,8 @@ class RunfieldSandboxEnvironment(
         transfer_timeout_sec: int | str | None = None,
         poll_interval_sec: float = 0.2,
         request_attempts: int | str = 3,
+        proxy_socket: str | None = None,
+        proxy_mode: str | None = None,
         **kwargs: Any,
     ) -> None:
         self._image_ref_override = (image_ref or "").strip()
@@ -150,9 +152,12 @@ class RunfieldSandboxEnvironment(
             allow_insecure_http=allow_insecure,
             request_timeout_sec=request_timeout,
             transfer_timeout_sec=self._transfer_timeout_sec,
+            proxy_socket=proxy_socket,
+            proxy_mode=proxy_mode,
         )
         self._sandbox_id = ""
         self._execution_sequence = 0
+        self._harbor_dirs_prepared = True
         super().__init__(*args, **kwargs)
         self.default_user = "root"
         self._network_mode = "bridge" if self._network_is_public else "none"

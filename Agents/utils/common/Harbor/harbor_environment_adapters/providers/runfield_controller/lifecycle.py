@@ -1,15 +1,10 @@
-"""Map Harbor lifecycle calls to Runfield create/status/close states."""
+"""Map Harbor lifecycle calls to Runfield create/wait_ready/close operations."""
 
 from __future__ import annotations
 
 import asyncio
 import hashlib
-import time
 from typing import Any
-
-import requests
-
-from .client import RunfieldControllerError
 
 _CREATE_FAILURE_STATES = {"create_failed", "recovery_required", "closed", "exited"}
 _CLOSE_TERMINAL_STATES = {"closed", "create_failed"}
@@ -50,43 +45,6 @@ class RunfieldLifecycleMixin:
             spec["network_mode"] = self._network_mode
         return spec
 
-    async def _create_with_stable_identity(self) -> dict[str, Any]:
-        spec = self._create_spec()
-        last_error: Exception | None = None
-        for attempt in range(self._request_attempts):
-            try:
-                return await self._client.create_sandbox(spec)
-            except RunfieldControllerError as error:
-                last_error = error
-                if not error.retryable or attempt + 1 == self._request_attempts:
-                    raise
-            except requests.RequestException as error:
-                last_error = error
-                if attempt + 1 == self._request_attempts:
-                    raise
-            await asyncio.sleep(min(2**attempt, 5))
-        raise RuntimeError("Runfield create retry loop exhausted") from last_error
-
-    async def _wait_sandbox_state(
-        self,
-        wanted: set[str],
-        *,
-        timeout_sec: int,
-    ) -> dict[str, Any]:
-        deadline = time.monotonic() + timeout_sec
-        while True:
-            record = await self._client.sandbox_status(self._sandbox_id)
-            state = record.get("state")
-            if state in wanted:
-                return record
-            if state in _CREATE_FAILURE_STATES:
-                raise RuntimeError(f"Runfield Sandbox entered terminal state {state}")
-            if time.monotonic() >= deadline:
-                raise TimeoutError(
-                    f"Runfield Sandbox wait deadline exceeded: {self._sandbox_id}"
-                )
-            await asyncio.sleep(self._poll_interval_sec)
-
     async def start(self, force_build: bool) -> None:
         if force_build:
             self.logger.warning(
@@ -94,8 +52,9 @@ class RunfieldLifecycleMixin:
                 "Harbor force_build is not forwarded to Controller"
             )
         self._validate_definition()
+        spec = self._create_spec()
         try:
-            record = await self._create_with_stable_identity()
+            record = await self._client.create_sandbox(spec)
             sandbox_id = record.get("sandbox_id")
             if not isinstance(sandbox_id, str) or not sandbox_id:
                 raise RuntimeError("Runfield Controller returned no sandbox identity")
@@ -105,16 +64,28 @@ class RunfieldLifecycleMixin:
                     "Runfield Sandbox entered terminal state "
                     f"{record.get('state')}"
                 )
-            if record.get("state") != "ready":
-                record = await self._wait_sandbox_state(
-                    {"ready"}, timeout_sec=self._ready_timeout_sec
+            observation = record.get("observation") or {}
+            if (
+                record.get("state") != "ready"
+                or observation.get("reachable") is not True
+            ):
+                record = await self._client.wait_sandbox_ready(
+                    sandbox_id, timeout_sec=self._ready_timeout_sec
+                )
+            if record.get("state") in _CREATE_FAILURE_STATES:
+                raise RuntimeError(
+                    "Runfield Sandbox entered terminal state "
+                    f"{record.get('state')}"
                 )
             observation = record.get("observation") or {}
-            if observation.get("reachable") is not True:
+            if (
+                record.get("state") != "ready"
+                or observation.get("reachable") is not True
+            ):
                 raise RuntimeError(
                     "Runfield Sandbox is ready but owning Node is unreachable"
                 )
-            await self._prepare_harbor_directories()
+            self._harbor_dirs_prepared = False
             await self._upload_environment_dir_after_start()
             await self._materialize_read_only_mounts()
         except BaseException:
@@ -131,11 +102,14 @@ class RunfieldLifecycleMixin:
                 "Runfield backend does not retain stopped Sandboxes; closing %s",
                 sandbox_id,
             )
-        record = await self._client.close_sandbox(sandbox_id)
-        if record.get("state") not in _CLOSE_TERMINAL_STATES:
-            await self._wait_sandbox_state(
-                _CLOSE_TERMINAL_STATES,
-                timeout_sec=self._close_timeout_sec,
+        record = await self._client.close_sandbox(
+            sandbox_id,
+            wait=True,
+            timeout_sec=self._close_timeout_sec,
+        )
+        if isinstance(record, dict) and record.get("state") not in _CLOSE_TERMINAL_STATES:
+            raise RuntimeError(
+                f"Runfield Sandbox did not reach closed state: {record.get('state')}"
             )
         if self._sandbox_id == sandbox_id:
             self._sandbox_id = ""

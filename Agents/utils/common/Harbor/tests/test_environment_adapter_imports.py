@@ -46,6 +46,11 @@ assert not inspect.isabstract(LegacyYiCloud)
 assert not inspect.isabstract(RunfieldEntrypoint)
 assert not inspect.isabstract(LegacyQz)
 assert "yicloud" not in sys.modules
+assert "runfield" not in sys.modules
+import os
+os.environ["RUNFIELD_CONTROLLER_ENDPOINT"] = "https://controller.example"
+RunfieldEntrypoint.preflight()
+assert "runfield" not in sys.modules
 """)
 
     def test_importing_qz_legacy_does_not_patch_the_official_sdk(self):
