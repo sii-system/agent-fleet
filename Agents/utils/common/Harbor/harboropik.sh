@@ -113,6 +113,7 @@ write_harbor_registry_summary() {
 }
 
 if harbor_publishes_job_dir; then
+  mkdir -p "$(dirname "$HARBOR_JOB_DIR_FILE")" "$(dirname "$HARBOR_BENCHMARK_PID_FILE")"
   : > "$HARBOR_JOB_DIR_FILE"
   rm -f "$HARBOR_BENCHMARK_EXIT_FILE"
   # BASHPID needs bash >= 4; at this top-level scope $$ is the same pid.
