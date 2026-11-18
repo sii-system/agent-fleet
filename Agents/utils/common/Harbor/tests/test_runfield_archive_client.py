@@ -1,77 +1,165 @@
-"""Validate Runfield archive HTTP streams, bounds, and host file ownership."""
+"""Validate Runfield archive streams, bounds, and host file ownership."""
 
 from __future__ import annotations
 
 import asyncio
 import sys
 import tempfile
-import threading
-import time
+import types
 import unittest
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-
-import requests
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from harbor_environment_adapters.providers.runfield_controller import (
+    client as client_mod,
+)
+from harbor_environment_adapters.providers.runfield_controller.archive_client import (
+    MAX_ARCHIVE_BYTES,
+)
 from harbor_environment_adapters.providers.runfield_controller.client import (
     RunfieldControllerClient,
+    RunfieldControllerError,
 )
 
 
+class _StubSandboxError(Exception):
+    def __init__(
+        self,
+        code: str,
+        *,
+        request_id: str | None = None,
+        sandbox: object | None = None,
+        http_status: int | None = None,
+        retryable: bool = False,
+        outcome_unknown: bool = False,
+    ) -> None:
+        super().__init__(code)
+        self.code = code
+        self.request_id = request_id
+        self.sandbox = sandbox
+        self.http_status = http_status
+        self.retryable = retryable
+        self.outcome_unknown = outcome_unknown
+
+
 class RunfieldArchiveClientTests(unittest.TestCase):
-    def setUp(self):
+    def setUp(self) -> None:
         self.payload = b"\0\xffarchive bytes" * 10000
         self.received = b""
-        self.response_type = "application/x-tar"
-        self.truncated = False
-        self.response_delay = 0
-        self.block_response = False
-        self.response_started = threading.Event()
-        self.response_release = threading.Event()
+        self.upload_calls: list[tuple[str, Path, float]] = []
+        self.download_calls: list[tuple[str, Path, float, int | None]] = []
+        self.stat_calls: list[tuple[str, float]] = []
+        self.fail_upload: Exception | None = None
+        self.fail_download_before_open: Exception | None = None
+        self.fail_download_after_partial: Exception | None = None
+        self.block_transfer = False
+        self.transfer_started: asyncio.Event | None = None
+        self.transfer_release: asyncio.Event | None = None
         owner = self
 
-        class Handler(BaseHTTPRequestHandler):
-            def wait_for_response(self):
-                owner.response_started.set()
-                if owner.block_response:
-                    owner.response_release.wait(5)
-                time.sleep(owner.response_delay)
+        class FakeSandbox:
+            def __init__(self, sandbox_id: str) -> None:
+                self.sandbox_id = sandbox_id
+                self.state = "ready"
+                self.record = {
+                    "sandbox_id": sandbox_id,
+                    "state": "ready",
+                    "observation": {"reachable": True},
+                }
 
-            def do_PUT(self):
-                owner.received = self.rfile.read(int(self.headers["Content-Length"]))
-                self.wait_for_response()
-                self.send_response(200)
-                self.send_header("Content-Type", "application/json")
-                self.end_headers()
-                self.wfile.write(b'{"api_version":"sandbox-lifecycle/v1alpha1","status":"ok","result":{}}')
+            async def _maybe_block(self) -> None:
+                if owner.block_transfer:
+                    assert owner.transfer_started is not None
+                    assert owner.transfer_release is not None
+                    owner.transfer_started.set()
+                    await owner.transfer_release.wait()
 
-            def do_GET(self):
-                self.wait_for_response()
-                self.send_response(200)
-                self.send_header("Content-Type", owner.response_type)
-                self.send_header("Content-Length", str(len(owner.payload) + (1 if owner.truncated else 0)))
-                self.end_headers()
-                self.wfile.write(owner.payload)
+            async def stat(
+                self, path: str, *, timeout_seconds: float = 15
+            ) -> dict[str, object]:
+                owner.stat_calls.append((path, timeout_seconds))
+                return {"path": path, "exists": True, "type": "directory", "size": 4096}
 
-            def log_message(self, *_args):
+            async def upload_archive(
+                self,
+                path: str,
+                source: Path,
+                *,
+                timeout_seconds: float = 300,
+            ) -> None:
+                owner.upload_calls.append((path, Path(source), timeout_seconds))
+                owner.received = Path(source).read_bytes()
+                await self._maybe_block()
+                if owner.fail_upload is not None:
+                    raise owner.fail_upload
+
+            async def download_archive(
+                self,
+                path: str,
+                dest: Path | None = None,
+                *,
+                max_bytes: int | None = None,
+                timeout_seconds: float = 300,
+            ) -> int:
+                assert dest is not None
+                dest_path = Path(dest)
+                owner.download_calls.append(
+                    (path, dest_path, timeout_seconds, max_bytes)
+                )
+                if owner.fail_download_before_open is not None:
+                    raise owner.fail_download_before_open
+                first_chunk = owner.payload[:32]
+                if max_bytes is not None and len(first_chunk) > max_bytes:
+                    raise _StubSandboxError(
+                        "resource_limit_exceeded",
+                        http_status=422,
+                        retryable=False,
+                    )
+                dest_path.write_bytes(first_chunk)
+                await self._maybe_block()
+                if owner.fail_download_after_partial is not None:
+                    raise owner.fail_download_after_partial
+                if max_bytes is not None and len(owner.payload) > max_bytes:
+                    dest_path.write_bytes(owner.payload[:max_bytes])
+                    raise _StubSandboxError(
+                        "resource_limit_exceeded",
+                        http_status=422,
+                        retryable=False,
+                    )
+                dest_path.write_bytes(owner.payload)
+                return len(owner.payload)
+
+        class FakeSandboxClient:
+            def __init__(self, **_kwargs: object) -> None:
                 pass
 
-        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
-        self.thread.start()
+            async def get(
+                self, sandbox_id: str, *, timeout_seconds: float = 15
+            ) -> FakeSandbox:
+                _ = timeout_seconds
+                return FakeSandbox(sandbox_id)
+
+            async def aclose(self) -> None:
+                return None
+
+        stub = types.ModuleType("runfield")
+        stub.ExecutionResult = object
+        stub.Sandbox = FakeSandbox
+        stub.SandboxClient = FakeSandboxClient
+        stub.SandboxError = _StubSandboxError
+        self._patcher = patch.dict(sys.modules, {"runfield": stub})
+        self._patcher.start()
+        client_mod._LOOP_SHARED_STATES.clear()
         self.client = RunfieldControllerClient(
-            f"http://127.0.0.1:{self.server.server_port}", allow_insecure_http=True
+            "http://127.0.0.1:19112", allow_insecure_http=True
         )
 
-    def tearDown(self):
-        self.response_release.set()
-        self.client.session.close()
-        self.server.shutdown()
-        self.server.server_close()
-        self.thread.join()
+    def tearDown(self) -> None:
+        client_mod._LOOP_SHARED_STATES.clear()
+        self._patcher.stop()
 
-    def test_binary_upload_and_download(self):
+    def test_binary_upload_and_download_and_stat(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             source = root / "source.tar"
@@ -79,44 +167,156 @@ class RunfieldArchiveClientTests(unittest.TestCase):
             asyncio.run(self.client.upload_archive("sandbox-one", "/tests", source))
             self.assertEqual(self.received, self.payload)
             target = root / "download.tar"
-            asyncio.run(self.client.download_archive("sandbox-one", "/tests", target, len(self.payload)))
+            asyncio.run(
+                self.client.download_archive(
+                    "sandbox-one", "/tests", target, len(self.payload)
+                )
+            )
             self.assertEqual(target.read_bytes(), self.payload)
+            stat = asyncio.run(self.client.stat_path("sandbox-one", "/tests"))
+            self.assertEqual(stat["exists"], True)
 
-    def test_truncated_and_oversized_downloads_remove_only_owned_staging(self):
+    def test_upload_is_single_attempt_and_rejects_empty_archive(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            empty = Path(temporary) / "empty.tar"
+            empty.write_bytes(b"")
+            with self.assertRaisesRegex(ValueError, "exceeds protocol limit"):
+                asyncio.run(self.client.upload_archive("sandbox-one", "/tests", empty))
+            self.assertEqual(self.upload_calls, [])
+
+            valid = Path(temporary) / "valid.tar"
+            valid.write_bytes(b"tar-bytes")
+            self.fail_upload = _StubSandboxError(
+                "transport_error", retryable=True, http_status=503
+            )
+            with self.assertRaises(RunfieldControllerError) as ctx:
+                asyncio.run(self.client.upload_archive("sandbox-one", "/tests", valid))
+            self.assertEqual(ctx.exception.code, "transport_error")
+            self.assertTrue(ctx.exception.retryable)
+            self.assertEqual(len(self.upload_calls), 1)
+
+    def test_truncated_and_oversized_downloads_remove_only_owned_staging(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             target = Path(temporary) / "download.tar"
             with self.assertRaisesRegex(ValueError, "exceeds configured limit"):
-                asyncio.run(self.client.download_archive("sandbox-one", "/tests", target, 1))
+                asyncio.run(
+                    self.client.download_archive("sandbox-one", "/tests", target, 1)
+                )
             self.assertFalse(target.exists())
-            self.truncated = True
-            with self.assertRaises(requests.exceptions.ChunkedEncodingError):
-                asyncio.run(self.client.download_archive("sandbox-one", "/tests", target, len(self.payload) + 1))
+
+            self.fail_download_after_partial = _StubSandboxError("transport_error")
+            with self.assertRaises(RunfieldControllerError):
+                asyncio.run(
+                    self.client.download_archive(
+                        "sandbox-one", "/tests", target, len(self.payload) + 1
+                    )
+                )
             self.assertFalse(target.exists())
-            self.truncated = False
+            self.fail_download_after_partial = None
+
+            self.fail_download_after_partial = _StubSandboxError(
+                "resource_limit_exceeded", http_status=200
+            )
+            with self.assertRaisesRegex(ValueError, "exceeds configured limit"):
+                asyncio.run(
+                    self.client.download_archive(
+                        "sandbox-one", "/tests", target, len(self.payload) + 1
+                    )
+                )
+            self.assertFalse(target.exists())
+            self.fail_download_after_partial = None
+
             target.write_bytes(b"keep existing file")
             with self.assertRaises(FileExistsError):
-                asyncio.run(self.client.download_archive("sandbox-one", "/tests", target, len(self.payload)))
+                asyncio.run(
+                    self.client.download_archive(
+                        "sandbox-one", "/tests", target, len(self.payload)
+                    )
+                )
             self.assertEqual(target.read_bytes(), b"keep existing file")
 
-    def test_wrong_media_type_is_rejected_before_creating_staging(self):
-        self.response_type = "application/json"
+    def test_wrong_media_type_is_rejected_before_creating_staging(self) -> None:
+        self.fail_download_before_open = _StubSandboxError(
+            "invalid_response", http_status=200
+        )
         with tempfile.TemporaryDirectory() as temporary:
             target = Path(temporary) / "download.tar"
-            with self.assertRaisesRegex(RuntimeError, "invalid media type"):
-                asyncio.run(self.client.download_archive("sandbox-one", "/tests", target, len(self.payload)))
+            with self.assertRaises(RunfieldControllerError) as ctx:
+                asyncio.run(
+                    self.client.download_archive(
+                        "sandbox-one", "/tests", target, len(self.payload)
+                    )
+                )
+            self.assertEqual(ctx.exception.code, "invalid_response")
             self.assertFalse(target.exists())
 
-    def test_archive_timeout_is_independent_from_control_timeout(self):
-        self.client.request_timeout_sec = 1
-        self.client.transfer_timeout_sec = 3
-        self.response_delay = 1.2
-        self.test_binary_upload_and_download()
+    def test_in_stream_max_bytes_is_forwarded_and_aborts_mid_stream_cleanly(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            target = root / "midstream.tar"
+            with self.assertRaisesRegex(ValueError, "exceeds configured limit") as ctx:
+                asyncio.run(
+                    self.client.download_archive("sandbox-one", "/tests", target, 64)
+                )
+            self.assertIsInstance(ctx.exception.__cause__, _StubSandboxError)
+            self.assertEqual(ctx.exception.__cause__.code, "resource_limit_exceeded")
+            self.assertEqual(self.download_calls[-1][3], 64)
+            self.assertFalse(target.exists())
 
-    def test_cancelled_transfers_keep_owned_paths_until_http_worker_finishes(self):
-        async def exercise(upload):
-            paths = []
+            capped = root / "protocol-capped.tar"
+            asyncio.run(
+                self.client.download_archive(
+                    "sandbox-one", "/tests", capped, MAX_ARCHIVE_BYTES + 4096
+                )
+            )
+            self.assertEqual(self.download_calls[-1][3], MAX_ARCHIVE_BYTES)
+            self.assertEqual(capped.read_bytes(), self.payload)
 
-            async def transfer_with_owned_path():
+            # Simple mocks without max_bytes in signature remain supported and
+            # still enforce the post-download size guard with owned-file cleanup.
+            legacy_calls: list[tuple[str, Path, float]] = []
+
+            async def legacy_download(
+                path: str, dest: Path | None = None, *, timeout_seconds: float = 300
+            ) -> int:
+                assert dest is not None
+                dest_path = Path(dest)
+                legacy_calls.append((path, dest_path, timeout_seconds))
+                dest_path.write_bytes(self.payload)
+                return len(self.payload)
+
+            async def exercise_legacy() -> None:
+                await self.client.stat_path("sandbox-legacy", "/tests")
+                sbx = self.client._sandboxes["sandbox-legacy"]
+                sbx.download_archive = legacy_download
+                legacy_target = root / "legacy-oversized.tar"
+                with self.assertRaisesRegex(ValueError, "exceeds configured limit"):
+                    await self.client.download_archive(
+                        "sandbox-legacy", "/tests", legacy_target, 16
+                    )
+                self.assertFalse(legacy_target.exists())
+
+            asyncio.run(exercise_legacy())
+            self.assertEqual(len(legacy_calls), 1)
+
+    def test_archive_timeout_is_independent_from_control_timeout(self) -> None:
+        self.client.request_timeout_sec = 7
+        self.client.transfer_timeout_sec = 93
+        self.test_binary_upload_and_download_and_stat()
+        self.assertEqual(self.upload_calls[-1][2], 93)
+        self.assertEqual(self.download_calls[-1][2], 93)
+        self.assertEqual(self.stat_calls[-1][1], 7)
+
+    def test_cancelled_transfers_clean_staging_before_tempdir_exits(self) -> None:
+        async def exercise(upload: bool) -> None:
+            paths: list[Path] = []
+            self.block_transfer = True
+            self.transfer_started = asyncio.Event()
+            self.transfer_release = asyncio.Event()
+
+            async def transfer_with_owned_path() -> None:
                 with tempfile.TemporaryDirectory() as temporary:
                     archive = Path(temporary) / "data.tar"
                     paths.append(archive)
@@ -124,20 +324,14 @@ class RunfieldArchiveClientTests(unittest.TestCase):
                         archive.write_bytes(self.payload)
                         await self.client.upload_archive("sandbox-one", "/tests", archive)
                     else:
-                        await self.client.download_archive("sandbox-one", "/tests", archive, len(self.payload))
+                        await self.client.download_archive(
+                            "sandbox-one", "/tests", archive, len(self.payload)
+                        )
 
-            self.block_response = True
-            self.response_started.clear()
-            self.response_release.clear()
             operation = asyncio.create_task(transfer_with_owned_path())
-            try:
-                self.assertTrue(await asyncio.to_thread(self.response_started.wait, 3))
-                operation.cancel()
-                await asyncio.sleep(0)
-                self.assertFalse(operation.done())
-                self.assertTrue(paths[0].parent.exists())
-            finally:
-                self.response_release.set()
+            await asyncio.wait_for(self.transfer_started.wait(), timeout=2.0)
+            self.assertTrue(paths[0].parent.exists())
+            operation.cancel()
             with self.assertRaises(asyncio.CancelledError):
                 await operation
             self.assertFalse(paths[0].parent.exists())

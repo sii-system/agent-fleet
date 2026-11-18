@@ -1,112 +1,98 @@
-"""Transfer bounded archives through Controller without guest-side tools."""
+"""Transfer bounded archives and stat probes through sii-runfield without guest tools."""
 
 from __future__ import annotations
 
-import asyncio
+import errno
+import inspect
+import os
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlencode
-
-from async_utils import await_owned
 
 MAX_ARCHIVE_BYTES = 512 << 20
 ARCHIVE_MEDIA_TYPE = "application/x-tar"
 
 
+def _download_accepts_max_bytes(download_fn: Any) -> bool:
+    """Return True when download_archive accepts an in-stream max_bytes bound."""
+    try:
+        params = inspect.signature(download_fn).parameters
+    except (TypeError, ValueError):
+        return False
+    return "max_bytes" in params or any(
+        param.kind == inspect.Parameter.VAR_KEYWORD
+        for param in params.values()
+    )
+
+
 class RunfieldArchiveClientMixin:
-    """Own binary HTTP transport; failed uploads may have partial side effects."""
-
-    def _archive_url(self, sandbox_id: str, path: str) -> str:
-        return (
-            self.endpoint + f"/v1alpha1/sandboxes/{sandbox_id}/archive?"
-            + urlencode({"path": path})
-        )
-
-    def _archive_stat_url(self, sandbox_id: str, path: str) -> str:
-        return (
-            self.endpoint + f"/v1alpha1/sandboxes/{sandbox_id}/archive/stat?"
-            + urlencode({"path": path})
-        )
-
-    def _stat_path_sync(self, sandbox_id: str, path: str) -> dict[str, Any]:
-        """Probe container path metadata outside guest execution via Controller stat."""
-        response = self.session.request(
-            "GET",
-            self._archive_stat_url(sandbox_id, path),
-            headers={"Accept": "application/json"},
-            timeout=self.request_timeout_sec,
-            allow_redirects=False,
-            stream=True,
-        )
-        try:
-            result = self._parse_response(response)
-        finally:
-            response.close()
-        stat = result.get("stat")
-        if not isinstance(stat, dict) or not isinstance(stat.get("exists"), bool):
-            raise TypeError("Runfield Controller response is missing stat metadata")
-        return stat
+    """Delegate container-external stat and single-attempt tar streams to sii-runfield."""
 
     async def stat_path(self, sandbox_id: str, path: str) -> dict[str, Any]:
         """Return container-external path metadata without starting an execution."""
-        return await await_owned(
-            asyncio.to_thread(self._stat_path_sync, sandbox_id, path)
+        sdk_error_cls = self._load_sdk_error()
+        _, sbx, _ = await self._resolve_sandbox(
+            sandbox_id, timeout_sec=self.request_timeout_sec
         )
-
-    def _check_archive_response(self, response: Any) -> None:
-        if response.status_code != 200:
-            self._parse_response(response)
-            raise RuntimeError("Runfield Controller returned an unexpected archive status")
-
-    def _upload_archive_sync(self, sandbox_id: str, path: str, archive: Path) -> None:
-        size = archive.stat().st_size
-        if not 0 < size <= MAX_ARCHIVE_BYTES:
-            raise ValueError("Runfield archive upload exceeds protocol limit")
-        with archive.open("rb") as source, self.session.request(
-            "PUT", self._archive_url(sandbox_id, path), data=source,
-            headers={"Content-Type": ARCHIVE_MEDIA_TYPE, "Content-Length": str(size)},
-            timeout=self.transfer_timeout_sec, allow_redirects=False, stream=True,
-        ) as response:
-            self._check_archive_response(response)
-            self._parse_response(response)
+        try:
+            stat = await sbx.stat(path, timeout_seconds=self.request_timeout_sec)
+        except sdk_error_cls as error:
+            raise self._translate_sdk_error(error) from error
+        if not isinstance(stat, dict) or not isinstance(stat.get("exists"), bool):
+            raise TypeError("Runfield Controller response is missing stat metadata")
+        return dict(stat)
 
     async def upload_archive(self, sandbox_id: str, path: str, archive: Path) -> None:
         """Send one archive once; never fall back to exec or replay partial writes."""
-        await await_owned(asyncio.to_thread(self._upload_archive_sync, sandbox_id, path, archive))
-
-    def _download_archive_sync(
-        self, sandbox_id: str, path: str, archive: Path, maximum_bytes: int
-    ) -> None:
-        with self.session.request(
-            "GET", self._archive_url(sandbox_id, path),
-            headers={"Accept": ARCHIVE_MEDIA_TYPE}, timeout=self.transfer_timeout_sec,
-            allow_redirects=False, stream=True,
-        ) as response:
-            self._check_archive_response(response)
-            if (
-                response.headers.get("Content-Type") != ARCHIVE_MEDIA_TYPE
-                or response.headers.get("Content-Encoding")
-            ):
-                raise RuntimeError("Runfield archive response has an invalid media type")
-            total = 0
-            owned = False
-            try:
-                with archive.open("xb") as output:
-                    owned = True
-                    for chunk in response.iter_content(64 << 10):
-                        total += len(chunk)
-                        if total > min(maximum_bytes, MAX_ARCHIVE_BYTES):
-                            raise ValueError("Runfield archive download exceeds configured limit")
-                        output.write(chunk)
-            except BaseException:
-                if owned:
-                    archive.unlink(missing_ok=True)
-                raise
+        archive_path = Path(archive)
+        size = archive_path.stat().st_size
+        if not 0 < size <= MAX_ARCHIVE_BYTES:
+            raise ValueError("Runfield archive upload exceeds protocol limit")
+        sdk_error_cls = self._load_sdk_error()
+        _, sbx, _ = await self._resolve_sandbox(
+            sandbox_id, timeout_sec=self.request_timeout_sec
+        )
+        try:
+            await sbx.upload_archive(
+                path, archive_path, timeout_seconds=self.transfer_timeout_sec
+            )
+        except sdk_error_cls as error:
+            raise self._translate_sdk_error(error) from error
 
     async def download_archive(
         self, sandbox_id: str, path: str, archive: Path, maximum_bytes: int
     ) -> None:
-        """Save only on the host; truncated streams fail before extraction."""
-        await await_owned(asyncio.to_thread(
-            self._download_archive_sync, sandbox_id, path, archive, maximum_bytes
-        ))
+        """Save only on the host; oversized or failed streams remove owned staging."""
+        archive_path = Path(archive)
+        if os.path.lexists(archive_path):
+            raise FileExistsError(
+                errno.EEXIST, os.strerror(errno.EEXIST), str(archive_path)
+            )
+        limit = min(maximum_bytes, MAX_ARCHIVE_BYTES)
+        if limit <= 0:
+            raise ValueError("Runfield archive download exceeds configured limit")
+        sdk_error_cls = self._load_sdk_error()
+        _, sbx, _ = await self._resolve_sandbox(
+            sandbox_id, timeout_sec=self.request_timeout_sec
+        )
+        download_kwargs: dict[str, Any] = {
+            "dest": archive_path,
+            "timeout_seconds": self.transfer_timeout_sec,
+        }
+        if _download_accepts_max_bytes(sbx.download_archive):
+            download_kwargs["max_bytes"] = limit
+        try:
+            size = await sbx.download_archive(path, **download_kwargs)
+            if not isinstance(size, int) or isinstance(size, bool):
+                size = archive_path.stat().st_size if archive_path.exists() else 0
+            if size > limit:
+                raise ValueError("Runfield archive download exceeds configured limit")
+        except sdk_error_cls as error:
+            archive_path.unlink(missing_ok=True)
+            if getattr(error, "code", None) == "resource_limit_exceeded":
+                raise ValueError(
+                    "Runfield archive download exceeds configured limit"
+                ) from error
+            raise self._translate_sdk_error(error) from error
+        except BaseException:
+            archive_path.unlink(missing_ok=True)
+            raise

@@ -1,25 +1,32 @@
 # Runfield Controller backend
 
 This package implements Harbor's `BaseEnvironment` for Runfield. One Harbor trial
-owns one Sandbox, accessed exclusively through the public Controller
-`sandbox-lifecycle/v1alpha1` API. Agent Fleet prepares immutable task images;
-Controller selects and persists the owning Node; Node owns container lifecycle,
-image leases and native filesystem operations. The adapter never accesses Node
-hosts, Docker sockets, 3FS, EROFS mounts, or lower directories directly.
+owns one Sandbox, accessed exclusively through the public `sii-runfield`
+(`runfield`) async Python SDK against the Controller `sandbox-lifecycle/v1alpha1`
+API (either over a local `sandbox-client-proxy` Unix domain socket or direct
+HTTP/HTTPS). Agent Fleet prepares immutable task images; Controller selects and
+persists the owning Node; Node owns container lifecycle, image leases and native
+filesystem operations. The adapter never accesses Node hosts, Docker sockets,
+3FS, EROFS mounts, or lower directories directly.
 
 The stable entrypoint is `runfield_sandbox:RunfieldSandboxEnvironment`.
 The shared backend selector resolves it when `HARBOR_ENVIRONMENT_TYPE=runfield`.
+Importing the adapter or running `preflight()` does not import `runfield` or
+open network sockets; `sii-runfield` is loaded lazily when a Controller
+operation runs, and all `RunfieldSandboxEnvironment` instances on the same
+asyncio event loop share one `runfield.SandboxClient` per transport key.
 For launcher behavior, see [environment adapters](../../README.md).
 
 ## Prerequisites and configuration
 
-The Controller must be reachable from the host runner. Task images must already
-be published and resolvable by the Runfield deployment as canonical OCI manifest
-digest references, such as
-`registry.example/tasks/example@sha256:<64-hex-digest>`; mutable tags and local
-Docker builds are rejected. Image precedence is the `image_ref` environment
-kwarg, the Bundle Manifest selected by `bundle_manifest_path` or
-`HARBOR_OPENSANDBOX_BUNDLE_MANIFEST`, then `task.environment.docker_image`.
+The Controller must be reachable from the host runner (or via a client-host
+`sandbox-client-proxy` daemon). Task images must already be published and
+resolvable by the Runfield deployment as canonical OCI manifest digest
+references, such as `registry.example/tasks/example@sha256:<64-hex-digest>`;
+mutable tags and local Docker builds are rejected. Image precedence is the
+`image_ref` environment kwarg, the Bundle Manifest selected by
+`bundle_manifest_path` or `HARBOR_OPENSANDBOX_BUNDLE_MANIFEST`, then
+`task.environment.docker_image`.
 
 Every schedulable ready Node must advertise `capabilities.archive_transfer:
 true`. For Pi, Claude Code and OpenCode, batch preflight additionally requires
@@ -33,6 +40,7 @@ Configure the shared launcher, for example:
 ```bash
 HARBOR_ENVIRONMENT_TYPE=runfield \
 RUNFIELD_CONTROLLER_ENDPOINT=https://controller.example \
+RUNFIELD_CLIENT_PROXY_SOCKET=/run/runfield/client-proxy.sock \
 AGENT=pi PI_VERSION=1.3.0 \
 DATASET_NAME=auto DATASET_PATH=/absolute/path/to/tasks \
 TOTAL_WORKERS=1 HARBOR_N_CONCURRENT=1 \
@@ -49,6 +57,8 @@ boundary accordingly before exposing it to untrusted networks.
 | --- | --- | --- |
 | `RUNFIELD_CONTROLLER_ENDPOINT` | required | Public Controller origin |
 | `RUNFIELD_CONTROLLER_ALLOW_INSECURE_HTTP` | `0` | Explicitly allow plaintext HTTP |
+| `RUNFIELD_CLIENT_PROXY_SOCKET` | unset | Optional client-host `sandbox-client-proxy` UDS path |
+| `RUNFIELD_CLIENT_PROXY_MODE` | `auto` (`uds` when socket set) | SDK transport mode (`auto`, `uds`, or `direct`) |
 | `RUNFIELD_SANDBOX_TTL_SECONDS` | `7200` | Sandbox lease lifetime |
 | `RUNFIELD_SANDBOX_READY_TIMEOUT_SEC` | `300` | Wait for Sandbox readiness |
 | `RUNFIELD_SANDBOX_CLOSE_TIMEOUT_SEC` | `120` | Wait for terminal close |
@@ -58,9 +68,9 @@ boundary accordingly before exposing it to untrusted networks.
 | `RUNFIELD_SANDBOX_TRANSFER_MAX_BYTES` | `536870912` | Adapter transfer bound |
 | `RUNFIELD_SANDBOX_TRANSFER_TIMEOUT_SEC` | `1800` | Archive HTTP timeout; service deadlines also apply |
 
-Constructor kwargs can override these numeric defaults. Services retain their
-own protocol, output, capacity and deadline limits; increasing a client setting
-does not increase service limits.
+Constructor kwargs can override these settings. Services retain their own
+protocol, output, capacity and deadline limits; increasing a client setting does
+not increase service limits.
 
 ## Supported tasks and boundaries
 
@@ -84,66 +94,78 @@ these advertised compatibility flags.
 
 ## Lifecycle and ownership
 
-`start()` validates the definition, submits create with a stable request ID,
-waits for `ready` and a reachable owning Node, then prepares Harbor directories,
-optional task environment files and read-only inputs. Image delivery is
-`lazy-required` with `fallback: none`; `force_build` is not forwarded.
-Retryable create failures reuse the same identity. A failed startup with a
-known Sandbox ID attempts a shielded close before propagating the error.
+`start()` validates the definition, submits `create_sandbox` (`wait_until=accepted`)
+with a deterministic request ID, records the returned Sandbox ID immediately,
+waits for `ready` with a reachable owning Node via `wait_sandbox_ready` (zero
+Python polling sleep when using `sandbox-client-proxy`), and then uploads
+optional task environment files and read-only inputs. Admission control, batch
+state polling and retryable backoff are owned by `sandbox-client-proxy` and
+`sii-runfield` rather than adapter-private semaphores or loops. Harbor output
+directory creation (`/logs/agent`, `/logs/verifier`, `/logs/artifacts`,
+`/artifacts`) is deferred out of `start()` so high-concurrency startup bursts
+issue zero empty-directory `PUT /archive` RPCs: the first `exec()` under an
+ordinary working directory creates those directories in an isolated outer shell
+step (marking them prepared once an execution exits `0`), while a first `exec()`
+whose working directory targets `/logs` or `/artifacts` — as well as zero-exec
+trials or post-failure downloads — lazily materializes them via
+`_prepare_harbor_directories()` before use.
+Image delivery is `lazy-required` with `fallback: none`; `force_build` is not
+forwarded. A failed startup with a known Sandbox ID attempts a shielded close
+before propagating the error.
 
-`stop()` requests close and waits for `closed` or `create_failed`. Retaining a
-stopped Sandbox is unsupported: `delete=False` emits a warning and still closes
-it. Image cache reclamation belongs to the deployment, not this adapter.
+`stop()` calls `close_sandbox(..., wait=True)` and waits for `closed` or
+`create_failed`, evicting the active SDK handle once terminal close succeeds.
+Retaining a stopped Sandbox is unsupported: `delete=False` emits a warning and
+still closes it. Image cache reclamation belongs to the deployment, not this
+adapter.
 
 ## Command execution
 
-Harbor commands run as `/bin/bash -lc` under root. Commands larger than 4096
-UTF-8 bytes are uploaded as private script files and run with `/bin/bash`.
-Scripts remain owned by their Sandbox and are reclaimed at close. The requested
-working directory and merged task/command environment are passed explicitly.
+Harbor commands run under root without a login shell:
 
-Execution uses non-TTY asynchronous resources, polls to a terminal state and
-retrieves separate bounded stdout/stderr ranges. It does not provide realtime
-streaming; the output callback receives completed output. Truncated streams and
-`recovery_required` are reported as errors. Because the API has no execution
-cancel operation, a command timeout or caller cancellation closes the entire
-Sandbox. Actual task and agent commands still require their declared guest
-runtime, including Bash for this execution interface.
+- Commands up to `4096` UTF-8 bytes without NUL bytes run directly as
+  `["/bin/bash", "-c", command]`.
+- Commands in `4097..98304` UTF-8 bytes (`4 KiB..96 KiB`, safely below Linux
+  `MAX_ARG_STRLEN`) without NUL bytes split on valid UTF-8 codepoint boundaries
+  into `<= 4096`-byte positional chunks and run inline via an unexported random
+  `__rf_cmd_<hex>` positional-shift bootstrap (`while [ "$#" -gt 0 ]; do ...; shift; done; export -n ...; exec /bin/bash -c "$..."`)
+  with zero host temporary files, zero caller environment mutation and zero
+  `PUT /archive` RPCs.
+- Commands exceeding `98304` UTF-8 bytes (or containing NUL bytes) fall back to
+  uploading a private script under `/tmp` via `upload_file` and executing
+  `["/bin/bash", remote_path]`.
 
-## Native filesystem transfers
+Execution uses two-phase submission (`create_execution` followed by
+`wait_execution`, skipping the wait RPC when an accepted record is already
+terminal with zero committed bytes and no truncation). It does not provide
+realtime streaming; the output callback receives completed output. Truncated
+streams and `recovery_required` are reported as errors.
 
-File transfer and environment preparation do not depend on Python, tar, chmod,
-mkdir, pwd or cleanup commands inside the task image. Only task/agent commands
-execute there.
+On wait timeout or caller cancellation, `_abort_execution_on_wait_exit` first
+attempts single-execution `cancel_execution`. When the execution transitions to
+`canceled` (or `state_conflict` confirms natural terminal completion via
+`execution_status`), the Sandbox remains alive. Closing the Sandbox is used only
+as a fallback when `close_on_timeout=True` and single-execution cancellation
+cannot guarantee termination. Best-effort probes pass `close_on_timeout=False`
+so a probe timeout never destroys the shared Sandbox.
 
-- `PUT /v1alpha1/sandboxes/{id}/archive?path=/` sends an uncompressed tar with a
-  known Content-Length and `Content-Type: application/x-tar`.
+## Native filesystem transfers and path probes
+
+File transfer, directory preparation and clean path probes (`is_dir` / `is_file`
+via `GET /v1alpha1/sandboxes/{id}/archive/stat`) do not depend on Python, tar,
+chmod, mkdir, pwd or cleanup commands inside the task image.
+
+- `PUT /v1alpha1/sandboxes/{id}/archive?path=/` streams an uncompressed tar with
+  a known `Content-Length` (`1..512 MiB`) and `Content-Type: application/x-tar`.
 - `GET /v1alpha1/sandboxes/{id}/archive?path=/absolute/container/path` streams an
-  uncompressed tar. The same endpoints exist on Node's internal API.
+  uncompressed tar to host staging.
 - Paths are normalized absolute container paths. The single value `.` refers
   to the OCI working directory, resolved by Node from runtime metadata.
-- Services limit each transfer to 512 MiB of tar bytes, additionally bounded
-  by the adapter's limit and service request deadlines.
 
-Controller routes to the persisted owning Node. Node validates ready state and
-actual container ownership, then calls Moby's native archive API. Moby owns
-filesystem isolation and locking. Transfers create no execution records or
-container temporary archives.
-
-Uploads have Docker archive-copy semantics: an error can leave partial writes.
-They are not transactional and are never transparently retried. Downloads are
-bounded, validated and staged on the host before committing local output.
-Unsafe archive paths, escaping links and special files are rejected. Input
-read-only modes and log-directory permissions are written into tar headers on
-the host. Host staging uses `TMPDIR`; allow enough space for uncompressed trees.
-
-Archive requests use `RUNFIELD_SANDBOX_TRANSFER_TIMEOUT_SEC`, independently of the
-control request timeout; service deadlines still apply. Cancellation waits for
-owned HTTP, packing and extraction workers before releasing temporary paths or
-returning to the caller. It does not interrupt synchronous filesystem work or
-roll back completed writes. Downloaded links are resolved against the exported
-subtree before merging, including link chains. The directory merge itself is
-not transactional.
+Uploads have Docker archive-copy semantics: an error can leave partial writes,
+and uploads are never transparently retried. Downloads are bounded, validated
+and staged on the host before committing local output. Unsafe archive paths,
+escaping links and special files are rejected.
 
 For `download_dir("/", ...)` only, Moby's `/` and `/path` archive names and
 root-relative hardlink targets are rebased into local staging. Other downloads
@@ -156,11 +178,11 @@ remain rejected, including in root exports.
 | --- | --- |
 | `adapter.py` | Harbor interface, configuration, task/resource/network boundaries |
 | `runtime_preflight.py` | Batch-wide Node archive and exact Toolkit capability checks |
-| `lifecycle.py` | Stable create identity, readiness, startup compensation and close |
-| `execution.py` | Command resources, output ranges, deadlines and cancellation |
-| `transfer.py` | Host archive packing/extraction and Harbor input/output preparation |
-| `archive_client.py` | Bounded binary archive HTTP transport |
-| `client.py` | Public control API, stable errors and bounded response decoding |
+| `lifecycle.py` | Stable create identity, two-phase readiness, startup compensation and close |
+| `execution.py` | Two-phase execution wait, UTF-8 chunked argv, single-command cancel and stat probes |
+| `transfer.py` | Host archive packing/extraction and lazy Harbor output directory preparation |
+| `archive_client.py` | Bounded archive upload/download and container-external stat delegation |
+| `client.py` | Lazy `sii-runfield` loader, loop-scoped shared `SandboxClient`, handle map and error translation |
 
 Run the focused regression suites from the repository root with the prepared
 Harbor runner and pinned Ruff version:
@@ -173,7 +195,7 @@ ruff check --config .github/ruff.toml \
   Agents/utils/common/Harbor/tests/test_runfield*.py
 ```
 
-Unit tests cover lifecycle, execution, host file semantics, transport failures
-and capability preflight. They do not prove deployment compatibility. A live
-check must also establish accepted resource policy, immutable image resolution,
-Toolkit capability, real transfer, command execution and exact Sandbox cleanup.
+Unit tests cover lazy SDK loading, shared per-loop `SandboxClient` pooling,
+lifecycle, UTF-8 chunked command delivery, single-command cancellation, host
+file semantics, transport failures and capability preflight in standalone CI
+mode without requiring `sii-runfield` at import time.

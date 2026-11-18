@@ -4,11 +4,15 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
+import os
 import shlex
+import subprocess
 import sys
+import tempfile
 import types
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 MODULE_DIR = Path(__file__).resolve().parents[1]
@@ -33,13 +37,16 @@ class FakePi:
         model_name: str | None = None,
         extra_env: dict[str, str] | None = None,
         thinking: str | None = None,
+        logs_dir: Path | None = None,
         **kwargs,
     ) -> None:
         self._version = version
         self.model_name = model_name
         self._extra_env = extra_env or {}
         self.thinking = thinking
+        self.logs_dir = logs_dir
         self.agent_commands: list[dict[str, object]] = []
+        self.root_commands: list[str] = []
 
     def version(self) -> str | None:
         return self._version
@@ -49,6 +56,17 @@ class FakePi:
 
     def _build_register_skills_command(self) -> str | None:
         return None
+
+    async def setup(self, environment) -> None:
+        self.root_commands.append("[ -d /installed-agent ] || mkdir -p /installed-agent")
+        if hasattr(environment, "exec"):
+            await environment.exec(
+                command="[ -d /installed-agent ] || mkdir -p /installed-agent",
+                user="root",
+            )
+        if self.logs_dir is not None:
+            (self.logs_dir / "setup").mkdir(parents=True, exist_ok=True)
+        await self.install(environment)
 
     async def exec_as_agent(self, environment, **kwargs) -> None:
         self.agent_commands.append(kwargs)
@@ -141,6 +159,139 @@ class AgentFleetPiTests(unittest.TestCase):
             command.index("required shared Pi runtime is unavailable"),
             command.index('elif [ -f "$node_tar" ]'),
         )
+
+    def test_preinstalled_setup_issues_zero_rpcs_and_inlines_bootstrap_in_run(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            logs_dir = Path(tmpdir) / "logs"
+            exec_calls: list[dict[str, object]] = []
+
+            async def record_exec(**kwargs):
+                exec_calls.append(kwargs)
+                return SimpleNamespace(return_code=0, stdout="", stderr="")
+
+            environment = SimpleNamespace(exec=record_exec)
+            agent = self.module.AgentFleetPi(
+                version="1.3.0",
+                model_name="sii-gateway/test-model",
+                extra_env={
+                    "AGENT_FLEET_API_KEY": "fake-key",
+                    "PI_MODELS_CONFIG": '{"providers":{}}',
+                    "PI_SETTINGS_CONFIG": '{"thinking":"high"}',
+                },
+                logs_dir=logs_dir,
+            )
+
+            with mock.patch.dict(
+                "os.environ", {"HARBOR_BACKEND_PREINSTALLED_AGENTS": "1"}
+            ):
+                asyncio.run(agent.setup(environment))
+                self.assertEqual(exec_calls, [])
+                self.assertEqual(agent.agent_commands, [])
+                self.assertTrue((logs_dir / "setup").is_dir())
+                self.assertTrue(agent._deferred_shared_setup)
+                self.assertEqual(agent._version, "1.3.0")
+
+                asyncio.run(agent.run("solve task", environment, object()))
+
+            self.assertEqual(exec_calls, [])
+            self.assertEqual(len(agent.agent_commands), 1)
+            wrapped_cmd = str(agent.agent_commands[0]["command"])
+            self.assertIn("pi_version=1.3.0", wrapped_cmd)
+            self.assertIn(
+                'mkdir -p /installed-agent "$HOME/.local/bin" "$HOME/.pi/agent"',
+                wrapped_cmd,
+            )
+            self.assertIn(
+                '[ -x "$shared_runtime/bin/node" ] && [ -x "$shared_runtime/bin/pi" ]',
+                wrapped_cmd,
+            )
+            self.assertIn(
+                '[ "$(cat "$shared_runtime/VERSION")" = "$pi_version" ]',
+                wrapped_cmd,
+            )
+            self.assertIn(
+                'required shared Pi runtime is unavailable or has the wrong version: $pi_version',
+                wrapped_cmd,
+            )
+            self.assertIn('"$HOME/.pi/agent/models.json"', wrapped_cmd)
+            self.assertIn('"$HOME/.pi/agent/settings.json"', wrapped_cmd)
+            self.assertNotIn("node -p", wrapped_cmd)
+            self.assertNotIn("pi --version", wrapped_cmd)
+            self.assertLess(
+                wrapped_cmd.index("models.json"),
+                wrapped_cmd.index("ext_args=()"),
+            )
+
+            # Verify bootstrap shell snippet against matching and mismatched fake runtime dirs.
+            runtime_root = Path(tmpdir) / "runtime"
+            (runtime_root / "bin").mkdir(parents=True)
+            (runtime_root / "bin/node").write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            (runtime_root / "bin/pi").write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            (runtime_root / "bin/node").chmod(0o755)
+            (runtime_root / "bin/pi").chmod(0o755)
+            (runtime_root / "VERSION").write_text("1.3.0\n", encoding="utf-8")
+            fake_home = Path(tmpdir) / "home"
+            fake_installed = Path(tmpdir) / "installed-agent"
+            bootstrap = agent._shared_runtime_bootstrap_command().replace(
+                "/installed-agent", shlex.quote(str(fake_installed))
+            )
+            env = {
+                **os.environ,
+                "HOME": str(fake_home),
+                "PI_SHARED_RUNTIME_DIR": str(runtime_root),
+                "PI_MODELS_CONFIG": '{"models":1}',
+                "PI_SETTINGS_CONFIG": '{"settings":2}',
+            }
+            ok = subprocess.run(
+                ["/bin/bash", "-c", bootstrap],
+                env=env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(ok.returncode, 0, ok.stderr)
+            self.assertTrue((fake_home / ".local/bin/pi").is_symlink())
+            self.assertEqual(
+                (fake_home / ".pi/agent/models.json").read_text(encoding="utf-8"),
+                '{"models":1}\n',
+            )
+
+            (runtime_root / "VERSION").write_text("9.9.9\n", encoding="utf-8")
+            bad = subprocess.run(
+                ["/bin/bash", "-c", bootstrap],
+                env=env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(bad.returncode, 1)
+            self.assertIn(
+                "required shared Pi runtime is unavailable or has the wrong version: 1.3.0",
+                bad.stderr,
+            )
+
+    def test_non_preinstalled_setup_delegates_to_super_without_inline_bootstrap(self) -> None:
+        exec_calls: list[dict[str, object]] = []
+
+        async def record_exec(**kwargs):
+            exec_calls.append(kwargs)
+            return SimpleNamespace(return_code=0, stdout="", stderr="")
+
+        environment = SimpleNamespace(exec=record_exec)
+        agent = self.module.AgentFleetPi(
+            version="0.81.1",
+            model_name="sii-gateway/test-model",
+        )
+        with mock.patch.dict(
+            "os.environ", {"HARBOR_BACKEND_PREINSTALLED_AGENTS": "0"}
+        ):
+            asyncio.run(agent.setup(environment))
+            self.assertFalse(agent._deferred_shared_setup)
+            self.assertEqual(len(exec_calls), 1)
+            self.assertEqual(len(agent.agent_commands), 1)
+            asyncio.run(agent.run("solve task", object(), object()))
+            run_cmd = str(agent.agent_commands[-1]["command"])
+            self.assertNotIn("required shared Pi runtime is unavailable", run_cmd)
 
     def test_run_uses_custom_provider_and_forwards_extra_environment(self) -> None:
         agent = self.module.AgentFleetPi(

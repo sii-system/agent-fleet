@@ -193,6 +193,8 @@ class RunfieldTransferMixin:
 
     async def download_file(self, source_path: str, target_path: Path | str) -> None:
         source = _remote_path(source_path)
+        if getattr(self, "_harbor_dirs_prepared", True) is False:
+            await self._prepare_harbor_directories()
         target = Path(target_path)
         target.parent.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(prefix=".harbor-runfield-download-", dir=target.parent) as temporary:
@@ -221,6 +223,8 @@ class RunfieldTransferMixin:
 
     async def download_dir(self, source_dir: str, target_dir: Path | str) -> None:
         source = _remote_path(source_dir)
+        if getattr(self, "_harbor_dirs_prepared", True) is False:
+            await self._prepare_harbor_directories()
         with tempfile.TemporaryDirectory(prefix="harbor-runfield-download-") as temporary:
             archive_path = Path(temporary) / "directory.tar"
             await self._client.download_archive(
@@ -242,6 +246,7 @@ class RunfieldTransferMixin:
                     member.type, member.mode = tarfile.DIRTYPE, 0o777
                     archive.addfile(member)
             await self._client.upload_archive(self._sandbox_id, "/", archive_path)
+        self._harbor_dirs_prepared = True
 
     async def _upload_environment_dir_after_start(self) -> None:
         """Resolve an unspecified workdir through Node metadata, never guest pwd."""
