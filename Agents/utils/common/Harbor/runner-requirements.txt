@@ -10,5 +10,6 @@ opik==2.1.32
 pip==26.2
 PyYAML==6.0.3
 s3cmd==2.4.0
+sii-runfield==0.1.0
 toml==0.10.2
 yicloud-sdk-python==0.4.1

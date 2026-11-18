@@ -53,11 +53,15 @@ class RunfieldControllerError(RuntimeError):
         *,
         retryable: bool = False,
         status_code: int | None = None,
+        sandbox_id: str | None = None,
+        sandbox_state: str | None = None,
     ) -> None:
         super().__init__(f"Runfield Controller request failed: {code}: {message}")
         self.code = code
         self.retryable = retryable
         self.status_code = status_code
+        self.sandbox_id = sandbox_id
+        self.sandbox_state = sandbox_state
 
 
 class RunfieldControllerClient(RunfieldArchiveClientMixin):
@@ -123,15 +127,33 @@ class RunfieldControllerClient(RunfieldArchiveClientMixin):
         _, _, _, sdk_error_cls = _load_runfield_sdk()
         return sdk_error_cls
 
-    @staticmethod
-    def _translate_sdk_error(error: Any) -> RunfieldControllerError:
+    @classmethod
+    def _extract_error_sandbox(
+        cls, error: Any
+    ) -> tuple[Any, str | None, str | None]:
+        err_sbx = getattr(error, "sandbox", None)
+        err_id = getattr(err_sbx, "sandbox_id", None)
+        if not isinstance(err_id, str) or not err_id:
+            err_record = getattr(err_sbx, "record", None)
+            raw_id = (
+                err_record.get("sandbox_id") if isinstance(err_record, dict) else None
+            )
+            err_id = raw_id if isinstance(raw_id, str) and raw_id else None
+        err_state = cls._handle_state(err_sbx) if err_sbx is not None else None
+        return err_sbx, err_id, err_state
+
+    @classmethod
+    def _translate_sdk_error(cls, error: Any) -> RunfieldControllerError:
         code = str(getattr(error, "code", None) or "unknown_error")
         message = str(error) or code
+        _, err_id, err_state = cls._extract_error_sandbox(error)
         return RunfieldControllerError(
             code,
             message,
             retryable=bool(getattr(error, "retryable", False)),
             status_code=getattr(error, "http_status", None),
+            sandbox_id=err_id,
+            sandbox_state=err_state,
         )
 
     def _resolve_proxy_settings(self) -> tuple[str | None, str]:
@@ -267,10 +289,12 @@ class RunfieldControllerClient(RunfieldArchiveClientMixin):
                 timeout_seconds=self.request_timeout_sec,
             )
         except sdk_error_cls as error:
-            err_sbx = getattr(error, "sandbox", None)
-            err_id = getattr(err_sbx, "sandbox_id", None)
-            if err_sbx is not None and isinstance(err_id, str) and err_id:
-                state.sandboxes[err_id] = err_sbx
+            err_sbx, err_id, err_state = self._extract_error_sandbox(error)
+            if err_sbx is not None and err_id is not None:
+                if err_state not in _INACTIVE_HANDLE_STATES:
+                    state.sandboxes[err_id] = err_sbx
+                else:
+                    state.sandboxes.pop(err_id, None)
             raise self._translate_sdk_error(error) from error
         record = dict(sbx.record)
         sandbox_id = getattr(sbx, "sandbox_id", None) or record.get("sandbox_id")

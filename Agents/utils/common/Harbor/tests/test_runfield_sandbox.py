@@ -465,6 +465,116 @@ class RunfieldClientPoolingAndSdkTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(nf_close.exception.code, "not_found")
             self.assertNotIn(sid2, client._sandboxes)
 
+    async def test_partial_create_failure_preserves_identity_and_cleans_up_during_start(
+        self,
+    ) -> None:
+        stub, _ = make_stub_runfield_sdk()
+        with patch.dict(sys.modules, {"runfield": stub}):
+            client = client_mod.RunfieldControllerClient("https://controller.example")
+            env = RunfieldLifecycleTests().environment()
+            env._client = client
+
+            close_calls: list[tuple[str, bool, float]] = []
+
+            async def fail_after_creating(
+                _sdk_self, _spec: dict, *, request_id: str, **_kwargs: object
+            ):
+                partial = stub.Sandbox(
+                    {
+                        "sandbox_id": "sbx-partial-creating",
+                        "request_id": request_id,
+                        "state": "creating",
+                        "observation": {"reachable": True, "node_id": "node-1"},
+                    }
+                )
+
+                async def record_close(handle, wait: bool, timeout_sec: float):
+                    close_calls.append((handle.sandbox_id, wait, timeout_sec))
+                    handle._record["state"] = "closed"
+                    handle._record["observation"] = {
+                        "reachable": True,
+                        "node_id": "node-1",
+                    }
+
+                partial.close_impl = record_close
+                raise stub.SandboxError(
+                    "timeout",
+                    request_id=request_id,
+                    sandbox=partial,
+                    retryable=True,
+                )
+
+            stub.SandboxClient.create_impl = fail_after_creating
+            with self.assertRaises(client_mod.RunfieldControllerError) as creating_err:
+                await env.start(force_build=False)
+
+            self.assertEqual(creating_err.exception.code, "timeout")
+            self.assertTrue(creating_err.exception.retryable)
+            self.assertEqual(
+                creating_err.exception.sandbox_id, "sbx-partial-creating"
+            )
+            self.assertEqual(creating_err.exception.sandbox_state, "creating")
+            self.assertEqual(close_calls, [("sbx-partial-creating", True, 2)])
+            self.assertEqual(client._sandboxes, {})
+            self.assertEqual(env._sandbox_id, "")
+
+            # Record-only sandbox fallback and already-inactive create_failed handles:
+            # inactive handles are never retained (and stale ones are evicted),
+            # .sandbox_id is preserved, and start() compensation skips redundant close.
+            state = client._shared_state()
+            state.sandboxes["sbx-partial-failed"] = SimpleNamespace(
+                sandbox_id="sbx-partial-failed", state="creating"
+            )
+
+            async def unexpected_get(_sdk_self, sandbox_id: str, **_kwargs: object):
+                raise AssertionError(
+                    f"inactive handle must not be refetched: {sandbox_id}"
+                )
+
+            stub.SandboxClient.get_impl = unexpected_get
+
+            async def fail_with_create_failed(
+                _sdk_self, _spec: dict, *, request_id: str, **_kwargs: object
+            ):
+                failed_record_only = SimpleNamespace(
+                    sandbox_id=None,
+                    record={
+                        "sandbox_id": "sbx-partial-failed",
+                        "request_id": request_id,
+                        "state": "create_failed",
+                        "observation": {"reachable": True, "node_id": "node-1"},
+                    },
+                )
+                raise stub.SandboxError(
+                    "internal_error",
+                    request_id=request_id,
+                    sandbox=failed_record_only,
+                    http_status=500,
+                )
+
+            stub.SandboxClient.create_impl = fail_with_create_failed
+            with self.assertRaises(client_mod.RunfieldControllerError) as direct_err:
+                await client.create_sandbox(
+                    {
+                        "request_id": "req-partial-failed",
+                        "image": "registry.example/tasks/a@sha256:" + "a" * 64,
+                        "resources": {"policy": "shared/v1"},
+                        "lifecycle": {"ttl_seconds": 3600},
+                    }
+                )
+            self.assertEqual(direct_err.exception.code, "internal_error")
+            self.assertEqual(direct_err.exception.status_code, 500)
+            self.assertEqual(direct_err.exception.sandbox_id, "sbx-partial-failed")
+            self.assertEqual(direct_err.exception.sandbox_state, "create_failed")
+            self.assertEqual(state.sandboxes, {})
+
+            with self.assertRaises(client_mod.RunfieldControllerError) as start_err:
+                await env.start(force_build=False)
+            self.assertEqual(start_err.exception.code, "internal_error")
+            self.assertEqual(start_err.exception.sandbox_id, "sbx-partial-failed")
+            self.assertEqual(state.sandboxes, {})
+            self.assertEqual(env._sandbox_id, "")
+
 
 class RunfieldLifecycleTests(unittest.IsolatedAsyncioTestCase):
     def environment(self):
@@ -1348,6 +1458,28 @@ class RunfieldLifecycleTests(unittest.IsolatedAsyncioTestCase):
         environment._client.close_sandbox.assert_awaited_once_with(
             "sbx-one", wait=True, timeout_sec=2
         )
+        self.assertEqual(environment._sandbox_id, "")
+
+        environment._client.close_sandbox.reset_mock()
+        environment._client.create_sandbox.side_effect = (
+            client_mod.RunfieldControllerError(
+                "timeout",
+                "deadline exceeded",
+                retryable=True,
+                sandbox_id="sbx-partial",
+            )
+        )
+        environment._client.close_sandbox.return_value = {
+            "sandbox_id": "sbx-partial",
+            "state": "closed",
+        }
+        with self.assertRaises(client_mod.RunfieldControllerError) as partial_ctx:
+            await environment.start(force_build=False)
+        self.assertEqual(partial_ctx.exception.sandbox_id, "sbx-partial")
+        environment._client.close_sandbox.assert_awaited_once_with(
+            "sbx-partial", wait=True, timeout_sec=2
+        )
+        self.assertEqual(environment._sandbox_id, "")
 
     async def test_execution_cancellation_before_execution_id_closes_sandbox(self):
         environment = self.environment()
@@ -2394,6 +2526,184 @@ class RunfieldRealSdkIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     await env.stop(delete=True)
                     self.assertEqual(env._sandbox_id, "")
                     self.assertEqual(env._client._sandboxes, {})
+                finally:
+                    await env._client.aclose()
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join()
+
+    async def test_partial_create_compensation_over_real_sii_runfield_sdk(
+        self,
+    ) -> None:
+        runfield_mod = importlib.import_module("runfield")
+        sandboxes: dict[str, dict] = {}
+        closed_ids: list[str] = []
+        next_create_spec: list[tuple[str, str, str, int | None]] = []
+        spec_digest = "sha256:" + "2" * 64
+
+        class PartialCreateHandler(BaseHTTPRequestHandler):
+            def _json_reply(self, status: int, result: dict) -> None:
+                body = json.dumps(
+                    {
+                        "api_version": "sandbox-lifecycle/v1alpha1",
+                        "status": "ok",
+                        "result": result,
+                    }
+                ).encode("utf-8")
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def do_POST(self) -> None:
+                parsed = urlsplit(self.path)
+                length = int(self.headers.get("Content-Length", "0"))
+                raw = self.rfile.read(length) if length else b""
+                payload = json.loads(raw) if raw else {}
+                if parsed.path == "/v1alpha1/sandboxes":
+                    sid, initial_state, _, _ = next_create_spec[0]
+                    rec = {
+                        "sandbox_id": sid,
+                        "request_id": payload["request_id"],
+                        "image": payload["image"],
+                        "spec_digest": spec_digest,
+                        "actual_delivery_mode": "lazy-required",
+                        "state": initial_state,
+                        "revision": 1,
+                        "observation": {"reachable": True, "node_id": "node-live-1"},
+                    }
+                    sandboxes[sid] = rec
+                    self._json_reply(202, {"sandbox": rec})
+                    return
+                if parsed.path.endswith("/close"):
+                    sid = parsed.path.split("/")[3]
+                    closed_ids.append(sid)
+                    rec = dict(sandboxes[sid])
+                    if rec["state"] != "create_failed":
+                        rec["state"] = "closed"
+                        rec["revision"] += 1
+                    sandboxes[sid] = rec
+                    self._json_reply(200, {"sandbox": rec})
+                    return
+                self.send_error(404)
+
+            def do_GET(self) -> None:
+                parsed = urlsplit(self.path)
+                parts = [p for p in parsed.path.split("/") if p]
+                if len(parts) == 3 and parts[:2] == ["v1alpha1", "sandboxes"]:
+                    sid = parts[2]
+                    self._json_reply(200, {"sandbox": dict(sandboxes[sid])})
+                    return
+                self.send_error(404)
+
+            def log_message(self, *_args: object) -> None:
+                pass
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), PartialCreateHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            endpoint = f"http://127.0.0.1:{server.server_port}"
+            with tempfile.TemporaryDirectory() as tmpdir, patch.object(
+                adapter.BaseEnvironment,
+                "__init__",
+                lambda self, **_kwargs: (
+                    setattr(self, "_network_is_public", False),
+                    setattr(self, "environment_dir", Path(tmpdir) / "env"),
+                    setattr(self, "session_id", "live-partial__env"),
+                    setattr(self, "context_id", None),
+                    setattr(
+                        self,
+                        "task_env_config",
+                        SimpleNamespace(docker_image=None, workdir="/workspace"),
+                    ),
+                    setattr(self, "logger", logging.getLogger("test-live-partial")),
+                    setattr(self, "_persistent_env", {}),
+                    setattr(self, "_effective_cpus", None),
+                    setattr(self, "_effective_memory_mb", None),
+                    setattr(self, "_effective_storage_mb", None),
+                    setattr(self, "_mounts", []),
+                )[-1],
+            ), patch.dict(
+                os.environ,
+                {
+                    "RUNFIELD_CONTROLLER_ENDPOINT": endpoint,
+                    "RUNFIELD_CONTROLLER_ALLOW_INSECURE_HTTP": "1",
+                    "RUNFIELD_CLIENT_PROXY_MODE": "direct",
+                },
+                clear=False,
+            ):
+                env = adapter.RunfieldSandboxEnvironment(
+                    image_ref="registry.example/tasks/demo@sha256:" + "c" * 64,
+                )
+                try:
+                    shared_state = env._client._shared_state()
+                    orig_create = shared_state.sdk_client.create
+
+                    async def create_then_raise(
+                        spec: dict, *, request_id: str, **kwargs: object
+                    ):
+                        real_sbx = await orig_create(
+                            spec, request_id=request_id, **kwargs
+                        )
+                        _, _, err_code, err_http = next_create_spec.pop(0)
+                        raise runfield_mod.SandboxError(
+                            err_code,
+                            request_id=request_id,
+                            sandbox=real_sbx,
+                            http_status=err_http,
+                            retryable=err_code == "timeout",
+                            outcome_unknown=False,
+                        )
+
+                    shared_state.sdk_client.create = create_then_raise
+
+                    # 1) Partial create in "creating" state -> closed on Controller,
+                    # handle evicted, _sandbox_id reset, original error propagated.
+                    next_create_spec.append(
+                        ("sbx-real-partial-creating", "creating", "timeout", None)
+                    )
+                    with self.assertRaises(
+                        client_mod.RunfieldControllerError
+                    ) as creating_ctx:
+                        await env.start(force_build=False)
+                    self.assertEqual(creating_ctx.exception.code, "timeout")
+                    self.assertEqual(
+                        creating_ctx.exception.sandbox_id,
+                        "sbx-real-partial-creating",
+                    )
+                    self.assertEqual(closed_ids, ["sbx-real-partial-creating"])
+                    self.assertEqual(
+                        sandboxes["sbx-real-partial-creating"]["state"], "closed"
+                    )
+                    self.assertEqual(shared_state.sandboxes, {})
+                    self.assertEqual(env._sandbox_id, "")
+
+                    # 2) Partial create already in "create_failed" -> inactive handle
+                    # not retained, .sandbox_id preserved, and start() compensation
+                    # succeeds cleanly even though real SandboxClient has no .get().
+                    next_create_spec.append(
+                        (
+                            "sbx-real-partial-failed",
+                            "create_failed",
+                            "internal_error",
+                            500,
+                        )
+                    )
+                    with self.assertRaises(
+                        client_mod.RunfieldControllerError
+                    ) as failed_ctx:
+                        await env.start(force_build=False)
+                    self.assertEqual(failed_ctx.exception.code, "internal_error")
+                    self.assertEqual(failed_ctx.exception.status_code, 500)
+                    self.assertEqual(
+                        failed_ctx.exception.sandbox_id, "sbx-real-partial-failed"
+                    )
+                    self.assertEqual(closed_ids, ["sbx-real-partial-creating"])
+                    self.assertEqual(shared_state.sandboxes, {})
+                    self.assertEqual(env._sandbox_id, "")
                 finally:
                     await env._client.aclose()
         finally:

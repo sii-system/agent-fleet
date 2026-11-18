@@ -88,7 +88,16 @@ class RunfieldLifecycleMixin:
             self._harbor_dirs_prepared = False
             await self._upload_environment_dir_after_start()
             await self._materialize_read_only_mounts()
-        except BaseException:
+        except BaseException as exc:
+            if not self._sandbox_id:
+                err_sandbox_id = getattr(exc, "sandbox_id", None)
+                err_sandbox_state = getattr(exc, "sandbox_state", None)
+                if (
+                    isinstance(err_sandbox_id, str)
+                    and err_sandbox_id
+                    and err_sandbox_state not in _CLOSE_TERMINAL_STATES
+                ):
+                    self._sandbox_id = err_sandbox_id
             if self._sandbox_id:
                 await asyncio.shield(self.stop(delete=True))
             raise
