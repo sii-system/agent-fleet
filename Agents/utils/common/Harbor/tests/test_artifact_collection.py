@@ -11,7 +11,10 @@ from unittest.mock import patch
 
 HARBOR_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(HARBOR_DIR))
-from artifact_collection import artifact_download_slot  # noqa: E402
+from artifact_collection import (
+    _resolve_download_concurrency,
+    artifact_download_slot,
+)  # noqa: E402
 
 
 class ArtifactCollectionTests(unittest.IsolatedAsyncioTestCase):
@@ -172,3 +175,50 @@ class ArtifactCollectionTests(unittest.IsolatedAsyncioTestCase):
         ):
             async with artifact_download_slot():
                 self.fail("invalid slot limit accepted")
+
+    async def test_adaptive_default_concurrency_scales_with_harbor_n_concurrent(self):
+        cases = [
+            ({}, 4),
+            ({"HARBOR_N_CONCURRENT": "1"}, 4),
+            ({"HARBOR_N_CONCURRENT": "32"}, 4),
+            ({"HARBOR_N_CONCURRENT": "33"}, 4),
+            ({"HARBOR_N_CONCURRENT": "64"}, 8),
+            ({"HARBOR_N_CONCURRENT": "192"}, 24),
+            ({"HARBOR_N_CONCURRENT": "1024"}, 128),
+            ({"HARBOR_N_CONCURRENT": "2000"}, 128),
+            ({"HARBOR_N_CONCURRENT": "not-an-int"}, 4),
+            (
+                {
+                    "HARBOR_N_CONCURRENT": "2000",
+                    "HARBOR_ARTIFACT_DOWNLOAD_CONCURRENCY": "16",
+                },
+                16,
+            ),
+        ]
+        for env_overrides, expected in cases:
+            with patch.dict(
+                os.environ,
+                {"HARBOR_ARTIFACT_LOCK_DIR": self.directory.name, **env_overrides},
+                clear=True,
+            ):
+                self.assertEqual(
+                    _resolve_download_concurrency(),
+                    expected,
+                    msg=f"env={env_overrides}",
+                )
+
+    async def test_adaptive_default_allows_scaled_concurrent_slots(self):
+        with patch.dict(
+            os.environ,
+            {
+                "HARBOR_ARTIFACT_LOCK_DIR": self.directory.name,
+                "HARBOR_N_CONCURRENT": "64",
+            },
+            clear=True,
+        ):
+            async with AsyncExitStack() as owners:
+                for _ in range(8):
+                    await asyncio.wait_for(
+                        owners.enter_async_context(artifact_download_slot()),
+                        timeout=2,
+                    )

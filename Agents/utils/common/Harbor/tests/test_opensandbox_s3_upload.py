@@ -3,6 +3,7 @@ import os
 import subprocess
 import tarfile
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -366,6 +367,73 @@ class S3UploadStoreTest(unittest.TestCase):
             self.assertTrue(store.cache_root.is_dir())
             self.assertTrue(store.lock_root.is_dir())
             run.assert_not_called()
+
+    def test_process_stage_cache_deduplicates_concurrent_stores_and_invalidates_on_change(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "wheels"
+            source.mkdir()
+            wheel = source / "pkg.whl"
+            wheel.write_bytes(b"wheel-v1" * 1024)
+
+            probe_calls = 0
+            probe_gate = threading.Barrier(8)
+            count_lock = threading.Lock()
+
+            def count_remote(artifact):
+                nonlocal probe_calls
+                with count_lock:
+                    probe_calls += 1
+
+            stores = [self.make_store(root) for _ in range(8)]
+            results = [None] * 8
+
+            def worker(idx: int) -> None:
+                probe_gate.wait(timeout=5)
+                results[idx] = stores[idx].stage_directory(source)
+
+            with patch.object(S3UploadStore, "_ensure_remote", side_effect=count_remote):
+                threads = [
+                    threading.Thread(target=worker, args=(i,)) for i in range(8)
+                ]
+                for t in threads:
+                    t.start()
+                for t in threads:
+                    t.join(timeout=5)
+
+                self.assertEqual(probe_calls, 1)
+                first = results[0]
+                self.assertIsNotNone(first)
+                for item in results[1:]:
+                    self.assertEqual(item, first)
+
+                # Subsequent store instance hits process cache without probing S3 again.
+                extra_store = self.make_store(root)
+                cached_hit = extra_store.stage_directory(source)
+                self.assertEqual(cached_hit, first)
+                self.assertEqual(probe_calls, 1)
+
+                # Mutating directory contents invalidates metadata signature and re-stages.
+                (source / "extra.whl").write_bytes(b"wheel-v2")
+                updated = extra_store.stage_directory(source)
+                self.assertNotEqual(updated.logical_digest, first.logical_digest)
+                self.assertEqual(probe_calls, 2)
+
+                # Deleting local payload invalidates cache entry and rebuilds snapshot.
+                Path(updated.local_payload_path).unlink()
+                rebuilt = extra_store.stage_directory(source)
+                self.assertEqual(rebuilt.logical_digest, updated.logical_digest)
+                self.assertTrue(Path(rebuilt.local_payload_path).is_file())
+                self.assertEqual(probe_calls, 3)
+
+                # Truncating/corrupting cached local payload invalidates payload stat signature.
+                Path(rebuilt.local_payload_path).write_bytes(b"corrupted")
+                repaired = extra_store.stage_directory(source)
+                self.assertEqual(repaired.payload_digest, rebuilt.payload_digest)
+                self.assertGreater(Path(repaired.local_payload_path).stat().st_size, 9)
+                self.assertEqual(probe_calls, 4)
 
 
 if __name__ == "__main__":

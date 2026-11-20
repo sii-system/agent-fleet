@@ -36,6 +36,25 @@ async def _acquire_download_lock(directory, limit):
             await asyncio.sleep(0.1)
 
 
+def _resolve_download_concurrency() -> int:
+    """Resolve artifact download concurrency from explicit override or worker count."""
+    explicit = os.environ.get("HARBOR_ARTIFACT_DOWNLOAD_CONCURRENCY")
+    if explicit is not None:
+        limit = int(explicit)
+        if limit < 1:
+            raise ValueError("HARBOR_ARTIFACT_DOWNLOAD_CONCURRENCY must be positive")
+        return limit
+    raw_workers = os.environ.get("HARBOR_N_CONCURRENT", "").strip()
+    if raw_workers:
+        try:
+            n_concurrent = int(raw_workers)
+        except ValueError:
+            n_concurrent = 0
+        if n_concurrent > 32:
+            return min(max(4, n_concurrent // 8), 128)
+    return 4
+
+
 @asynccontextmanager
 async def artifact_download_slot():
     """Acquire one advisory-lock slot; process death releases the slot too.
@@ -43,9 +62,7 @@ async def artifact_download_slot():
     Workers sharing this directory must use the same concurrency setting. Keep
     the lock files in place: unlinking a held lock would allow another owner.
     """
-    limit = int(os.environ.get("HARBOR_ARTIFACT_DOWNLOAD_CONCURRENCY", "4"))
-    if limit < 1:
-        raise ValueError("HARBOR_ARTIFACT_DOWNLOAD_CONCURRENCY must be positive")
+    limit = _resolve_download_concurrency()
     directory = Path(os.environ.get(
         "HARBOR_ARTIFACT_LOCK_DIR",
         str(Path(tempfile.gettempdir()) / f"agent-fleet-artifacts-{os.getuid()}"),

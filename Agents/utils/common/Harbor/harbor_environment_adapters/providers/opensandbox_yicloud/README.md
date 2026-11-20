@@ -19,12 +19,13 @@ The former 3175-line provider is split by its existing responsibilities:
 | `lifecycle.py` | Single sandbox create/readiness/start/stop, cleanup and deletion confirmation, retain policy |
 | `services.py` | Existing Bundle compatibility, service graph, depends_on/healthchecks, aliases, sidecar exec/stop and group cleanup |
 | `execution.py` | Execd commands, SSE, verifier runtime activation, dispatch retry/idempotence, detached command polling and native command pool |
-| `transfer.py` | Host artifact packing/extraction, S3 staging selection, read-only mount delivery and native file transport orchestration |
+| `transfer.py` | Host artifact packing/extraction, S3 guest-pull offload with host HTTP fallback, read-only mount delivery and native file transport orchestration |
 | `async_commands.py` | Bounded native-background execd transport, polling, output retrieval, cancellation and cleanup |
 | `native_files.py` | Raw binary multipart upload, byte-compatible gateway signing and bounded native Range downloads; no guest exec |
 | `packing.py` | Bounded directory archive workers used by native async uploads |
-| `s3_transfer.py` | Content-addressed S3 staging, anonymous-read verification, local cache and the preflight/prewarm CLI |
+| `s3_transfer.py` | Content-addressed S3 staging, process-local metadata-verified stage cache, anonymous-read verification, local cache and the preflight/prewarm CLI |
 | `scripts/s3_profile.sh` | Project-local S3 profile validation and environment projection sourced during Harbor bootstrap |
+| `scripts/s3_guest_pull.sh` | POSIX guest-pull script invoked with positional arguments to fetch, SHA-256-verify, and place S3 payloads |
 
 Internal method groups share the adapter's existing state and call each other
 through `self`. They have no independent construction, registration, lifecycle
@@ -86,13 +87,23 @@ Existing host target modes are retained; new download files start private.
 
 ### S3 and legacy configuration
 
-`http` delivers directly through the native file API. `s3` and `auto` retain the
-existing deterministic local snapshot, object publication and anonymous-read
-checks, but Sandbox delivery now uploads that local snapshot through the file
-API. The Sandbox never runs curl, wget, Python or a Bash downloader. This changes
-the data path: all payload bytes pass through the host-to-Sandbox upload channel,
-including when the S3 object already exists. Direct Sandbox-to-S3 offload and
-its bandwidth behavior are no longer provided by this adapter.
+`http` delivers directly through the native file API without starting a guest
+downloader. `s3` and `auto` stage deterministic local snapshots, reuse a
+process-local metadata-verified stage cache across concurrent Sandbox instances
+for unchanged host sources, verify anonymous S3 readability, and offload
+directories and files `>= 1 MiB` to proxy-free in-guest S3 pull with SHA-256
+verification (`YICLOUD_SANDBOX_S3_GUEST_PULL=0` disables guest pull and delivers
+staged snapshots through the native file API). When a minimal guest lacks download or SHA-256 tools (`exit 125` with the
+`HARBOR_S3_GUEST_PULL_NO_TOOLS` marker), delivery falls back to uploading the
+staged local snapshot through the native file API; on confirmed in-guest
+download transport failure (`exit 123` prior to destination mutation), the
+adapter invalidates the process stage cache to re-verify/republish the S3
+object once, and under `auto` falls back to native host file upload while
+strict `s3` raises. Ambiguous command-channel exceptions, SHA-256 mismatches
+(`exit 67`), whole-command deadlines (`exit 124`), or extraction errors fail
+explicitly without fallback so detached in-guest writers cannot race a second
+delivery, and confirmed failed temporary `/tmp` payloads are removed before
+returning. Small files (`< 1 MiB`) continue to use the native file API directly.
 
 `auto` may fall back to ordinary HTTP when S3 staging fails, before Sandbox
 mutation begins. A native upload or extraction failure is propagated without
