@@ -30,7 +30,7 @@ def build_notify_incident_key(output: dict[str, Any], action: dict[str, Any]) ->
     return json.dumps(key, sort_keys=True, separators=(",", ":"))
 
 
-def suggested_user_checks(benchmark_status: str, status_reason: str, action: dict[str, Any]) -> list[str]:
+def suggested_user_checks(status_reason: str, action: dict[str, Any]) -> list[str]:
     checks: list[str] = []
     action_type = str(action.get("type") or "wait")
     if status_reason == "timeout_reached":
@@ -120,7 +120,7 @@ def build_user_notify(
         "severity": severity,
         "message": message,
         "human_action_needed": human_action_needed,
-        "suggested_checks": suggested_user_checks(benchmark_status, status_reason, action),
+        "suggested_checks": suggested_user_checks(status_reason, action),
         "benchmark_status": benchmark_status,
         "status_reason": status_reason,
         "monitor_action_type": action_type,

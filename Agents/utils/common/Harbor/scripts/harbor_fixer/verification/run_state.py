@@ -173,7 +173,6 @@ def generate_monitor_snapshot(
                 max_retries=0,
                 S_default=1800,
                 S_min=900,
-                S_max=3600,
                 startup_grace=startup_grace,
                 configured_timeout=None,
                 total_override=None,

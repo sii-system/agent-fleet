@@ -8,7 +8,8 @@ datasets, setup logic, evaluators, and scoring belong to the consuming project.
 The WAA and WAA-V2 Harbor benchmark adapters are available under
 [Tasks/WindowsAgentArena](../../../../Tasks/WindowsAgentArena/README.md), including
 task setup, PC-Agent/custom agents, native evaluation, resume and reporting.
-ALE's full benchmark adapter is not included.
+The native ALE Linux/Windows CPU benchmark adapter is available under
+[Tasks/AgentsLastExam](../../../../Tasks/AgentsLastExam/README.md).
 
 Use `run_kubevirt_windows.sh` for Windows runs. It uses the existing config
 loader and pinned runner validation, but avoids the Linux dependency installers,
@@ -401,8 +402,11 @@ The image already includes desktop-control endpoints, but exposing screenshot,
 input, or accessibility APIs to agents is outside this transport's contract.
 The consuming benchmark project owns those integrations and desktop validation.
 
-Reset is a **fresh persistent disk clone per trial**. Restarting a retained VM is
-not a reset. Benchmark application-state snapshot restoration, tool-disk attachment,
+Reset uses a **fresh persistent disk clone per trial** in the default `clone`
+mode or a **fresh ephemeral writable layer** in `overlay` mode. Restarting a
+retained clone-mode VM preserves its disk. Overlay retention keeps the VM
+running because a platform-level stop discards its writable layer.
+Benchmark application-state snapshot restoration, tool-disk attachment,
 and prepared-snapshot caching are outside this backend. Keep base image versions,
 tool manifests, and task assets independently versioned.
 

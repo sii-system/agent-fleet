@@ -1,7 +1,9 @@
 ## Harbor Analyzer MVP
 
-Analyzer is an optional post-monitor component. It does not run during the
-normal Harbor benchmark path unless `scripts/analyzer_subagent.py` is invoked.
+Analyzer is an optional post-monitor component, disabled by default.
+`HARBOR_ANALYZER_ENABLED=1` starts `scripts/analyzer_subagent.py` automatically
+when the monitor is enabled; it can also be invoked directly. Model gateway
+defaults or `HARBOR_ANALYZER_*` overrides select its provider and model.
 
 Its job is limited to root-cause analysis and classification:
 
@@ -20,7 +22,7 @@ flowchart LR
     H[monitor handover v2] --> A[analyzer_subagent.py]
     A --> R[validate handover]
     R --> T[one task per Pi subprocess]
-    T --> G[Pi + GLM analyzer]
+    T --> G[Pi-backed analyzer]
     G --> J[task analysis JSON]
     J --> V[Python validation / retry]
     V --> O[aggregate outputs]
@@ -34,7 +36,7 @@ Python owns orchestration:
 - output parsing, schema validation, retry, and fallback;
 - final artifact assembly.
 
-Pi + GLM owns semantic analysis:
+The configured model, invoked through Pi, owns semantic analysis:
 
 - read only the handover and task-related artifacts allowed by Python;
 - inspect logs/results for the single assigned task;

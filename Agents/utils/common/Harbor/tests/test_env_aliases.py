@@ -99,6 +99,7 @@ class HarborEnvAliasTests(unittest.TestCase):
         env = self.load_env(
             ROLLOUT="1", BASE_URL="https://listener.invalid", API_KEY="fake-listener-key"
         )
+        self.assertEqual(env["RL_API_KEY"], "fake-listener-key")
         for name in (
             "OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_API_BASE",
             "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL",

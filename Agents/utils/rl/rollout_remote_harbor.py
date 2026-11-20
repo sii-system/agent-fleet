@@ -30,8 +30,6 @@ DEFAULT_DATASET_NAME = os.environ.get("RL_DATASET_NAME", "seta")
 DEFAULT_DATASET_ROOT = Path(os.environ.get("RL_DATASET_ROOT", "/workspace/seta-env/Harbor-Dataset"))
 DEFAULT_MODEL_NAME = os.environ.get("RL_MODEL_NAME", "minimax2.7")
 DEFAULT_API_BASE = os.environ.get("RL_API_BASE", "")
-DEFAULT_API_KEY = os.environ.get("RL_API_KEY", "")
-DEFAULT_API_KEY_MODE = os.environ.get("RL_API_KEY_MODE", "static").strip().lower()
 DEFAULT_OPIK_PROJECT_NAME = os.environ.get("OPIK_PROJECT_NAME", "")
 DEFAULT_ENVIRONMENT_TYPE = os.environ.get("RL_ENVIRONMENT_TYPE", "docker").strip().lower()
 DEFAULT_DISABLED_TASK_IDS = os.environ.get("RL_DISABLED_TASK_IDS", "")
@@ -548,7 +546,7 @@ def _enqueue_request(request: dict[str, Any]) -> tuple[str, Path]:
         "model_name": model_name,
         "opik_project_name": opik_project_name,
         "api_base": _extract_api_base(request),
-        "api_key_mode": DEFAULT_API_KEY_MODE,
+        "api_key_mode": "static",
         "environment_type": environment_type,
         "queue_dir": str(queue_dir),
         "zellij_session": zellij_session,
@@ -657,7 +655,7 @@ class Handler(BaseHTTPRequestHandler):
                         or os.environ.get("HARBOR_E2B_PREBUILT_TEMPLATE")
                         or os.environ.get("E2B_TEMPLATE")
                     ),
-                    "api_key_mode": DEFAULT_API_KEY_MODE,
+                    "api_key_mode": "static",
                     "queue_dir": str(QUEUE_DIR),
                     "job_queue_root": str(JOB_QUEUE_ROOT),
                     "dynamic_job_zellij": ENABLE_DYNAMIC_JOB_ZELLIJ,
