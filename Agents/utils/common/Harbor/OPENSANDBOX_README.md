@@ -172,13 +172,21 @@ Switch providers only by changing
 traversal, symlinked profile files, unknown or duplicate metadata keys, and
 standalone S3 values that conflict with the selected profile. Selecting a
 profile defaults `YICLOUD_SANDBOX_UPLOAD_BACKEND` to `auto`: S3 is preferred,
-while an S3 staging failure falls back to the authenticated native HTTP upload
-path before Sandbox mutation begins. Delivery or extraction failures are not
-automatically replayed. S3 staging retains a local snapshot; Sandbox delivery
-uploads that snapshot through the file API, without a guest downloader. Set the value explicitly to `s3`
-when failure must be strict. Without a profile, the bucket and read origin may
-be configured directly; `YICLOUD_SANDBOX_S3_CONFIG` remains an optional legacy
-write configuration.
+while an S3 staging failure, missing guest download/hash tools (`exit 125` with
+marker), or confirmed in-guest S3 download failure (`exit 123`, prior to
+destination mutation) falls back to the authenticated native HTTP upload path.
+Ambiguous `exec` transport exceptions, SHA-256 checksum mismatches (`exit 67`),
+whole-command deadlines (`exit 124`), or extraction errors are never replayed.
+S3 staging retains a local snapshot (with a process-local metadata-verified
+stage cache controlled by `YICLOUD_SANDBOX_S3_STAGE_CACHE=1`); Sandbox delivery
+offloads directories and files `>= 1 MiB` to proxy-free in-guest S3 pull with
+SHA-256 verification (`YICLOUD_SANDBOX_S3_GUEST_PULL=0` disables guest pull and
+uploads staged snapshots through the native file API; minimal containers lacking
+`bash`, download, or checksum tools emit `HARBOR_S3_GUEST_PULL_NO_TOOLS` with
+`exit 125` and fall back to the native file API). Set the value explicitly to
+`s3` when failure must be strict. Without a profile, the bucket and read origin
+may be configured directly; `YICLOUD_SANDBOX_S3_CONFIG` remains an optional
+legacy write configuration.
 
 Every YiCloud OpenSandbox create request uses the provider-required
 `["sleep", "infinity"]` entrypoint. After the Sandbox reaches `Running` and
@@ -334,7 +342,10 @@ cancellation. `TMPDIR` should point at a data disk with space for complete
 upload snapshots and directory archives. Per-socket request timeouts do not
 constitute a total wall-clock transfer deadline.
 
-`HARBOR_ARTIFACT_DOWNLOAD_CONCURRENCY` defaults to `4`. Independent worker
+`HARBOR_ARTIFACT_DOWNLOAD_CONCURRENCY` defaults to `4` when
+`HARBOR_N_CONCURRENT <= 32`, and scales adaptively as
+`min(max(4, HARBOR_N_CONCURRENT // 8), 128)` for larger `HARBOR_N_CONCURRENT`
+values unless explicitly overridden. Independent worker
 processes running as the same host user share advisory-lock slots under
 `${TMPDIR:-/tmp}/agent-fleet-artifacts-<uid>`; locks release on cancellation or
 process death. `HARBOR_ARTIFACT_LOCK_DIR` can select a shared local directory.

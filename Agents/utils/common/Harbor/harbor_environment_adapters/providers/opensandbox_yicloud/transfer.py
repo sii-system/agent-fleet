@@ -1,11 +1,15 @@
-"""YiCloud artifact preparation around native host-initiated file transfers.
+"""YiCloud artifact preparation around S3 guest pull and native file transfers.
 
-Packing/extraction may run in the task; payload transport never uses exec.
+Immutable S3-staged artifacts prefer direct in-guest pull with SHA-256
+verification and automatic fallback to host-initiated native HTTP upload when a
+minimal container lacks download tools.
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextvars
+import functools
 import os
 import shlex
 import stat
@@ -22,6 +26,18 @@ from async_utils import await_owned
 from .native_files import YiCloudNativeFilesMixin
 from .packing import pack_directory, pack_directory_async
 from .s3_transfer import S3UploadStore
+
+_S3_GUEST_PULL_SCRIPT_PATH = (
+    Path(__file__).resolve().parent / "scripts" / "s3_guest_pull.sh"
+)
+_ACTIVE_S3_STAGE_SOURCE: contextvars.ContextVar[Path | None] = contextvars.ContextVar(
+    "_ACTIVE_S3_STAGE_SOURCE", default=None
+)
+
+
+@functools.lru_cache(maxsize=1)
+def _load_s3_guest_pull_script() -> str:
+    return _S3_GUEST_PULL_SCRIPT_PATH.read_text(encoding="utf-8")
 
 
 class YiCloudTransferMixin(YiCloudNativeFilesMixin):
@@ -72,9 +88,185 @@ class YiCloudTransferMixin(YiCloudNativeFilesMixin):
             raise RuntimeError("YiCloud S3 upload backend is not configured")
         return store
 
+    _S3_GUEST_PULL_MIN_FILE_BYTES = 1024 * 1024
+    _S3_GUEST_PULL_EXEC_TIMEOUT_SEC = 600
+    _S3_GUEST_PULL_PER_TRY_TIMEOUT_SEC = 150
+    _S3_GUEST_PULL_DOWNLOAD_FAILED_EXIT = 123
+    _S3_GUEST_PULL_MISSING_TOOL_EXIT = 125
+    _S3_GUEST_PULL_NO_TOOLS_MARKER = "HARBOR_S3_GUEST_PULL_NO_TOOLS"
+    _S3_GUEST_PULL_PROXY_UNSET = (
+        "env -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY -u WGETRC "
+        "-u http_proxy -u https_proxy -u all_proxy "
+        "NO_PROXY='*' no_proxy='*'"
+    )
+
+    @staticmethod
+    def _s3_guest_pull_enabled() -> bool:
+        return os.environ.get("YICLOUD_SANDBOX_S3_GUEST_PULL", "1").strip() != "0"
+
+    @classmethod
+    def _has_no_tools_marker(cls, result: object) -> bool:
+        combined = f"{getattr(result, 'stderr', '') or ''}\n{getattr(result, 'stdout', '') or ''}"
+        return cls._S3_GUEST_PULL_NO_TOOLS_MARKER in combined
+
+    @classmethod
+    def _build_s3_guest_pull_command(
+        cls,
+        *,
+        kind: str,
+        download_url: str,
+        payload_digest: str,
+        temp_path: str,
+        target: str,
+        mode_or_compression: str,
+        per_try_timeout_sec: int = _S3_GUEST_PULL_PER_TRY_TIMEOUT_SEC,
+    ) -> str:
+        """Invoke scripts/s3_guest_pull.sh under bash strict mode with positional arguments."""
+        if not payload_digest:
+            raise RuntimeError("S3 artifact is missing payload_digest")
+        script = _load_s3_guest_pull_script()
+        launcher = (
+            "if command -v bash >/dev/null 2>&1; then "
+            'script="$1"; shift; exec bash -c "$script" s3-guest-pull "$@"; '
+            "fi; "
+            f"printf '%s\\n' {shlex.quote(cls._S3_GUEST_PULL_NO_TOOLS_MARKER)} >&2; "
+            f"exit {cls._S3_GUEST_PULL_MISSING_TOOL_EXIT}"
+        )
+        quoted_args = " ".join(
+            shlex.quote(str(arg))
+            for arg in (
+                script,
+                kind,
+                download_url,
+                payload_digest,
+                temp_path,
+                target,
+                mode_or_compression,
+                per_try_timeout_sec,
+            )
+        )
+        return (
+            f"{cls._S3_GUEST_PULL_PROXY_UNSET} "
+            f"sh -c {shlex.quote(launcher)} s3-guest-pull-bootstrap {quoted_args}"
+        )
+
+    async def _cleanup_guest_temp_payload(self, temp_path: str) -> None:
+        try:
+            cleanup = await self.exec(
+                f"rm -f -- {shlex.quote(temp_path)}",
+                cwd="/",
+                timeout_sec=30,
+                user="root",
+            )
+            if cleanup.return_code != 0:
+                self.logger.warning("Failed to remove temporary S3 guest payload")
+        except Exception:
+            self.logger.warning(
+                "Failed to remove temporary S3 guest payload", exc_info=True
+            )
+
+    async def _reverify_s3_source(self, kind: str) -> object | None:
+        source = _ACTIVE_S3_STAGE_SOURCE.get()
+        if source is None:
+            return None
+        store = getattr(self, "_s3_upload_store", None)
+        if store is None:
+            return None
+        invalidate = getattr(store, "invalidate_cached_source", None)
+        if not callable(invalidate):
+            return None
+        invalidate(kind, source)
+        stage_fn = store.stage_directory if kind == "directory" else store.stage_file
+        try:
+            return await asyncio.to_thread(stage_fn, source)
+        except Exception as exc:
+            if not self._allows_http_upload_fallback():
+                raise
+            self.logger.warning(
+                "YiCloud S3 stage re-verification failed backend=auto kind=%s error=%s",
+                kind,
+                exc,
+            )
+            return None
+
+    async def _run_s3_guest_pull_attempt(
+        self, command: str, temp_path: str
+    ) -> object:
+        """Execute one in-guest S3 pull attempt; propagate ambiguous exec exceptions without replay."""
+        result = await self.exec(
+            command,
+            cwd="/",
+            timeout_sec=self._S3_GUEST_PULL_EXEC_TIMEOUT_SEC,
+            user="root",
+        )
+        if result.return_code != 0 and not (
+            result.return_code == self._S3_GUEST_PULL_MISSING_TOOL_EXIT
+            and self._has_no_tools_marker(result)
+        ):
+            await self._cleanup_guest_temp_payload(temp_path)
+        return result
+
     async def _materialize_s3_file(self, artifact, target_path, mode):
-        # Staging already owns a verified local payload snapshot. Deliver those
-        # bytes through the file API rather than starting a guest downloader.
+        download_url = str(getattr(artifact, "download_url", "") or "").strip()
+        payload_size = int(getattr(artifact, "payload_size", 0) or 0)
+        if (
+            download_url
+            and payload_size >= self._S3_GUEST_PULL_MIN_FILE_BYTES
+            and self._s3_guest_pull_enabled()
+        ):
+            chmod_mode = mode.zfill(3)
+            for attempt in range(2):
+                temp_path = f"/tmp/harbor-s3-{uuid.uuid4().hex}.part"
+                command = self._build_s3_guest_pull_command(
+                    kind="file",
+                    download_url=download_url,
+                    payload_digest=str(getattr(artifact, "payload_digest", "") or "").strip(),
+                    temp_path=temp_path,
+                    target=target_path,
+                    mode_or_compression=chmod_mode,
+                )
+                result = await self._run_s3_guest_pull_attempt(
+                    command, temp_path
+                )
+                if result.return_code == 0:
+                    self.logger.info(
+                        "YiCloud S3 guest pull materialized target=%s bytes=%s",
+                        target_path,
+                        payload_size,
+                    )
+                    return
+                if (
+                    result.return_code == self._S3_GUEST_PULL_MISSING_TOOL_EXIT
+                    and self._has_no_tools_marker(result)
+                ):
+                    self.logger.info(
+                        "YiCloud S3 guest pull unavailable (exit=%s), falling back to host HTTP upload target=%s",
+                        result.return_code,
+                        target_path,
+                    )
+                    break
+                if result.return_code == self._S3_GUEST_PULL_DOWNLOAD_FAILED_EXIT:
+                    if attempt == 0:
+                        refreshed = await self._reverify_s3_source("file")
+                        if refreshed is not None:
+                            artifact = refreshed
+                            download_url = str(
+                                getattr(artifact, "download_url", "") or ""
+                            ).strip()
+                            continue
+                    if self._allows_http_upload_fallback():
+                        self.logger.warning(
+                            "YiCloud S3 guest pull download failed (exit=%s), "
+                            "falling back to host HTTP upload backend=auto target=%s",
+                            result.return_code,
+                            target_path,
+                        )
+                        break
+                raise RuntimeError(
+                    f"failed to materialize S3 file to {target_path!r} via guest pull: "
+                    f"return_code={result.return_code}; "
+                    f"{(result.stderr or result.stdout or 'no output')[-2000:]}"
+                )
         await self._upload_file_http(Path(artifact.local_payload_path), target_path, mode)
 
     async def _extract_uploaded_directory(self, archive: Path, target_dir: str, *, gzip: bool) -> None:
@@ -98,7 +290,69 @@ class YiCloudTransferMixin(YiCloudNativeFilesMixin):
                 self.logger.warning("Failed to remove temporary upload archive", exc_info=True)
 
     async def _materialize_s3_directory(self, artifact, target_dir):
-        await self._extract_uploaded_directory(Path(artifact.local_payload_path), target_dir, gzip=False)
+        is_gzip = getattr(artifact, "compression", "none") == "gzip"
+        download_url = str(getattr(artifact, "download_url", "") or "").strip()
+        if download_url and self._s3_guest_pull_enabled():
+            compression = "gzip" if is_gzip else "none"
+            for attempt in range(2):
+                temp_path = f"/tmp/harbor-s3-{uuid.uuid4().hex}.tar"
+                command = self._build_s3_guest_pull_command(
+                    kind="directory",
+                    download_url=download_url,
+                    payload_digest=str(getattr(artifact, "payload_digest", "") or "").strip(),
+                    temp_path=temp_path,
+                    target=target_dir,
+                    mode_or_compression=compression,
+                )
+                result = await self._run_s3_guest_pull_attempt(
+                    command, temp_path
+                )
+                if result.return_code == 0:
+                    self.logger.info(
+                        "YiCloud S3 guest pull materialized target=%s bytes=%s",
+                        target_dir,
+                        getattr(artifact, "payload_size", 0),
+                    )
+                    return
+                if (
+                    result.return_code == self._S3_GUEST_PULL_MISSING_TOOL_EXIT
+                    and self._has_no_tools_marker(result)
+                ):
+                    self.logger.info(
+                        "YiCloud S3 guest pull unavailable (exit=%s), falling back to host HTTP upload target=%s",
+                        result.return_code,
+                        target_dir,
+                    )
+                    break
+                if result.return_code == self._S3_GUEST_PULL_DOWNLOAD_FAILED_EXIT:
+                    if attempt == 0:
+                        refreshed = await self._reverify_s3_source("directory")
+                        if refreshed is not None:
+                            artifact = refreshed
+                            is_gzip = getattr(artifact, "compression", "none") == "gzip"
+                            compression = "gzip" if is_gzip else "none"
+                            download_url = str(
+                                getattr(artifact, "download_url", "") or ""
+                            ).strip()
+                            continue
+                    if self._allows_http_upload_fallback():
+                        self.logger.warning(
+                            "YiCloud S3 guest pull download failed (exit=%s), "
+                            "falling back to host HTTP upload backend=auto target=%s",
+                            result.return_code,
+                            target_dir,
+                        )
+                        break
+                raise RuntimeError(
+                    f"failed to materialize S3 directory to {target_dir!r} via guest pull: "
+                    f"return_code={result.return_code}; "
+                    f"{(result.stderr or result.stdout or 'no output')[-2000:]}"
+                )
+        await self._extract_uploaded_directory(
+            Path(artifact.local_payload_path),
+            target_dir,
+            gzip=is_gzip,
+        )
 
     async def upload_file(self, source_path: Path | str, target_path: str) -> None:
         source = Path(source_path)
@@ -111,7 +365,11 @@ class YiCloudTransferMixin(YiCloudNativeFilesMixin):
             try:
                 artifact = await asyncio.to_thread(self._s3_store().stage_file, source)
                 phase = "materialize"
-                await self._materialize_s3_file(artifact, target_path, mode)
+                token = _ACTIVE_S3_STAGE_SOURCE.set(source)
+                try:
+                    await self._materialize_s3_file(artifact, target_path, mode)
+                finally:
+                    _ACTIVE_S3_STAGE_SOURCE.reset(token)
             except Exception as exc:
                 if phase != "stage" or not self._allows_http_upload_fallback():
                     raise
@@ -197,7 +455,11 @@ class YiCloudTransferMixin(YiCloudNativeFilesMixin):
                     self._s3_store().stage_directory, source
                 )
                 phase = "materialize"
-                await self._materialize_s3_directory(artifact, target_dir)
+                token = _ACTIVE_S3_STAGE_SOURCE.set(source)
+                try:
+                    await self._materialize_s3_directory(artifact, target_dir)
+                finally:
+                    _ACTIVE_S3_STAGE_SOURCE.reset(token)
             except Exception as exc:
                 if phase != "stage" or not self._allows_http_upload_fallback():
                     raise

@@ -20,7 +20,10 @@ import stat
 import subprocess
 import tarfile
 import tempfile
+import threading
+import weakref
 import zlib
+from collections import OrderedDict
 from collections.abc import Iterator
 from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
@@ -32,6 +35,75 @@ from urllib.request import ProxyHandler, Request, build_opener
 BUFFER_SIZE = 4 * 1024 * 1024
 SAMPLE_SIZE = 4 * 1024 * 1024
 ANONYMOUS_PROBE_TIMEOUT_SEC = 15
+_STAGE_CACHE_MAX_ENTRIES = 512
+_STAGE_CACHE_GUARD = threading.Lock()
+_STAGE_KEY_LOCKS: weakref.WeakValueDictionary[tuple[str, ...], threading.Lock] = (
+    weakref.WeakValueDictionary()
+)
+_STAGE_CACHE: OrderedDict[
+    tuple[str, ...],
+    tuple[object, tuple[int, int, int, int, int, int], S3UploadArtifact],
+] = OrderedDict()
+
+
+def _stage_key_lock(cache_key: tuple[str, ...]) -> threading.Lock:
+    with _STAGE_CACHE_GUARD:
+        lock = _STAGE_KEY_LOCKS.get(cache_key)
+        if lock is None:
+            lock = threading.Lock()
+            _STAGE_KEY_LOCKS[cache_key] = lock
+        return lock
+
+
+def _payload_stat_signature(path: Path) -> tuple[int, int, int, int, int, int] | None:
+    try:
+        info = path.stat()
+    except OSError:
+        return None
+    if not stat.S_ISREG(info.st_mode):
+        return None
+    return (
+        info.st_dev,
+        info.st_ino,
+        info.st_size,
+        info.st_mtime_ns,
+        info.st_ctime_ns,
+        stat.S_IMODE(info.st_mode),
+    )
+
+
+def _stage_cache_get(
+    cache_key: tuple[str, ...], signature: object
+) -> S3UploadArtifact | None:
+    with _STAGE_CACHE_GUARD:
+        entry = _STAGE_CACHE.get(cache_key)
+        if entry is None:
+            return None
+        cached_sig, cached_payload_sig, artifact = entry
+        current_payload_sig = _payload_stat_signature(Path(artifact.local_payload_path))
+        if cached_sig != signature or current_payload_sig != cached_payload_sig:
+            _STAGE_CACHE.pop(cache_key, None)
+            return None
+        _STAGE_CACHE.move_to_end(cache_key)
+        return artifact
+
+
+def _stage_cache_put(
+    cache_key: tuple[str, ...], signature: object, artifact: S3UploadArtifact
+) -> None:
+    payload_sig = _payload_stat_signature(Path(artifact.local_payload_path))
+    if payload_sig is None:
+        return
+    with _STAGE_CACHE_GUARD:
+        _STAGE_CACHE[cache_key] = (signature, payload_sig, artifact)
+        _STAGE_CACHE.move_to_end(cache_key)
+        while len(_STAGE_CACHE) > _STAGE_CACHE_MAX_ENTRIES:
+            _STAGE_CACHE.popitem(last=False)
+
+
+def _stage_cache_invalidate(cache_key: tuple[str, ...]) -> None:
+    with _STAGE_CACHE_GUARD:
+        _STAGE_CACHE.pop(cache_key, None)
 
 
 def _direct_urlopen(request: Request, timeout: int):
@@ -495,10 +567,84 @@ class S3UploadStore:
         self._ensure_remote(artifact)
         return replace(artifact, download_url=self._download_url(artifact))
 
+    def invalidate_cached_source(self, kind: str, source_path: Path | str) -> None:
+        _stage_cache_invalidate(self._stage_cache_key(kind, Path(source_path)))
+
+    def _stage_cache_enabled(self) -> bool:
+        return os.environ.get("YICLOUD_SANDBOX_S3_STAGE_CACHE", "1").strip() != "0"
+
+    def _stage_cache_key(self, kind: str, source: Path) -> tuple[str, ...]:
+        return (
+            self.bucket,
+            self.read_origin,
+            self.prefix,
+            os.path.abspath(self.cache_root),
+            self.directory_compression if kind == "directory" else "none",
+            kind,
+            os.path.abspath(source),
+        )
+
+    @staticmethod
+    def _file_stat_signature(source: Path) -> tuple[int, int, int, int, int, int]:
+        info = source.stat()
+        return (
+            info.st_dev,
+            info.st_ino,
+            info.st_size,
+            info.st_mtime_ns,
+            info.st_ctime_ns,
+            stat.S_IMODE(info.st_mode),
+        )
+
+    @staticmethod
+    def _directory_stat_signature(source: Path) -> str:
+        digest = hashlib.blake2b(digest_size=32)
+        root_info = source.lstat()
+        digest.update(
+            f".|{root_info.st_mode}|{root_info.st_dev}|{root_info.st_ino}|"
+            f"{root_info.st_mtime_ns}|{root_info.st_ctime_ns}\n".encode()
+        )
+        for path in sorted(source.rglob("*"), key=lambda item: item.as_posix()):
+            relative = path.relative_to(source).as_posix()
+            info = path.lstat()
+            if stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode):
+                link_target = ""
+            elif stat.S_ISLNK(info.st_mode):
+                link_target = os.readlink(path)
+            else:
+                raise ValueError(
+                    f"unsupported S3 upload directory entry: {path}"
+                )
+            digest.update(
+                f"{relative}|{info.st_mode}|{info.st_dev}|{info.st_ino}|"
+                f"{info.st_size}|{info.st_mtime_ns}|{info.st_ctime_ns}|"
+                f"{link_target}\n".encode("utf-8", errors="surrogateescape")
+            )
+        return digest.hexdigest()
+
     def stage_file(self, source_path: Path | str) -> S3UploadArtifact:
         source = Path(source_path)
         if not source.is_file():
             raise ValueError(f"S3 upload source is not a file: {source}")
+        if not self._stage_cache_enabled():
+            return self._stage_file_uncached(source)
+        cache_key = self._stage_cache_key("file", source)
+        key_lock = _stage_key_lock(cache_key)
+        with key_lock:
+            before_sig = self._file_stat_signature(source)
+            hit = _stage_cache_get(cache_key, before_sig)
+            if hit is not None:
+                return hit
+            published = self._stage_file_uncached(source)
+            try:
+                after_sig = self._file_stat_signature(source)
+            except OSError:
+                after_sig = None
+            if after_sig == before_sig:
+                _stage_cache_put(cache_key, after_sig, published)
+            return published
+
+    def _stage_file_uncached(self, source: Path) -> S3UploadArtifact:
         logical_digest = _sha256_file(source)
         compression = "none"
         artifact_dir = self._artifact_dir(
@@ -647,6 +793,25 @@ class S3UploadStore:
         source = Path(source_path)
         if not source.is_dir():
             raise ValueError(f"S3 upload source is not a directory: {source}")
+        if not self._stage_cache_enabled():
+            return self._stage_directory_uncached(source)
+        cache_key = self._stage_cache_key("directory", source)
+        key_lock = _stage_key_lock(cache_key)
+        with key_lock:
+            before_sig = self._directory_stat_signature(source)
+            hit = _stage_cache_get(cache_key, before_sig)
+            if hit is not None:
+                return hit
+            published = self._stage_directory_uncached(source)
+            try:
+                after_sig = self._directory_stat_signature(source)
+            except OSError:
+                after_sig = None
+            if after_sig == before_sig:
+                _stage_cache_put(cache_key, after_sig, published)
+            return published
+
+    def _stage_directory_uncached(self, source: Path) -> S3UploadArtifact:
         logical_digest, logical_size, file_count = self._tree_digest(source)
         compression = self._compression_for(source)
         artifact_dir = self._artifact_dir(

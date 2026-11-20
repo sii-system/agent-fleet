@@ -2917,5 +2917,470 @@ class BoundedDownloadTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse((self.root / "escaped").exists())
 
 
+
+class YiCloudS3GuestPullTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+
+    async def asyncTearDown(self):
+        self.tmp.cleanup()
+
+    def _make_instance(self):
+        instance = object.__new__(
+            yicloud_opensandbox.YiCloudOpenSandboxEnvironment
+        )
+        instance._upload_backend = "s3"
+        instance.logger = Mock()
+        instance._upload_file_http = AsyncMock()
+        instance._extract_uploaded_directory = AsyncMock()
+        return instance
+
+    async def _run_guest_pull_case(self, compression: str, tar_mode: str):
+        import hashlib
+        import threading
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+        payload_path = self.root / f"bundle-{compression}.tar"
+        with tarfile.open(payload_path, tar_mode) as tar:
+            data = f"hello-{compression}\n".encode()
+            info = tarfile.TarInfo("nested/greeting.txt")
+            info.size = len(data)
+            info.mode = 0o644
+            tar.addfile(info, io.BytesIO(data))
+        payload_bytes = payload_path.read_bytes()
+        payload_digest = hashlib.sha256(payload_bytes).hexdigest()
+
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *_args):
+                pass
+
+            def do_GET(self):
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(payload_bytes)))
+                self.end_headers()
+                self.wfile.write(payload_bytes)
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            url = f"http://127.0.0.1:{server.server_port}/bundle"
+            target_dir = self.root / f"out-{compression}"
+            artifact = SimpleNamespace(
+                kind="directory",
+                logical_digest="a" * 64,
+                payload_digest=payload_digest,
+                payload_size=len(payload_bytes),
+                compression=compression,
+                local_payload_path=str(payload_path),
+                object_key="k",
+                object_uri="s3://b/k",
+                download_url=url,
+            )
+            instance = self._make_instance()
+            recorded_cmds = []
+
+            async def real_exec(command, *, cwd="/", timeout_sec=None, user=None):
+                recorded_cmds.append((command, cwd, timeout_sec, user))
+                proc_env = {
+                    **os.environ,
+                    "HTTP_PROXY": "http://127.0.0.1:9",
+                    "HTTPS_PROXY": "http://127.0.0.1:9",
+                    "ALL_PROXY": "http://127.0.0.1:9",
+                    "http_proxy": "http://127.0.0.1:9",
+                    "https_proxy": "http://127.0.0.1:9",
+                    "all_proxy": "http://127.0.0.1:9",
+                }
+                proc = await asyncio.create_subprocess_exec(
+                    "sh",
+                    "-c",
+                    command,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    env=proc_env,
+                )
+                stdout, stderr = await proc.communicate()
+                return SimpleNamespace(
+                    return_code=proc.returncode,
+                    stdout=stdout.decode("utf-8", errors="replace"),
+                    stderr=stderr.decode("utf-8", errors="replace"),
+                )
+
+            instance.exec = real_exec
+            await instance._materialize_s3_directory(artifact, str(target_dir))
+
+            self.assertEqual(len(recorded_cmds), 1)
+            cmd, cwd, timeout_sec, user = recorded_cmds[0]
+            self.assertEqual((cwd, timeout_sec, user), ("/", 600, "root"))
+            self.assertIn("env -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY", cmd)
+            self.assertIn("NO_PROXY='*' no_proxy='*'", cmd)
+            self.assertEqual(
+                (target_dir / "nested/greeting.txt").read_text(encoding="utf-8"),
+                f"hello-{compression}\n",
+            )
+            instance._extract_uploaded_directory.assert_not_awaited()
+            instance._upload_file_http.assert_not_awaited()
+            instance.logger.info.assert_any_call(
+                "YiCloud S3 guest pull materialized target=%s bytes=%s",
+                str(target_dir),
+                len(payload_bytes),
+            )
+        finally:
+            await asyncio.to_thread(server.shutdown)
+            server.server_close()
+            thread.join(timeout=2)
+
+    async def test_s3_directory_guest_pull_succeeds_with_sha256_and_proxy_unset(self):
+        for compression, tar_mode in (("gzip", "w:gz"), ("none", "w")):
+            with self.subTest(compression=compression):
+                await self._run_guest_pull_case(compression, tar_mode)
+
+    async def test_s3_directory_guest_pull_sha256_mismatch_fails_without_fallback(self):
+        import threading
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+        payload_bytes = b"corrupted-payload"
+
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *_args):
+                pass
+
+            def do_GET(self):
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(payload_bytes)))
+                self.end_headers()
+                self.wfile.write(payload_bytes)
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            url = f"http://127.0.0.1:{server.server_port}/corrupted"
+            artifact = SimpleNamespace(
+                kind="directory",
+                logical_digest="a" * 64,
+                payload_digest="0" * 64,
+                payload_size=len(payload_bytes),
+                compression="none",
+                local_payload_path=str(self.root / "local.tar"),
+                object_key="k",
+                object_uri="s3://b/k",
+                download_url=url,
+            )
+            instance = self._make_instance()
+
+            async def real_exec(command, **_kwargs):
+                proc = await asyncio.create_subprocess_exec(
+                    "sh",
+                    "-c",
+                    command,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                stdout, stderr = await proc.communicate()
+                return SimpleNamespace(
+                    return_code=proc.returncode,
+                    stdout=stdout.decode("utf-8", errors="replace"),
+                    stderr=stderr.decode("utf-8", errors="replace"),
+                )
+
+            instance.exec = real_exec
+            with self.assertRaisesRegex(RuntimeError, "return_code=67"):
+                await instance._materialize_s3_directory(artifact, str(self.root / "out"))
+            instance._extract_uploaded_directory.assert_not_awaited()
+        finally:
+            await asyncio.to_thread(server.shutdown)
+            server.server_close()
+            thread.join(timeout=2)
+
+    async def test_s3_directory_guest_pull_exit_125_falls_back_to_host_http(self):
+        for compression, expected_gzip in (("gzip", True), ("none", False)):
+            with self.subTest(compression=compression):
+                artifact = SimpleNamespace(
+                    kind="directory",
+                    logical_digest="a" * 64,
+                    payload_digest="b" * 64,
+                    payload_size=4096,
+                    compression=compression,
+                    local_payload_path=str(self.root / "local.tar"),
+                    object_key="k",
+                    object_uri="s3://b/k",
+                    download_url="http://10.100.78.128/bucket/obj",
+                )
+                instance = self._make_instance()
+                instance.exec = AsyncMock(
+                    return_value=SimpleNamespace(
+                        return_code=125,
+                        stdout="",
+                        stderr="HARBOR_S3_GUEST_PULL_NO_TOOLS\n",
+                    )
+                )
+
+                await instance._materialize_s3_directory(artifact, "/opt/delivery")
+
+                instance.exec.assert_awaited_once()
+                instance._extract_uploaded_directory.assert_awaited_once_with(
+                    Path(artifact.local_payload_path),
+                    "/opt/delivery",
+                    gzip=expected_gzip,
+                )
+
+        # Bare exit 125 from detached wrapper (without NO_TOOLS marker) must NOT silently fallback in strict s3.
+        strict_artifact = SimpleNamespace(
+            kind="directory",
+            logical_digest="a" * 64,
+            payload_digest="b" * 64,
+            payload_size=4096,
+            compression="gzip",
+            local_payload_path=str(self.root / "local.tar"),
+            object_key="k",
+            object_uri="s3://b/k",
+            download_url="http://10.100.78.128/bucket/obj",
+        )
+        vanished = self._make_instance()
+        vanished._upload_backend = "s3"
+        vanished.exec = AsyncMock(
+            side_effect=[
+                SimpleNamespace(
+                    return_code=125,
+                    stdout="",
+                    stderr="detached command exited without status",
+                ),
+                SimpleNamespace(return_code=0, stdout="", stderr=""),
+            ]
+        )
+        with self.assertRaisesRegex(RuntimeError, "return_code=125"):
+            await vanished._materialize_s3_directory(strict_artifact, "/opt/delivery")
+        vanished._extract_uploaded_directory.assert_not_awaited()
+        self.assertEqual(vanished.exec.await_count, 2)
+        self.assertTrue(vanished.exec.await_args_list[1].args[0].startswith("rm -f -- "))
+
+    async def test_s3_directory_guest_pull_disabled_uses_host_http_with_compression(self):
+        artifact = SimpleNamespace(
+            kind="directory",
+            logical_digest="a" * 64,
+            payload_digest="b" * 64,
+            payload_size=4096,
+            compression="gzip",
+            local_payload_path=str(self.root / "local.tar.gz"),
+            object_key="k",
+            object_uri="s3://b/k",
+            download_url="http://10.100.78.128/bucket/obj",
+        )
+        instance = self._make_instance()
+        instance.exec = AsyncMock()
+        with patch.dict(os.environ, {"YICLOUD_SANDBOX_S3_GUEST_PULL": "0"}):
+            await instance._materialize_s3_directory(artifact, "/opt/delivery")
+        instance.exec.assert_not_awaited()
+        instance._extract_uploaded_directory.assert_awaited_once_with(
+            Path(artifact.local_payload_path),
+            "/opt/delivery",
+            gzip=True,
+        )
+
+    async def test_s3_file_guest_pull_threshold_and_exit_125_fallback(self):
+        small_artifact = SimpleNamespace(
+            kind="file",
+            logical_digest="a" * 64,
+            payload_digest="b" * 64,
+            payload_size=1024,
+            compression="none",
+            local_payload_path=str(self.root / "small.bin"),
+            object_key="k",
+            object_uri="s3://b/k",
+            download_url="http://10.100.78.128/bucket/small",
+        )
+        instance = self._make_instance()
+        instance.exec = AsyncMock()
+        await instance._materialize_s3_file(small_artifact, "/opt/small.bin", "644")
+        instance.exec.assert_not_awaited()
+        instance._upload_file_http.assert_awaited_once_with(
+            Path(small_artifact.local_payload_path), "/opt/small.bin", "644"
+        )
+
+        large_artifact = SimpleNamespace(
+            kind="file",
+            logical_digest="a" * 64,
+            payload_digest="b" * 64,
+            payload_size=2 * 1024 * 1024,
+            compression="none",
+            local_payload_path=str(self.root / "large.bin"),
+            object_key="k",
+            object_uri="s3://b/k",
+            download_url="http://10.100.78.128/bucket/large",
+        )
+        instance = self._make_instance()
+        instance.exec = AsyncMock(
+            return_value=SimpleNamespace(return_code=0, stdout="", stderr="")
+        )
+        await instance._materialize_s3_file(large_artifact, "/opt/large.bin", "755")
+        instance.exec.assert_awaited_once()
+        instance._upload_file_http.assert_not_awaited()
+
+        instance_fallback = self._make_instance()
+        instance_fallback.exec = AsyncMock(
+            return_value=SimpleNamespace(
+                return_code=125,
+                stdout="",
+                stderr="HARBOR_S3_GUEST_PULL_NO_TOOLS\n",
+            )
+        )
+        await instance_fallback._materialize_s3_file(large_artifact, "/opt/large.bin", "755")
+        instance_fallback.exec.assert_awaited_once()
+        instance_fallback._upload_file_http.assert_awaited_once_with(
+            Path(large_artifact.local_payload_path), "/opt/large.bin", "755"
+        )
+
+    async def test_s3_guest_pull_download_failure_reverifies_stage_and_honors_auto_fallback(
+        self,
+    ):
+        source = self.root / "deps"
+        source.mkdir()
+        (source / "pkg.whl").write_bytes(b"wheel")
+        artifact = SimpleNamespace(
+            kind="directory",
+            logical_digest="a" * 64,
+            payload_digest="b" * 64,
+            payload_size=4096,
+            compression="gzip",
+            local_payload_path=str(self.root / "local.tar.gz"),
+            object_key="k",
+            object_uri="s3://b/k",
+            download_url="http://10.100.78.128/bucket/obj",
+        )
+
+        def make_exec(pull_results):
+            cleanups = []
+            pulls = list(pull_results)
+
+            async def fake_exec(command, **_kwargs):
+                if command.startswith("rm -f -- "):
+                    cleanups.append(command)
+                    return SimpleNamespace(return_code=0, stdout="", stderr="")
+                outcome = pulls.pop(0)
+                if isinstance(outcome, BaseException):
+                    raise outcome
+                return outcome
+
+            return AsyncMock(side_effect=fake_exec), cleanups
+
+        # Case 1: Evicted remote object repaired on stage re-verification succeeds on retry.
+        repaired_instance = self._make_instance()
+        repaired_instance._s3_upload_store = SimpleNamespace(
+            stage_directory=Mock(return_value=artifact),
+            invalidate_cached_source=Mock(),
+        )
+        repaired_instance.exec, repaired_cleanups = make_exec(
+            [
+                SimpleNamespace(return_code=123, stdout="", stderr="404"),
+                SimpleNamespace(return_code=0, stdout="", stderr=""),
+            ]
+        )
+        await repaired_instance.upload_dir(source, "/opt/deps")
+        self.assertEqual(len(repaired_cleanups), 1)
+        repaired_instance._s3_upload_store.invalidate_cached_source.assert_called_once_with(
+            "directory", source
+        )
+        repaired_instance._extract_uploaded_directory.assert_not_awaited()
+
+        # Case 2: Persistent guest S3 unreachability falls back to host HTTP under backend=auto.
+        auto_instance = self._make_instance()
+        auto_instance._upload_backend = "auto"
+        auto_instance._s3_upload_store = SimpleNamespace(
+            stage_directory=Mock(return_value=artifact),
+            invalidate_cached_source=Mock(),
+        )
+        auto_instance.exec, auto_cleanups = make_exec(
+            [
+                SimpleNamespace(return_code=123, stdout="", stderr="unreachable"),
+                SimpleNamespace(return_code=123, stdout="", stderr="unreachable"),
+            ]
+        )
+        await auto_instance.upload_dir(source, "/opt/deps")
+        self.assertEqual(len(auto_cleanups), 2)
+        auto_instance._extract_uploaded_directory.assert_awaited_once_with(
+            Path(artifact.local_payload_path), "/opt/deps", gzip=True
+        )
+
+        # Case 3: Ambiguous exec-layer transport exception propagates without replay,
+        # temp-file deletion race, or concurrent fallback writer (both directory & file).
+        exec_err_auto = self._make_instance()
+        exec_err_auto._upload_backend = "auto"
+        exec_err_auto._s3_upload_store = SimpleNamespace(
+            stage_directory=Mock(return_value=artifact),
+            invalidate_cached_source=Mock(),
+        )
+        exec_err_auto.exec, exec_err_cleanups = make_exec(
+            [ConnectionError("execd poll reset")]
+        )
+        with self.assertRaisesRegex(ConnectionError, "execd poll reset"):
+            await exec_err_auto.upload_dir(source, "/opt/deps")
+        self.assertEqual(len(exec_err_cleanups), 0)
+        exec_err_auto._s3_upload_store.invalidate_cached_source.assert_not_called()
+        exec_err_auto._extract_uploaded_directory.assert_not_awaited()
+
+        file_source = self.root / "large.bin"
+        file_source.write_bytes(b"x" * (2 * 1024 * 1024))
+        file_artifact = SimpleNamespace(
+            kind="file",
+            logical_digest="a" * 64,
+            payload_digest="b" * 64,
+            payload_size=file_source.stat().st_size,
+            compression="none",
+            local_payload_path=str(file_source),
+            object_key="k-file",
+            object_uri="s3://b/k-file",
+            download_url="http://10.100.78.128/bucket/large.bin",
+        )
+        exec_err_file = self._make_instance()
+        exec_err_file._upload_backend = "auto"
+        exec_err_file._s3_upload_store = SimpleNamespace(
+            stage_file=Mock(return_value=file_artifact),
+            invalidate_cached_source=Mock(),
+        )
+        exec_err_file.exec, exec_err_file_cleanups = make_exec(
+            [ConnectionError("execd poll reset")]
+        )
+        with self.assertRaisesRegex(ConnectionError, "execd poll reset"):
+            await exec_err_file.upload_file(file_source, "/opt/large.bin")
+        self.assertEqual(len(exec_err_file_cleanups), 0)
+        exec_err_file._s3_upload_store.invalidate_cached_source.assert_not_called()
+        exec_err_file._upload_file_http.assert_not_awaited()
+
+        # Case 4: Whole-command deadline exit 124 cleans temp payload and NEVER replays or falls back.
+        timeout_auto = self._make_instance()
+        timeout_auto._upload_backend = "auto"
+        timeout_auto._s3_upload_store = SimpleNamespace(
+            stage_directory=Mock(return_value=artifact),
+            invalidate_cached_source=Mock(),
+        )
+        timeout_auto.exec, timeout_cleanups = make_exec(
+            [SimpleNamespace(return_code=124, stdout="", stderr="timed out")]
+        )
+        with self.assertRaisesRegex(RuntimeError, "return_code=124"):
+            await timeout_auto.upload_dir(source, "/opt/deps")
+        self.assertEqual(len(timeout_cleanups), 1)
+        timeout_auto._extract_uploaded_directory.assert_not_awaited()
+
+        # Case 5: Strict backend=s3 raises after re-verification when guest pull still fails.
+        strict_instance = self._make_instance()
+        strict_instance._upload_backend = "s3"
+        strict_instance._s3_upload_store = SimpleNamespace(
+            stage_directory=Mock(return_value=artifact),
+            invalidate_cached_source=Mock(),
+        )
+        strict_instance.exec, strict_cleanups = make_exec(
+            [
+                SimpleNamespace(return_code=123, stdout="", stderr="unreachable"),
+                SimpleNamespace(return_code=123, stdout="", stderr="unreachable"),
+            ]
+        )
+        with self.assertRaisesRegex(RuntimeError, "return_code=123"):
+            await strict_instance.upload_dir(source, "/opt/deps")
+        self.assertEqual(len(strict_cleanups), 2)
+        strict_instance._extract_uploaded_directory.assert_not_awaited()
+
+
 if __name__ == "__main__":
     unittest.main()
