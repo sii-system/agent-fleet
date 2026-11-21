@@ -10,6 +10,12 @@ import urllib.request
 from pathlib import Path
 
 ROLLOUT_SESSION_HEADERS = {"x-session-id", "proxy-x-session-id"}
+BROWSE_LINE_VERDICT_RE = re.compile(
+    r"(?im)^\s*(?:[*_]{1,2})?(?:correct|judge)(?:[*_]{1,2})?\s*:\s*(?:[*_]{1,2})?['\"]?(yes|no)\b"
+)
+BROWSE_JSON_VERDICT_RE = re.compile(
+    r"(?i)[\"']correct[\"']\s*:\s*[\"']?(yes|no)\b"
+)
 
 BROWSE_PROMPT = """Judge whether the following [response] to [question] is correct or not based on the precise and unambiguous [correct_answer] below.
 
@@ -68,7 +74,7 @@ DEEPSEARCH_EXAMPLE = r"""**Example (Partial):**
     "Explanation": "The response correctly identified Belgium and France but also includes an excessive answer, Italy.",
     "Correctness Details": {{
       "Belgium": true,
-      "France": true,
+      "France": true
     }},
     "Excessive Answers": [ "Italy" ]
   }}
@@ -109,13 +115,20 @@ def _answer() -> str:
                 event = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            if event.get("type") == "result" and event.get("result"):
+            if (
+                isinstance(event, dict)
+                and event.get("type") == "result"
+                and event.get("result")
+            ):
                 return str(event["result"]).strip()
     return ""
 
 
 def _chat(prompt: str) -> str:
-    llm_kwargs = json.loads(os.environ.get("JUDGE_LLM_KWARGS", "{}"))
+    raw_kwargs = os.environ.get("JUDGE_LLM_KWARGS", "").strip()
+    llm_kwargs = json.loads(raw_kwargs) if raw_kwargs else {}
+    if not isinstance(llm_kwargs, dict):
+        raise TypeError("invalid JUDGE_LLM_KWARGS")
     extra_headers = llm_kwargs.get("extra_headers", {})
     if not isinstance(extra_headers, dict):
         raise TypeError("invalid judge extra_headers")
@@ -158,8 +171,14 @@ def _chat(prompt: str) -> str:
 
 
 def _json(text: str) -> dict:
-    match = re.search(r"```(?:json)?\s*(.*?)```", text, re.DOTALL | re.IGNORECASE)
-    return json.loads(match.group(1) if match else text)
+    blocks = list(
+        re.finditer(r"```(?:json)?\s*(.*?)```", text, re.DOTALL | re.IGNORECASE)
+    )
+    raw = blocks[-1].group(1) if blocks else text
+    parsed = json.loads(raw)
+    if not isinstance(parsed, dict):
+        raise TypeError(f"invalid DeepSearchQA grader response: {text}")
+    return parsed
 
 
 def grade_browsecomp(reference: dict, response: str) -> dict[str, float]:
@@ -170,24 +189,23 @@ def grade_browsecomp(reference: dict, response: str) -> dict[str, float]:
             response=response,
         )
     )
-    match = re.search(
-        r"(?im)(?:^\s*(?:[*_]{1,2})?(?:correct|judge)\s*:\s*(?:[*_]{1,2})?\s*|[\"']correct[\"']\s*:\s*[\"']?)(yes|no)\b",
-        reply,
-    )
-    if not match:
+    matches = list(BROWSE_LINE_VERDICT_RE.finditer(reply))
+    if not matches:
+        matches = list(BROWSE_JSON_VERDICT_RE.finditer(reply))
+    if not matches:
         raise ValueError(f"invalid BrowseComp grader response: {reply}")
-    return {"reward": float(match.group(1).lower() == "yes")}
+    return {"reward": float(matches[-1].group(1).lower() == "yes")}
 
 
 def grade_deepsearchqa(reference: dict, response: str) -> dict[str, float]:
     reply = _chat(
         DEEPSEARCH_PROMPT + DEEPSEARCH_EXAMPLE.format(response=response, **reference)
     )
-    result = _json(reply)["Answer Correctness"]
-    details, excessive = (
-        result["Correctness Details"],
-        result.get("Excessive Answers", []),
-    )
+    result = _json(reply).get("Answer Correctness")
+    if not isinstance(result, dict):
+        raise TypeError(f"invalid DeepSearchQA grader response: {reply}")
+    details = result.get("Correctness Details")
+    excessive = result.get("Excessive Answers", [])
     if (
         not isinstance(details, dict)
         or not details
