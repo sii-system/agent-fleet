@@ -355,7 +355,11 @@ def _run_command_action(
                 encoding="utf-8",
             ) as stderr_handle,
         ):
-            write_json_atomic(active_action_path, {"status": "launching"})
+            owner = ProcessIdentity.capture(os.getpid())
+            launching_record: dict[str, Any] = {"status": "launching"}
+            if owner is not None:
+                launching_record["owner"] = owner.as_dict()
+            write_json_atomic(active_action_path, launching_record)
             process: subprocess.Popen[str] | None = None
             try:
                 process = subprocess.Popen(

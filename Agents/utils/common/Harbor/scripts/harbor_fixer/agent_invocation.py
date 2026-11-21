@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -15,6 +16,7 @@ from harbor_pi_runtime import (
     run_pi_json_process,
     write_text_atomic,
 )
+from harbor_runtime import ProcessIdentity, write_json_atomic
 
 FIXER_INPUT_MARKER = "HARBOR_FIXER_INPUT_JSON:"
 FIXER_SYSTEM_PROMPT = (
@@ -78,7 +80,11 @@ class PiAgentInvoker:
         prompt_path = self.output_dir / "pi-agent-prompts" / safe_label / f"{attempt_name}.txt"
         write_text_atomic(prompt_path, rendered_prompt)
         process_record_path = self.output_dir / "active-agent-processes" / f"{call_id}.json"
-        write_text_atomic(process_record_path, '{"status":"launching"}\n')
+        owner = ProcessIdentity.capture(os.getpid())
+        launching_record: dict[str, Any] = {"status": "launching"}
+        if owner is not None:
+            launching_record["owner"] = owner.as_dict()
+        write_json_atomic(process_record_path, launching_record)
         try:
             result = run_pi_json_process(
                 prompt=rendered_prompt,
