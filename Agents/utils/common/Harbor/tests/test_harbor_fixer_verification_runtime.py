@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import shlex
 import signal
@@ -261,6 +262,73 @@ class HarborFixerVerificationRuntimeTest(FixerTestCase):
         self.assertIn("timed out after 0.2 seconds", result["stderr_summary"])
         self.assertEqual(term_marker.read_text(), "term")
         self.assertFalse(verifier_backup.exists())
+
+    def test_run_command_records_running_child_identity_and_restores_launching(
+        self,
+    ) -> None:
+        from harbor_runtime import ProcessIdentity
+
+        task_source = self.root / "tasks.txt"
+        task_source.write_text("task-a\n", encoding="utf-8")
+        record_path = self.root / "active-verification.json"
+        observed_path = self.root / "observed-record.json"
+        code = "\n".join(
+            [
+                "import json, os, sys, time",
+                "from pathlib import Path",
+                "record = Path(sys.argv[1])",
+                "out = Path(sys.argv[2])",
+                "deadline = time.monotonic() + 2.0",
+                "payload = {}",
+                "while time.monotonic() < deadline:",
+                "    if record.is_file():",
+                "        payload = json.loads(record.read_text(encoding='utf-8'))",
+                "        if payload.get('status') == 'running':",
+                "            break",
+                "    time.sleep(0.02)",
+                "result = {'self_pid': os.getpid(), 'record': payload}",
+                "out.write_text(json.dumps(result), encoding='utf-8')",
+            ]
+        )
+
+        def fake_capture(pid: int) -> ProcessIdentity:
+            return ProcessIdentity(pid=pid, start_ticks=pid * 10)
+
+        with mock.patch(
+            "harbor_fixer.verification.rerun.ProcessIdentity.capture",
+            side_effect=fake_capture,
+        ):
+            result = run_command(
+                shlex.join(
+                    [sys.executable, "-c", code, str(record_path), str(observed_path)]
+                ),
+                self.root / "run",
+                "claude-code",
+                task_source_path=str(task_source),
+                selection_path=str(self.root / "selection.json"),
+                should_run=True,
+                timeout_seconds=5,
+                process_record_path=record_path,
+            )
+
+        self.assertEqual(result["exit_code"], 0)
+        observed = json.loads(observed_path.read_text(encoding="utf-8"))
+        self.assertEqual(
+            observed["record"],
+            {
+                "status": "running",
+                "pid": observed["self_pid"],
+                "start_ticks": observed["self_pid"] * 10,
+            },
+        )
+        restored = json.loads(record_path.read_text(encoding="utf-8"))
+        self.assertEqual(
+            restored,
+            {
+                "status": "launching",
+                "owner": {"pid": os.getpid(), "start_ticks": os.getpid() * 10},
+            },
+        )
 
     def test_run_command_rejects_invalid_commands_and_setup(self) -> None:
         task_source = self.root / "tasks.txt"

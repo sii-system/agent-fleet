@@ -102,7 +102,10 @@ def build_verification_input(
 
 
 def run_verification(
-    verification_input: dict[str, Any], output_dir: Path
+    verification_input: dict[str, Any],
+    output_dir: Path,
+    *,
+    process_record_path: Path | None = None,
 ) -> dict[str, Any]:
     _prepare_verification_output(output_dir)
     validate_verification_input(verification_input)
@@ -137,6 +140,7 @@ def run_verification(
                 "rerun_timeout", DEFAULT_RERUN_TIMEOUT_SECONDS
             )
         ),
+        process_record_path=process_record_path,
     )
 
     monitor, monitor_path = read_monitor_snapshot(run_dir)
@@ -349,6 +353,7 @@ def run_verification_from_paths(
     dataset_name: str = "",
     dataset_path: str = "",
     model: str = "",
+    process_record_path: Path | None = None,
 ) -> dict[str, Any]:
     _prepare_verification_output(output_dir)
     payload = build_verification_input(
@@ -367,4 +372,8 @@ def run_verification_from_paths(
         dataset_path=dataset_path,
         model=model,
     )
-    return run_verification(payload, output_dir)
+    return run_verification(
+        payload,
+        output_dir,
+        process_record_path=process_record_path,
+    )

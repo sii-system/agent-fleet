@@ -204,16 +204,16 @@ class HarborControllerFixerTest(FixerTestCase):
             status = fixer_status(self.run_dir)
             observed.append(str(status["status"]))
             self.assertEqual(status["verification_status"], "running")
-            self.assertEqual(
-                len(
-                    list(
-                        (self.run_dir / "fixer" / "active-agent-processes").glob(
-                            "*-verification.json"
-                        )
-                    )
-                ),
-                1,
+            records = list(
+                (self.run_dir / "fixer" / "active-agent-processes").glob(
+                    "*-verification.json"
+                )
             )
+            self.assertEqual(len(records), 1)
+            self.assertEqual(kwargs.get("process_record_path"), records[0].resolve())
+            record_payload = json.loads(records[0].read_text(encoding="utf-8"))
+            self.assertEqual(record_payload["status"], "launching")
+            self.assertEqual(record_payload["owner"]["pid"], os.getpid())
             with self.assertRaisesRegex(ValueError, "after execution starts"):
                 cancel_fixer(self.run_dir, state["fixer_workflow_id"])
             return {"status": "partially_fixed"}
@@ -465,6 +465,79 @@ class HarborControllerFixerTest(FixerTestCase):
             self._start()
         with self.assertRaisesRegex(ValueError, "cannot reset while Fixer"):
             reset_fixer_control(self.run_dir)
+
+    def test_stale_launching_record_with_dead_owner_recovers_and_resets(self) -> None:
+        state_path = self.run_dir / "fixer" / "fixer-state.json"
+        record_path = (
+            self.run_dir
+            / "fixer"
+            / "active-agent-processes"
+            / "fixer-dead-verification.json"
+        )
+        dead_owner = {"pid": 999999999, "start_ticks": 1}
+        write_json(
+            state_path,
+            {
+                "fixer_workflow_id": "fixer-dead",
+                "status": "verifying",
+                "owner": dead_owner,
+            },
+        )
+        write_json(record_path, {"status": "launching", "owner": dead_owner})
+
+        reset = reset_fixer_control(self.run_dir)
+        self.assertEqual(reset["status"], "reset")
+        self.assertFalse(state_path.exists())
+        self.assertFalse(record_path.exists())
+
+        # Legacy ownerless launching record with dead workflow owner also recovers.
+        write_json(
+            state_path,
+            {
+                "fixer_workflow_id": "fixer-legacy-dead",
+                "status": "verifying",
+                "owner": dead_owner,
+            },
+        )
+        write_json(record_path, {"status": "launching"})
+
+        state = self._start()
+        self.assertEqual(state["status"], "awaiting_approval")
+        self.assertNotEqual(state["fixer_workflow_id"], "fixer-legacy-dead")
+
+    def test_live_launching_record_blocks_start_and_reset(self) -> None:
+        from harbor_runtime import ProcessIdentity
+
+        state_path = self.run_dir / "fixer" / "fixer-state.json"
+        record_path = (
+            self.run_dir
+            / "fixer"
+            / "active-agent-processes"
+            / "fixer-live-verification.json"
+        )
+        owner = ProcessIdentity.capture(os.getpid())
+        assert owner is not None
+        write_json(
+            state_path,
+            {
+                "fixer_workflow_id": "fixer-dead-owner",
+                "status": "verifying",
+                "owner": {"pid": 999999999, "start_ticks": 1},
+            },
+        )
+        write_json(
+            record_path,
+            {
+                "status": "launching",
+                "owner": owner.as_dict(),
+            },
+        )
+
+        with self.assertRaisesRegex(ValueError, "another Fixer workflow is active"):
+            self._start()
+        with self.assertRaisesRegex(ValueError, "cannot reset while Fixer"):
+            reset_fixer_control(self.run_dir)
+        self.assertTrue(record_path.exists())
 
     def test_cancel_rejects_pending_plan(self) -> None:
         state = self._start()

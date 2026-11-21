@@ -12,6 +12,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from harbor_runtime import ProcessIdentity, write_json_atomic
 from harbor_runtime import utc_now as _utc_now
 
 from ..validation import ValidationError, task_key
@@ -182,6 +183,7 @@ def run_command(
     dataset_name: str = "",
     dataset_path: str = "",
     model: str = "",
+    process_record_path: Path | None = None,
 ) -> dict[str, Any]:
     skipped_reason = "" if should_run else "no_sampled_tasks"
     if not command or not should_run:
@@ -266,6 +268,11 @@ def run_command(
             _open_log(stdout_path) as stdout_file,
             _open_log(stderr_path) as stderr_file,
         ):
+            owner = (
+                ProcessIdentity.capture(os.getpid())
+                if process_record_path is not None
+                else None
+            )
             process = subprocess.Popen(
                 argv,
                 cwd=run_dir,
@@ -274,30 +281,53 @@ def run_command(
                 env=env,
                 start_new_session=True,
             )
-            deadline = started + timeout_seconds
-            while True:
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    _terminate_process_group(process)
-                    _cleanup_verifier_backups(run_dir, agent)
-                    exit_code = 124
-                    timed_out = True
-                    break
-                try:
-                    exit_code = process.wait(
-                        timeout=min(remaining, RERUN_PROGRESS_INTERVAL_SECONDS)
-                    )
-                    break
-                except subprocess.TimeoutExpired:
-                    if deadline - time.monotonic() <= 0:
-                        continue
-                    elapsed = int(time.monotonic() - started)
-                    print(
-                        "verification rerun is still running "
-                        f"({elapsed}s elapsed); logs: {stdout_path}, {stderr_path}",
-                        file=sys.stderr,
-                        flush=True,
-                    )
+            try:
+                if process_record_path is not None:
+                    identity = ProcessIdentity.capture(process.pid)
+                    if identity is None:
+                        _terminate_process_group(process)
+                        raise OSError("cannot identify the verification rerun process")
+                    try:
+                        write_json_atomic(
+                            process_record_path,
+                            {"status": "running", **identity.as_dict()},
+                        )
+                    except OSError:
+                        _terminate_process_group(process)
+                        raise
+                deadline = started + timeout_seconds
+                while True:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        _terminate_process_group(process)
+                        _cleanup_verifier_backups(run_dir, agent)
+                        exit_code = 124
+                        timed_out = True
+                        break
+                    try:
+                        exit_code = process.wait(
+                            timeout=min(remaining, RERUN_PROGRESS_INTERVAL_SECONDS)
+                        )
+                        break
+                    except subprocess.TimeoutExpired:
+                        if deadline - time.monotonic() <= 0:
+                            continue
+                        elapsed = int(time.monotonic() - started)
+                        print(
+                            "verification rerun is still running "
+                            f"({elapsed}s elapsed); logs: {stdout_path}, {stderr_path}",
+                            file=sys.stderr,
+                            flush=True,
+                        )
+            finally:
+                if process_record_path is not None:
+                    restored_record: dict[str, Any] = {"status": "launching"}
+                    if owner is not None:
+                        restored_record["owner"] = owner.as_dict()
+                    try:
+                        write_json_atomic(process_record_path, restored_record)
+                    except OSError:
+                        pass
             stdout_summary = _read_log_tail(stdout_file)
             stderr_summary = _read_log_tail(stderr_file)
     except OSError as exc:

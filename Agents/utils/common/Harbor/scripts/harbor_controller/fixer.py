@@ -16,7 +16,7 @@ from typing import Any
 
 from analyzer_subagent import _load_follow_state, _pending_handovers
 from harbor_fixer.agent_invocation import PiAgentInvoker, PiInvocationConfig
-from harbor_fixer.artifact_io import read_json, write_json_atomic, write_text_atomic
+from harbor_fixer.artifact_io import read_json, write_json_atomic
 from harbor_fixer.executor import (
     MAX_SUMMARY_LIMIT,
     build_exec_input_from_plan,
@@ -129,12 +129,18 @@ def _owner_is_live(state: dict[str, Any]) -> bool:
     return identity.is_live()
 
 
-def _process_record_is_live(path: Path) -> bool:
+def _process_record_is_live(
+    path: Path, *, fallback_owner: dict[str, Any] | None = None
+) -> bool:
     process = _load_optional_json(path)
     if process is None:
         return False
     if process.get("status") == "launching":
-        return True
+        if "owner" in process:
+            return _owner_is_live(process)
+        if fallback_owner is not None:
+            return _owner_is_live({"owner": fallback_owner})
+        return False
     try:
         identity = ProcessIdentity.from_mapping(process)
     except (KeyError, TypeError, ValueError) as exc:
@@ -152,10 +158,16 @@ def _process_record_is_live(path: Path) -> bool:
     return True
 
 
-def _active_process_is_live(run_dir: Path) -> bool:
+def _active_process_is_live(
+    run_dir: Path, *, state: dict[str, Any] | None = None
+) -> bool:
+    fallback_owner = state.get("owner") if isinstance(state, dict) else None
     paths = [_active_action_path(run_dir)]
     paths.extend(sorted(_active_agent_process_dir(run_dir).glob("*.json")))
-    return any(_process_record_is_live(path) for path in paths)
+    return any(
+        _process_record_is_live(path, fallback_owner=fallback_owner)
+        for path in paths
+    )
 
 
 def _positive_env_int(name: str, default: int, *, maximum: int | None = None) -> int:
@@ -555,7 +567,7 @@ def start_fixer(
             benchmark_config=_benchmark_run_config(run_dir),
         )
         current = _load_optional_json(_state_path(run_dir))
-        process_is_live = _active_process_is_live(run_dir)
+        process_is_live = _active_process_is_live(run_dir, state=current)
         workflow_is_live = bool(
             current
             and current.get("status") in ACTIVE_STATUSES
@@ -720,7 +732,10 @@ def _finish_execution(
         _active_agent_process_dir(run_dir) / f"{workflow_id}-verification.json"
     )
     try:
-        write_text_atomic(process_record, '{"status":"launching"}\n')
+        write_json_atomic(
+            process_record,
+            {"status": "launching", "owner": _current_owner()},
+        )
         try:
             verification = run_verification_from_paths(
                 Path(paths["fix_plan"]),
@@ -734,6 +749,7 @@ def _finish_execution(
                 dataset_path=str(config["dataset_path"]),
                 model=str(config["benchmark_model"]),
                 rerun_timeout=int(config["rerun_timeout"]),
+                process_record_path=process_record,
             )
         finally:
             process_record.unlink(missing_ok=True)
@@ -1011,7 +1027,7 @@ def reset_fixer_control(
     run_dir = run_dir.resolve()
     with _state_lock(run_dir, inherited_lock_fd):
         state = _load_optional_json(_state_path(run_dir))
-        process_is_live = _active_process_is_live(run_dir)
+        process_is_live = _active_process_is_live(run_dir, state=state)
         workflow_is_live = bool(
             state
             and state.get("status") in OWNER_STATUSES
