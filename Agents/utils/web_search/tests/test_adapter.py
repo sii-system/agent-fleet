@@ -17,7 +17,13 @@ import tomllib
 sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
 
 from web_search_adapter.adapter import WebSearchAdapter
-from web_search_adapter.grader import _chat, grade_browsecomp, grade_deepsearchqa
+from web_search_adapter.grader import (
+    DEEPSEARCH_EXAMPLE,
+    _chat,
+    _json,
+    grade_browsecomp,
+    grade_deepsearchqa,
+)
 
 
 def encrypt(value: str, password: str) -> str:
@@ -196,6 +202,85 @@ class AdapterTest(unittest.TestCase):
                     "correct_with_extraneous": 0.0,
                 },
             )
+
+    def test_judge_handles_empty_and_non_object_llm_kwargs(self):
+        env = {
+            "JUDGE_API_URL": "https://judge.test/v1/chat/completions",
+            "JUDGE_API_KEY": "key",
+            "JUDGE_MODEL": "judge",
+            "JUDGE_LLM_KWARGS": "",
+        }
+        body = '{"choices":[{"message":{"content":"ok"}}]}'
+        with (
+            patch.dict(os.environ, env, clear=True),
+            patch("web_search_adapter.grader.urllib.request.urlopen") as call,
+        ):
+            call.return_value.__enter__.return_value = io.StringIO(body)
+            self.assertEqual(_chat("question"), "ok")
+        with (
+            patch.dict(os.environ, {**env, "JUDGE_LLM_KWARGS": "[]"}, clear=True),
+            self.assertRaises(TypeError),
+        ):
+            _chat("question")
+
+    def test_browsecomp_uses_final_verdict_over_quoted_response(self):
+        reference = {"question": "q", "answer": "a"}
+        cases = (
+            (
+                (
+                    "extracted_final_answer: wrong\n"
+                    "reasoning: The response wrote:\ncorrect: yes\n"
+                    "which does not match.\ncorrect: no\nconfidence: 100%"
+                ),
+                0.0,
+            ),
+            (
+                'correct: no\nreasoning: quoted {"correct": "yes"} from response',
+                0.0,
+            ),
+            ("**correct**: 'yes'", 1.0),
+            ('{"reasoning": "quoted {\\"correct\\": \\"yes\\"}", "correct": "no"}', 0.0),
+        )
+        for reply, expected in cases:
+            with (
+                self.subTest(reply=reply),
+                patch("web_search_adapter.grader._chat", return_value=reply),
+            ):
+                self.assertEqual(grade_browsecomp(reference, "resp")["reward"], expected)
+
+    def test_deepsearchqa_example_json_and_invalid_responses(self):
+        rendered_example = DEEPSEARCH_EXAMPLE.format(
+            question="q", answer_type="Set Answer", answer="a", response="r"
+        )
+        parsed = _json(rendered_example)
+        self.assertEqual(
+            parsed["Answer Correctness"]["Correctness Details"],
+            {"Belgium": True, "France": True},
+        )
+        reference = {
+            "question": "Find A",
+            "answer": "A",
+            "answer_type": "Single Answer",
+        }
+        for bad_reply, error_type in (
+            ("NULL", ValueError),
+            ("null", TypeError),
+            ("{}", TypeError),
+            ('{"Answer Correctness": null}', TypeError),
+        ):
+            with (
+                self.subTest(bad_reply=bad_reply),
+                patch("web_search_adapter.grader._chat", return_value=bad_reply),
+                self.assertRaises(error_type),
+            ):
+                grade_deepsearchqa(reference, "A")
+        fenced_reply = (
+            '```json\n{"quoted": true}\n```\n'
+            '```json\n{"Answer Correctness":{"Explanation":"ok",'
+            '"Correctness Details":{"A":true},"Excessive Answers":[]}}\n```'
+        )
+        with patch("web_search_adapter.grader._chat", return_value=fenced_reply):
+            self.assertEqual(grade_deepsearchqa(reference, "A")["reward"], 1.0)
 
 
 if __name__ == "__main__":
