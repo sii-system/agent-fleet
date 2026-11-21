@@ -273,5 +273,6 @@ while true; do
     log_msg "failed task ${task_index}: ${task_name} (exit=$rc, missing trial result)"
   fi
 
+  harbor_release_claim "$task_index"
   rm -f "$CURRENT_FILE"
 done

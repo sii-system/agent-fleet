@@ -25,8 +25,14 @@ start_monitor() {
   local close_on_complete="$2"
   local online_analysis="$3"
   local log="$4"
+  local monitor_path="/usr/bin:/bin:/usr/sbin:/sbin"
+  local flock_bin
+  flock_bin="$(command -v flock || true)"
+  if [[ -n "$flock_bin" ]]; then
+    monitor_path="$(dirname "$flock_bin"):$monitor_path"
+  fi
   env -i \
-    PATH="/usr/bin:/bin:/usr/sbin:/sbin" \
+    PATH="$monitor_path" \
     HOME="$TEST_TMP_DIR/home" \
     TERM=dumb \
     RUN_ID="monitor-summary-test" \

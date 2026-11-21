@@ -60,7 +60,7 @@ collect_counts() {
   next="$(next_index)"
   done_n="$(count_done)"
   failed_n="$(count_failed)"
-  running_n="$(find "$QUEUE_DIR" -maxdepth 1 -name 'worker-*.current' | wc -l | tr -d ' ')"
+  running_n="$(harbor_count_live_workers)"
   claimed=$((next - 1))
   if [[ "$claimed" -lt 0 ]]; then
     claimed=0
@@ -221,6 +221,8 @@ write_summary() {
 }
 
 while true; do
+  harbor_recover_lost_claims
+  harbor_ensure_queue_recovery_worker
   collect_counts
 
   # Detached zellij panes may not have TERM set; do not let clear kill monitor.

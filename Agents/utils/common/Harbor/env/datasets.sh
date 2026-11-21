@@ -236,10 +236,218 @@ harbor_prepare_task_file() {
 
 harbor_task_count() {
   if [[ -f "$TASK_FILE" ]]; then
+    awk 'NF {n++} END {print n+0}' "$TASK_FILE"
+  else
+    echo 0
+  fi
+}
+
+harbor_task_line_count() {
+  if [[ -f "$TASK_FILE" ]]; then
     wc -l < "$TASK_FILE" | tr -d ' '
   else
     echo 0
   fi
+}
+
+harbor_pid_is_alive() {
+  local pid="$1" err
+  [[ "$pid" =~ ^[0-9]+$ ]] || return 1
+  if err="$(kill -0 -- "$pid" 2>&1)"; then
+    return 0
+  fi
+  [[ "$err" == *"not permitted"* ]]
+}
+
+harbor_queue_claim_attempts() {
+  local n="${HARBOR_QUEUE_CLAIM_ATTEMPTS:-2}"
+  [[ "$n" =~ ^[0-9]+$ && "$n" -ge 1 ]] || n=2
+  printf '%s\n' "$n"
+}
+
+harbor_claim_dir() {
+  printf '%s\n' "$QUEUE_DIR/claims"
+}
+
+harbor_task_index_recorded() {
+  local index="$1" file
+  for file in "$QUEUE_DIR/done.txt" "$QUEUE_DIR/failed.txt"; do
+    [[ -f "$file" ]] || continue
+    if awk -F '\t' -v idx="$index" 'NF && $1 == idx { found=1 } END { exit found ? 0 : 1 }' "$file"; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+harbor_write_claim() {
+  local index="$1" task_name="$2" attempt="$3"
+  mkdir -p "$(harbor_claim_dir)"
+  printf '%s\t%s\t%s\t%s\n' "$index" "$task_name" "$$" "$attempt" > "$(harbor_claim_dir)/$index"
+}
+
+harbor_release_claim() {
+  local index="$1" claim pid
+  [[ "$index" =~ ^[0-9]+$ ]] || return 0
+  mkdir -p "$QUEUE_DIR"
+  exec 9>"$LOCK_FILE"
+  flock 9
+  claim="$(harbor_claim_dir)/$index"
+  if [[ -f "$claim" ]]; then
+    pid="$(awk -F '\t' 'NR==1 { print $3 }' "$claim")"
+    if [[ "$pid" == "$$" ]]; then
+      rm -f "$claim"
+    fi
+  fi
+  flock -u 9
+}
+
+harbor_pop_reclaim_locked() {
+  local file="$QUEUE_DIR/reclaim.txt" line lines
+  [[ -s "$file" ]] || return 1
+  line="$(head -n 1 "$file" | tr -d '\r')"
+  lines="$(wc -l < "$file" | tr -d ' ')"
+  if [[ "$lines" -le 1 ]]; then
+    : > "$file"
+  else
+    tail -n +2 "$file" > "${file}.tmp"
+    mv -f "${file}.tmp" "$file"
+  fi
+  [[ -n "$line" ]] || return 1
+  printf '%s\n' "$line"
+}
+
+harbor_append_reclaim_locked() {
+  local index="$1" task_name="$2" attempt="$3" file="$QUEUE_DIR/reclaim.txt"
+  if [[ -f "$file" ]] && awk -F '\t' -v idx="$index" 'NF && $1 == idx { found=1 } END { exit found ? 0 : 1 }' "$file"; then
+    return 0
+  fi
+  printf '%s\t%s\t%s\n' "$index" "$task_name" "$attempt" >> "$file"
+}
+
+harbor_fail_lost_claim_locked() {
+  local index="$1" task_name="$2"
+  if harbor_task_index_recorded "$index"; then
+    return 0
+  fi
+  printf '%s\t%s\t%s\t%s\n' "$index" "$task_name" "worker-lost" "WorkerLost" >> "$QUEUE_DIR/failed.txt"
+}
+
+# Caller holds the queue lock. Dead claims go back on the reclaim list until
+# HARBOR_QUEUE_CLAIM_ATTEMPTS is exhausted, then they are recorded as failed.
+harbor_recover_lost_claims_locked() {
+  local claim index task_name pid attempt max_attempts claims_dir current current_pid
+  max_attempts="$(harbor_queue_claim_attempts)"
+  claims_dir="$(harbor_claim_dir)"
+  mkdir -p "$claims_dir"
+  touch "$QUEUE_DIR/done.txt" "$QUEUE_DIR/failed.txt"
+  for claim in "$claims_dir"/*; do
+    [[ -f "$claim" ]] || continue
+    index=""
+    task_name=""
+    pid=""
+    attempt=""
+    IFS=$'\t' read -r index task_name pid attempt < "$claim" || true
+    [[ "$index" =~ ^[0-9]+$ && -n "$task_name" ]] || {
+      rm -f "$claim"
+      continue
+    }
+    [[ "$attempt" =~ ^[0-9]+$ ]] || attempt=1
+    if harbor_pid_is_alive "$pid"; then
+      continue
+    fi
+    if harbor_task_index_recorded "$index"; then
+      rm -f "$claim"
+      continue
+    fi
+    if [[ "$attempt" -ge "$max_attempts" ]]; then
+      harbor_fail_lost_claim_locked "$index" "$task_name"
+    else
+      harbor_append_reclaim_locked "$index" "$task_name" "$attempt"
+    fi
+    rm -f "$claim"
+  done
+  for current in "$QUEUE_DIR"/worker-*.current; do
+    [[ -f "$current" ]] || continue
+    current_pid="$(awk -F '\t' 'NR==1 { print $3 }' "$current")"
+    if [[ -z "$current_pid" ]]; then
+      continue
+    fi
+    if ! harbor_pid_is_alive "$current_pid"; then
+      rm -f "$current"
+    fi
+  done
+}
+
+harbor_recover_lost_claims() {
+  mkdir -p "$QUEUE_DIR"
+  exec 9>"$LOCK_FILE"
+  flock 9
+  harbor_recover_lost_claims_locked
+  flock -u 9
+}
+
+harbor_count_live_workers() {
+  local current pid n=0
+  for current in "$QUEUE_DIR"/worker-*.current; do
+    [[ -f "$current" ]] || continue
+    pid="$(awk -F '\t' 'NR==1 { print $3 }' "$current")"
+    if [[ -z "$pid" ]]; then
+      n=$((n + 1))
+      continue
+    fi
+    if harbor_pid_is_alive "$pid"; then
+      n=$((n + 1))
+    fi
+  done
+  printf '%s\n' "$n"
+}
+
+harbor_fail_pending_reclaim_locked() {
+  local file="$QUEUE_DIR/reclaim.txt" line index task_name
+  [[ -s "$file" ]] || return 0
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ -n "$line" ]] || continue
+    index="$(printf '%s' "$line" | cut -f1)"
+    task_name="$(printf '%s' "$line" | cut -f2)"
+    [[ "$index" =~ ^[0-9]+$ && -n "$task_name" ]] || continue
+    harbor_fail_lost_claim_locked "$index" "$task_name"
+  done < "$file"
+  : > "$file"
+}
+
+harbor_ensure_queue_recovery_worker() {
+  local pidfile old cmd count_file count budget
+  [[ -s "$QUEUE_DIR/reclaim.txt" ]] || return 0
+  [[ "$(harbor_count_live_workers)" == "0" ]] || return 0
+  pidfile="$QUEUE_DIR/recovery.pid"
+  if [[ -f "$pidfile" ]]; then
+    old="$(tr -d '[:space:]' < "$pidfile" || true)"
+    if harbor_pid_is_alive "$old"; then
+      return 0
+    fi
+  fi
+  count_file="$QUEUE_DIR/recovery.count"
+  count=0
+  if [[ -f "$count_file" ]]; then
+    count="$(tr -d '[:space:]' < "$count_file" || true)"
+  fi
+  [[ "$count" =~ ^[0-9]+$ ]] || count=0
+  budget="${HARBOR_QUEUE_RECOVERY_SPAWNS:-3}"
+  [[ "$budget" =~ ^[0-9]+$ && "$budget" -ge 1 ]] || budget=3
+  if [[ "$count" -ge "$budget" ]]; then
+    mkdir -p "$QUEUE_DIR"
+    exec 9>"$LOCK_FILE"
+    flock 9
+    harbor_fail_pending_reclaim_locked
+    flock -u 9
+    return 0
+  fi
+  cmd="${HARBOR_QUEUE_RECOVERY_COMMAND:-$SCRIPT_DIR/run_harbor_worker.sh}"
+  mkdir -p "$RUNTIME_DIR/worker-logs"
+  bash "$cmd" recovery >> "$RUNTIME_DIR/worker-logs/worker-recovery.log" 2>&1 &
+  printf '%s\n' "$!" > "$pidfile"
+  printf '%s\n' "$((count + 1))" > "$count_file"
 }
 
 harbor_ensure_dataset() {
@@ -287,19 +495,38 @@ harbor_ensure_dataset() {
 harbor_pick_task() {
   exec 9>"$LOCK_FILE"
   flock 9
+  mkdir -p "$QUEUE_DIR"
+  touch "$QUEUE_DIR/done.txt" "$QUEUE_DIR/failed.txt"
+  harbor_recover_lost_claims_locked
 
-  local total idx task_name
-  total="$(harbor_task_count)"
-  idx="$(cat "$NEXT_INDEX_FILE" 2>/dev/null || echo 1)"
-  if [[ -z "$idx" || "$idx" -gt "$total" ]]; then
+  local line index task_name attempt idx total_lines
+  line="$(harbor_pop_reclaim_locked || true)"
+  if [[ -n "$line" ]]; then
+    index="$(printf '%s' "$line" | cut -f1)"
+    task_name="$(printf '%s' "$line" | cut -f2)"
+    attempt="$(printf '%s' "$line" | cut -f3)"
+    [[ "$attempt" =~ ^[0-9]+$ ]] || attempt=1
+    harbor_write_claim "$index" "$task_name" "$((attempt + 1))"
     flock -u 9
-    return 1
+    printf '%s\t%s\n' "$index" "$task_name"
+    return 0
   fi
 
-  task_name="$(sed -n "${idx}p" "$TASK_FILE" | tr -d '\r')"
-  echo $((idx + 1)) > "$NEXT_INDEX_FILE"
+  total_lines="$(harbor_task_line_count)"
+  idx="$(cat "$NEXT_INDEX_FILE" 2>/dev/null || echo 1)"
+  [[ "$idx" =~ ^[0-9]+$ ]] || idx=1
+  while [[ "$idx" -le "$total_lines" ]]; do
+    task_name="$(sed -n "${idx}p" "$TASK_FILE" | tr -d '\r')"
+    echo $((idx + 1)) > "$NEXT_INDEX_FILE"
+    if [[ -z "$task_name" ]]; then
+      idx=$((idx + 1))
+      continue
+    fi
+    harbor_write_claim "$idx" "$task_name" 1
+    flock -u 9
+    printf '%s\t%s\n' "$idx" "$task_name"
+    return 0
+  done
   flock -u 9
-
-  [[ -n "$task_name" ]] || return 1
-  printf '%s\t%s\n' "$idx" "$task_name"
+  return 1
 }

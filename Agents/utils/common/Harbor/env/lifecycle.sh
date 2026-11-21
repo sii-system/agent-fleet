@@ -5,7 +5,7 @@ set -euo pipefail
 # Sourced by ../env.sh; SCRIPT_DIR remains the Harbor directory.
 
 harbor_init_run_dirs() {
-  mkdir -p "$OUTPUT_PATH" "$QUEUE_DIR" "$RUNTIME_DIR/worker-logs" "$JOBS_ROOT"
+  mkdir -p "$OUTPUT_PATH" "$QUEUE_DIR" "$QUEUE_DIR/claims" "$RUNTIME_DIR/worker-logs" "$JOBS_ROOT"
   touch "$QUEUE_DIR/done.txt" "$QUEUE_DIR/failed.txt"
 }
 
@@ -155,6 +155,8 @@ harbor_reset_run_state() (
   harbor_stop_monitor
   harbor_stop_online_analysis
   rm -f "$QUEUE_DIR"/worker-*.current "$LOCK_FILE" "$WORKERS_READY_FILE" "$WORKERS_FAILED_FILE"
+  rm -rf "$QUEUE_DIR/claims"
+  rm -f "$QUEUE_DIR/reclaim.txt" "$QUEUE_DIR/recovery.pid" "$QUEUE_DIR/recovery.count"
   rm -f "$NEXT_INDEX_FILE"
   rm -f "$OUTPUT_PATH/.monitor_state.json" "$HARBOR_MONITOR_LOG_FILE" "$HARBOR_BENCHMARK_PID_FILE" "$HARBOR_BENCHMARK_EXIT_FILE" "$HARBOR_JOB_DIR_FILE"
   rm -rf "$HARBOR_MONITOR_DIR"
