@@ -339,6 +339,7 @@ def test_generated_dockerfile_excludes_future_commits_tags_and_reflogs(
         subprocess.run(
             ["git", "-C", str(target), "cat-file", "-e", f"{gold_sha}^{{commit}}"],
             capture_output=True,
+            check=False,
         ).returncode
         != 0
     )
