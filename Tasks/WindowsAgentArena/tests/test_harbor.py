@@ -31,13 +31,16 @@ class HarborTrialTests(unittest.IsolatedAsyncioTestCase):
     async def test_setup_failure_recovers_guest_logs_after_vm_cleanup(self):
         await self.run_native_trial(fail_setup=True)
 
+    async def test_agent_timeout_still_runs_native_verifier_and_cleans_up(self):
+        await self.run_native_trial(timeout_agent=True)
+
     async def test_docker_trial_runs_native_agent_and_verifier(self):
         await self.run_native_trial(backend="docker")
 
     async def test_docker_setup_failure_preserves_guest_logs(self):
         await self.run_native_trial(backend="docker", fail_setup=True)
 
-    async def run_native_trial(self, *, fail_setup=False, backend="kubevirt"):
+    async def run_native_trial(self, *, fail_setup=False, timeout_agent=False, backend="kubevirt"):
         from docker_windows.environment import DockerWindowsEnvironment
         from harbor.models.trial.config import TrialConfig
         from harbor.trial.trial import Trial
@@ -77,6 +80,7 @@ class HarborTrialTests(unittest.IsolatedAsyncioTestCase):
             Image.new('RGB', (1280, 720), 'white').save(png, format='PNG')
             png = png.getvalue()
             seen, predictions = [], []
+            stall_event = threading.Event()
 
             class Handler(BaseHTTPRequestHandler):
                 def log_message(self, *_):
@@ -106,6 +110,9 @@ class HarborTrialTests(unittest.IsolatedAsyncioTestCase):
                     seen.append(self.path)
                     if self.path == '/v1/chat/completions':
                         predictions.append(json.loads(body))
+                        if timeout_agent and len(predictions) >= 2:
+                            stall_event.wait(timeout=30)
+                            return
                         action = 'click (12, 18)' if len(predictions) == 1 else 'finish'
                         self.send({'id': 'fake', 'object': 'chat.completion', 'created': 0, 'model': 'fake-model',
                                    'choices': [{'index': 0, 'message': {'role': 'assistant', 'content': 'Plan: Test\nAction: ' + action},
@@ -120,6 +127,7 @@ class HarborTrialTests(unittest.IsolatedAsyncioTestCase):
             thread.start()
             self.addCleanup(server.server_close)
             self.addCleanup(server.shutdown)
+            self.addCleanup(stall_event.set)
             endpoint = f'http://127.0.0.1:{server.server_port}'
             control = Mock()
             control.guest_endpoints = AsyncMock(return_value={5000: endpoint, 9222: endpoint, 8080: endpoint})
@@ -164,12 +172,15 @@ class HarborTrialTests(unittest.IsolatedAsyncioTestCase):
                              'from waa_benchmark.worker import main; main()')
                 return await real_spawn(command[0], '-c', bootstrap, command[-1], **kwargs)
 
+            agent_config = {'import_path': 'Agents.WindowsAgentArena.agent:WAAAgent', 'model_name': 'fake-model',
+                            'kwargs': {'max_steps': 3, 'pause': 0}}
+            if timeout_agent:
+                agent_config['override_timeout_sec'] = 3.0
             trial_config = TrialConfig.model_validate({
                 'trial_name': 'waa-native-fixture', 'trials_dir': str(root / 'trials'), 'task': {'path': str(task)},
                 'environment': {'import_path': environment_path, 'kwargs': {
                     'runtime': RUNTIME, 'pcagent_runtime': PCAGENT_RUNTIME, 'screen_size': [1280, 720]}},
-                'agent': {'import_path': 'Agents.WindowsAgentArena.agent:WAAAgent', 'model_name': 'fake-model',
-                          'kwargs': {'max_steps': 3, 'pause': 0}},
+                'agent': agent_config,
                 'verifier': {'import_path': 'waa_benchmark.verifier:WAAVerifier'},
             })
             with patch.dict(os.environ, {'OPENAI_API_KEY': 'sk-fake', 'OPENAI_BASE_URL': endpoint + '/v1',
@@ -186,6 +197,10 @@ class HarborTrialTests(unittest.IsolatedAsyncioTestCase):
                 if fail_setup:
                     self.assertIn('Native WAA setup failed', result.exception_info.exception_message)
                     self.assertEqual(cleanup.await_count, 2)
+                elif timeout_agent:
+                    self.assertEqual(result.exception_info.exception_type, 'AgentTimeoutError')
+                    self.assertEqual(result.verifier_result.rewards, {'reward': 1})
+                    cleanup.assert_awaited_once()
                 else:
                     self.assertIsNone(result.exception_info, result.exception_info)
                     self.assertEqual(result.verifier_result.rewards, {'reward': 1})
@@ -196,7 +211,10 @@ class HarborTrialTests(unittest.IsolatedAsyncioTestCase):
                 control.delete.assert_awaited_once()
                 if trial.agent_environment._log_snapshot is not None:
                     self.addCleanup(trial.agent_environment._log_snapshot.cleanup)
-            self.assertEqual(len(predictions), 0 if fail_setup else 2)
+            if timeout_agent:
+                self.assertGreaterEqual(len(predictions), 1)
+            else:
+                self.assertEqual(len(predictions), 0 if fail_setup else 2)
             if not fail_setup:
                 for path in ['/setup/create_folder', '/update_computer', '/execute']:
                     self.assertIn(path, seen)

@@ -36,12 +36,18 @@ class NativeSession:
                                   action_space=spec["action_space"], require_a11y_tree=spec["a11y"], benchmark=self.benchmark)
         self.obs, self.steps, self.done, self.evaluated = None, 0, False, False
         self.started = datetime.datetime.now(datetime.timezone.utc)
-        from trajectory_recorder import TrajectoryRecorder
-        self.recorder = TrajectoryRecorder(str(self.output))
+        self.recorder = None
+
+    def _ensure_recorder(self):
+        if self.recorder is None:
+            from trajectory_recorder import TrajectoryRecorder
+            self.recorder = TrajectoryRecorder(str(self.output))
+        return self.recorder
 
     def setup(self):
         if self.obs is not None:
             raise RuntimeError("Native task setup already ran")
+        recorder = self._ensure_recorder()
         if self.benchmark == "waa":
             self.obs = self.env.reset(task_config=self.config)
         else:
@@ -50,7 +56,7 @@ class NativeSession:
         if self.obs is None:
             raise RuntimeError("WAA setup did not produce an observation")
         if self.benchmark == "waa":
-            self.recorder.record_init(self.obs, self.config, timestamp())
+            recorder.record_init(self.obs, self.config, timestamp())
         return {"benchmark": self.benchmark, "status": "ready"}
 
     def agent(self, *, factory, model, instruction, max_steps, pause, extra_env=None):
@@ -91,34 +97,47 @@ class NativeSession:
                 self.http.check()
             for action in actions:
                 if self.benchmark == "waa-v2":
-                    self.recorder.record_step(self.obs, logs, self.steps, timestamp(), action)
-                self.obs, reward, self.done, info = self.env.step(action, pause)
+                    self._ensure_recorder().record_step(self.obs, logs, self.steps, timestamp(), action)
+                obs, reward, self.done, info = self.env.step(action, pause)
                 self.http.check()
-                if self.obs is None:
+                if obs is None:
                     raise RuntimeError("WAA step did not produce an observation")
+                self.obs = obs
                 if self.benchmark == "waa":
-                    self.recorder.record_step(self.obs, logs, self.steps, timestamp(),
-                                             str(datetime.datetime.now(datetime.timezone.utc) - self.started), action, reward, self.done, info)
+                    self._ensure_recorder().record_step(self.obs, logs, self.steps, timestamp(),
+                                                        str(datetime.datetime.now(datetime.timezone.utc) - self.started), action, reward, self.done, info)
                 if self.done:
                     break
             self.steps += 1
 
-    def evaluate(self):
-        if self.obs is None or self.evaluated:
+    def evaluate(self, *, reattach=False):
+        if self.evaluated:
             raise RuntimeError("Verification requires setup and runs once per trial")
+        if reattach:
+            if self.obs is not None:
+                raise RuntimeError("Cannot reattach an already initialized native session")
+            if self.benchmark != "waa" and self.spec.get("domain"):
+                self.env.domain = self.spec["domain"]
+            self.env._set_task_info(self.config)
+        elif self.obs is None:
+            raise RuntimeError("Verification requires setup and runs once per trial")
+        self.http.failures.clear()
         self.http.check_execution = False
         score = float(self.env.evaluate())
         self.http.check(allow_missing_file=True)
         if not math.isfinite(score):
             raise ValueError("Native WAA evaluator returned an invalid score")
         self.evaluated = True
-        if self.benchmark == "waa":
-            self.recorder.record_end(score, self.started.astimezone().replace(tzinfo=None))
-            (self.output / "result.txt").write_text(str(score) + "\n")
+        if self.recorder is not None:
+            if self.benchmark == "waa":
+                self.recorder.record_end(score, self.started.astimezone().replace(tzinfo=None))
+                (self.output / "result.txt").write_text(str(score) + "\n")
+            else:
+                self.recorder.record_end([(self.steps, score)], self.obs, self.steps, timestamp())
         else:
-            self.recorder.record_end([(self.steps, score)], self.obs, self.steps, timestamp())
-        return {"status": "completed", "score": score, "steps": self.steps,
-                "termination": "agent" if self.done else "max_steps"}
+            (self.output / "result.txt").write_text(str(score) + "\n")
+        termination = "interrupted" if reattach else ("agent" if self.done else "max_steps")
+        return {"status": "completed", "score": score, "steps": self.steps, "termination": termination}
 
 
 def main():
