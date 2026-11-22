@@ -15,12 +15,15 @@ class GuestHTTP:
     covers upstream functions which construct controllers or URLs internally.
     """
 
-    def __init__(self, host, endpoints, timeout=120):
+    def __init__(self, host, endpoints, timeout=120, *, on_guest_busy=None):
         self.host = host
         self.endpoints = {int(port): url.rstrip("/") for port, url in endpoints.items()}
         self.timeout = timeout
         self.failures = []
         self.check_execution = True
+        self.guest_busy = False
+        self._inflight_mutations = 0
+        self._on_guest_busy = on_guest_busy
 
     def rewrite(self, url):
         parsed = urlsplit(url)
@@ -44,17 +47,29 @@ class GuestHTTP:
             rewritten = self.rewrite(url)
             parsed = urlsplit(rewritten)
             guest = any(parsed.netloc == urlsplit(endpoint).netloc for endpoint in self.endpoints.values())
+            guest_mutation = rewritten != url and method.upper() not in ("GET", "HEAD")
             kwargs.setdefault("timeout", self.timeout)
             if guest:
                 # Do not forward controller proxies or ambient netrc credentials.
                 session.trust_env = False
                 kwargs["proxies"] = {}
+            if guest_mutation:
+                self._inflight_mutations += 1
+                self.guest_busy = True
+                if self._on_guest_busy is not None:
+                    self._on_guest_busy(True)
             try:
                 response = original(session, method, rewritten, **kwargs)
             except requests.RequestException:
                 if guest:
                     self.failures.append((0, parsed.path))
                 raise
+            if guest_mutation:
+                self._inflight_mutations = max(0, self._inflight_mutations - 1)
+                if self._inflight_mutations == 0:
+                    self.guest_busy = False
+                    if self._on_guest_busy is not None:
+                        self._on_guest_busy(False)
             if guest and response.status_code >= 400:
                 self.failures.append((response.status_code, parsed.path))
             elif guest and parsed.path in ("/json/version", "/probe", "/screenshot", "/obs_winagent"):

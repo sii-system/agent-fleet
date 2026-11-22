@@ -23,6 +23,7 @@ class WAASession:
         self.native_python = native_python or sys.executable
         self.worker, self.worker_log = None, None
         self._worker_spec_path = None
+        self._worker_state_path = None
         self._setup_complete = False
         self._evaluate_attempted = False
         self._phase_lock = asyncio.Lock()
@@ -56,15 +57,19 @@ class WAASession:
             native_dir = self.trial_paths.agent_dir / "native"
             native_dir.mkdir(parents=True, exist_ok=True)
             spec_path = self.trial_paths.trial_dir / "waa-worker.json"
+            state_path = self.trial_paths.trial_dir / "waa-worker-state.json"
+            state_path.unlink(missing_ok=True)
             spec_path.write_text(json.dumps({
                 "benchmark": self.benchmark, "runtime": str(self.runtime),
                 "pcagent_client": str(self.pcagent_runtime / "client"),
                 "task_path": str(self.environment_dir / "native-task.json"),
                 "task_sha256": self.native["task_sha256"], "domain": self.native["domain"],
                 "host": "waa-guest.invalid", "endpoints": endpoints, "output": str(native_dir),
+                "state_path": str(state_path),
                 "screen_size": self.screen_size, "action_space": self.action_space, "a11y": self.a11y,
             }, indent=2) + "\n")
             self._worker_spec_path = spec_path
+            self._worker_state_path = state_path
             self._setup_complete = False
             self._evaluate_attempted = False
             await self._start_worker(spec_path, append_log=False)
@@ -73,6 +78,16 @@ class WAASession:
         except BaseException:
             await asyncio.shield(self.stop(delete=True))
             raise
+
+    def _guest_is_quiescent(self) -> bool:
+        state_path = getattr(self, "_worker_state_path", None)
+        if state_path is None:
+            return False
+        try:
+            state = json.loads(Path(state_path).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return False
+        return isinstance(state, dict) and state.get("guest_busy") is False
 
     async def _start_worker(self, spec_path: Path, *, append_log: bool = False):
         mode = "ab" if append_log else "wb"
@@ -105,6 +120,10 @@ class WAASession:
                 if not can_reattach:
                     raise RuntimeError("Native WAA worker is not running")
                 self._evaluate_attempted = True
+                if not self._guest_is_quiescent():
+                    raise RuntimeError(
+                        "Cannot recover WAA verification while a guest command may still be running"
+                    )
                 if self.worker is not None:
                     await self._stop_worker()
                 await self._start_worker(Path(spec_path), append_log=True)
