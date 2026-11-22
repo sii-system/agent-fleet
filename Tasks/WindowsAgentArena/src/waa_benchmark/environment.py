@@ -22,6 +22,10 @@ class WAASession:
         self.screen_size, self.action_space, self.a11y = screen_size, action_space, a11y
         self.native_python = native_python or sys.executable
         self.worker, self.worker_log = None, None
+        self._worker_spec_path = None
+        self._worker_state_path = None
+        self._setup_complete = False
+        self._evaluate_attempted = False
         self._phase_lock = asyncio.Lock()
         super().__init__(*args, **kwargs)
         self.native = json.loads((self.environment_dir / "waa.json").read_text())
@@ -53,44 +57,99 @@ class WAASession:
             native_dir = self.trial_paths.agent_dir / "native"
             native_dir.mkdir(parents=True, exist_ok=True)
             spec_path = self.trial_paths.trial_dir / "waa-worker.json"
+            state_path = self.trial_paths.trial_dir / "waa-worker-state.json"
+            state_path.unlink(missing_ok=True)
             spec_path.write_text(json.dumps({
                 "benchmark": self.benchmark, "runtime": str(self.runtime),
                 "pcagent_client": str(self.pcagent_runtime / "client"),
                 "task_path": str(self.environment_dir / "native-task.json"),
                 "task_sha256": self.native["task_sha256"], "domain": self.native["domain"],
                 "host": "waa-guest.invalid", "endpoints": endpoints, "output": str(native_dir),
+                "state_path": str(state_path),
                 "screen_size": self.screen_size, "action_space": self.action_space, "a11y": self.a11y,
             }, indent=2) + "\n")
-            self.worker_log = (self.trial_paths.trial_dir / "waa-worker.log").open("wb")
-            self.worker = await asyncio.create_subprocess_exec(
-                self.native_python, "-m", "waa_benchmark.worker", str(spec_path),
-                stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
-                stderr=self.worker_log, start_new_session=True,
-            )
+            self._worker_spec_path = spec_path
+            self._worker_state_path = state_path
+            self._setup_complete = False
+            self._evaluate_attempted = False
+            await self._start_worker(spec_path, append_log=False)
             await self.native_request("setup")
+            self._setup_complete = True
         except BaseException:
             await asyncio.shield(self.stop(delete=True))
             raise
 
+    def _guest_is_quiescent(self) -> bool:
+        state_path = getattr(self, "_worker_state_path", None)
+        if state_path is None:
+            return False
+        try:
+            state = json.loads(Path(state_path).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return False
+        return isinstance(state, dict) and state.get("guest_busy") is False
+
+    async def _start_worker(self, spec_path: Path, *, append_log: bool = False):
+        mode = "ab" if append_log else "wb"
+        log_file = (self.trial_paths.trial_dir / "waa-worker.log").open(mode)
+        try:
+            worker = await asyncio.create_subprocess_exec(
+                self.native_python, "-m", "waa_benchmark.worker", str(spec_path),
+                stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
+                stderr=log_file, start_new_session=True,
+            )
+        except BaseException:
+            log_file.close()
+            raise
+        self.worker_log = log_file
+        self.worker = worker
+
     async def native_request(self, method, **kwargs):
         async with self._phase_lock:
+            reattach = False
             if self.worker is None or self.worker.returncode is not None:
-                raise RuntimeError("Native WAA worker is not running")
+                spec_path = getattr(self, "_worker_spec_path", None)
+                can_reattach = (
+                    method == "evaluate"
+                    and getattr(self, "_setup_complete", False)
+                    and getattr(self, "_started", False)
+                    and not getattr(self, "_evaluate_attempted", False)
+                    and spec_path is not None
+                    and Path(spec_path).is_file()
+                )
+                if not can_reattach:
+                    raise RuntimeError("Native WAA worker is not running")
+                self._evaluate_attempted = True
+                if not self._guest_is_quiescent():
+                    raise RuntimeError(
+                        "Cannot recover WAA verification while a guest command may still be running"
+                    )
+                if self.worker is not None:
+                    await self._stop_worker()
+                await self._start_worker(Path(spec_path), append_log=True)
+                reattach = True
+            elif method == "evaluate":
+                self._evaluate_attempted = True
+            payload = {"method": method, **kwargs}
+            if reattach:
+                payload["reattach"] = True
             try:
-                self.worker.stdin.write((json.dumps({"method": method, **kwargs}) + "\n").encode())
+                self.worker.stdin.write((json.dumps(payload) + "\n").encode())
                 await self.worker.stdin.drain()
                 line = await self.worker.stdout.readline()
                 if not line:
                     raise RuntimeError("Native WAA worker exited; see waa-worker.log")
                 response = json.loads(line)
-                if not response["ok"]:
-                    raise RuntimeError(f"Native WAA {method} failed ({response['error_type']}); see waa-worker.log")
-                return response["result"]
             except BaseException:
-                # A cancelled phase must not continue changing the desktop while
-                # Harbor starts verification or cleanup.
+                # A cancelled or broken phase must not continue changing the
+                # desktop while Harbor starts verification or cleanup.
                 await asyncio.shield(self._stop_worker())
                 raise
+            if not response["ok"]:
+                if method != "agent":
+                    await asyncio.shield(self._stop_worker())
+                raise RuntimeError(f"Native WAA {method} failed ({response['error_type']}); see waa-worker.log")
+            return response["result"]
 
     async def _stop_worker(self):
         worker, self.worker = self.worker, None
@@ -107,6 +166,7 @@ class WAASession:
                 self.worker_log = None
 
     async def stop(self, delete=True):
+        self._setup_complete = False
         try:
             await self._stop_worker()
         finally:

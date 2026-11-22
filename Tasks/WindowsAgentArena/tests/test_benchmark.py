@@ -210,6 +210,30 @@ class TransportTests(unittest.TestCase):
                 requests.get('http://guest:9222/json/version')
             http.check()
 
+    def test_guest_busy_tracks_only_rewritten_mutating_requests_and_sticks_on_timeout(self):
+        import requests
+        transitions = []
+        http = GuestHTTP('guest', {5000: 'http://node:30001'}, on_guest_busy=transitions.append)
+        with (
+            patch('requests.sessions.Session.request', return_value=Mock(status_code=200, json=lambda: {'returncode': 0})),
+            http.installed(),
+        ):
+            requests.get('http://guest:5000/screenshot')
+            requests.post('http://node:30001/v1/chat/completions')
+            self.assertEqual(transitions, [])
+            self.assertFalse(http.guest_busy)
+            requests.post('http://guest:5000/execute')
+            self.assertEqual(transitions, [True, False])
+            self.assertFalse(http.guest_busy)
+        with (
+            patch('requests.sessions.Session.request', side_effect=requests.ReadTimeout('stalled')),
+            http.installed(),
+            self.assertRaises(requests.ReadTimeout),
+        ):
+            requests.post('http://guest:5000/execute')
+        self.assertTrue(http.guest_busy)
+        self.assertEqual(transitions, [True, False, True])
+
 
 class AgentTests(unittest.TestCase):
     def test_custom_factory_receives_model_and_resolution(self):
@@ -238,6 +262,81 @@ class AgentTests(unittest.TestCase):
         self.assertEqual(session.recorder.record_step.call_count, 2)
         session.env.controller.update_computer.assert_called_once_with(scale=(1, 1))
         session.env.evaluate.assert_not_called()
+
+    def test_step_none_observation_preserves_previous_observation(self):
+        agent = Mock()
+        agent.predict.return_value = ('response', ['WAIT'], {'thought': 'step'}, None)
+        session = object.__new__(NativeSession)
+        session.benchmark, session.steps, session.done = 'waa-v2', 0, False
+        session.env, session.http, session.recorder = Mock(), Mock(), Mock()
+        initial_obs = {'screenshot': b'initial'}
+        session.obs = initial_obs
+        session.env.step.return_value = (None, 0, False, {})
+        with self.assertRaisesRegex(RuntimeError, 'did not produce an observation'):
+            session._predict(agent, 'task', max_steps=1, pause=0)
+        self.assertIs(session.obs, initial_obs)
+
+    def test_evaluate_reattach_loads_task_info_without_reset_or_recorder(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp)
+            existing_traj = output / 'traj.jsonl'
+            existing_traj.write_text('{"step": 0}\n', encoding='utf-8')
+            state_path = output / 'waa-worker-state.json'
+            state_path.write_text(json.dumps({
+                'guest_busy': False, 'action_history': ['click', 'FAIL'], 'steps': 2, 'done': True,
+            }) + '\n', encoding='utf-8')
+            session = object.__new__(NativeSession)
+            session.benchmark = 'waa-v2'
+            session.spec = {'domain': 'chrome'}
+            session.config = {'id': 'fixture', 'evaluator': {'func': 'infeasible'}}
+            session.output = output
+            session.state_path = state_path
+            session.env = Mock(action_history=[])
+            session.env._set_task_info.side_effect = lambda _cfg: setattr(session.env, 'action_history', [])
+            session.env.evaluate.side_effect = lambda: 1.0 if session.env.action_history[-1:] == ['FAIL'] else 0.0
+            session.http = GuestHTTP('guest', {5000: 'http://node:30001'})
+            session.http.failures.append((500, '/execute'))
+            session.obs, session.steps, session.done, session.evaluated = None, 0, False, False
+            session.recorder = None
+            session._in_evaluate = False
+
+            result = session.evaluate(reattach=True)
+
+            session.env._set_task_info.assert_called_once_with(session.config)
+            session.env.reset.assert_not_called()
+            self.assertEqual(session.env.domain, 'chrome')
+            self.assertEqual(session.env.action_history, ['click', 'FAIL'])
+            self.assertFalse(session.http.check_execution)
+            self.assertIsNone(session.recorder)
+            self.assertEqual(existing_traj.read_text(encoding='utf-8'), '{"step": 0}\n')
+            self.assertEqual(float((output / 'result.txt').read_text(encoding='utf-8')), 1.0)
+            self.assertEqual(result, {'status': 'completed', 'score': 1.0, 'steps': 2, 'termination': 'agent'})
+            with self.assertRaisesRegex(RuntimeError, 'once per trial'):
+                session.evaluate(reattach=True)
+
+    def test_predict_persists_terminal_fail_action_history(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state_path = Path(tmp) / 'waa-worker-state.json'
+            agent = Mock()
+            agent.predict.return_value = ('response', ['FAIL'], {'thought': 'infeasible'}, None)
+            session = object.__new__(NativeSession)
+            session.benchmark, session.steps, session.done = 'waa-v2', 0, False
+            session.state_path = state_path
+            session.env = Mock(action_history=[])
+            session.http = GuestHTTP('guest', {5000: 'http://node:30001'})
+            session.recorder = Mock()
+            session.obs = {'screenshot': b'image'}
+
+            def apply_step(action, _pause):
+                session.env.action_history.append(action)
+                return ({'screenshot': b'end'}, 0, True, {})
+
+            session.env.step.side_effect = apply_step
+            session._predict(agent, 'task', max_steps=3, pause=0)
+            persisted = json.loads(state_path.read_text(encoding='utf-8'))
+            self.assertEqual(persisted, {
+                'guest_busy': False, 'action_history': ['FAIL'], 'steps': 1, 'done': True,
+            })
 
 
 class HarborAdapterTests(unittest.TestCase):
@@ -372,6 +471,155 @@ class HarborBridgeTests(unittest.IsolatedAsyncioTestCase):
         with patch('waa_benchmark.environment.os.killpg') as kill, self.assertRaises(asyncio.CancelledError):
             await env.native_request('agent')
         kill.assert_called_once()
+        self.assertIsNone(env.worker)
+        with self.assertRaisesRegex(RuntimeError, 'not running'):
+            await env.native_request('evaluate')
+
+    async def test_cancelled_agent_after_setup_reattaches_worker_for_evaluate(self):
+        from harbor.models.trial.paths import TrialPaths
+        from waa_benchmark.environment import WAAEnvironment
+        from waa_benchmark.verifier import WAAVerifier
+
+        with tempfile.TemporaryDirectory() as tmp:
+            trial_dir = Path(tmp)
+            paths = TrialPaths(trial_dir)
+            spec_path = trial_dir / 'waa-worker.json'
+            spec_path.write_text('{}\n', encoding='utf-8')
+            state_path = trial_dir / 'waa-worker-state.json'
+            state_path.write_text(json.dumps({
+                'guest_busy': False, 'action_history': ['click'], 'steps': 1, 'done': False,
+            }) + '\n', encoding='utf-8')
+            log_path = trial_dir / 'waa-worker.log'
+            log_path.write_text('agent-phase-log\n', encoding='utf-8')
+
+            env = object.__new__(WAAEnvironment)
+            env._phase_lock = asyncio.Lock()
+            env._started = True
+            env._setup_complete = True
+            env._evaluate_attempted = False
+            env._worker_spec_path = spec_path
+            env._worker_state_path = state_path
+            env.native_python = sys.executable
+            env.trial_paths = paths
+            env.worker = Mock(pid=123456, returncode=None)
+            env.worker.stdin.drain = AsyncMock()
+            env.worker.stdout.readline = AsyncMock(side_effect=asyncio.CancelledError())
+            env.worker.wait = AsyncMock()
+            env.worker_log = log_path.open('ab')
+
+            with patch('waa_benchmark.environment.os.killpg') as kill, self.assertRaises(asyncio.CancelledError):
+                await env.native_request('agent')
+            kill.assert_called_once()
+            self.assertIsNone(env.worker)
+            self.assertIsNone(env.worker_log)
+
+            with self.assertRaisesRegex(RuntimeError, 'not running'):
+                await env.native_request('agent')
+
+            eval_requests = []
+            eval_worker = Mock(pid=654321, returncode=None)
+            eval_worker.stdin.write = Mock(side_effect=lambda data: eval_requests.append(json.loads(data.decode())))
+            eval_worker.stdin.drain = AsyncMock()
+            eval_worker.stdout.readline = AsyncMock(
+                return_value=(json.dumps({'ok': True, 'result': {'score': 1.0, 'status': 'completed'}}) + '\n').encode()
+            )
+            eval_worker.wait = AsyncMock()
+
+            async def fake_spawn(*args, **kwargs):
+                kwargs['stderr'].write(b'eval-phase-log\n')
+                kwargs['stderr'].flush()
+                return eval_worker
+
+            verifier = WAAVerifier(task=Mock(), trial_paths=paths, environment=env)
+            with patch('waa_benchmark.environment.asyncio.create_subprocess_exec', side_effect=fake_spawn) as spawn:
+                result = await verifier.verify()
+
+            spawn.assert_awaited_once()
+            self.assertEqual(eval_requests, [{'method': 'evaluate', 'reattach': True}])
+            self.assertEqual(result.rewards, {'reward': 1.0})
+            self.assertEqual(float(paths.reward_text_path.read_text(encoding='utf-8')), 1.0)
+            self.assertIn('agent-phase-log', log_path.read_text(encoding='utf-8'))
+            self.assertIn('eval-phase-log', log_path.read_text(encoding='utf-8'))
+
+            with patch('waa_benchmark.environment.os.killpg'):
+                await env._stop_worker()
+            with self.assertRaisesRegex(RuntimeError, 'not running'):
+                await env.native_request('evaluate')
+
+    async def test_cancelled_agent_with_inflight_guest_command_declines_recovery(self):
+        from waa_benchmark.environment import WAAEnvironment
+
+        with tempfile.TemporaryDirectory() as tmp:
+            trial_dir = Path(tmp)
+            spec_path = trial_dir / 'waa-worker.json'
+            spec_path.write_text('{}\n', encoding='utf-8')
+            state_path = trial_dir / 'waa-worker-state.json'
+            state_path.write_text(json.dumps({
+                'guest_busy': True, 'action_history': [], 'steps': 0, 'done': False,
+            }) + '\n', encoding='utf-8')
+
+            env = object.__new__(WAAEnvironment)
+            env._phase_lock = asyncio.Lock()
+            env._started = True
+            env._setup_complete = True
+            env._evaluate_attempted = False
+            env._worker_spec_path = spec_path
+            env._worker_state_path = state_path
+            env.worker = None
+            env.worker_log = None
+
+            with patch('waa_benchmark.environment.asyncio.create_subprocess_exec') as spawn, \
+                    self.assertRaisesRegex(RuntimeError, 'guest command may still be running'):
+                await env.native_request('evaluate')
+            spawn.assert_not_called()
+
+    async def test_clean_agent_error_preserves_worker_for_evaluate(self):
+        from waa_benchmark.environment import WAAEnvironment
+
+        env = object.__new__(WAAEnvironment)
+        env._phase_lock = asyncio.Lock()
+        env._started = True
+        env._setup_complete = True
+        env._evaluate_attempted = False
+        env._worker_spec_path = None
+        env.worker = Mock(pid=123456, returncode=None)
+        env.worker.stdin.drain = AsyncMock()
+        env.worker.stdout.readline = AsyncMock(side_effect=[
+            (json.dumps({'ok': False, 'error_type': 'ValueError'}) + '\n').encode(),
+            (json.dumps({'ok': True, 'result': {'score': 0.5, 'status': 'completed'}}) + '\n').encode(),
+        ])
+        env.worker.wait = AsyncMock()
+        env.worker_log = Mock()
+
+        with patch('waa_benchmark.environment.os.killpg') as kill:
+            with self.assertRaisesRegex(RuntimeError, 'Native WAA agent failed \\(ValueError\\)'):
+                await env.native_request('agent')
+            kill.assert_not_called()
+            self.assertIsNotNone(env.worker)
+            result = await env.native_request('evaluate')
+        self.assertEqual(result, {'score': 0.5, 'status': 'completed'})
+
+    async def test_setup_error_kills_worker_and_blocks_evaluate(self):
+        from waa_benchmark.environment import WAAEnvironment
+
+        env = object.__new__(WAAEnvironment)
+        env._phase_lock = asyncio.Lock()
+        env._started = True
+        env._setup_complete = False
+        env._evaluate_attempted = False
+        env._worker_spec_path = None
+        env.worker = Mock(pid=123456, returncode=None)
+        env.worker.stdin.drain = AsyncMock()
+        env.worker.stdout.readline = AsyncMock(
+            return_value=(json.dumps({'ok': False, 'error_type': 'RuntimeError'}) + '\n').encode()
+        )
+        env.worker.wait = AsyncMock()
+        env.worker_log = Mock()
+
+        with patch('waa_benchmark.environment.os.killpg') as kill:
+            with self.assertRaisesRegex(RuntimeError, 'Native WAA setup failed \\(RuntimeError\\)'):
+                await env.native_request('setup')
+            kill.assert_called_once()
         self.assertIsNone(env.worker)
         with self.assertRaisesRegex(RuntimeError, 'not running'):
             await env.native_request('evaluate')
