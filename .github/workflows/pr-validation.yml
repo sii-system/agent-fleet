@@ -112,6 +112,8 @@ jobs:
           bash scripts/tests/test_dind_cgroup_v2.sh
           echo "Running scripts/tests/test_dind_run.sh"
           bash scripts/tests/test_dind_run.sh
+          echo "Running Agents/utils/common/Harbor/tests/test_harbor_queue_reclaim.sh"
+          bash Agents/utils/common/Harbor/tests/test_harbor_queue_reclaim.sh
           echo "Running Agents/Openclaw/tests/test_build_openclaw_image.sh"
           bash Agents/Openclaw/tests/test_build_openclaw_image.sh
           echo "Running Agents/Openclaw/tests/test_session_layout.sh"

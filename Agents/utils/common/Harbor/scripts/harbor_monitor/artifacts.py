@@ -324,11 +324,13 @@ def load_task_file_manifest(path: Path | None) -> dict[str, str]:
     if not path or not path.exists():
         return {}
     manifest: dict[str, str] = {}
-    index = 1
-    for raw in path.read_text(encoding="utf-8").splitlines():
+    for index, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
         task_name = raw.strip()
         if not task_name or task_name.startswith("#"):
             continue
         manifest[str(index)] = task_name
-        index += 1
     return manifest
+
+
+def claimed_task_count(manifest: dict[str, str], next_index: int) -> int:
+    return sum(int(index) < next_index for index in manifest)

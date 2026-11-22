@@ -11,8 +11,10 @@ from harbor_controller.analyzer_dispatch import dispatch_analyzer_handover
 from harbor_controller.decision import build_decision_request_id, resolve_user_decision
 from harbor_controller.executor import execute_action
 from harbor_controller.policy import decide_action
+from harbor_queue import count_running_workers
 
 from .artifacts import (
+    claimed_task_count,
     load_harbor_job_snapshot,
     load_manifest,
     load_state,
@@ -29,30 +31,6 @@ from .contracts import (
     build_user_notify,
 )
 from .evaluator import evaluate_once
-
-
-def count_running_workers(queue_dir: Path) -> int:
-    running = 0
-    for current_file in queue_dir.glob("worker-*.current"):
-        if not current_file.is_file():
-            continue
-        try:
-            fields = current_file.read_text(encoding="utf-8").rstrip("\n").split("\t")
-        except OSError:
-            continue
-        if len(fields) < 3:
-            # Backward compatibility for existing Harbor runs.
-            running += 1
-            continue
-        try:
-            worker_pid = int(fields[-1])
-            os.kill(worker_pid, 0)
-        except (ValueError, ProcessLookupError):
-            continue
-        except PermissionError:
-            pass
-        running += 1
-    return running
 
 
 def process_is_alive(pid_file: Path | None) -> bool:
@@ -172,8 +150,8 @@ def run_loop(
     )
 
     tasks_manifest = load_manifest(task_manifest_path)
-    if not tasks_manifest:
-        tasks_manifest = load_task_file_manifest(task_file_path)
+    file_manifest = {} if tasks_manifest else load_task_file_manifest(task_file_path)
+    tasks_manifest = tasks_manifest or file_manifest
 
     while True:
         native_job_dir = None
@@ -221,9 +199,10 @@ def run_loop(
                 next_index = read_int(next_index_path, default=None)
                 if next_index is not None:
                     break
-            claimed = next_index if next_index is not None else 0
-            if claimed is not None:
-                claimed = max(0, claimed - 1)
+            claimed = (
+                claimed_task_count(file_manifest, next_index or 1)
+                if file_manifest else max(0, (next_index or 1) - 1)
+            )
         if remaining is None and total is not None and claimed is not None:
             remaining = max(0, total - claimed)
 

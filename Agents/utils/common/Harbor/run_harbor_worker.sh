@@ -14,12 +14,10 @@ if harbor_local_cache_ready && ! harbor_agent_is_dsh; then
   harbor_ensure_local_wheels_server
 fi
 
-CURRENT_FILE="$QUEUE_DIR/worker-${WORKER_ID}.current"
 WORKER_LOG="$RUNTIME_DIR/worker-logs/worker-${WORKER_ID}.log"
 AGENT_TAIL_PID=""
 
 cleanup() {
-  rm -f "$CURRENT_FILE"
   if [[ -n "${AGENT_TAIL_PID:-}" ]]; then
     kill "$AGENT_TAIL_PID" >/dev/null 2>&1 || true
   fi
@@ -202,7 +200,7 @@ run_claimed_task() {
 }
 
 while true; do
-  picked="$(harbor_pick_task || true)"
+  picked="$(harbor_queue pick "$$" "$WORKER_ID")"
   if [[ -z "${picked:-}" ]]; then
     log_msg "no more tasks, exiting"
     break
@@ -217,7 +215,6 @@ while true; do
 
   mkdir -p "$task_jobs_root"
   rm -f "$early_stop_reason_file"
-  printf '%s\t%s\t%s\n' "$task_index" "$task_name" "$BASHPID" > "$CURRENT_FILE"
   log_msg "starting task ${task_index}: $task_name"
   # Dry-run does not create agent JSONL logs; starting the tailer there leaves
   # a waiting Python process behind after the worker exits.
@@ -273,6 +270,5 @@ while true; do
     log_msg "failed task ${task_index}: ${task_name} (exit=$rc, missing trial result)"
   fi
 
-  harbor_release_claim "$task_index"
-  rm -f "$CURRENT_FILE"
+  harbor_queue release "$$" "$WORKER_ID" "$task_index"
 done

@@ -1,175 +1,109 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-HARBOR_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+HARBOR_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TEST_ROOT="$(mktemp -d)"
 trap 'rm -rf "$TEST_ROOT"' EXIT
+export HOME="$TEST_ROOT" OUTPUT_PATH="$TEST_ROOT/run" AGENT=claude-code DATASET_NAME=auto OPIK_URL=""
+export API_KEY=test-only HARBOR_ANTHROPIC_AUTH_TOKEN=test-only BASE_URL=https://example.invalid
+source "$HARBOR_DIR/env.sh"
+harbor_init_run_dirs
+export HARBOR_QUEUE_CLAIM_ATTEMPTS=2
 
-mkdir -p "$TEST_ROOT/home" "$TEST_ROOT/dataset/alpha" "$TEST_ROOT/dataset/beta"
-printf 'version: 1\n' > "$TEST_ROOT/dataset/alpha/task.yaml"
-printf 'version: 1\n' > "$TEST_ROOT/dataset/beta/task.yaml"
+assert_eq() {
+  if [[ "$1" != "$2" ]]; then
+    printf 'expected [%s], got [%s]\n' "$2" "$1" >&2
+    exit 1
+  fi
+}
 
-output="$(
-  env \
-    HOME="$TEST_ROOT/home" \
-    TEST_ROOT="$TEST_ROOT" \
-    AGENT="claude-code" \
-    DATASET_NAME="auto" \
-    DATASET_PATH="$TEST_ROOT/dataset" \
-    OUTPUT_PATH="$TEST_ROOT/run" \
-    OPIK_URL="" \
-    HARBOR_QUEUE_CLAIM_ATTEMPTS="2" \
-    bash -c '
-      set -euo pipefail
-      source "$1"
-      mkdir -p "$QUEUE_DIR" "$RUNTIME_DIR/worker-logs"
-      touch "$QUEUE_DIR/done.txt" "$QUEUE_DIR/failed.txt"
+# The first process exits after claiming alpha. A live worker can reclaim it,
+# but repeated observations alone must never consume the retry.
+printf 'alpha\r\n \t\n# comment\nbeta' > "$TASK_FILE"
+owner="$(bash -c 'source "$1/env.sh"; harbor_queue pick "$$" 1 >/dev/null; echo "$$"' bash "$HARBOR_DIR")"
+assert_eq "$(harbor_queue observe)" "2 1 0"
+assert_eq "$(harbor_queue observe)" "2 1 0"
+[[ ! -e "$QUEUE_DIR/worker-1.current" ]]
+assert_eq "$(harbor_queue pick "$$" 2)" $'1\talpha'
+assert_eq "$(cat "$QUEUE_DIR/claims/1")" "$(printf '1\talpha\t%s\t2' "$$")"
+harbor_queue release "$owner" 1 1
+[[ -e "$QUEUE_DIR/claims/1" ]]
+assert_eq "$(harbor_queue pick "$$" 3)" $'4\tbeta'
+assert_eq "$(harbor_queue observe)" "2 2 2"
+assert_eq "$(harbor_queue pick "$$" 4)" ""
+printf '1\talpha\t1.0\n4\tbeta\t1.0\n' > "$QUEUE_DIR/done.txt"
+harbor_queue release "$$" 2 1
+harbor_queue release "$$" 3 4
+assert_eq "$(harbor_queue observe)" "2 2 0"
 
-      fail() {
-        printf "FAIL: %s\n" "$1" >&2
-        exit 1
-      }
+python3 "$HARBOR_DIR/scripts/monitor.py" --run-dir "$OUTPUT_PATH" --output "$TEST_ROOT/report.json" >/dev/null
+python3 - "$TEST_ROOT/report.json" <<'PY'
+import json
+import sys
+from pathlib import Path
 
-      dead_pid() {
-        sleep 30 &
-        local pid="$!"
-        kill "$pid" 2>/dev/null || true
-        wait "$pid" 2>/dev/null || true
-        printf "%s\n" "$pid"
-      }
+report = json.loads(Path(sys.argv[1]).read_text())
+assert report["benchmark_status"] == "completed"
+assert report["task_summary_action"]["claimed"] == 2
+assert report["task_summary"]["total_evaluated"] == 2
+assert report["task_summary"]["complete_success"] == 2
+PY
 
-      reset_queue() {
-        rm -rf "$QUEUE_DIR/claims"
-        rm -f "$QUEUE_DIR/reclaim.txt" "$QUEUE_DIR/recovery.pid" "$QUEUE_DIR/recovery.count" "$QUEUE_DIR"/worker-*.current
-        : > "$QUEUE_DIR/done.txt"
-        : > "$QUEUE_DIR/failed.txt"
-        echo 1 > "$NEXT_INDEX_FILE"
-      }
+# A torn handoff leaves the durable claim ahead of the cursor. A terminal
+# claim is retired and an exhausted claim gets exactly one WorkerLost row.
+printf '1\n' > "$NEXT_INDEX_FILE"
+printf '1\talpha\t1.0\n' > "$QUEUE_DIR/done.txt"
+printf '1\talpha\t%s\t1\n' "$owner" > "$QUEUE_DIR/claims/1"
+printf '4\tbeta\t%s\t2\n' "$owner" > "$QUEUE_DIR/claims/4"
+assert_eq "$(harbor_queue observe)" "2 2 0"
+assert_eq "$(harbor_queue pick "$$" 4)" ""
+assert_eq "$(cat "$QUEUE_DIR/failed.txt")" $'4\tbeta\tworker-lost\tWorkerLost'
 
-      reset_queue
-      printf "alpha\n\nbeta\n" > "$TASK_FILE"
-      first="$(harbor_pick_task || true)"
-      second="$(harbor_pick_task || true)"
-      third="$(harbor_pick_task || true)"
-      [[ "$first" == $'"'"'1\talpha'"'"' ]] || fail "blank line ended the queue before alpha: [$first]"
-      [[ "$second" == $'"'"'3\tbeta'"'"' ]] || fail "blank line was treated as the end of the queue: [$second]"
-      [[ -z "$third" ]] || fail "expected the queue to end after beta, got [$third]"
-      [[ "$(harbor_task_count)" == "2" ]] || fail "blank lines counted as tasks: $(harbor_task_count)"
-
-      reset_queue
-      printf "alpha\nbeta\n" > "$TASK_FILE"
-      gone="$(dead_pid)"
-      mkdir -p "$QUEUE_DIR/claims"
-      printf "1\talpha\t%s\t1\n" "$gone" > "$QUEUE_DIR/claims/1"
-      echo 3 > "$NEXT_INDEX_FILE"
-      reclaimed="$(harbor_pick_task || true)"
-      [[ "$reclaimed" == $'"'"'1\talpha'"'"' ]] || fail "dead claim was not requeued: [$reclaimed]"
-      claim_pid="$(cut -f3 "$QUEUE_DIR/claims/1")"
-      [[ "$claim_pid" == "$$" ]] || fail "requeued claim did not record the new worker pid"
-      [[ "$(cut -f4 "$QUEUE_DIR/claims/1")" == "2" ]] || fail "requeued claim did not advance the attempt"
-
-      reset_queue
-      printf "alpha\nbeta\n" > "$TASK_FILE"
-      mkdir -p "$QUEUE_DIR/claims"
-      printf "1\talpha\t%s\t1\n" "$$" > "$QUEUE_DIR/claims/1"
-      echo 2 > "$NEXT_INDEX_FILE"
-      next_task="$(harbor_pick_task || true)"
-      [[ "$next_task" == $'"'"'2\tbeta'"'"' ]] || fail "live claim was stolen: [$next_task]"
-      [[ -f "$QUEUE_DIR/claims/1" ]] || fail "live claim was removed"
-
-      reset_queue
-      printf "alpha\nbeta\n" > "$TASK_FILE"
-      mkdir -p "$QUEUE_DIR/claims"
-      printf "1\talpha\t%s\t1\n" "$(dead_pid)" > "$QUEUE_DIR/claims/1"
-      printf "1\talpha\t1.0\t\t/tmp/result.json\n" >> "$QUEUE_DIR/done.txt"
-      echo 2 > "$NEXT_INDEX_FILE"
-      recorded="$(harbor_pick_task || true)"
-      [[ "$recorded" == $'"'"'2\tbeta'"'"' ]] || fail "recorded claim was retried: [$recorded]"
-      [[ ! -f "$QUEUE_DIR/claims/1" ]] || fail "recorded dead claim was left behind"
-      if [[ -s "$QUEUE_DIR/reclaim.txt" ]] && grep -q "^1	" "$QUEUE_DIR/reclaim.txt"; then
-        fail "recorded claim was written back to the reclaim list"
-      fi
-
-      reset_queue
-      printf "alpha\nbeta\n" > "$TASK_FILE"
-      picked="$(harbor_pick_task || true)"
-      harbor_release_claim "${picked%%$'"'"'\t'"'"'*}"
-      [[ ! -e "$QUEUE_DIR/claims/1" ]] || fail "release left the claim in place"
-
-      reset_queue
-      printf "alpha\n" > "$TASK_FILE"
-      mkdir -p "$QUEUE_DIR/claims"
-      printf "1\talpha\t%s\t2\n" "$(dead_pid)" > "$QUEUE_DIR/claims/1"
-      printf "1\talpha\t%s\n" "$(dead_pid)" > "$QUEUE_DIR/worker-7.current"
-      echo 2 > "$NEXT_INDEX_FILE"
-      harbor_recover_lost_claims
-      [[ "$(harbor_count_live_workers)" == "0" ]] || fail "dead current file still counts as running"
-      [[ ! -e "$QUEUE_DIR/worker-7.current" ]] || fail "dead current file was not cleared"
-      grep -q $'"'"'^1\talpha\tworker-lost\tWorkerLost$'"'"' "$QUEUE_DIR/failed.txt" \
-        || fail "exhausted claim was not recorded as failed: [$(cat "$QUEUE_DIR/failed.txt")]"
-      exhausted="$(harbor_pick_task || true)"
-      [[ -z "$exhausted" ]] || fail "exhausted claim was requeued: [$exhausted]"
-
-      reset_queue
-      printf "alpha\n" > "$TASK_FILE"
-      mkdir -p "$QUEUE_DIR/claims"
-      printf "1\talpha\t%s\t1\n" "$(dead_pid)" > "$QUEUE_DIR/claims/1"
-      echo 2 > "$NEXT_INDEX_FILE"
-      recovery_log="$TEST_ROOT/recovery.log"
-      export HARBOR_QUEUE_RECOVERY_COMMAND="$TEST_ROOT/fake-recovery.sh"
-      cat > "$HARBOR_QUEUE_RECOVERY_COMMAND" <<'"'"'EOF'"'"'
+# Kill the last claimant. The existing controller must ask before the run-local
+# restart command launches the real worker entrypoint in dry-run mode.
+printf 'alpha\n' > "$TASK_FILE"
+: > "$QUEUE_DIR/done.txt"
+: > "$QUEUE_DIR/failed.txt"
+printf '1\n' > "$NEXT_INDEX_FILE"
+bash -c 'source "$1/env.sh"; harbor_queue pick "$$" original >/dev/null; kill -KILL "$$"' bash "$HARBOR_DIR" &
+victim="$!"
+wait "$victim" 2>/dev/null && exit 1
+assert_eq "$(harbor_queue observe)" "1 1 0"
+export HARBOR_DRY_RUN=1 HARBOR_ENVIRONMENT_TYPE=docker
+touch "$WORKERS_READY_FILE"
+cat > "$OUTPUT_PATH/restart.sh" <<'WORKER'
 #!/usr/bin/env bash
-printf "%s\n" "$1" > "$TEST_ROOT/recovery.log"
-sleep 30
-EOF
-      chmod +x "$HARBOR_QUEUE_RECOVERY_COMMAND"
-      harbor_recover_lost_claims
-      harbor_ensure_queue_recovery_worker
-      for _ in 1 2 3 4 5 10; do
-        [[ -s "$recovery_log" ]] && break
-        sleep 0.1
-      done
-      [[ "$(cat "$recovery_log" 2>/dev/null || true)" == "recovery" ]] \
-        || fail "no worker was started for a requeued claim"
-      harbor_ensure_queue_recovery_worker
-      [[ "$(wc -l < "$recovery_log" | tr -d " ")" == "1" ]] \
-        || fail "a second recovery worker was started"
-      if [[ -f "$QUEUE_DIR/recovery.pid" ]]; then
-        kill "$(tr -d "[:space:]" < "$QUEUE_DIR/recovery.pid")" 2>/dev/null || true
-        wait "$(tr -d "[:space:]" < "$QUEUE_DIR/recovery.pid")" 2>/dev/null || true
-      fi
+set -euo pipefail
+exec bash "$SCRIPT_DIR/run_harbor_worker.sh" restarted
+WORKER
+chmod +x "$OUTPUT_PATH/restart.sh"
+monitor=(python3 "$HARBOR_DIR/scripts/monitor.py" --run-dir "$OUTPUT_PATH"
+  --startup-grace 0 --restart-cmd restart.sh --output "$TEST_ROOT/report.json"
+  --user-report-output "$OUTPUT_PATH/monitor/user-notify-latest.json")
+"${monitor[@]}" >/dev/null
+python3 - "$TEST_ROOT/report.json" <<'PYREPORT'
+import json
+import sys
+from pathlib import Path
 
-      reset_queue
-      printf "alpha\n" > "$TASK_FILE"
-      mkdir -p "$QUEUE_DIR/claims"
-      printf "1\talpha\t%s\t1\n" "$(dead_pid)" > "$QUEUE_DIR/claims/1"
-      echo 2 > "$NEXT_INDEX_FILE"
-      export HARBOR_QUEUE_RECOVERY_SPAWNS="1"
-      export HARBOR_QUEUE_RECOVERY_COMMAND="$TEST_ROOT/fake-recovery-exit.sh"
-      cat > "$HARBOR_QUEUE_RECOVERY_COMMAND" <<'"'"'EOF'"'"'
-#!/usr/bin/env bash
-printf "%s\n" "$1" >> "$TEST_ROOT/recovery-exit.log"
-exit 1
-EOF
-      chmod +x "$HARBOR_QUEUE_RECOVERY_COMMAND"
-      : > "$TEST_ROOT/recovery-exit.log"
-      harbor_recover_lost_claims
-      harbor_ensure_queue_recovery_worker
-      for _ in 1 2 3 4 5 10; do
-        [[ -s "$TEST_ROOT/recovery-exit.log" ]] && break
-        sleep 0.1
-      done
-      wait "$(tr -d "[:space:]" < "$QUEUE_DIR/recovery.pid")" 2>/dev/null || true
-      harbor_ensure_queue_recovery_worker
-      grep -q $'"'"'^1\talpha\tworker-lost\tWorkerLost$'"'"' "$QUEUE_DIR/failed.txt" \
-        || fail "recovery that never claimed the task left it pending: [$(cat "$QUEUE_DIR/failed.txt")]"
-      [[ "$(wc -l < "$TEST_ROOT/recovery-exit.log" | tr -d " ")" == "1" ]] \
-        || fail "recovery worker was restarted after the spawn budget"
+action = json.loads(Path(sys.argv[1]).read_text())["action"]
+assert action["type"] == "notify" and action["allowed_decisions"] == ["restart"]
+PYREPORT
+[[ ! -s "$QUEUE_DIR/done.txt" && ! -e "$RUNTIME_DIR/worker-logs/worker-restarted.log" ]]
+python3 "$HARBOR_DIR/scripts/controller.py" --run-dir "$OUTPUT_PATH" decide restart >/dev/null
+"${monitor[@]}" >/dev/null
+assert_eq "$(cut -f1-3 "$QUEUE_DIR/done.txt")" $'1\talpha\tdry-run'
+if ! grep -Fq 'skip execution' "$OUTPUT_PATH/1-alpha.console.log"; then
+  echo "approved worker did not reach the Harbor dry-run command" >&2
+  exit 1
+fi
+[[ ! -e "$QUEUE_DIR/claims/1" && ! -e "$QUEUE_DIR/worker-restarted.current" ]]
 
-      printf "ok\n"
-    ' bash "$HARBOR_DIR/env.sh"
-)"
+# Resume a pending retry written by the earlier reclaim-list format.
+: > "$QUEUE_DIR/done.txt"
+printf '1\talpha\t1\n' > "$QUEUE_DIR/reclaim.txt"
+assert_eq "$(harbor_queue pick "$$" 5)" $'1\talpha'
+assert_eq "$(cut -f4 "$QUEUE_DIR/claims/1")" "2"
+[[ ! -e "$QUEUE_DIR/reclaim.txt" ]]
 
-[[ "$output" == "ok" ]]
-printf "ok\n"
+printf 'ok\n'

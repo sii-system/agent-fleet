@@ -12,26 +12,12 @@ harbor_init_run_dirs
 harbor_ensure_dataset
 harbor_prepare_task_file
 
-if [[ ! -s "$TASK_FILE" ]]; then
-  echo "no tasks found (AGENT=$AGENT, DATASET_PATH=$DATASET_PATH)" >&2
-  touch "$WORKERS_FAILED_FILE"
-  exit 1
-fi
-
-if ! harbor_prepare_agent_runtime; then
-  exit 1
-fi
-
 count_done() {
   awk 'NF {n++} END {print n+0}' "$QUEUE_DIR/done.txt" 2>/dev/null || echo 0
 }
 
 count_failed() {
   awk 'NF {n++} END {print n+0}' "$QUEUE_DIR/failed.txt" 2>/dev/null || echo 0
-}
-
-next_index() {
-  cat "$NEXT_INDEX_FILE" 2>/dev/null || echo 1
 }
 
 reward_stats() {
@@ -56,15 +42,11 @@ environment_signal_stats() {
 SUMMARY_FILE="$OUTPUT_PATH/summary.txt"
 
 collect_counts() {
-  total="$(harbor_task_count)"
-  next="$(next_index)"
+  local counts
+  counts="$(harbor_queue observe)"
+  read -r total claimed running_n <<< "$counts"
   done_n="$(count_done)"
   failed_n="$(count_failed)"
-  running_n="$(harbor_count_live_workers)"
-  claimed=$((next - 1))
-  if [[ "$claimed" -lt 0 ]]; then
-    claimed=0
-  fi
   remaining=$((total - claimed))
   if [[ "$remaining" -lt 0 ]]; then
     remaining=0
@@ -180,9 +162,10 @@ render_report() {
   local f worker_id current current_idx item
   while IFS= read -r f; do
     [[ -e "$f" ]] || continue
-    found_any=1
     worker_id="$(basename "$f" .current | sed 's/^worker-//')"
     current="$(cat "$f" 2>/dev/null || true)"
+    [[ -n "$current" ]] || continue
+    found_any=1
     current_idx="$(printf '%s' "$current" | cut -f1)"
     # Keep active workers dense enough for zellij/web panes.
     item="$(printf 'w%s #%s' "$worker_id" "$current_idx")"
@@ -220,9 +203,18 @@ write_summary() {
     || echo "[WARN] failed to write joint Harbor summary" >&2
 }
 
+collect_counts
+if [[ "$total" -eq 0 ]]; then
+  echo "no tasks found (AGENT=$AGENT, DATASET_PATH=$DATASET_PATH)" >&2
+  touch "$WORKERS_FAILED_FILE"
+  exit 1
+fi
+
+if ! harbor_prepare_agent_runtime; then
+  exit 1
+fi
+
 while true; do
-  harbor_recover_lost_claims
-  harbor_ensure_queue_recovery_worker
   collect_counts
 
   # Detached zellij panes may not have TERM set; do not let clear kill monitor.
