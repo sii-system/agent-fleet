@@ -10,7 +10,7 @@ RUN <<-DOCKER_RUN_EOF
     git checkout -B main '{{ spec.base_commit }}';
     git remote remove origin;
     rm -rf .git/logs .git/ORIG_HEAD .git/FETCH_HEAD;
-    chmod -R 777 {{ project_dir }};
+    chmod -R a+rwX {{ project_dir }};
     {%- for cmd in spec.install_config.install %}
     ( {{ cmd }} ) || true;
     {%- endfor %}

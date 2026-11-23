@@ -84,6 +84,8 @@ def test_generated_task_uses_builder_base_image(tmp_path: Path) -> None:
     )
     assert f"git checkout -B main '{record['base_commit']}';" in dockerfile
     assert "rm -rf .git/logs .git/ORIG_HEAD .git/FETCH_HEAD;" in dockerfile
+    assert "chmod -R a+rwX /project;" in dockerfile
+    assert "chmod -R 777" not in dockerfile
     assert "git clone" not in dockerfile
     assert (task_dir / "instruction.md").read_text().strip() == record["problem_statement"]
     config = tomllib.loads((task_dir / "task.toml").read_text())
@@ -296,7 +298,10 @@ def test_generated_dockerfile_excludes_future_commits_tags_and_reflogs(
     subprocess.run(["git", "-C", str(work), "add", "a.py"], check=True)
     subprocess.run(["git", "-C", str(work), "commit", "-m", "init"], check=True, capture_output=True)
     (work / "a.py").write_text("v1-base\n", encoding="utf-8")
-    subprocess.run(["git", "-C", str(work), "commit", "-am", "base"], check=True, capture_output=True)
+    (work / "run.sh").write_text("#!/bin/sh\necho ok\n", encoding="utf-8")
+    (work / "run.sh").chmod(0o755)
+    subprocess.run(["git", "-C", str(work), "add", "a.py", "run.sh"], check=True)
+    subprocess.run(["git", "-C", str(work), "commit", "-m", "base"], check=True, capture_output=True)
     base_sha = subprocess.check_output(
         ["git", "-C", str(work), "rev-parse", "HEAD"], text=True
     ).strip()
@@ -352,6 +357,20 @@ def test_generated_dockerfile_excludes_future_commits_tags_and_reflogs(
     assert not (target / ".git" / "logs").exists()
     assert not (target / ".git" / "ORIG_HEAD").exists()
     assert not (target / ".git" / "FETCH_HEAD").exists()
+
+    # Preserve executable bits so Oracle/solve.sh clean-index checks pass.
+    assert (target / "a.py").stat().st_mode & 0o777 == 0o666
+    assert (target / "run.sh").stat().st_mode & 0o777 == 0o777
+    subprocess.run(
+        ["git", "-C", str(target), "update-index", "--really-refresh"],
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(target), "diff-files", "--quiet", "--"],
+        check=True,
+        capture_output=True,
+    )
 
     (target / "a.py").write_text("agent edit\n", encoding="utf-8")
     subprocess.run(["git", "-C", str(target), "checkout", base_sha, "--", "a.py"], check=True)
