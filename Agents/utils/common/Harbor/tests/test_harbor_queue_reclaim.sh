@@ -3,7 +3,7 @@ set -euo pipefail
 
 HARBOR_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TEST_ROOT="$(mktemp -d)"
-trap 'rm -rf "$TEST_ROOT"' EXIT
+trap 'if [[ -n "${orphan:-}" ]]; then kill -TERM -- "-$orphan" >/dev/null 2>&1 || true; fi; rm -rf "$TEST_ROOT"' EXIT
 export HOME="$TEST_ROOT" OUTPUT_PATH="$TEST_ROOT/run" AGENT=claude-code DATASET_NAME=auto OPIK_URL=""
 export API_KEY=test-only HARBOR_ANTHROPIC_AUTH_TOKEN=test-only BASE_URL=https://example.invalid
 source "$HARBOR_DIR/env.sh"
@@ -93,11 +93,62 @@ PYREPORT
 python3 "$HARBOR_DIR/scripts/controller.py" --run-dir "$OUTPUT_PATH" decide restart >/dev/null
 "${monitor[@]}" >/dev/null
 assert_eq "$(cut -f1-3 "$QUEUE_DIR/done.txt")" $'1\talpha\tdry-run'
-if ! grep -Fq 'skip execution' "$OUTPUT_PATH/1-alpha.console.log"; then
+if ! grep -Fq 'skip execution' "$OUTPUT_PATH/1-2-alpha.console.log"; then
   echo "approved worker did not reach the Harbor dry-run command" >&2
   exit 1
 fi
 [[ ! -e "$QUEUE_DIR/claims/1" && ! -e "$QUEUE_DIR/worker-restarted.current" ]]
+
+# A second attempt must not read the first attempt's trial result.
+rm -rf "$JOBS_ROOT/worker-restarted/1-2-alpha"
+rm -f "$OUTPUT_PATH/1-2-alpha.console.log"
+mkdir -p "$JOBS_ROOT/worker-restarted/1-1-alpha/trial" "$JOBS_ROOT/worker-restarted/1-alpha/trial"
+printf '%s\n' '{"is_resolved": true, "verifier_result": {"rewards": {"reward": 1.0}}}' \
+  > "$JOBS_ROOT/worker-restarted/1-1-alpha/trial/result.json"
+cp "$JOBS_ROOT/worker-restarted/1-1-alpha/trial/result.json" \
+  "$JOBS_ROOT/worker-restarted/1-alpha/trial/result.json"
+: > "$QUEUE_DIR/done.txt"
+: > "$QUEUE_DIR/failed.txt"
+printf '1\talpha\t%s\t1\n' "$owner" > "$QUEUE_DIR/claims/1"
+printf '2\n' > "$NEXT_INDEX_FILE"
+bash "$HARBOR_DIR/run_harbor_worker.sh" restarted
+[[ -d "$JOBS_ROOT/worker-restarted/1-2-alpha" ]]
+[[ -f "$OUTPUT_PATH/1-2-alpha.console.log" ]]
+if python3 "$HARBOR_DIR/harbor_worker_utils.py" latest-result \
+  "$JOBS_ROOT/worker-restarted/1-2-alpha" >/dev/null; then
+  echo "attempt 2 discovered attempt 1's trial result" >&2
+  exit 1
+fi
+assert_eq "$(cut -f1-3 "$QUEUE_DIR/done.txt")" $'1\talpha\tdry-run'
+
+# A dead claim shell does not release a task whose session is still running.
+printf 'alpha\nbeta\n' > "$TASK_FILE"
+: > "$QUEUE_DIR/done.txt"
+: > "$QUEUE_DIR/failed.txt"
+rm -rf "$QUEUE_DIR/claims"
+mkdir -p "$QUEUE_DIR/claims"
+rm -f "$QUEUE_DIR"/worker-*.current
+printf '1\n' > "$NEXT_INDEX_FILE"
+python3 -c 'import os, time; os.setsid(); time.sleep(60)' >/dev/null 2>&1 &
+orphan="$!"
+pgid=""
+for _ in 1 2 3 4 5 10 11 12 13 14 15; do
+  pgid="$(ps -o pgid= -p "$orphan" 2>/dev/null | tr -d ' ' || true)"
+  [[ "$pgid" == "$orphan" ]] && break
+  sleep 0.05
+done
+[[ "$pgid" == "$orphan" ]]
+printf '1\talpha\t0\t1\t%s\n' "$orphan" > "$QUEUE_DIR/claims/1"
+printf '2\n' > "$NEXT_INDEX_FILE"
+assert_eq "$(harbor_queue observe)" "2 1 1"
+assert_eq "$(harbor_queue pick "$$" other)" $'2\tbeta'
+[[ "$(cut -f5 "$QUEUE_DIR/claims/1")" == "$orphan" ]]
+kill -TERM -- "-$orphan" >/dev/null 2>&1 || kill "$orphan" >/dev/null 2>&1 || true
+wait "$orphan" 2>/dev/null || true
+harbor_queue release "$$" other 2
+assert_eq "$(harbor_queue pick "$$" retry)" $'1\talpha'
+assert_eq "$(cut -f4 "$QUEUE_DIR/claims/1")" "2"
+harbor_queue release "$$" retry 1
 
 # Resume a pending retry written by the earlier reclaim-list format.
 : > "$QUEUE_DIR/done.txt"

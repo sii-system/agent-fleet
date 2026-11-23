@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import errno
 import os
 from pathlib import Path
 
@@ -22,6 +23,20 @@ def pid_is_alive(pid: int) -> bool:
     return True
 
 
+def process_group_is_alive(pgid: int) -> bool:
+    if pgid <= 0:
+        return False
+    try:
+        os.killpg(pgid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError as exc:
+        return exc.errno == errno.EPERM
+    return True
+
+
 def count_running_workers(queue: Path, *, clean_stale: bool = False) -> int:
     running = 0
     for current in queue.glob("worker-*.current"):
@@ -35,6 +50,35 @@ def count_running_workers(queue: Path, *, clean_stale: bool = False) -> int:
             running += 1
         elif clean_stale:
             current.unlink(missing_ok=True)
+    return running + count_orphan_executions(queue)
+
+
+def claim_fields(path: Path) -> tuple[str, int, int, int] | None:
+    try:
+        fields = path.read_text().rstrip("\n").split("\t")
+    except OSError:
+        return None
+    if len(fields) < 4 or not fields[2].isdecimal() or not fields[3].isdecimal():
+        return None
+    pgid = fields[4] if len(fields) > 4 else "0"
+    return fields[1], int(fields[2]), int(fields[3]), int(pgid) if pgid.isdecimal() else 0
+
+
+def count_orphan_executions(queue: Path) -> int:
+    """Count claims whose shell is gone while its task session is still running."""
+    claims = queue / "claims"
+    if not claims.is_dir():
+        return 0
+    running = 0
+    for path in claims.iterdir():
+        if not path.name.isdecimal():
+            continue
+        parsed = claim_fields(path)
+        if parsed is None:
+            continue
+        _, pid, _, pgid = parsed
+        if not pid_is_alive(pid) and process_group_is_alive(pgid):
+            running += 1
     return running
 
 
@@ -74,8 +118,12 @@ def recover_claims(
     terminal = None
     for path in paths:
         index = path.name
-        _, name, pid, attempt = path.read_text().rstrip("\n").split("\t")
-        if pid_is_alive(int(pid)):
+        parsed = claim_fields(path)
+        if parsed is None:
+            continue
+        name, pid, attempt, pgid = parsed
+        # The shell can die while the session it started is still executing.
+        if pid_is_alive(pid) or process_group_is_alive(pgid):
             continue
         if terminal is None:
             terminal = recorded_indices(queue)
@@ -95,12 +143,24 @@ def main() -> None:
     commands.add_parser("observe")
     pick = commands.add_parser("pick")
     release = commands.add_parser("release")
+    attach = commands.add_parser("attach")
     for command in (pick, release):
         command.add_argument("pid", type=int)
         command.add_argument("worker")
     release.add_argument("index", type=int)
+    attach.add_argument("pid", type=int)
+    attach.add_argument("index", type=int)
+    attach.add_argument("pgid", type=int)
     args = parser.parse_args()
     queue = Path(os.environ["QUEUE_DIR"])
+    if args.command == "attach":
+        path = queue / "claims" / str(args.index)
+        parsed = claim_fields(path) if path.exists() else None
+        if parsed is not None and parsed[1] == args.pid:
+            name, _, attempt, _ = parsed
+            body = f"{args.index}\t{name}\t{args.pid}\t{attempt}\t{args.pgid}\n"
+            write_text_atomic(path, body)
+        return
     if args.command == "release":
         path = queue / "claims" / str(args.index)
         if path.exists() and path.read_text().split("\t")[2] == str(args.pid):

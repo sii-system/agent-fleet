@@ -145,6 +145,23 @@ finalize_timeout_trace() {
   fi
 }
 
+start_owned_harbor() {
+  local task_index="$1"
+  local bash_bin
+  bash_bin="$(command -v bash)"
+  # A new session keeps the task's process group identifiable after this shell dies.
+  python3 -c 'import os, sys; os.setsid(); os.execv(sys.argv[1], [sys.argv[1], sys.argv[2]])' \
+    "$bash_bin" "$SCRIPT_DIR/harboropik.sh" &
+  OWNED_HARBOR_PID=$!
+  harbor_queue attach "$$" "$task_index" "$OWNED_HARBOR_PID" || true
+}
+
+stop_owned_harbor() {
+  local pid="$1"
+  kill -TERM -- "-$pid" >/dev/null 2>&1 || true
+  terminate_task_process "$pid"
+}
+
 run_claimed_task() {
   local task_name="$1"
   local task_jobs_root="$2"
@@ -178,14 +195,14 @@ run_claimed_task() {
       local early_stop_reason_file="$task_jobs_root/online-early-stop.reason"
       local reason task_pid
       rm -f "$early_stop_reason_file"
-      bash "$SCRIPT_DIR/harboropik.sh" &
-      task_pid="$!"
+      start_owned_harbor "$task_index"
+      task_pid="$OWNED_HARBOR_PID"
       while kill -0 "$task_pid" >/dev/null 2>&1; do
         reason="$(online_early_stop_reason "$task_index" || true)"
         if [[ -n "$reason" ]]; then
           printf '%s\n' "$reason" > "$early_stop_reason_file"
           echo "[ONLINE_EARLY_STOP] task ${task_index}: ${reason}" >&2
-          terminate_task_process "$task_pid"
+          stop_owned_harbor "$task_pid"
           wait "$task_pid" >/dev/null 2>&1 || true
           return 130
         fi
@@ -195,7 +212,8 @@ run_claimed_task() {
       return $?
     fi
 
-    bash "$SCRIPT_DIR/harboropik.sh"
+    start_owned_harbor "$task_index"
+    wait "$OWNED_HARBOR_PID"
   )
 }
 
@@ -208,9 +226,11 @@ while true; do
 
   task_index="$(printf '%s' "$picked" | cut -f1)"
   task_name="$(printf '%s' "$picked" | cut -f2-)"
+  task_attempt="$(awk -F '\t' 'NR==1 { print $4 }' "$QUEUE_DIR/claims/${task_index}" 2>/dev/null || true)"
+  [[ "$task_attempt" =~ ^[0-9]+$ ]] || task_attempt=1
   task_safe="$(safe_name "$task_name")"
-  task_jobs_root="$JOBS_ROOT/worker-${WORKER_ID}/${task_index}-${task_safe}"
-  task_console_log="$OUTPUT_PATH/${task_index}-${task_safe}.console.log"
+  task_jobs_root="$JOBS_ROOT/worker-${WORKER_ID}/${task_index}-${task_attempt}-${task_safe}"
+  task_console_log="$OUTPUT_PATH/${task_index}-${task_attempt}-${task_safe}.console.log"
   early_stop_reason_file="$task_jobs_root/online-early-stop.reason"
 
   mkdir -p "$task_jobs_root"
