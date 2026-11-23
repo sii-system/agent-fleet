@@ -234,13 +234,12 @@ harbor_prepare_task_file() {
   ) 9>"${TASK_FILE}.lock"
 }
 
-harbor_task_count() {
-  if [[ -f "$TASK_FILE" ]]; then
-    wc -l < "$TASK_FILE" | tr -d ' '
-  else
-    echo 0
-  fi
-}
+# The worker shell owns the claim across command substitutions. File operations
+# run under the same lock for workers and the shell monitor.
+harbor_queue() (
+  flock -x 9 || return 1
+  python3 "$SCRIPT_DIR/scripts/harbor_queue.py" "$@"
+) 9>"$LOCK_FILE"
 
 harbor_ensure_dataset() {
   local dataset_kind
@@ -282,24 +281,4 @@ harbor_ensure_dataset() {
     fi
     return 1
   fi
-}
-
-harbor_pick_task() {
-  exec 9>"$LOCK_FILE"
-  flock 9
-
-  local total idx task_name
-  total="$(harbor_task_count)"
-  idx="$(cat "$NEXT_INDEX_FILE" 2>/dev/null || echo 1)"
-  if [[ -z "$idx" || "$idx" -gt "$total" ]]; then
-    flock -u 9
-    return 1
-  fi
-
-  task_name="$(sed -n "${idx}p" "$TASK_FILE" | tr -d '\r')"
-  echo $((idx + 1)) > "$NEXT_INDEX_FILE"
-  flock -u 9
-
-  [[ -n "$task_name" ]] || return 1
-  printf '%s\t%s\n' "$idx" "$task_name"
 }
