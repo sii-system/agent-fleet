@@ -160,6 +160,20 @@ class HarborOpikE2BSmokeTest(unittest.TestCase):
         self.assertEqual(len(plans), 2)
         self.assertEqual(plans[0], plans[1])
 
+    def test_lab_verifier_receives_role_templates_only_for_lab(self) -> None:
+        for dataset in ("harveyai/lab", "auto"):
+            with self.subTest(dataset=dataset):
+                result = self.run_dry_run("docker", "claude-code", dry_run=False, extra_env={
+                    "DATASET_NAME": dataset, "HARBOR_LAB_JUDGE_URL": "https://judge.invalid/v1/messages",
+                    "HARBOR_LAB_JUDGE_API_KEY": "fake-private-judge-key",
+                })
+                self.assertEqual(result.returncode, 0, result.stdout)
+                for template in ("ANTHROPIC_API_BASE=${HARBOR_LAB_JUDGE_URL}",
+                                 "ANTHROPIC_API_KEY=${HARBOR_LAB_JUDGE_API_KEY}"):
+                    self.assertEqual(f"FAKE_HARBOR_ARG=--ve\nFAKE_HARBOR_ARG={template}\n" in result.stdout,
+                                     dataset == "harveyai/lab")
+                self.assertNotIn("fake-private-judge-key", result.stdout)
+
     def test_oracle_e2b_uses_host_configured_prebuilt_environment(self) -> None:
         completed = self.run_dry_run("e2b", prebuilt_template="template-test")
         self.assertEqual(completed.returncode, 0, completed.stdout)

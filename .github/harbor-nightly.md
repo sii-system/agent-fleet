@@ -52,6 +52,12 @@ are not logged.
 A model that disappears mid-run can still fail trials. The preflight checks
 availability at startup.
 
+The random nightly checks LAB's pinned Claude Sonnet 4.6 judge on the Messages
+route. The verifier uses the run gateway by default. Set the paired
+`HARBOR_NIGHTLY_VERIFIER_BASE_URL` and `HARBOR_NIGHTLY_VERIFIER_API_KEY`
+when a separate gateway serves the judge. Keep the preflight model in sync
+with the dataset's `tests/judge.toml` if the benchmark updates its judge.
+
 After selection, the random nightly forwards the already-checked run's
 `BASE_URL`, `MODEL`, and `API_KEY` to Atlas's judge and Tau3's simulator/judge
 through `OPENAI_*`, `EVAL_MODEL`, and `TAU2_*` settings. This makes no additional

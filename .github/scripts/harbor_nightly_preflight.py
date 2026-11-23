@@ -18,6 +18,9 @@ class PreflightError(Exception):
     """An actionable error that is safe to put in Actions logs."""
 
 
+# Selected by the LAB task manifests in tests/judge.toml.
+LAB_JUDGE_MODEL = "claude-sonnet-4-6"
+
 BENCHMARK_MODEL_VARS = {
     "scale-ai/swe-atlas-qna": ("EVAL_MODEL",),
     "sierra-research/tau3-bench": ("TAU2_USER_MODEL", "TAU2_NL_ASSERTIONS_MODEL"),
@@ -109,7 +112,8 @@ def tau_user_args() -> str:
 def configure_benchmark_models(benchmark: str) -> None:
     """Forward the checked run configuration; probe only distinct overrides."""
     model_vars = BENCHMARK_MODEL_VARS.get(benchmark, ())
-    if not model_vars:
+    is_lab = benchmark == "harveyai/lab"
+    if not model_vars and not is_lab:
         return
     base = os.environ.get("BASE_URL", os.environ.get("BASE_URL_RAW", ""))
     run_model = os.environ.get("MODEL", "").strip()
@@ -125,9 +129,27 @@ def configure_benchmark_models(benchmark: str) -> None:
             "Set both HARBOR_NIGHTLY_VERIFIER_BASE_URL and "
             "HARBOR_NIGHTLY_VERIFIER_API_KEY for a separate benchmark gateway"
         )
-    root, key = (api_root(separate_url), separate_key) if separate_url else (run_root, run_key)
+    url, key = (separate_url, separate_key) if separate_url else (base, run_key)
+    if is_lab:
+        if not separate_url:
+            url = os.environ.get("ANTHROPIC_API_BASE", os.environ.get("ANTHROPIC_BASE_URL", url))
+            key = os.environ.get("ANTHROPIC_API_KEY", key)
+        url = url.rstrip("/").removesuffix("/v1/messages")
+    root = api_root(url)
+    if (is_lab and not separate_url and "ANTHROPIC_API_KEY" not in os.environ
+            and urlsplit(root)[:2] != urlsplit(run_root)[:2]):
+        raise PreflightError("Set ANTHROPIC_API_KEY for a separate LAB judge endpoint")
     if not key or "\n" in key or "\r" in key:
         raise PreflightError("Benchmark model preflight requires a valid API credential")
+    if is_lab:
+        try:
+            probe(root, LAB_JUDGE_MODEL, key, "messages")
+        except PreflightError as exc:
+            raise PreflightError(f"LAB judge {LAB_JUDGE_MODEL}: {exc}") from None
+        publish_benchmark_env(benchmark, {
+            "HARBOR_LAB_JUDGE_URL": f"{root}/messages", "HARBOR_LAB_JUDGE_API_KEY": key,
+        })
+        return
     is_tau = benchmark == "sierra-research/tau3-bench"
     exported = {"OPENAI_BASE_URL": root, "OPENAI_API_BASE": root, "OPENAI_API_KEY": key}
     selected = []
@@ -154,6 +176,10 @@ def configure_benchmark_models(benchmark: str) -> None:
             except PreflightError as exc:
                 raise PreflightError(f"Benchmark override {variable}: {exc}") from None
             checked.add(configuration)
+    publish_benchmark_env(benchmark, exported)
+
+
+def publish_benchmark_env(benchmark: str, exported: dict[str, str]) -> None:
     if os.environ.get("GITHUB_ENV"):
         with Path(os.environ["GITHUB_ENV"]).open("a", encoding="utf-8") as output:
             output.write("".join(f"{variable}={value}\n" for variable, value in exported.items()))

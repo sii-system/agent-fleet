@@ -157,6 +157,36 @@ class PreflightTest(unittest.TestCase):
                 })
                 self.assertNotIn("fake-run-key", log)
 
+    def test_lab_probes_pinned_judge_and_exports_only_verifier_settings(self):
+        for overrides, url, key in (
+            ({}, "https://run.invalid/v1", "fake-run-key"),
+            ({"VERIFIER_BASE_URL_RAW": "https://judge.invalid/lab/v1/messages",
+              "VERIFIER_API_KEY": "fake-judge-key"}, "https://judge.invalid/lab/v1", "fake-judge-key"),
+            ({"ANTHROPIC_API_BASE": "https://role.invalid/v1/messages",
+              "ANTHROPIC_API_KEY": "fake-role-key"}, "https://role.invalid/v1", "fake-role-key"),
+        ):
+            with self.subTest(url=url):
+                status, env, calls, log = self.configure("harveyai/lab", **overrides)
+                self.assertEqual(status, 0, log)
+                self.assertEqual(calls, [mock.call(url, "claude-sonnet-4-6", key, "messages")])
+                self.assertEqual(env, {
+                    "EXISTING": "value", "HARBOR_LAB_JUDGE_URL": f"{url}/messages",
+                    "HARBOR_LAB_JUDGE_API_KEY": key,
+                })
+                self.assertNotIn(key, log)
+
+    def test_lab_unavailable_judge_leaves_environment_untouched(self):
+        status, env, _, log = self.configure("harveyai/lab", preflight.PreflightError("HTTP 404"))
+        self.assertEqual(status, 1)
+        self.assertIn("LAB judge claude-sonnet-4-6: HTTP 404", log)
+        self.assertEqual(env, {"EXISTING": "value"})
+
+    def test_lab_requires_role_key_for_a_different_provider_origin(self):
+        status, env, calls, _ = self.configure("harveyai/lab", ANTHROPIC_API_BASE="https://other.invalid")
+        self.assertEqual(status, 1)
+        self.assertEqual(calls, [])
+        self.assertEqual(env, {"EXISTING": "value"})
+
     def test_only_distinct_role_models_are_probed(self):
         status, exported, calls, log = self.configure(
             TAU2_USER_MODEL="openai/other-model", TAU2_NL_ASSERTIONS_MODEL="other-model"

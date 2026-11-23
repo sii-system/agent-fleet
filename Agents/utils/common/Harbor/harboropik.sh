@@ -321,10 +321,18 @@ prepare_opensandbox_image_ref() {
   echo "[INFO] OpenSandbox Bundle Manifest ready: $HARBOR_OPENSANDBOX_BUNDLE_MANIFEST" >&2
 }
 
-append_environment_backend_args() {
+append_environment_args() {
   local arguments
   arguments="$(harbor_backend_launch args)" || return 1
   eval "$arguments"
+  if [[ "$ROLLOUT" != "1" && "$DATASET_NAME" == "harveyai/lab" && -n "${HARBOR_LAB_JUDGE_URL:-}" ]]; then
+    # Harbor resolves these placeholders inside the verifier. Keep the role key
+    # out of the CLI arguments and serialized job configuration.
+    cmd+=(
+      --ve 'ANTHROPIC_API_BASE=${HARBOR_LAB_JUDGE_URL}'
+      --ve 'ANTHROPIC_API_KEY=${HARBOR_LAB_JUDGE_API_KEY}'
+    )
+  fi
 }
 
 append_agent_model_gateway_host() {
@@ -727,7 +735,7 @@ run_oracle_task() {
   else
     cmd+=( --path "$DATASET_PATH" )
   fi
-  append_environment_backend_args
+  append_environment_args
   if opensandbox_verifier_tool_env_required; then
     local verifier_mounts_json
     local -a verifier_mount_args=()
@@ -1043,7 +1051,7 @@ run_harbor() {
     cmd+=( --path "$DATASET_PATH" )
   fi
   prepare_opensandbox_image_ref "$out_dir/opensandbox-bundle.json" || return 1
-  append_environment_backend_args
+  append_environment_args
   if [[ -n "${HARBOR_VERIFIER_UV_HOME:-}" ]]; then
     cmd+=( --ve "HOME=$HARBOR_VERIFIER_UV_HOME" )
   fi
@@ -1435,7 +1443,7 @@ run_opencode_task() {
       cmd+=( --path "$DATASET_PATH" )
     fi
     prepare_opensandbox_image_ref "$out_dir/opensandbox-bundle.json" || return 1
-    append_environment_backend_args
+    append_environment_args
 
     if [[ -n "${HARBOR_AGENT_TIMEOUT_MULTIPLIER:-}" ]]; then
       cmd+=( --agent-timeout-multiplier "$HARBOR_AGENT_TIMEOUT_MULTIPLIER" )
