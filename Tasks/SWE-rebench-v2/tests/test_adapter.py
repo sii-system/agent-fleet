@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -75,8 +76,17 @@ def test_generated_task_uses_builder_base_image(tmp_path: Path) -> None:
     from_lines = [line for line in dockerfile.splitlines() if line.startswith("FROM ")]
     assert len(from_lines) == 1
     assert from_lines[0].split()[-1] == base_image
-    assert f"git clone -o origin https://github.com/{record['repo']} /project;" in dockerfile
-    assert f"git reset --hard {record['base_commit']};" in dockerfile
+    assert "git init /project;" in dockerfile
+    assert f"git remote add origin https://github.com/{record['repo']};" in dockerfile
+    assert (
+        f"git fetch origin '{record['base_commit']}:refs/remotes/origin/base';"
+        in dockerfile
+    )
+    assert f"git checkout -B main '{record['base_commit']}';" in dockerfile
+    assert "rm -rf .git/logs .git/ORIG_HEAD .git/FETCH_HEAD;" in dockerfile
+    assert "chmod -R a+rwX /project;" in dockerfile
+    assert "chmod -R 777" not in dockerfile
+    assert "git clone" not in dockerfile
     assert (task_dir / "instruction.md").read_text().strip() == record["problem_statement"]
     config = tomllib.loads((task_dir / "task.toml").read_text())
     assert config["task"]["name"] == "swe-rebench-v2/owner__project-1"
@@ -180,12 +190,17 @@ def test_archived_supermq_repository_clones_merged_magistrala_history(
     task_dir, _ = adapter.generate_task(record)
 
     dockerfile = (task_dir / "environment" / "Dockerfile").read_text()
+    assert "git init /supermq;" in dockerfile
     assert (
-        "git clone -o origin https://github.com/absmach/magistrala /supermq;"
+        "git remote add origin https://github.com/absmach/magistrala;"
         in dockerfile
     )
     assert (
-        "git fetch --no-tags origin "
+        "git fetch origin "
+        "'1c0400d3a58409d4148d2f3cd7befd279dd97a42:refs/remotes/origin/base';" in dockerfile
+    )
+    assert (
+        "git checkout -B main "
         "'1c0400d3a58409d4148d2f3cd7befd279dd97a42';" in dockerfile
     )
     assert dockerfile.endswith("WORKDIR /supermq\n")
@@ -220,13 +235,13 @@ def test_repository_overrides_preserve_task_identity_and_verified_commit(
     task_dir, _ = adapter.generate_task(record)
 
     dockerfile = (task_dir / "environment" / "Dockerfile").read_text()
-    expected_clone = (
-        f"git clone -o origin https://github.com/{clone_repo} /{project};"
+    assert f"git init /{project};" in dockerfile
+    assert (
+        f"git remote add origin https://github.com/{clone_repo};"
+        in dockerfile
     )
-    assert expected_clone in dockerfile
-    assert f"git cat-file -e '{base_commit}^{{commit}}'" in dockerfile
-    assert f"git fetch --no-tags origin '{base_commit}';" in dockerfile
-    assert f"git reset --hard {base_commit};" in dockerfile
+    assert f"git fetch origin '{base_commit}:refs/remotes/origin/base';" in dockerfile
+    assert f"git checkout -B main '{base_commit}';" in dockerfile
     assert dockerfile.endswith(f"WORKDIR /{project}\n")
 
     metadata = json.loads((task_dir / "tests" / "config.json").read_text())
@@ -260,8 +275,111 @@ def test_repository_override_is_limited_to_verified_commit(
     task_dir, _ = adapter.generate_task(record)
 
     dockerfile = (task_dir / "environment" / "Dockerfile").read_text()
-    assert f"https://github.com/{source_repo} /{project};" in dockerfile
+    assert f"git init /{project};" in dockerfile
+    assert f"git remote add origin https://github.com/{source_repo};" in dockerfile
     assert f"https://github.com/{clone_repo}" not in dockerfile
+
+
+def test_generated_dockerfile_excludes_future_commits_tags_and_reflogs(
+    tmp_path: Path,
+) -> None:
+    remote = tmp_path / "remote.git"
+    work = tmp_path / "work"
+    target = tmp_path / "project"
+    subprocess.run(["git", "init", "--bare", str(remote)], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(remote), "config", "uploadpack.allowAnySHA1InWant", "true"],
+        check=True,
+    )
+    subprocess.run(["git", "init", str(work)], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(work), "config", "user.email", "t@example.com"], check=True)
+    subprocess.run(["git", "-C", str(work), "config", "user.name", "Test"], check=True)
+    (work / "a.py").write_text("v0\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(work), "add", "a.py"], check=True)
+    subprocess.run(["git", "-C", str(work), "commit", "-m", "init"], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(work), "tag", "-a", "v1.2.3", "-m", "historical release"],
+        check=True,
+    )
+    (work / "a.py").write_text("v1-base\n", encoding="utf-8")
+    (work / "run.sh").write_text("#!/bin/sh\necho ok\n", encoding="utf-8")
+    (work / "run.sh").chmod(0o755)
+    subprocess.run(["git", "-C", str(work), "add", "a.py", "run.sh"], check=True)
+    subprocess.run(["git", "-C", str(work), "commit", "-m", "base"], check=True, capture_output=True)
+    base_sha = subprocess.check_output(
+        ["git", "-C", str(work), "rev-parse", "HEAD"], text=True
+    ).strip()
+
+    (work / "a.py").write_text("GOLD_FIX_SECRET\n", encoding="utf-8")
+    subprocess.run(
+        ["git", "-C", str(work), "commit", "-am", "gold fix PR"],
+        check=True,
+        capture_output=True,
+    )
+    gold_sha = subprocess.check_output(
+        ["git", "-C", str(work), "rev-parse", "HEAD"], text=True
+    ).strip()
+    gold_blob = subprocess.check_output(
+        ["git", "-C", str(work), "rev-parse", "HEAD:a.py"], text=True
+    ).strip()
+    subprocess.run(["git", "-C", str(work), "tag", "v9.9.9-gold"], check=True)
+    subprocess.run(["git", "-C", str(work), "remote", "add", "origin", str(remote)], check=True)
+    subprocess.run(["git", "-C", str(work), "push", "--all", "origin"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(work), "push", "--tags", "origin"], check=True, capture_output=True)
+
+    record = _record()
+    record["base_commit"] = base_sha
+    record["install_config"]["install"] = ["git describe --tags --long > build-version"]
+    adapter = SWERebenchV2Adapter(tmp_path / "tasks", source="sample.json")
+    task_dir, _ = adapter.generate_task(record)
+
+    dockerfile = (task_dir / "environment" / "Dockerfile").read_text(encoding="utf-8")
+    run_body = dockerfile.split("RUN <<-DOCKER_RUN_EOF\n", 1)[1].split(
+        "\nDOCKER_RUN_EOF", 1
+    )[0]
+    local_script = run_body.replace(
+        f"https://github.com/{record['repo']}", f"file://{remote}"
+    ).replace("/project", str(target))
+    subprocess.run(["bash", "-c", local_script], check=True)
+
+    head = subprocess.check_output(
+        ["git", "-C", str(target), "rev-parse", "HEAD"], text=True
+    ).strip()
+    assert head == base_sha
+    assert (target / "a.py").read_text(encoding="utf-8") == "v1-base\n"
+    assert (target / "build-version").read_text().strip() == subprocess.check_output(
+        ["git", "-C", str(work), "describe", "--tags", "--long", base_sha], text=True
+    ).strip()
+    # Include unreachable objects in the check for future history and patch content.
+    objects = subprocess.check_output(
+        ["git", "-C", str(target), "cat-file", "--batch-all-objects", "--batch-check=%(objectname)"],
+        text=True,
+    ).splitlines()
+    assert gold_sha not in objects
+    assert gold_blob not in objects
+    assert subprocess.check_output(["git", "-C", str(target), "tag", "-l"], text=True) == "v1.2.3\n"
+    assert subprocess.check_output(["git", "-C", str(target), "remote"], text=True) == ""
+    assert not (target / ".git" / "logs").exists()
+    assert not (target / ".git" / "ORIG_HEAD").exists()
+    assert not (target / ".git" / "FETCH_HEAD").exists()
+
+    # Preserve executable bits so Oracle/solve.sh clean-index checks pass.
+    assert (target / "a.py").stat().st_mode & 0o777 == 0o666
+    assert (target / "run.sh").stat().st_mode & 0o777 == 0o777
+    subprocess.run(
+        ["git", "-C", str(target), "update-index", "--really-refresh"],
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(target), "diff-files", "--quiet", "--"],
+        check=True,
+        capture_output=True,
+    )
+
+    (target / "a.py").write_text("agent edit\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(target), "checkout", base_sha, "--", "a.py"], check=True)
+    assert (target / "a.py").read_text(encoding="utf-8") == "v1-base\n"
 
 
 def test_task_config_matches_current_harbor_schema(tmp_path: Path) -> None:

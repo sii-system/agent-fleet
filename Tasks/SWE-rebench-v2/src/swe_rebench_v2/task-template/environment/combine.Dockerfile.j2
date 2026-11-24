@@ -3,12 +3,15 @@ FROM --platform=linux/amd64 {{ spec.install_config.image_name }}
 
 RUN <<-DOCKER_RUN_EOF
     set -eux;
-    git clone -o origin https://github.com/{{ spec.clone_repo }} {{ project_dir }};
-    chmod -R 777 {{ project_dir }};
+    git init {{ project_dir }};
     cd {{ project_dir }};
-    git cat-file -e '{{ spec.base_commit }}^{commit}' || git fetch --no-tags origin '{{ spec.base_commit }}';
-    git reset --hard {{ spec.base_commit }};
+    git remote add origin https://github.com/{{ spec.clone_repo }};
+    # A destination ref lets Git auto-follow release tags in the base commit's ancestry.
+    git fetch origin '{{ spec.base_commit }}:refs/remotes/origin/base';
+    git checkout -B main '{{ spec.base_commit }}';
     git remote remove origin;
+    rm -rf .git/logs .git/ORIG_HEAD .git/FETCH_HEAD;
+    chmod -R a+rwX {{ project_dir }};
     {%- for cmd in spec.install_config.install %}
     ( {{ cmd }} ) || true;
     {%- endfor %}
