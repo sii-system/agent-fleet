@@ -6,7 +6,8 @@ RUN <<-DOCKER_RUN_EOF
     git init {{ project_dir }};
     cd {{ project_dir }};
     git remote add origin https://github.com/{{ spec.clone_repo }};
-    git fetch --depth 1 --no-tags origin '{{ spec.base_commit }}';
+    # A destination ref lets Git auto-follow release tags in the base commit's ancestry.
+    git fetch origin '{{ spec.base_commit }}:refs/remotes/origin/base';
     git checkout -B main '{{ spec.base_commit }}';
     git remote remove origin;
     rm -rf .git/logs .git/ORIG_HEAD .git/FETCH_HEAD;
