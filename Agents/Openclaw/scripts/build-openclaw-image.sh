@@ -6,7 +6,6 @@
 #
 # Variables:
 #   OPENCLAW_REPO   OpenClaw git repo URL  (default: https://github.com/openclaw/openclaw.git)
-#   TRACE_PLUGIN_SOURCE_DIR  agent-opik-plugin checkout (default: repo submodule)
 #   NPM_CONFIG_REGISTRY  npm/pnpm registry mirror for builds
 #   PIP_INDEX_URL        pip index mirror for the Opik image layer
 #   PIP_EXTRA_INDEX_URL  optional extra pip index for the Opik image layer
@@ -42,8 +41,7 @@ OPENCLAW_REPO="${OPENCLAW_REPO:-https://github.com/openclaw/openclaw.git}"
 
 OPENCLAW_CACHE="$PROJECT_DIR/cache/openclaw"
 OPENCLAW_SESSION_AFFINITY_PATCH="$PROJECT_DIR/patches/openclaw/openclaw-session-affinity.patch"
-TRACE_PLUGIN_SOURCE_DIR="${TRACE_PLUGIN_SOURCE_DIR:-$REPO_ROOT/third_party/agent-opik-plugin}"
-PLUGIN_SRC="$TRACE_PLUGIN_SOURCE_DIR/harness/openclaw"
+PLUGIN_SOURCE_DIR="$REPO_ROOT/third_party/agent-opik-plugin"
 
 OPIK_DOCKER_BUILD_ARGS=()
 
@@ -148,8 +146,8 @@ echo ""
 echo "OPIK_URL is set — building opik layer..."
 
 # ── Step 3: Verify the agent-opik-plugin submodule ──
-if [ ! -d "$PLUGIN_SRC" ] || [ ! -f "$TRACE_PLUGIN_SOURCE_DIR/src/sii_opik_plugin/openclaw/openclaw_opik_tracer.py" ]; then
-  echo "Error: agent-opik-plugin submodule is missing or incomplete: $TRACE_PLUGIN_SOURCE_DIR" >&2
+if [ ! -d "$PLUGIN_SOURCE_DIR/harness/openclaw" ] || [ ! -f "$PLUGIN_SOURCE_DIR/src/sii_opik_plugin/openclaw/openclaw_opik_tracer.py" ]; then
+  echo "Error: agent-opik-plugin submodule is missing or incomplete: $PLUGIN_SOURCE_DIR" >&2
   echo "Run: git submodule update --init --recursive" >&2
   exit 1
 fi

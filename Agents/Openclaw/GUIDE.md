@@ -1,6 +1,6 @@
 # OpenClaw Guide
 
-Operator-facing reference: configuration, fleet commands, multi-node deployment, and platform notes. See [SECURITY.md](./SECURITY.md) for the security policy matrix.
+Operator-facing reference: configuration, fleet commands, and platform notes. See [SECURITY.md](./SECURITY.md) for the security policy matrix.
 
 ## Configuration
 
@@ -10,12 +10,12 @@ Operator-facing reference: configuration, fleet commands, multi-node deployment,
 2. Environment variables set by the caller
 3. `Agents/Openclaw/config/fleet.env` — OpenClaw config
 4. `config.local.env` — private overrides/secrets
-5. `config.env` — shared site configuration (model gateway, Opik, mirrors)
+5. `config.env` — committed, public-safe configuration template
 
-Set your model gateway in the repo-root `config.env`, then edit `Agents/Openclaw/config/fleet.env` for fleet-specific options:
+Set your model gateway in the ignored repo-root `config.local.env`, then edit `Agents/Openclaw/config/fleet.env` for non-secret fleet-specific options. Keep credentials in `config.local.env` or the caller environment:
 
 ```bash
-# Set BASE_URL, API_KEY, MODEL in config.env
+# Set BASE_URL, API_KEY, MODEL in config.local.env
 # Set COUNT and other OpenClaw options in Agents/Openclaw/config/fleet.env
 ./Agents/Openclaw/scripts/setup.sh
 ```
@@ -85,7 +85,7 @@ DEFAULT_PORTS_OFFSET="100" \
 
 Existing tokens in `Agents/Openclaw/.env` are preserved across regenerations. Generated service names follow `${CONTAINER_NAME_PREFIX}-N`. Host gateway port assignment follows `18789 + DEFAULT_PORTS_OFFSET + (N-1) * PORT_STEP`, per [gateway docs](https://docs.openclaw.ai/gateway/multiple-gateways).
 
-The generated containers intentionally do not mount over `/home/node/.openclaw`. OpenClaw state is redirected with `OPENCLAW_STATE_DIR=/home/node/openclaw-state` and `OPENCLAW_CONFIG_PATH=/home/node/openclaw-state/openclaw.json`, which keeps image-provided or runtime-created `.openclaw` content from being hidden by a host bind mount.
+OpenClaw state uses `OPENCLAW_STATE_DIR=/home/node/openclaw-state` and `OPENCLAW_CONFIG_PATH=/home/node/openclaw-state/openclaw.json`. The generated containers also mount `$CONFIG_BASE/N/openclaw-home` at `/home/node/.openclaw` so the exec tool can write and change permissions there. Setup recreates its `agents` symlink to the state directory; traced instances additionally mount `$CONFIG_BASE/N/opik-state` at `/home/node/.openclaw/state`.
 
 ### Opik Tracing Plugin
 
@@ -213,26 +213,7 @@ Optional environment variables:
 | `OPENCLAW_SESSION_POLL_INTERVAL` | `2` | Seconds between pane refreshes |
 | `ZELLIJ_BIN` | `zellij` | Zellij executable override |
 
-## Deployment
-
-### Multi-Node (Ansible)
-
-To deploy the fleet across multiple nodes, use the bundled Ansible playbook. It clones the repo on each node, renders `fleet.env` from a template, runs `setup.sh`, and starts the fleet.
-
-```bash
-# Edit inventory.ini with your node IPs first
-ansible-playbook -i Agents/Openclaw/config/ansible/inventory.ini \
-  Agents/Openclaw/config/ansible/deploy.yml \
-  -e base_url="https://api.example.com/v1" \
-  -e api_key="sk-xxx" \
-  -e model="nex/nex-n1.1" \
-  -e trace_to_opik=false \
-  -e openclaw_image="registry.example.com/openclaw:latest"
-```
-
-The playbook renders `Agents/Openclaw/config/ansible/templates/fleet.env.j2` into `Agents/Openclaw/config/fleet.env` on each node, then runs `setup.sh` and `docker compose up -d`.
-To enable tracing, set `trace_to_opik=true`, `opik_plugin=enabled`,
-`opik_url`, and `opik_project_name`.
+## Platform Notes
 
 ### Linux Notes
 
@@ -259,16 +240,12 @@ agent-fleet/
 │       │   ├── build-openclaw-image.sh     # Build openclaw:local (or openclaw:local-opik)
 │       │   └── openclaw-fleet.sh           # Fleet management tool
 │       ├── config/
-│       │   ├── ansible/
-│       │   │   ├── deploy.yml              # Multi-node deployment playbook
-│       │   │   ├── inventory.ini           # Node inventory (edit with your IPs)
-│       │   │   └── templates/fleet.env.j2  # fleet.env template rendered per node
 │       │   ├── openclaw.json.template      # Base config template
 │       │   └── fleet.env                   # Local setup defaults
 │       ├── docker-compose.yml              # Auto-generated — do not edit manually
 │       ├── .env                            # Auto-generated tokens (TOKEN_1 … TOKEN_N)
 │       ├── README.md                       # Quick start + architecture
-│       ├── GUIDE.md                        # Configuration, fleet commands, deployment
+│       ├── GUIDE.md                        # Configuration, fleet commands, platform notes
 │       └── SECURITY.md                     # Policy matrix + known limitations
 └── README.md
 ```
