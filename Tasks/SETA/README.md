@@ -10,8 +10,9 @@ terminal_bench_tui_tasks.txt
 `harbor_tasks.txt` is used by `Agents/utils/common/Harbor`.
 `terminal_bench_tui_tasks.txt` is a legacy task list kept for compatibility.
 
-Use `harbor_tasks.txt` through `Agents/utils/common/Harbor/start.sh` by setting
-`DATASET_NAME=seta` and `DATASET_PATH` in `Agents/utils/common/Harbor/env.sh`.
+Use `harbor_tasks.txt` for local runs with
+`DATASET_NAME=auto DATASET_PATH=/data/seta/Harbor-Dataset bash Agents/utils/common/Harbor/start.sh`.
+The `seta` alias selects the Harbor registry dataset instead.
 
 Optional online analysis:
 
